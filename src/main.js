@@ -6956,9 +6956,8 @@ function updateKnives(dt){
     if(segLen>.0001){
       const dir=segDir.clone().multiplyScalar(1/segLen);
       // Enemies first
-      const r=new THREE.Raycaster(prev,dir,0,segLen);
       const enemyMeshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
-      const hits=r.intersectObjects(enemyMeshes,false);
+      const hits=_rayHits(prev,dir,0,segLen,enemyMeshes);
       if(hits.length){
         const h=hits[0];const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
         const killed=enemy.takeDamage(isHead?999:200,isHead);
@@ -7127,9 +7126,8 @@ function tryPistolWhip(){
   _whipAnchorZ=gunGrp.position.z;
   // Hit detection — short forward raycast
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  const r=new THREE.Raycaster(camera.position.clone(),fwd,0,1.6);
   const meshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
-  const hits=r.intersectObjects(meshes,false);
+  const hits=_rayHits(camera.position,fwd,0,1.6,meshes);
   if(hits.length){
     const h=hits[0];const enemy=h.object.userData.enemy;
     enemy.lastPlayerDir.set(fwd.x,0,fwd.z).normalize();
@@ -7786,18 +7784,20 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const SETTINGS=(()=>{let s={sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,gore:'med',aimAssist:false};try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}return s;})();
+const SETTINGS=(()=>{let s={sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,gore:'med',aimAssist:false,pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,aiSkipFramesModulo:3,raycastSpatialIndex:true,maxParticlesBlood:120,maxParticlesSmoke:80,cheapMaterials:false,reducedBloomish:false};try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}return s;})();
 function _goreMul(){return ({low:.30,med:1.0,high:1.5}[SETTINGS.gore])||1.0;}
 function saveSettings(){try{localStorage.setItem('clearance_settings',JSON.stringify(SETTINGS));}catch(_){}}
 function applyQuality(){
   const q=SETTINGS.quality||'high';
   if(_bloomPass){
-    const stren={low:0,medium:.18,high:.28,ultra:.45}[q];
+    const stren=(SETTINGS.reducedBloomish?{low:0,medium:.12,high:.20,ultra:.30}:{low:0,medium:.18,high:.28,ultra:.45})[q];
     _bloomPass.strength=stren;
   }
   // Pixel ratio
-  const px={low:1.0,medium:1.25,high:Math.min(devicePixelRatio,2),ultra:Math.min(devicePixelRatio,2)}[q];
+  const px=Math.min(({low:1.0,medium:1.25,high:Math.min(devicePixelRatio,2),ultra:Math.min(devicePixelRatio,2)}[q]),SETTINGS.pixelRatioCap||1.5);
   renderer.setPixelRatio(px);
+  if(_composer)_composer.setPixelRatio(px);
+  G._useComposer=q!=='low'||stren>0;
   // Scope PIP resolution
   if(typeof rtScope!=='undefined'){
     const sr={low:512,medium:768,high:1024,ultra:1536}[q];
@@ -7970,8 +7970,7 @@ function addMuzzleSmoke(originLocal,gunGroup){
 // Quick AABB-aware wall raycast helper (uses scene meshes from current building)
 function wallRaycast(origin,dir){
   if(!G.levelData||!G.levelData.solids)return null;
-  const r=new THREE.Raycaster(origin,dir,.2,80);
-  const hits=r.intersectObjects(G.levelData.solids,false);
+  const hits=_rayHits(origin,dir,.2,80,G.levelData.solids);
   return hits.length?hits[0]:null;
 }
 // ── ATTACHMENT PICKUPS ───────────────────────────────────────────────────────
@@ -8264,6 +8263,11 @@ function tryEquipPickup(pk){
 }
 // ── SHOOT ────────────────────────────────────────────────────────────────────
 const rc=new THREE.Raycaster();rc.far=80;
+const _rcShared=new THREE.Raycaster();
+function _rayHits(origin,dir,near,far,targets){
+  _rcShared.set(origin,dir);_rcShared.near=near||0;_rcShared.far=far||80;
+  return _rcShared.intersectObjects(targets,false);
+}
 // ── HOLD BREATH — Shift+ADS holds breath for sniper precision (limited duration)
 const BREATH={holding:false,timer:0,maxDur:4.0,cooldown:0,recoverRate:.6};
 function tickBreath(dt){
@@ -13176,7 +13180,9 @@ function startEndlessMode(){
   if(G.levelData)G.levelData.cleanup();
   G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[];
   G.exitUnlocked=false;G.advancePending=false;G.zoneClears=[true,true,true]; // pre-cleared for endless
+  console.time('buildLevel');
   G.levelData=buildLevel(scene,G.building);
+  console.timeEnd('buildLevel');
   G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
@@ -14410,7 +14416,9 @@ function startBuilding(){
   G.exitUnlocked=false;G.advancePending=false;
   G.zoneClears=[false,false,false];
   $e('exit-prompt').style.opacity='0';
+  console.time('buildLevel');
   G.levelData=buildLevel(scene,G.building);
+  console.timeEnd('buildLevel');
   G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
@@ -15663,7 +15671,9 @@ function startRange(){
   // Build a flat empty room (no enemies), spawn target dummies via Enemy class
   if(G.levelData)G.levelData.cleanup();
   G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[];
+  console.time('buildLevel');
   G.levelData=buildLevel(scene,1);
+  console.timeEnd('buildLevel');
   G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
@@ -16215,8 +16225,22 @@ _setLayer(shopGrp,1);
 _setLayer(reloadHoloGrp,1);
 _setLayer(throwGrp,1);
 const clock=new THREE.Clock();
+const PERF={emaMs:16.7,emaFps:60,samples:new Float32Array(120),sampleIdx:0,lastHudUpdate:0,lastMemLog:0,hud:null,txtA:null,txtB:null,txtC:null};
+const _perfEnabled=()=>SETTINGS.perfHud||new URLSearchParams(location.search).get('perf')==='1';
+function _ensurePerfHud(){
+  if(PERF.hud||!_perfEnabled())return;
+  const hud=document.createElement('div');
+  hud.style.cssText='position:fixed;right:10px;top:10px;z-index:50;background:rgba(0,0,0,.6);color:#7CFF9A;font:12px monospace;padding:6px 8px;pointer-events:none;white-space:pre;line-height:1.3';
+  PERF.txtA=document.createElement('div');PERF.txtB=document.createElement('div');PERF.txtC=document.createElement('div');
+  hud.append(PERF.txtA,PERF.txtB,PERF.txtC);document.body.appendChild(hud);PERF.hud=hud;
+}
+window.__PERF={snapshot:()=>({emaMs:PERF.emaMs,emaFps:PERF.emaFps,p99ms:Array.from(PERF.samples).sort((a,b)=>a-b)[Math.floor(PERF.samples.length*.99)]||0,info:renderer.info?.render||{}})};
 renderer.setAnimationLoop(()=>{
   const dt=Math.min(clock.getDelta(),.05);
+  const frameMs=dt*1000;
+  PERF.emaMs=PERF.emaMs*0.9+frameMs*0.1;
+  PERF.emaFps=1000/Math.max(0.0001,PERF.emaMs);
+  PERF.samples[PERF.sampleIdx++%PERF.samples.length]=frameMs;
   const now=performance.now()*.001;
   // Drive the Deagle slide-cycle / hammer-fall animation. Decoupled from any
   // enemy mixer; only ticks when the GLB rig is loaded.
@@ -16269,10 +16293,26 @@ renderer.setAnimationLoop(()=>{
   $e('chrom').classList.toggle('show',hpRatio<.30&&!P.dead);
   // Slow-mo dt: world entities slow during focus, player camera/input stays at full dt
   const dts=dt*(P.timeScale||1);
+  if(_perfEnabled()){
+    _ensurePerfHud();
+    const nowMs=performance.now();
+    if(PERF.hud&&nowMs-PERF.lastHudUpdate>1000){
+      PERF.lastHudUpdate=nowMs;
+      const p99=Array.from(PERF.samples).sort((a,b)=>a-b)[Math.floor(PERF.samples.length*.99)]||0;
+      const ri=renderer.info;
+      PERF.txtA.textContent=`fps ${PERF.emaFps.toFixed(1)} | frame ${PERF.emaMs.toFixed(2)}ms | p99 ${p99.toFixed(2)}ms`;
+      PERF.txtB.textContent=`draw ${ri.render.calls} tri ${ri.render.triangles} geo ${ri.memory.geometries} tex ${ri.memory.textures}`;
+      PERF.txtC.textContent=`lines ${ri.render.lines} pts ${ri.render.points}`;
+    }
+    if(nowMs-PERF.lastMemLog>5000){
+      PERF.lastMemLog=nowMs;
+      if(performance.memory)console.log('[perf.heap]',{usedJSHeapSize:performance.memory.usedJSHeapSize});
+    }
+  }
   if(!G.started){renderer.render(scene,camera);return;}
   if(P.dead){
     updateDeathCam(dt);
-    if(_composer)_composer.render();
+    if(_composer&&G._useComposer!==false)_composer.render();
     else renderer.render(scene,camera);
     return;
   }
@@ -17086,7 +17126,7 @@ renderer.setAnimationLoop(()=>{
         if(scopeViewM_active)scopeViewM_active.opacity=0;
         $e('scope-vignette').style.opacity='0';
       }
-      if(_composer)_composer.render();
+      if(_composer&&G._useComposer!==false)_composer.render();
       else renderer.render(scene,camera);
 });
 

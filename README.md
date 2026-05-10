@@ -94,3 +94,25 @@ Key exports:
 Validation helpers:
 - `validateStoryDepthPack()`
 - `scripts/story-depth-check.mjs`
+
+## Performance controls and capture
+
+- `?perf=1` URL flag or `SETTINGS.perfHud=true` enables the in-game perf HUD.
+- Perf HUD reports EMA fps/frame time, p99-ish frame spike, and `renderer.info` counters.
+- `window.__PERF.snapshot()` returns a JSON-safe baseline sample for regressions.
+- Additional settings persisted in `clearance_settings` include:
+  - `pixelRatioCap`
+  - `maxPointLightsEffective`
+  - `aiSkipFramesModulo`
+  - `raycastSpatialIndex`
+  - `maxParticlesBlood` / `maxParticlesSmoke`
+  - `cheapMaterials`
+  - `reducedBloomish`
+
+### Perf bug-report workflow
+
+1. Start with `npm run dev`.
+2. Open a reproducible scene and append `?perf=1`.
+3. Record a 10–20 second Chrome Performance trace while moving + combat.
+4. In DevTools console run `window.__PERF.snapshot()` and save output JSON.
+5. Attach one screenshot/GIF of the camera pose + HUD values with the trace.
