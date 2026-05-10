@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:campaign": "node scripts/campaign-regression.mjs"
+    "test:campaign": "node scripts/campaign-regression.mjs",
+    "test:ai": "node scripts/ai-tactical-probe.mjs",
+    "test:perf": "node scripts/perf-snapshot.mjs",
+    "test:perf:stress": "node scripts/perf-stress.mjs",
+    "test:visual": "node scripts/visual-regression.mjs"
   },
   "dependencies": {
     "three": "0.170.0"

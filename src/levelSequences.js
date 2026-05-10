@@ -49,6 +49,16 @@ export function applySequenceLayout(ctx) {
 
   addSequenceIdentityLayer(ctx, def);
 
+  // ── Sub-room dividers + tactical glass windows + density pass ─────────
+  // Authored per building in EXTRA_ELEMENTS (below). Windows are see-/shoot-/
+  // vault-through (isWindow flag). Dividers create interior sub-rooms with
+  // optional doorways. Extra decoration elements deepen each cell.
+  const extras = EXTRA_ELEMENTS[bn] || [];
+  for (const el of extras) {
+    const builder = ELEMENT_BUILDERS[el.t];
+    if (builder) builder(ctx, el);
+  }
+
   // Per-building extra accent lights tuned to the theme.
   if (def.lights) for (const L of def.lights) {
     const pl = new THREE.PointLight(L.col || def.accent, L.int || 1.4, L.r || 11, 1.6);
@@ -81,6 +91,11 @@ const SEQUENCE_IDENTITY = {
   6: { routeX: 12.0, heroX:  0, heroZ:17, bossCol:0xff5040, railZ:0.0 },
   7: { routeX:-11.2, heroX: 13, heroZ:18, bossCol:0xa0c8ff, railZ:-2.5 },
   8: { routeX: 11.2, heroX:  0, heroZ:-16, bossCol:0x40e0ff, railZ:-8.0 },
+  // ── ACT III — The Apparatus ─────────────────────────────────────────────
+  9: { routeX:-12.5, heroX:-10, heroZ:19, bossCol:0xffb060, railZ: 6.8 },     // Border crossing — long sand axis
+  10: { routeX: 0,    heroX:  0, heroZ:20, bossCol:0xffe8b0, railZ:-2.0 },    // Cathedral — central nave axis
+  11: { routeX:-9.0,  heroX:  0, heroZ:17, bossCol:0x6890b8, railZ: 0.5 },    // Karelia — central deck spine
+  12: { routeX: 12.0, heroX:  0, heroZ:-15,bossCol:0xc8e0ff, railZ:-7.4 },    // The Spire — boss arena at back
 };
 
 // ── PARTITION SKELETON ─────────────────────────────────────────────────────
@@ -448,6 +463,10 @@ const ELEMENT_BUILDERS = {
         new THREE.MeshPhongMaterial({ color: col, shininess: 30, specular: 0x202428 })
       );
       m.position.set(cx + ox, WT + 0.46, cz + oz);
+      // Phase M: every drum is now an explosive barrel. Bullet impact
+      // detonates with chain-radius — clusters of drums make satisfying
+      // chain reactions. Opt-out via `e.inert:true`.
+      if (!e.inert) m.userData.explosive = true;
       scene.add(m); ob.push(m);
       const sM = new THREE.MeshLambertMaterial({ color: stripe });
       const s1 = new THREE.Mesh(new THREE.CylinderGeometry(0.305, 0.305, 0.04, 12), sM);
@@ -975,10 +994,20 @@ const ELEMENT_BUILDERS = {
     const m = new THREE.MeshPhongMaterial({ color: e.col || 0x6a4830, shininess: 24, specular: 0x202020 });
     const a = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
     a.position.set(e.x, WT + h/2, e.z); scene.add(a); ob.push(a);
+    const aabb = { x0: e.x - w/2, x1: e.x + w/2, z0: e.z - d/2, z1: e.z + d/2 };
+    const vaultE = { x0: aabb.x0, x1: aabb.x1, z0: aabb.z0, z1: aabb.z1, height: WT + h };
+    wl.push(aabb);
+    vl.push(vaultE);
+    // Phase P: wooden crates degrade after ~5 hits → mid-fight cover read shifts.
+    a.userData.coverHP = e.coverHP != null ? e.coverHP : 5;
+    a.userData.breakSound = 'wood';
+    a.userData.linkedAABB = aabb;
+    a.userData.linkedVault = vaultE;
     const b = new THREE.Mesh(new THREE.BoxGeometry(w*0.92, h*0.9, d*0.92), m);
     b.position.set(e.x + 0.1, WT + h*1.45, e.z - 0.05); scene.add(b); ob.push(b);
-    wl.push({ x0: e.x - w/2, x1: e.x + w/2, z0: e.z - d/2, z1: e.z + d/2 });
-    vl.push({ x0: e.x - w/2, x1: e.x + w/2, z0: e.z - d/2, z1: e.z + d/2, height: WT + h });
+    b.userData.coverHP = e.coverHP != null ? e.coverHP : 4;
+    b.userData.breakSound = 'wood';
+    b.userData.linkedSibling = a;  // top breaks → bottom still cover
   },
 
   // Cooling unit (B8) — wide, short, blocking with vent fan visual.
@@ -1232,6 +1261,158 @@ const ELEMENT_BUILDERS = {
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.78, 8),
       new THREE.MeshPhongMaterial({ color: 0x14161a, shininess: 200 }));
     stem.position.set(e.x, WT + 0.39, e.z + 0.85); scene.add(stem); ob.push(stem);
+  },
+
+  // ── Window — see-through, shoot-through, vault-through tactical glass ──
+  // Visual: glass pane (transparent, not in solids → bullets/LOS pass through)
+  // Frame: solid trim on top + sill (in solids → blocks bullets at frame)
+  // Walls: AABB tagged `isWindow:true` blocks player movement but skipped by
+  //   canSee/_losClear so AI vision treats it as transparent.
+  // Vaultables: sill-height entry lets the existing vault prompt kick in.
+  // Params: { x, z, len, rotY, sill=0.85, head=2.0, col?, frameCol? }
+  window(ctx, e) {
+    const { THREE, scene, ob, wl, vl, dims } = ctx;
+    const { WT } = dims;
+    const len = e.len || 3.0;
+    const sill = (e.sill == null) ? 0.85 : e.sill;       // bottom of glass
+    const head = (e.head == null) ? 2.0 : e.head;        // top of glass
+    const paneH = Math.max(0.1, head - sill);
+    const paneT = 0.06;                                  // pane thickness (along normal)
+    // Glass pane — transparent + depthWrite false → auto-excluded from solids
+    // (so player & enemy bullets pass through cleanly).
+    const glassM = new THREE.MeshPhongMaterial({
+      color: e.col || 0xa8c8e0, transparent: true, opacity: 0.22,
+      shininess: 220, specular: 0xffffff, depthWrite: false,
+    });
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(len, paneH, paneT), glassM);
+    pane.position.set(e.x, WT + sill + paneH/2, e.z);
+    if (e.rotY) pane.rotation.y = e.rotY;
+    // Phase B: glass IS shootable + breakable. Tagged glassPane so the solids
+    // filter keeps it in despite transparency; on bullet hit _shatterMesh
+    // removes it and clears isWindow on the linked wall AABB.
+    pane.userData.glassPane = true;
+    pane.userData.breakable = true;
+    pane.userData.breakSound = 'glass';
+    scene.add(pane); ob.push(pane);
+    // Subtle highlight band across the glass (animated reflection feel)
+    const hi = new THREE.Mesh(
+      new THREE.BoxGeometry(len * 0.85, 0.04, paneT + 0.005),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false })
+    );
+    hi.position.set(e.x, WT + sill + paneH * 0.66, e.z);
+    if (e.rotY) hi.rotation.y = e.rotY;
+    hi.userData.noBlock = true;
+    scene.add(hi); ob.push(hi);
+    // Frame: top, bottom (sill cap), and two vertical mullions
+    const frM = new THREE.MeshPhongMaterial({ color: e.frameCol || 0x202428, shininess: 90, specular: 0x808890 });
+    const topFrame = new THREE.Mesh(new THREE.BoxGeometry(len + 0.10, 0.10, 0.16), frM);
+    topFrame.position.set(e.x, WT + head + 0.05, e.z);
+    if (e.rotY) topFrame.rotation.y = e.rotY;
+    scene.add(topFrame); ob.push(topFrame);
+    const sillFrame = new THREE.Mesh(new THREE.BoxGeometry(len + 0.10, 0.10, 0.20), frM);
+    sillFrame.position.set(e.x, WT + sill - 0.05, e.z);
+    if (e.rotY) sillFrame.rotation.y = e.rotY;
+    scene.add(sillFrame); ob.push(sillFrame);
+    // Vertical mullions at each end
+    for (const mx of [-len/2, len/2]) {
+      const mull = new THREE.Mesh(new THREE.BoxGeometry(0.10, paneH + 0.20, 0.16), frM);
+      const lx = Math.cos(e.rotY || 0) * mx;
+      const lz = -Math.sin(e.rotY || 0) * mx;
+      mull.position.set(e.x + lx, WT + sill + paneH/2, e.z + lz);
+      if (e.rotY) mull.rotation.y = e.rotY;
+      scene.add(mull); ob.push(mull);
+    }
+    // Mid mullion (optional, on wide windows)
+    if (len >= 2.4) {
+      const mid = new THREE.Mesh(new THREE.BoxGeometry(0.07, paneH, 0.14), frM);
+      mid.position.set(e.x, WT + sill + paneH/2, e.z);
+      if (e.rotY) mid.rotation.y = e.rotY;
+      scene.add(mid); ob.push(mid);
+    }
+    // Wall AABB: full window plane footprint, tagged isWindow.
+    const s = Math.sin(e.rotY || 0), c = Math.cos(e.rotY || 0);
+    const ax = Math.abs(c) * len/2 + Math.abs(s) * (paneT + 0.04) * 0.5;
+    const az = Math.abs(s) * len/2 + Math.abs(c) * (paneT + 0.04) * 0.5;
+    const aabb = {
+      x0: e.x - ax, x1: e.x + ax, z0: e.z - az, z1: e.z + az,
+      isWindow: true,                                      // canSee/_losClear skip this
+      sillH: WT + sill,                                    // for vault-through (chest height)
+    };
+    wl.push(aabb);
+    // Vaultable entry — vault prompt + animation kicks in when the player
+    // walks up to the sill from the open side.
+    const vaultEntry = { x0: aabb.x0, x1: aabb.x1, z0: aabb.z0, z1: aabb.z1, height: aabb.sillH, isWindow: true };
+    vl.push(vaultEntry);
+    // Phase B: link the pane mesh to its AABB + vault entry so when it
+    // shatters we can clear isWindow (allowing AI to path through). Also
+    // store a reference to the highlight strip so it gets removed too.
+    pane.userData.linkedAABB = aabb;
+    pane.userData.linkedVault = vaultEntry;
+    pane.userData.linkedSibling = hi;
+  },
+
+  // ── Divider — full-height interior sub-room wall with optional doorway
+  // Params: { x, z, len, rotY, gap=0 (door width), gapPos=0 (door offset along len) }
+  // Creates a wall segment (or two segments with a gap) splitting the cell.
+  // Always full-height, opaque to LOS, bullets, and movement.
+  divider(ctx, e) {
+    const { THREE, scene, ob, wl, dims, materials } = ctx;
+    const { RH, WT } = dims;
+    const len = e.len || 4.0;
+    const t = 0.40;                                       // wall thickness
+    const gap = Math.max(0, Math.min(len * 0.9, e.gap || 0));
+    const gapPos = e.gapPos || 0;                         // -len/2..len/2 along the wall
+    const mat = e.mat || materials.dM;
+    const rotY = e.rotY || 0;
+    function placeSeg(localX0, localX1) {
+      const segLen = localX1 - localX0;
+      if (segLen < 0.2) return;
+      const localCx = (localX0 + localX1) * 0.5;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(segLen, RH, t), mat);
+      // Local space: x axis along the wall length, z along thickness.
+      const cosR = Math.cos(rotY), sinR = Math.sin(rotY);
+      const worldX = e.x + cosR * localCx;
+      const worldZ = e.z - sinR * localCx;
+      m.position.set(worldX, RH/2 + WT/2, worldZ);
+      m.rotation.y = rotY;
+      scene.add(m); ob.push(m);
+      // AABB conservative: bound by oriented box endpoints
+      const ax = Math.abs(cosR) * segLen/2 + Math.abs(sinR) * t/2;
+      const az = Math.abs(sinR) * segLen/2 + Math.abs(cosR) * t/2;
+      wl.push({ x0: worldX - ax, x1: worldX + ax, z0: worldZ - az, z1: worldZ + az });
+      // Top trim — matches existing partition style
+      if (materials.trimM) {
+        const tm = new THREE.Mesh(new THREE.BoxGeometry(segLen*0.95, 0.05, t*0.9), materials.trimM);
+        tm.position.set(worldX, RH + WT - 0.045, worldZ);
+        tm.rotation.y = rotY;
+        scene.add(tm); ob.push(tm);
+      }
+    }
+    if (gap > 0) {
+      // Two segments either side of the doorway
+      const half = len / 2;
+      const g0 = gapPos - gap/2, g1 = gapPos + gap/2;
+      placeSeg(-half, g0);
+      placeSeg(g1, half);
+      // Door posts + lintel
+      const postM = materials.postM || materials.dM;
+      const cosR = Math.cos(rotY), sinR = Math.sin(rotY);
+      for (const px of [g0, g1]) {
+        const wx = e.x + cosR * px, wz = e.z - sinR * px;
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, RH, 0.14), postM);
+        post.position.set(wx, RH/2 + WT/2, wz);
+        post.rotation.y = rotY;
+        scene.add(post); ob.push(post);
+      }
+      const lintWX = e.x + cosR * gapPos;
+      const lintWZ = e.z - sinR * gapPos;
+      const lint = new THREE.Mesh(new THREE.BoxGeometry(gap + 0.28, 0.14, 0.14), postM);
+      lint.position.set(lintWX, RH - 0.18, lintWZ);
+      lint.rotation.y = rotY;
+      scene.add(lint); ob.push(lint);
+    } else {
+      placeSeg(-len/2, len/2);
+    }
   },
 
   // Statue / centerpiece (B11 Skycourt — recycled for boss arena flair on B4/B2).
@@ -1825,6 +2006,284 @@ const SEQUENCE_DEFS = {
       { x:  14, y: 3.6, z: -18, col: 0xff5040, int: 1.0, r: 9 },
     ],
   },
+
+  // ── 9: BORDER CROSSING — desert customs, sandstone watchtower ─────────
+  9: {
+    accent: 0xffb060, accentSoft: 0xffd090,
+    cells: {
+      FW: { name: 'Inspection Lane', elements: [
+        { t: 'container', x: -14, z: 21, w: 4.6, d: 1.9, col: 0x8a6028 },
+        { t: 'cart', x: -10, z: 18, col: 0x806040 },
+        { t: 'drum', x: -12, z: 14, n: 3, col: 0xb8783c, stripe: 0xffd090 },
+        { t: 'cov', x: -16, z: 17, w: 1.4, h: 0.85, d: 0.8, col: 0x4a3820, top: 0xffd090 },
+        { t: 'pend', x: -13, z: 19, col: 0xffb060, int: 1.7, r: 8 },
+      ]},
+      FC: { name: 'Customs Gate', elements: [
+        { t: 'cov', x: -3, z: 22, w: 2.4, h: 0.9, d: 0.9, col: 0x6a4830, top: 0xffd090 },
+        { t: 'cov', x: 3, z: 22, w: 2.4, h: 0.9, d: 0.9, col: 0x6a4830, top: 0xffd090 },
+        { t: 'arch', x: 0, z: 19, w: 4.6, h: 2.8, col: 0x282018, accent: 0xffb060 },
+        { t: 'pipes', x: 0, z: 23.5, len: 7 },
+        { t: 'pend', x: 0, z: 17, col: 0xffd090, int: 1.8, r: 9 },
+      ]},
+      FE: { name: 'Truck Bay', elements: [
+        { t: 'container', x: 14, z: 21, w: 4.6, d: 1.9, col: 0x583820, rotY: Math.PI/2 },
+        { t: 'forklift', x: 12, z: 17, rotY: -0.4 },
+        { t: 'stack', x: 15, z: 15, w: 2.4, d: 1.4, h: 1.2, cols: [0x6a4828, 0x6a4828, 0x6a4828] },
+        { t: 'pend', x: 13, z: 18, col: 0xffb060, int: 1.5, r: 7 },
+        { t: 'haz', x: 14, z: 22, w: 2.0, d: 1.4, col: 0x141008, alpha: 0.8, glow: 0xff7030 },
+      ]},
+      MW: { name: 'Border Office', elements: [
+        { t: 'desk', x: -14, z: 0, lx: 1.55, lz: 1.20 },
+        { t: 'tall', x: -16, z: -4, w: 0.85, h: 2.0, d: 0.55, col: 0x282018, stripes: 3, stripe: 0xffb060 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14100a, glow: 0xffd090 },
+        { t: 'bench', x: -16, z: 2, w: 0.6, d: 2.0, h: 0.55, col: 0x4a3820, rotY: Math.PI/2 },
+        { t: 'pend', x: -14, z: 0, col: 0xffd090, int: 1.4, r: 6 },
+      ]},
+      ME: { name: 'Vehicle Search', elements: [
+        { t: 'cart', x: 14, z: -2, col: 0x8a4020 },
+        { t: 'cart', x: 16, z: 3, col: 0x806020, rotY: 0.3 },
+        { t: 'drum', x: 14, z: 4, n: 4, col: 0xb8783c, stripe: 0xffd090 },
+        { t: 'cov', x: 13, z: -4, w: 2.2, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+        { t: 'pend', x: 14.5, z: 1, col: 0xffb060, int: 1.5 },
+      ]},
+      BW: { name: 'Watchtower Base', elements: [
+        { t: 'tall', x: -16, z: -14, w: 1.2, h: 2.6, d: 0.7, col: 0x282018, stripes: 4, stripe: 0xffb060 },
+        { t: 'tall', x: -14, z: -19, w: 1.0, h: 2.4, d: 0.5, col: 0x202018 },
+        { t: 'plat', x: -14, z: -17, w: 3.6, d: 2.0, h: 0.85, col: 0x3a2818, top: 0x6a4830, rim: 0xffb060 },
+        { t: 'rail', x: -14, z: -16.0, len: 3.6, col: 0xa0a8b0 },
+        { t: 'pend', x: -14, z: -14, col: 0xffb060, int: 1.4 },
+      ]},
+      BE: { name: 'Sand Vent Bypass', elements: [
+        { t: 'pipes', x: 14, z: -17, len: 8 },
+        { t: 'cov', x: 14, z: -20, w: 2.0, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+        { t: 'crate2', x: 16, z: -14, col: 0x6a4828 },
+        { t: 'pend', x: 13.5, z: -14, col: 0xffd090 },
+      ]},
+      BC: { name: 'Customs Office', elements: [
+        { t: 'arch', x: 0, z: -10.5, w: 4.6, h: 2.8, col: 0x14100a, accent: 0xffb060 },
+        { t: 'tall', x: -3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x282018, stripes: 4, stripe: 0xffb060 },
+        { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x282018, stripes: 4, stripe: 0xffb060 },
+        { t: 'desk', x: 0, z: -16, lx: 1.6, lz: 1.2 },
+        { t: 'console', x: -4, z: -14, w: 1.6, h: 0.95, d: 0.7, col: 0x140a06, glow: 0xffd090 },
+        { t: 'pend', x: 0, z: -17, col: 0xffb060, int: 2.4, r: 12 },
+      ]},
+    },
+    lights: [
+      { x: -14.5, y: 3.6, z: 18, col: 0xffb060, int: 1.4, r: 12, flicker: true },
+      { x:  14.5, y: 3.6, z: 18, col: 0xffd090, int: 1.2, r: 12 },
+      { x: -14, y: 3.6, z: -18, col: 0xffb060, int: 1.8, r: 14 },
+      { x:  14, y: 3.6, z: -18, col: 0x8090c0, int: 0.9, r: 11 },
+    ],
+  },
+
+  // ── 10: CATHEDRAL OF SAN MARCO — gothic vault, candles, marble ─────────
+  10: {
+    accent: 0xffe8b0, accentSoft: 0xfff0d0,
+    cells: {
+      FW: { name: 'North Transept', elements: [
+        { t: 'plinth', x: -14, z: 22 },
+        { t: 'lamp', x: -16, z: 18, col: 0xffe8b0 },
+        { t: 'bench', x: -13, z: 17, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'bench', x: -13, z: 21, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'pend', x: -13, z: 19, col: 0xffe8b0, int: 1.6 },
+      ]},
+      FC: { name: 'Nave', elements: [
+        { t: 'bench', x: -3, z: 22, w: 2.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'bench', x: 3, z: 22, w: 2.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'bench', x: -3, z: 17, w: 2.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'bench', x: 3, z: 17, w: 2.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'lamp', x: -5, z: 19, col: 0xffe8b0 },
+        { t: 'lamp', x: 5, z: 19, col: 0xffe8b0 },
+        { t: 'pend', x: 0, z: 20, col: 0xffe8b0, int: 2.0, r: 11 },
+      ]},
+      FE: { name: 'South Transept', elements: [
+        { t: 'plinth', x: 14, z: 22 },
+        { t: 'lamp', x: 16, z: 18, col: 0xffe8b0 },
+        { t: 'bench', x: 13, z: 17, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'bench', x: 13, z: 21, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'pend', x: 13, z: 19, col: 0xffe8b0, int: 1.6 },
+      ]},
+      MW: { name: 'Confessionals', elements: [
+        { t: 'tall', x: -15, z: -2, w: 1.6, h: 2.4, d: 1.2, col: 0x281810, stripes: 2, stripe: 0xffe8b0 },
+        { t: 'tall', x: -15, z: 3, w: 1.6, h: 2.4, d: 1.2, col: 0x281810, stripes: 2, stripe: 0xffe8b0 },
+        { t: 'lamp', x: -13, z: 0, col: 0xffe8b0 },
+        { t: 'cov', x: -12, z: 4, w: 1.6, h: 0.9, d: 0.7, col: 0x281810, top: 0xffe8b0 },
+        { t: 'pend', x: -13, z: -2, col: 0xffe8b0, int: 1.4 },
+      ]},
+      ME: { name: 'Choir Loft Stair', elements: [
+        { t: 'plat', x: 14, z: 2, w: 3.6, d: 2.0, h: 0.85, col: 0x281810, top: 0x6a4830, rim: 0xffe8b0 },
+        { t: 'rail', x: 14, z: 3.0, len: 3.6, col: 0xa08c60 },
+        { t: 'tall', x: 16, z: -2, w: 1.0, h: 2.4, d: 0.6, col: 0x281810, stripes: 4, stripe: 0xffe8b0 },
+        { t: 'lamp', x: 14, z: -2, col: 0xffe8b0 },
+        { t: 'pend', x: 14, z: 1, col: 0xffe8b0, int: 1.6 },
+      ]},
+      BW: { name: 'Reliquary Vault', elements: [
+        { t: 'plinth', x: -14, z: -18 },
+        { t: 'plinth', x: -12, z: -14 },
+        { t: 'tall', x: -16, z: -16, w: 1.0, h: 2.4, d: 0.6, col: 0x281810, stripes: 4, stripe: 0xffd090 },
+        { t: 'lamp', x: -14, z: -20, col: 0xffe8b0 },
+        { t: 'pend', x: -13, z: -16, col: 0xffd090, int: 1.4 },
+      ]},
+      BE: { name: 'Bell Stair', elements: [
+        { t: 'plat', x: 14, z: -18, w: 4.0, d: 2.4, h: 0.85, col: 0x281810, top: 0x6a4830, rim: 0xffe8b0 },
+        { t: 'rail', x: 14, z: -16.7, len: 4.0, col: 0xa08c60 },
+        { t: 'tall', x: 16, z: -14, w: 1.0, h: 2.6, d: 0.6, col: 0x281810, stripes: 5, stripe: 0xffd090 },
+        { t: 'lamp', x: 14, z: -14, col: 0xffe8b0 },
+        { t: 'pend', x: 13.5, z: -14, col: 0xffe8b0 },
+      ]},
+      BC: { name: 'High Altar', elements: [
+        { t: 'arch', x: 0, z: -10.5, w: 4.8, h: 3.0, col: 0x14100a, accent: 0xffd090 },
+        { t: 'plinth', x: 0, z: -17 },
+        { t: 'tall', x: -3, z: -19, w: 1.0, h: 2.6, d: 0.6, col: 0x281810, stripes: 5, stripe: 0xffd090 },
+        { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.6, d: 0.6, col: 0x281810, stripes: 5, stripe: 0xffd090 },
+        { t: 'lamp', x: -4, z: -14, col: 0xffe8b0 },
+        { t: 'lamp', x: 4, z: -14, col: 0xffe8b0 },
+        { t: 'pend', x: 0, z: -17, col: 0xffe8b0, int: 2.8, r: 14 },
+      ]},
+    },
+    lights: [
+      { x: -14, y: 4.0, z: 18, col: 0xffe8b0, int: 1.4, r: 12 },
+      { x:  14, y: 4.0, z: 18, col: 0xffd090, int: 1.4, r: 12 },
+      { x: -14, y: 4.0, z: -18, col: 0xffd090, int: 1.6, r: 13, flicker: true },
+      { x:  14, y: 4.0, z: -18, col: 0xffe8b0, int: 1.6, r: 13 },
+    ],
+  },
+
+  // ── 11: KARELIA FREIGHTER — open ocean cargo deck ─────────────────────
+  11: {
+    accent: 0x80b0d0, accentSoft: 0xa0c0e0,
+    cells: {
+      FW: { name: 'Port Container Row', elements: [
+        { t: 'container', x: -13, z: 22, w: 4.6, d: 1.9, col: 0x405060 },
+        { t: 'container', x: -10, z: 18, w: 4.0, d: 1.8, col: 0x6a4830, rotY: Math.PI/2 },
+        { t: 'cov', x: -16, z: 19, w: 1.4, h: 0.85, d: 0.8, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'pend', x: -12, z: 20, col: 0x80b0d0, int: 1.4 },
+        { t: 'pipes', x: -16, z: 14, len: 6 },
+      ]},
+      FC: { name: 'Cargo Spine', elements: [
+        { t: 'container', x: -3, z: 22, w: 4.0, d: 1.8, col: 0x405060, rotY: Math.PI/2 },
+        { t: 'container', x: 3, z: 22, w: 4.0, d: 1.8, col: 0x6a4830, rotY: Math.PI/2 },
+        { t: 'drum', x: 0, z: 16, n: 3, col: 0xb8783c, stripe: 0x80b0d0 },
+        { t: 'pend', x: 0, z: 19, col: 0xa0c0e0, int: 1.8, r: 9 },
+        { t: 'pipes', x: 0, z: 23.5, len: 7 },
+      ]},
+      FE: { name: 'Starboard Container Row', elements: [
+        { t: 'container', x: 13, z: 22, w: 4.6, d: 1.9, col: 0x483a28 },
+        { t: 'container', x: 10, z: 18, w: 4.0, d: 1.8, col: 0x405060, rotY: Math.PI/2 },
+        { t: 'cart', x: 14, z: 14, col: 0x6a4830 },
+        { t: 'pend', x: 12.5, z: 20, col: 0x80b0d0, int: 1.4 },
+      ]},
+      MW: { name: 'Engine Companionway', elements: [
+        { t: 'tall', x: -16, z: -2, w: 0.85, h: 2.4, d: 0.4, col: 0x1a2028, stripes: 3, stripe: 0xff8040 },
+        { t: 'pipes', x: -13, z: 0, len: 7 },
+        { t: 'cov', x: -13, z: 4, w: 2.0, h: 0.85, d: 0.8, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'console', x: -14, z: -4, w: 1.6, h: 0.95, d: 0.7, col: 0x10141c, glow: 0xff8040 },
+        { t: 'pend', x: -14, z: -2, col: 0xff8040, int: 1.6 },
+      ]},
+      ME: { name: 'Deck Lift', elements: [
+        { t: 'plat', x: 14, z: -2, w: 3.6, d: 2.4, h: 0.85, col: 0x2a323a, top: 0x405060, rim: 0x80b0d0 },
+        { t: 'rail', x: 14, z: -0.8, len: 3.6, col: 0xa0a8b0 },
+        { t: 'drum', x: 16, z: 4, n: 3, col: 0xb8783c, stripe: 0x80b0d0 },
+        { t: 'pend', x: 14.5, z: 1, col: 0x80b0d0 },
+      ]},
+      BW: { name: 'Aft Engine Hood', elements: [
+        { t: 'tall', x: -16, z: -14, w: 1.2, h: 2.6, d: 0.7, col: 0x1a2028, stripes: 4, stripe: 0xff8040 },
+        { t: 'tall', x: -16, z: -19, w: 1.0, h: 2.4, d: 0.5, col: 0x1a2028 },
+        { t: 'haz', x: -14, z: -17, w: 2.4, d: 1.6, col: 0x14080a, alpha: 0.85, glow: 0xff5040 },
+        { t: 'pipes', x: -13, z: -20, len: 7 },
+        { t: 'pend', x: -13, z: -14, col: 0xff8040, int: 1.6 },
+      ]},
+      BE: { name: 'Crew Companionway', elements: [
+        { t: 'plat', x: 14, z: -18, w: 3.6, d: 2.4, h: 0.85, col: 0x2a323a, top: 0x60686e, rim: 0x80b0d0 },
+        { t: 'rail', x: 14, z: -16.7, len: 3.6, col: 0xa0a8b0 },
+        { t: 'tall', x: 16, z: -14, w: 1.0, h: 2.4, d: 0.6, col: 0x1a2028, stripes: 4, stripe: 0x80b0d0 },
+        { t: 'pend', x: 13.5, z: -14, col: 0x80b0d0 },
+      ]},
+      BC: { name: 'Bridge Approach', elements: [
+        { t: 'arch', x: 0, z: -10.5, w: 4.2, h: 2.8, col: 0x10141c, accent: 0x80b0d0 },
+        { t: 'tall', x: -3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x1a2028, stripes: 4, stripe: 0x80b0d0 },
+        { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x1a2028, stripes: 4, stripe: 0x80b0d0 },
+        { t: 'console', x: 0, z: -16, w: 1.8, h: 1.0, d: 0.8, col: 0x080c14, glow: 0x80b0d0 },
+        { t: 'pend', x: 0, z: -17, col: 0x80b0d0, int: 2.2, r: 12 },
+        { t: 'haz', x: 0, z: -22, w: 4.0, d: 1.6, col: 0x06080a, alpha: 0.9, glow: 0xff8040 },
+      ]},
+    },
+    lights: [
+      { x: -14, y: 3.6, z: 18, col: 0x80b0d0, int: 1.3, r: 12 },
+      { x:  14, y: 3.6, z: 18, col: 0xa0c0e0, int: 1.1, r: 12 },
+      { x: -14, y: 3.6, z: -18, col: 0xff8040, int: 1.6, r: 13, flicker: true },
+      { x:  14, y: 3.6, z: -18, col: 0x80b0d0, int: 1.4, r: 12 },
+    ],
+  },
+
+  // ── 12: THE SPIRE — apex executive tower + helipad ─────────────────────
+  12: {
+    accent: 0xc8e0ff, accentSoft: 0xe0eaff,
+    cells: {
+      FW: { name: 'Glass Atrium West', elements: [
+        { t: 'plinth', x: -14, z: 22 },
+        { t: 'bench', x: -13, z: 17, w: 3.0, d: 0.7, h: 0.55, col: 0x10141c, back: true },
+        { t: 'lamp', x: -16, z: 19, col: 0xc8e0ff },
+        { t: 'pend', x: -13, z: 19, col: 0xc8e0ff, int: 1.6, r: 9 },
+      ]},
+      FC: { name: 'Reception Court', elements: [
+        { t: 'desk', x: 0, z: 22, lx: 1.8, lz: 1.4 },
+        { t: 'plinth', x: -5, z: 18 },
+        { t: 'plinth', x: 5, z: 18 },
+        { t: 'lamp', x: -4, z: 14, col: 0xc8e0ff },
+        { t: 'lamp', x: 4, z: 14, col: 0xc8e0ff },
+        { t: 'pend', x: 0, z: 17, col: 0xc8e0ff, int: 2.4, r: 12 },
+      ]},
+      FE: { name: 'Glass Atrium East', elements: [
+        { t: 'plinth', x: 14, z: 22 },
+        { t: 'bench', x: 13, z: 17, w: 3.0, d: 0.7, h: 0.55, col: 0x10141c, back: true },
+        { t: 'lamp', x: 16, z: 19, col: 0xc8e0ff },
+        { t: 'pend', x: 13, z: 19, col: 0xc8e0ff, int: 1.6, r: 9 },
+      ]},
+      MW: { name: 'Boardroom', elements: [
+        { t: 'desk', x: -14, z: 0, lx: 1.6, lz: 4.0 },
+        { t: 'bench', x: -16, z: -3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
+        { t: 'bench', x: -16, z: 3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
+        { t: 'console', x: -12, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x06070a, glow: 0xffd060 },
+        { t: 'pend', x: -14, z: 0, col: 0xffd060, int: 1.8, r: 9 },
+      ]},
+      ME: { name: 'Executive Vault', elements: [
+        { t: 'tall', x: 16, z: -3, w: 1.4, h: 2.4, d: 0.8, col: 0x06070a, stripes: 3, stripe: 0xffd060 },
+        { t: 'tall', x: 16, z: 3, w: 1.4, h: 2.4, d: 0.8, col: 0x06070a, stripes: 3, stripe: 0xffd060 },
+        { t: 'console', x: 14, z: 0, w: 1.8, h: 1.0, d: 0.8, col: 0x06070a, glow: 0xffd060 },
+        { t: 'haz', x: 14.5, z: 4, w: 2.2, d: 1.4, col: 0x040608, alpha: 0.85, glow: 0xffd060 },
+        { t: 'pend', x: 14, z: 0, col: 0xffd060, int: 1.6, r: 9 },
+      ]},
+      BW: { name: 'Maintenance Spine', elements: [
+        { t: 'tall', x: -16, z: -14, w: 1.0, h: 2.6, d: 0.6, col: 0x06070a, stripes: 4, stripe: 0xc8e0ff },
+        { t: 'pipes', x: -13, z: -17, len: 7 },
+        { t: 'cov', x: -13, z: -20, w: 2.0, h: 0.85, d: 0.8, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'pend', x: -13, z: -16, col: 0xc8e0ff, int: 1.4 },
+      ]},
+      BE: { name: 'Helipad Stair', elements: [
+        { t: 'plat', x: 14, z: -18, w: 4.2, d: 2.4, h: 0.85, col: 0x06070a, top: 0x202a38, rim: 0xc8e0ff },
+        { t: 'rail', x: 14, z: -16.7, len: 4.2, col: 0xa0c0e0 },
+        { t: 'catwalk', x: 13, z: -22, len: 8, rotY: Math.PI/2 },
+        { t: 'crate2', x: 16, z: -14, col: 0x10141c },
+        { t: 'pend', x: 13.5, z: -14, col: 0xc8e0ff },
+      ]},
+      BC: { name: 'Helipad Apex', elements: [
+        { t: 'arch', x: 0, z: -10.5, w: 5.0, h: 3.2, col: 0x06070a, accent: 0xc8e0ff },
+        { t: 'tall', x: -3, z: -19, w: 1.2, h: 2.6, d: 0.6, col: 0x06070a, stripes: 5, stripe: 0xc8e0ff },
+        { t: 'tall', x: 3, z: -19, w: 1.2, h: 2.6, d: 0.6, col: 0x06070a, stripes: 5, stripe: 0xc8e0ff },
+        { t: 'console', x: -4, z: -15, w: 1.6, h: 0.95, d: 0.7, col: 0x040608, glow: 0xc8e0ff },
+        { t: 'console', x: 4, z: -15, w: 1.6, h: 0.95, d: 0.7, col: 0x040608, glow: 0xffd060 },
+        { t: 'pend', x: 0, z: -17, col: 0xc8e0ff, int: 3.0, r: 14 },
+        { t: 'haz', x: 0, z: -22, w: 4.6, d: 1.8, col: 0x06080c, alpha: 0.92, glow: 0xc8e0ff },
+      ]},
+    },
+    lights: [
+      { x: -14, y: 4.4, z: 18, col: 0xc8e0ff, int: 1.6, r: 12 },
+      { x:  14, y: 4.4, z: 18, col: 0xc8e0ff, int: 1.6, r: 12 },
+      { x: -14, y: 4.4, z: -18, col: 0xffd060, int: 1.4, r: 11 },
+      { x:  14, y: 4.4, z: -18, col: 0xc8e0ff, int: 1.8, r: 14, flicker: true },
+    ],
+  },
 };
 
 
@@ -1883,6 +2342,227 @@ const BUILDING_ZONE_ROLES = {
     { tag: 'snipe', verb: 'pierce', reinforce: 'marksman', telegraph: 'cold aisle beams' },
     { tag: 'brawl', verb: 'lockdown', reinforce: 'drone', telegraph: 'battery bay' },
     { tag: 'boss', verb: 'end', reinforce: 'riot', telegraph: 'core protocol' },
+  ],
+  // ── ACT III — The Apparatus ───────────────────────────────────────────
+  9: [
+    { tag: 'snipe', verb: 'enter', reinforce: 'marksman', telegraph: 'watchtower beam' },
+    { tag: 'read', verb: 'intercept', reinforce: 'soldier', telegraph: 'customs siren' },
+    { tag: 'boss', verb: 'hold', reinforce: 'demolitions', telegraph: 'border office shutter' },
+  ],
+  10: [
+    { tag: 'stealth_or_loud', verb: 'enter', reinforce: 'pistolero', telegraph: 'votive bells' },
+    { tag: 'brawl', verb: 'ascend', reinforce: 'riot', telegraph: 'choir loft echo' },
+    { tag: 'boss', verb: 'unseal', reinforce: 'heavy', telegraph: 'bell-tower toll' },
+  ],
+  11: [
+    { tag: 'hold', verb: 'board', reinforce: 'heavy', telegraph: 'horn cycle' },
+    { tag: 'brawl', verb: 'cross', reinforce: 'drone', telegraph: 'engine rumble' },
+    { tag: 'boss', verb: 'pilot', reinforce: 'marksman', telegraph: 'bridge spotlight' },
+  ],
+  12: [
+    { tag: 'snipe', verb: 'ascend', reinforce: 'marksman', telegraph: 'glass glint' },
+    { tag: 'brawl', verb: 'crown', reinforce: 'drone', telegraph: 'vault siren' },
+    { tag: 'boss', verb: 'apex', reinforce: 'lieutenant', telegraph: 'helipad rotor' },
+  ],
+};
+
+// ── EXTRA_ELEMENTS — per-building post-pass placements ───────────────────
+// Dividers create closed-off interior sub-rooms (with optional doorways).
+// Windows are tactical glass — see-through, shoot-through, vault-through —
+// placed where they create new peek/flank opportunities. Plus a few extra
+// decoration elements to deepen each cell.
+//
+// Coordinate convention (matches existing SEQUENCE_DEFS): x roughly -16..16,
+// z roughly -22..22, where +z is "front" (player spawn side) and -z is "back"
+// (boss-arena side). rotY=0 → wall runs along X; rotY=π/2 → wall runs along Z.
+const EXTRA_ELEMENTS = {
+  // ── 1: LOADING DOCK — manifest office + cargo office windows ──────────
+  1: [
+    // Manifest sub-room (MW): a small office walled off, doorway facing east
+    { t: 'divider', x: -12, z: 4, len: 5.5, rotY: 0, gap: 1.4, gapPos: 1.5 },
+    { t: 'divider', x: -10, z: 1, len: 5.0, rotY: Math.PI/2, gap: 0 },
+    // Tactical glass — front face of the office (peek from main floor into MW)
+    { t: 'window', x: -8.5, z: 4, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, frameCol: 0x1a1a20 },
+    // Foreman's catwalk lookout window (BE side, looking down on relay cage)
+    { t: 'window', x: 15.5, z: -12, len: 2.8, rotY: Math.PI/2, sill: 1.1, head: 2.2 },
+    // Extra cover density
+    { t: 'crate2', x: -6, z: 6, col: 0x6a4830 },
+    { t: 'drum', x: 16, z: -6, n: 2, col: 0xc04830, stripe: 0xfff0d0 },
+  ],
+  // ── 2: CONTINENTAL — coat check booth + lobby glass ───────────────────
+  2: [
+    // Coat-check booth (FW) — short walls with doorway
+    { t: 'divider', x: -14, z: 14, len: 5.0, rotY: Math.PI/2, gap: 1.4, gapPos: 1.6 },
+    { t: 'divider', x: -12, z: 11.5, len: 4.0, rotY: 0, gap: 0 },
+    // Marble glass partition between FC and the salon (FE side)
+    { t: 'window', x: 7.5, z: 14, len: 3.4, rotY: Math.PI/2, sill: 0.0, head: 2.2, col: 0xffe0a0, frameCol: 0x281810 },
+    // Concierge desk window (FC) — peek view into office
+    { t: 'window', x: -3, z: 18, len: 2.8, rotY: 0, sill: 0.95, head: 2.05, col: 0xffd070 },
+    // Salon partition (FE)
+    { t: 'divider', x: 12, z: 14, len: 3.6, rotY: 0, gap: 1.3, gapPos: 0 },
+    { t: 'plinth', x: -6, z: 8 },
+    { t: 'lamp', x: 11, z: 8 },
+  ],
+  // ── 3: NIGHTCLUB — VIP booths + mirror lounge glass ───────────────────
+  3: [
+    // VIP cordon (ME) — sub-room with a doorway
+    { t: 'divider', x: 13, z: 3, len: 5.2, rotY: 0, gap: 1.6, gapPos: -1.0 },
+    { t: 'divider', x: 15.5, z: 0.5, len: 4.5, rotY: Math.PI/2, gap: 0 },
+    // Mirror lounge glass — players can shoot Roux through this!
+    { t: 'window', x: 10, z: 3, len: 3.0, rotY: 0, sill: 0.6, head: 2.2, col: 0xff60c0, frameCol: 0x281020 },
+    // DJ booth front glass (FC) — see-through into the pit
+    { t: 'window', x: 0, z: 14, len: 4.0, rotY: 0, sill: 1.1, head: 1.9, col: 0xff40c8 },
+    // Bottle service partition (FE)
+    { t: 'divider', x: 12, z: 18, len: 3.0, rotY: Math.PI/2, gap: 1.2, gapPos: 0 },
+    { t: 'speaker', x: -10, z: 22, col: 0xff40c8 },
+  ],
+  // ── 4: PENTHOUSE — wine vault corridor + study + executive glass ──────
+  4: [
+    // Wine vault narrow corridor (BW) — two parallel dividers form a passage
+    { t: 'divider', x: -10, z: -14, len: 5.5, rotY: Math.PI/2, gap: 1.4, gapPos: 2.0 },
+    { t: 'divider', x: -14, z: -14, len: 5.5, rotY: Math.PI/2, gap: 1.4, gapPos: -2.0 },
+    // Study window into the wine corridor — peek-shot opportunity
+    { t: 'window', x: -8.5, z: -16, len: 2.6, rotY: 0, sill: 0.95, head: 2.0, col: 0xffd060 },
+    // Executive suite glass wall (BE) — looks out at the boss arena
+    { t: 'window', x: 8, z: -14, len: 4.0, rotY: Math.PI/2, sill: 0.3, head: 2.3, col: 0xa0c8ff, frameCol: 0x141420 },
+    // Bedroom partition
+    { t: 'divider', x: 12, z: -14, len: 4.4, rotY: 0, gap: 1.4, gapPos: 0.8 },
+    { t: 'plinth', x: 5, z: 8 },
+  ],
+  // ── 5: STERLING MEDICAL — ICU partition + observation glass ───────────
+  5: [
+    // ICU sub-room (BW)
+    { t: 'divider', x: -12, z: -14, len: 5.0, rotY: 0, gap: 1.4, gapPos: -0.6 },
+    { t: 'divider', x: -10, z: -16, len: 4.0, rotY: Math.PI/2, gap: 0 },
+    // ICU observation glass — classic peek-through-the-window
+    { t: 'window', x: -8, z: -14, len: 3.2, rotY: 0, sill: 1.0, head: 2.1, col: 0xa8e0c8, frameCol: 0x202830 },
+    // Surgery suite glass (BE side)
+    { t: 'window', x: 11, z: -10, len: 3.2, rotY: 0, sill: 0.85, head: 2.0, col: 0xc8e8ff },
+    // Triage cubicle (FC) — soft sub-room
+    { t: 'divider', x: 0, z: 14, len: 4.2, rotY: 0, gap: 1.5, gapPos: 0 },
+    { t: 'console', x: 4, z: -16, w: 1.4, h: 0.95, d: 0.7, col: 0x141820, glow: 0x40ff80 },
+  ],
+  // ── 6: SUBWAY LINE 7 — ticket booth + maintenance corridor ────────────
+  6: [
+    // Ticket booth (FC) — small sub-room with the iconic agent window
+    { t: 'divider', x: -3, z: 18, len: 4.5, rotY: 0, gap: 1.2, gapPos: -1.6 },
+    { t: 'divider', x: -5, z: 16, len: 3.0, rotY: Math.PI/2, gap: 0 },
+    // The ticket window — see/shoot/vault through
+    { t: 'window', x: -1, z: 18, len: 2.4, rotY: 0, sill: 0.85, head: 1.7, col: 0xfff060, frameCol: 0x202020 },
+    // Maintenance corridor wall (BW)
+    { t: 'divider', x: -12, z: -15, len: 7.0, rotY: Math.PI/2, gap: 1.5, gapPos: 1.5 },
+    // Operator booth window (BE) — overlooking switch chamber
+    { t: 'window', x: 13, z: -12, len: 2.6, rotY: 0, sill: 1.0, head: 2.0, col: 0xff5040 },
+    { t: 'pipes', x: 5, z: -20, len: 6 },
+  ],
+  // ── 7: AZURE YACHT — stateroom corridor + bridge glass ─────────────────
+  7: [
+    // Stateroom corridor (ME)
+    { t: 'divider', x: 11, z: 0, len: 6.0, rotY: Math.PI/2, gap: 1.3, gapPos: 1.0 },
+    { t: 'divider', x: 13, z: -3, len: 3.0, rotY: 0, gap: 0 },
+    // Stateroom porthole-style window
+    { t: 'window', x: 9.5, z: 2, len: 1.6, rotY: 0, sill: 1.05, head: 1.85, col: 0xa0c8ff, frameCol: 0x281408 },
+    // Bridge wing glass — overlooking the boss arena
+    { t: 'window', x: 0, z: -10, len: 4.0, rotY: 0, sill: 1.0, head: 2.2, col: 0xa0c8ff, frameCol: 0x281408 },
+    // Galley partition (FW)
+    { t: 'divider', x: -11, z: 14, len: 4.0, rotY: 0, gap: 1.3, gapPos: 0 },
+  ],
+  // ── 8: SERVER FARM Δ — hot/cold aisle glass + control booth ──────────
+  8: [
+    // Hot/cold aisle separator (middle band) — long glass run
+    { t: 'window', x: 0, z: 0, len: 6.0, rotY: 0, sill: 0.0, head: 2.4, col: 0x80c8ff, frameCol: 0x10141c },
+    // Control booth (BE)
+    { t: 'divider', x: 13, z: -14, len: 4.5, rotY: 0, gap: 1.4, gapPos: -0.3 },
+    { t: 'divider', x: 15.5, z: -16, len: 3.2, rotY: Math.PI/2, gap: 0 },
+    // Control booth observation window
+    { t: 'window', x: 11, z: -14, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, col: 0x40e0ff, frameCol: 0x10141c },
+    // Cold-aisle dividers — short sub-room walls between racks
+    { t: 'divider', x: -12, z: -2, len: 5.0, rotY: 0, gap: 1.6, gapPos: 1.0 },
+  ],
+  // ── 9: BORDER CROSSING — customs booth + watchtower windows ──────────
+  9: [
+    // Customs booth (BC) — sub-room with the office window
+    { t: 'divider', x: 0, z: -14, len: 5.0, rotY: 0, gap: 1.5, gapPos: 0 },
+    { t: 'divider', x: -3, z: -17, len: 3.0, rotY: Math.PI/2, gap: 0 },
+    { t: 'divider', x: 3, z: -17, len: 3.0, rotY: Math.PI/2, gap: 0 },
+    // Customs office glass — peek at the target inside
+    { t: 'window', x: -4.5, z: -14, len: 2.4, rotY: 0, sill: 0.95, head: 1.95, col: 0xffd090, frameCol: 0x282018 },
+    { t: 'window', x: 4.5, z: -14, len: 2.4, rotY: 0, sill: 0.95, head: 1.95, col: 0xffd090, frameCol: 0x282018 },
+    // Inspection lane separator (FC) — divided lanes
+    { t: 'divider', x: 0, z: 18, len: 7.0, rotY: Math.PI/2, gap: 1.4, gapPos: 0 },
+    // Watchtower window (BW) — sniper hide above
+    { t: 'window', x: -10, z: -19, len: 3.0, rotY: Math.PI/2, sill: 1.4, head: 2.4, col: 0xffb060 },
+    // Extra cover for the long sand axis
+    { t: 'drum', x: 5, z: 10, n: 3, col: 0xb8783c, stripe: 0xffd090 },
+    { t: 'cov', x: -6, z: 5, w: 1.6, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+    { t: 'cov', x: 6, z: -4, w: 1.6, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+  ],
+  // ── 10: CATHEDRAL — confessionals + stained-glass partition ──────────
+  10: [
+    // Sacristy sub-room (BW)
+    { t: 'divider', x: -12, z: -14, len: 5.0, rotY: 0, gap: 1.4, gapPos: 0.8 },
+    { t: 'divider', x: -10, z: -17, len: 3.0, rotY: Math.PI/2, gap: 0 },
+    // Sacristy stained-glass — see the cardinal at his desk
+    { t: 'window', x: -8.5, z: -14, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, col: 0xffd060, frameCol: 0x14100a },
+    // Confessional booths (MW) — two narrow sub-rooms side by side
+    { t: 'divider', x: -15, z: -2, len: 4.0, rotY: 0, gap: 1.2, gapPos: 0 },
+    { t: 'divider', x: -13, z: -4, len: 3.5, rotY: Math.PI/2, gap: 0 },
+    { t: 'divider', x: -13, z: 0, len: 3.5, rotY: Math.PI/2, gap: 0 },
+    // Confessional lattice window (lattice = stained-glass small panel)
+    { t: 'window', x: -11, z: -2, len: 1.6, rotY: 0, sill: 1.1, head: 1.8, col: 0xffe8b0, frameCol: 0x281810 },
+    // Bell-tower stair partition (BE)
+    { t: 'divider', x: 12, z: -14, len: 4.0, rotY: 0, gap: 1.3, gapPos: 0 },
+    // Altar railing window (BC) — symbolic glass between altar and nave
+    { t: 'window', x: 0, z: -8, len: 4.5, rotY: 0, sill: 0.3, head: 1.3, col: 0xffe8b0, frameCol: 0x281810 },
+    { t: 'lamp', x: -4, z: 4, col: 0xffe8b0 },
+    { t: 'lamp', x: 4, z: 4, col: 0xffe8b0 },
+    { t: 'plinth', x: -8, z: 16 },
+    { t: 'plinth', x: 8, z: 16 },
+  ],
+  // ── 11: KARELIA FREIGHTER — engine companionway + bridge glass ──────
+  11: [
+    // Engine companionway (MW) — narrow corridor with engine room sub-room
+    { t: 'divider', x: -12, z: 0, len: 6.0, rotY: Math.PI/2, gap: 1.3, gapPos: 1.8 },
+    { t: 'divider', x: -10, z: -3, len: 3.0, rotY: 0, gap: 0 },
+    // Engine room control window — see/shoot at the engineer
+    { t: 'window', x: -8.5, z: 0, len: 2.4, rotY: 0, sill: 1.0, head: 2.0, col: 0xff8040, frameCol: 0x14181c },
+    // Bridge approach (BC) — captain's sub-room
+    { t: 'divider', x: 0, z: -14, len: 5.5, rotY: 0, gap: 1.4, gapPos: 0 },
+    { t: 'divider', x: 4, z: -16, len: 3.0, rotY: Math.PI/2, gap: 0 },
+    // Bridge wing glass — vault out onto the bridge wing
+    { t: 'window', x: -5, z: -14, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, col: 0x80b0d0, frameCol: 0x14181c },
+    { t: 'window', x: 5, z: -14, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, col: 0x80b0d0, frameCol: 0x14181c },
+    // Container labyrinth divider (FC) — close off the spine
+    { t: 'divider', x: 0, z: 14, len: 6.0, rotY: Math.PI/2, gap: 1.3, gapPos: 1.0 },
+    { t: 'divider', x: 4, z: 12, len: 3.0, rotY: 0, gap: 0 },
+    // Crew quarters (BE) — small sub-room
+    { t: 'divider', x: 12, z: -14, len: 4.0, rotY: 0, gap: 1.3, gapPos: -0.8 },
+    { t: 'pipes', x: -14, z: -18, len: 5 },
+    { t: 'drum', x: 5, z: 5, n: 2, col: 0x603020, stripe: 0xff8040 },
+  ],
+  // ── 12: THE SPIRE — apex glass everywhere ────────────────────────────
+  12: [
+    // Boardroom (MW) — large sub-room walls
+    { t: 'divider', x: -11, z: 0, len: 7.0, rotY: Math.PI/2, gap: 1.5, gapPos: 0 },
+    { t: 'divider', x: -13, z: -3, len: 4.0, rotY: 0, gap: 0 },
+    // Boardroom glass wall — view into executive meeting
+    { t: 'window', x: -9, z: 0, len: 4.0, rotY: Math.PI/2, sill: 0.3, head: 2.4, col: 0xc8e0ff, frameCol: 0x06070a },
+    // Executive vault sub-room (ME)
+    { t: 'divider', x: 13, z: 0, len: 6.0, rotY: Math.PI/2, gap: 1.4, gapPos: -1.0 },
+    { t: 'divider', x: 15, z: -3, len: 3.0, rotY: 0, gap: 0 },
+    // Vault inspection window
+    { t: 'window', x: 11, z: 0, len: 3.0, rotY: Math.PI/2, sill: 0.95, head: 2.05, col: 0xffd060, frameCol: 0x06070a },
+    // Helipad approach (BC) — glass corridor onto the helipad
+    { t: 'window', x: -6, z: -10, len: 4.0, rotY: 0, sill: 0.0, head: 2.4, col: 0xc8e0ff, frameCol: 0x06070a },
+    { t: 'window', x: 6, z: -10, len: 4.0, rotY: 0, sill: 0.0, head: 2.4, col: 0xc8e0ff, frameCol: 0x06070a },
+    // Reception court partition (FC)
+    { t: 'divider', x: 0, z: 14, len: 5.0, rotY: 0, gap: 1.5, gapPos: 0 },
+    // Helipad stair safety glass (BE)
+    { t: 'window', x: 12, z: -16, len: 3.4, rotY: Math.PI/2, sill: 0.0, head: 1.1, col: 0xc8e0ff, frameCol: 0x06070a },
+    { t: 'plinth', x: -8, z: 4 },
+    { t: 'plinth', x: 8, z: 4 },
+    { t: 'lamp', x: -6, z: -16, col: 0xc8e0ff },
+    { t: 'lamp', x: 6, z: -16, col: 0xc8e0ff },
   ],
 };
 

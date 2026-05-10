@@ -15,6 +15,20 @@ import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass }   from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
 import { applySequenceLayout, getSequenceGameplayProfile } from './levelSequences.js';
+// Phase G: small audio module — first piece of main.js modularization.
+import { getAC, sfxHit as _sfxHit, sfxReload as _sfxReload, sfxDamage as _sfxDamage, sfxWaveClear as _sfxWaveClear } from './audio.js';
+// Phase AC: cover-graph helpers — pure functions extracted out of main.js
+// to slim the monolith. Local wrappers below preserve the existing names.
+import {
+  losClear as _losClearImpl,
+  floorYAt as _floorYAtImpl,
+  navCellOpen as _navCellOpenImpl,
+  isPosClearForEnemy as _isPosClearForEnemyImpl,
+  navSnapOpen as _navSnapOpenImpl,
+  navAStar as _navAStarImpl,
+  coverSlotRisk as _coverSlotRiskImpl,
+  getBestPeekSlot as _getBestPeekSlotImpl,
+} from './cover-graph.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
 // so we can re-attach the addons under the same `THREE.X` names the legacy
@@ -85,14 +99,28 @@ function _meshyToast(msg,color){
 // dead code so this can be re-enabled with a one-line change if needed.
 // ─── BUILDING ────────────────────────────────────────────────────────────────
 // Clearance-floor footprint (~+30% area vs prototype) — zone math uses RD/RW ratios
-const DEFAULT_RW=36,DEFAULT_RD=52,RH=4.25,WT=0.4;
+const DEFAULT_RW=36,DEFAULT_RD=52,DEFAULT_RH=4.25,WT=0.4;
+// Per-building footprint + ceiling height + layer tags (Phase 1 / LEVELS_AI_LEAN_UPGRADE_PLAN.md §4.1).
+// layers[] is consumed by Phase 1 verticality hooks and Phase 2 cover-graph routines.
 const BUILDING_DIMS={
-  1:{RW:44,RD:64},2:{RW:38,RD:56},3:{RW:36,RD:52},4:{RW:32,RD:60},
-  5:{RW:40,RD:60},6:{RW:36,RD:70},7:{RW:28,RD:64},8:{RW:44,RD:56},
+  1:{RW:44,RD:64,RH:4.25,layers:['floor','catwalk']},        // Loading Dock — wide flat
+  2:{RW:38,RD:56,RH:4.50,layers:['floor','mezzanine']},      // Continental Lobby — formal
+  3:{RW:36,RD:52,RH:4.25,layers:['pit','floor','vipDeck']},  // Nightclub — intimate, sunken
+  4:{RW:32,RD:60,RH:4.50,layers:['floor']},                  // Penthouse — long arc
+  5:{RW:40,RD:60,RH:4.25,layers:['floor','roofBridge']},     // Sterling Medical — corridor
+  6:{RW:36,RD:70,RH:4.50,layers:['trackPit','platform']},    // Subway Line 7 — linear
+  7:{RW:28,RD:64,RH:4.00,layers:['lower','deck']},           // Azure Yacht — narrow
+  8:{RW:44,RD:56,RH:4.50,layers:['raisedFloor','floor']},    // Server Farm Δ — grid
+  // ── ACT III — "The Apparatus" expansion (B09-B12) ─────────────────────
+  9:{RW:42,RD:62,RH:4.50,layers:['floor','watchtower']},     // Border Crossing — desert pipeline
+  10:{RW:36,RD:66,RH:5.00,layers:['nave','transept','choirloft']}, // Cathedral of San Marco — sanctified vault
+  11:{RW:30,RD:68,RH:4.00,layers:['lower','deck','bridgeWing']},   // Karelia Freighter — open-ocean steel maze
+  12:{RW:40,RD:60,RH:5.50,layers:['floor','catwalk','helipad']},   // The Spire — apex tower & helipad
 };
-function getBuildingDims(bn){return BUILDING_DIMS[bn]||{RW:DEFAULT_RW,RD:DEFAULT_RD};}
-// Runtime footprint used by utility renderers/minimap after level build.
-let RW=DEFAULT_RW,RD=DEFAULT_RD;
+function getBuildingDims(bn){return BUILDING_DIMS[bn]||{RW:DEFAULT_RW,RD:DEFAULT_RD,RH:DEFAULT_RH,layers:['floor']};}
+// Runtime footprint + ceiling height used by utility renderers/minimap after level build.
+// RH was a global const; promoted to mutable per-building to support layered verticality.
+let RW=DEFAULT_RW,RD=DEFAULT_RD,RH=DEFAULT_RH;
 // Soft radial alpha texture — used for floor light pools so edges fade smoothly
 // instead of showing a hard disc rim. Generated once and shared across buildings.
 const _softRadialTex=(()=>{
@@ -728,12 +756,106 @@ const _skylineTexBExt=(bn=>{
     const grad=g.createLinearGradient(0,0,0,80);
     grad.addColorStop(0,'rgba(20,80,140,.55)');grad.addColorStop(1,'rgba(20,80,140,0)');
     g.fillStyle=grad;g.fillRect(0,0,512,80);
+  } else if(bn===9){
+    // Border crossing — pre-dawn desert sky over distant mesas
+    const grad=g.createLinearGradient(0,0,0,256);
+    grad.addColorStop(0,'#221a30');grad.addColorStop(.45,'#5a3a3a');grad.addColorStop(.7,'#b07050');grad.addColorStop(1,'#3a2018');
+    g.fillStyle=grad;g.fillRect(0,0,512,256);
+    // Distant mesa silhouettes (long, flat plateaus)
+    g.fillStyle='#2a1a18';
+    let x=0;while(x<512){const w=60+Math.random()*120,h=40+Math.random()*55;g.fillRect(x,256-h,w,h);x+=w-12;}
+    // Watchtower light pulses
+    for(let i=0;i<4;i++){
+      const wx=80+Math.random()*350,wy=180+Math.random()*30;
+      g.fillStyle='rgba(255,180,80,.85)';g.fillRect(wx,wy,3,3);
+      g.fillStyle='rgba(255,180,80,.30)';g.fillRect(wx-3,wy-3,9,9);
+    }
+    // Stars in fading sky
+    for(let i=0;i<60;i++){
+      const sx=Math.random()*512,sy=Math.random()*100;
+      g.fillStyle=`rgba(255,255,255,${.25+Math.random()*.30})`;g.fillRect(sx,sy,1,1);
+    }
+  } else if(bn===10){
+    // Cathedral — looking out a stained-glass window into a midnight courtyard
+    g.fillStyle='#04060a';g.fillRect(0,0,512,256);
+    // Stained-glass mosaic panels in upper half
+    const tiles=[[80,180,90],[180,80,40],[40,80,140],[140,40,80],[180,160,40],[200,40,140]];
+    for(let yy=0;yy<6;yy++){
+      for(let xx=0;xx<16;xx++){
+        const c=tiles[(xx*7+yy*5)%tiles.length];
+        g.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${.40+Math.random()*.55})`;
+        g.fillRect(xx*32,yy*24,30,22);
+      }
+    }
+    // Lead came (dark grid lines)
+    g.fillStyle='rgba(8,4,2,.85)';
+    for(let xx=0;xx<=16;xx++){g.fillRect(xx*32,0,2,144);}
+    for(let yy=0;yy<=6;yy++){g.fillRect(0,yy*24,512,2);}
+    // Dark cobblestone courtyard below
+    const grad=g.createLinearGradient(0,144,0,256);
+    grad.addColorStop(0,'#060404');grad.addColorStop(1,'#020202');
+    g.fillStyle=grad;g.fillRect(0,144,512,112);
+    // Distant chapel candle dots
+    for(let i=0;i<10;i++){
+      const wx=20+Math.random()*470,wy=160+Math.random()*60;
+      g.fillStyle='rgba(255,220,140,.85)';g.fillRect(wx,wy,2,2);
+      g.fillStyle='rgba(255,180,80,.30)';g.fillRect(wx-2,wy-2,6,6);
+    }
+  } else if(bn===11){
+    // Karelia freighter — open ocean at night, with running lights in fog
+    const grad=g.createLinearGradient(0,0,0,256);
+    grad.addColorStop(0,'#080a14');grad.addColorStop(.55,'#181c28');grad.addColorStop(.78,'#1a2030');grad.addColorStop(1,'#06080e');
+    g.fillStyle=grad;g.fillRect(0,0,512,256);
+    // Fog bank (broad horizontal haze)
+    const fog=g.createLinearGradient(0,140,0,200);
+    fog.addColorStop(0,'rgba(180,200,220,0)');fog.addColorStop(.5,'rgba(180,200,220,.20)');fog.addColorStop(1,'rgba(180,200,220,0)');
+    g.fillStyle=fog;g.fillRect(0,120,512,90);
+    // Distant ship running lights (red, green, white)
+    const lights=[[80,168,'rgba(255,60,40,.85)'],[200,170,'rgba(60,200,80,.85)'],[340,166,'rgba(240,240,240,.85)'],[440,172,'rgba(255,180,40,.75)']];
+    for(const [lx,ly,col] of lights){
+      g.fillStyle=col;g.fillRect(lx,ly,3,3);
+      g.fillStyle=col.replace(/\.\d+\)/,'.25)');g.fillRect(lx-3,ly-3,9,9);
+    }
+    // Few faint stars
+    for(let i=0;i<28;i++){
+      const sx=Math.random()*512,sy=Math.random()*90;
+      g.fillStyle=`rgba(255,255,255,${.20+Math.random()*.30})`;g.fillRect(sx,sy,1,1);
+    }
+    // Choppy water reflections
+    for(let i=0;i<60;i++){
+      const wx=Math.random()*512,wy=190+Math.random()*60;
+      g.fillStyle=`rgba(120,150,180,${.20+Math.random()*.25})`;g.fillRect(wx,wy,2+Math.random()*3,1);
+    }
+  } else if(bn===12){
+    // The Spire — apex tower view, pre-dawn city below + dawn-pink sky
+    const grad=g.createLinearGradient(0,0,0,256);
+    grad.addColorStop(0,'#0a1838');grad.addColorStop(.35,'#3a4880');grad.addColorStop(.55,'#a07050');grad.addColorStop(.75,'#e0a070');grad.addColorStop(1,'#080a14');
+    g.fillStyle=grad;g.fillRect(0,0,512,256);
+    // Distant city below — dense window-lit silhouette
+    g.fillStyle='#040608';
+    let x=0;while(x<512){const w=10+Math.random()*22,h=110+Math.random()*80;g.fillRect(x,256-h,w,h);x+=w+Math.random()*4;}
+    // Thousands of distant lit windows
+    for(let i=0;i<420;i++){
+      const wx=Math.random()*512,wy=160+Math.random()*92;
+      g.fillStyle=`rgba(${200+Math.random()*55|0},${180+Math.random()*55|0},${120+Math.random()*70|0},${.55+Math.random()*.40})`;
+      g.fillRect(wx,wy,1,1);
+    }
+    // Aircraft warning lights (slow red blinks suggested by scatter)
+    for(let i=0;i<6;i++){
+      const wx=Math.random()*512,wy=190+Math.random()*40;
+      g.fillStyle='rgba(255,40,30,.85)';g.fillRect(wx,wy,2,2);
+    }
+    // High stars in dawn sky
+    for(let i=0;i<22;i++){
+      const sx=Math.random()*512,sy=Math.random()*40;
+      g.fillStyle=`rgba(255,255,255,${.35+Math.random()*.35})`;g.fillRect(sx,sy,1,1);
+    }
   }
   const t=new THREE.CanvasTexture(c);
   t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
   return t;
 });
-const _skylinePerBuilding=[_skylineTexB(1),_skylineTexB(2),_skylineTexB(3),_skylineTexB(4),_skylineTexBExt(5),_skylineTexBExt(6),_skylineTexBExt(7),_skylineTexBExt(8)];
+const _skylinePerBuilding=[_skylineTexB(1),_skylineTexB(2),_skylineTexB(3),_skylineTexB(4),_skylineTexBExt(5),_skylineTexBExt(6),_skylineTexBExt(7),_skylineTexBExt(8),_skylineTexBExt(9),_skylineTexBExt(10),_skylineTexBExt(11),_skylineTexBExt(12)];
 // ── Carpet — for Continental/Penthouse soft floor
 const _carpetTex=(()=>{
   const c=document.createElement('canvas');c.width=512;c.height=512;
@@ -1013,9 +1135,17 @@ const _padTex=(()=>{
   return t;
 })();
 function buildLevel(scene,bn){
-  const bDims=getBuildingDims(bn); RW=bDims.RW; RD=bDims.RD;
+  const bDims=getBuildingDims(bn); RW=bDims.RW; RD=bDims.RD; RH=bDims.RH||DEFAULT_RH;
   const layout=(bn-1)%2; // 0=dock (baseline), 1=lobby (mirrored doors + different core obstacles)
   const ob=[],wl=[],vl=[];
+  // ── Verticality (floor regions) ───────────────────────────────────────
+  // Each region: {x0,x1,z0,z1, floorY}. The player's standing Y is the
+  // highest matching floorY at their XZ; default 0. Negative floorY = pit.
+  // Positive floorY = catwalk/mezzanine/raised platform.
+  const floorRegions=[];
+  function floorRegion(x0,x1,z0,z1,floorY){
+    floorRegions.push({x0:Math.min(x0,x1),x1:Math.max(x0,x1),z0:Math.min(z0,z1),z1:Math.max(z0,z1),floorY});
+  }
   function box(x,y,z,w,h,d,mat){
     const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     m.position.set(x,y,z);scene.add(m);ob.push(m);return m;
@@ -1037,9 +1167,14 @@ function buildLevel(scene,bn){
     [0x3a4248,0x444c52,0x2a3036,0x1c2228],     // 5 hospital: abandoned ward, deep grey-blue
     [0x303034,0x404048,0x282830,0x484850],     // 6 subway: dark grey concrete
     [0x202028,0xe8e2d4,0x281408,0x504030],     // 7 yacht: dark base + cream upper
-    [0x06080e,0x10141c,0x202840,0x183050]      // 8 server farm: dark cyan
+    [0x06080e,0x10141c,0x202840,0x183050],     // 8 server farm: dark cyan
+    // Act III — The Apparatus
+    [0x4a3820,0x6a4e2c,0x3a2810,0x8a6028],     // 9 border crossing: sandstone + dusk amber
+    [0x14100c,0x281c10,0x603018,0x806040],     // 10 cathedral: ash + candle gold
+    [0x1a2028,0x2a323a,0x405060,0x584a3a],     // 11 karelia freighter: salt-bleached steel
+    [0x06070a,0x10161e,0x202a38,0x80a0c8]      // 12 the spire: midnight glass + chrome
   ];
-  const pc=pal[Math.min(bn-1,7)];
+  const pc=pal[Math.min(bn-1,pal.length-1)];
   // ── Per-building texture & material profile ──────────────────────────────
   const _texProfile=[
     // 1: LOADING DOCK — concrete floor + corrugated metal walls + brushed metal pillars
@@ -1065,8 +1200,20 @@ function buildLevel(scene,bn){
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:_velvetTex,floorShine:140,wallShine:32,pillarShine:280,ceilCol:0x0a0e18},
     // 8: SERVER FARM — perforated grate floor + rack-row walls + chrome pillars
     {floorTex:_serverGrateTex,floorRepeat:[5,8],wallTex:_serverWallTex,wallRepeat:[2,1],
-     pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:60,wallShine:30,pillarShine:180,ceilCol:0x040810}
-  ][Math.min(bn-1,7)];
+     pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:60,wallShine:30,pillarShine:180,ceilCol:0x040810},
+    // 9: BORDER CROSSING — sun-baked concrete floor + sandstone walls + steel-clad pillars
+    {floorTex:_concreteTex,floorRepeat:[6,9],wallTex:_subwayConcreteTex,wallRepeat:[3,2],
+     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:10,wallShine:12,pillarShine:90,ceilCol:0x100a06},
+    // 10: CATHEDRAL — polished marble floor + marble walls + carved pillars + velvet vaulted ceiling
+    {floorTex:_blackMarbleTex,floorRepeat:[3,5],wallTex:_marbleTex,wallRepeat:[2,1],
+     pillarTex:_marbleTex,pillarRepeat:[1,1],ceilTex:_velvetTex,floorShine:180,wallShine:80,pillarShine:130,ceilCol:0x0a0808},
+    // 11: KARELIA FREIGHTER — corrugated grate floor + corrugated metal walls + chrome pillars
+    {floorTex:_serverGrateTex,floorRepeat:[5,9],wallTex:_corrugatedTex,wallRepeat:[4,2],
+     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:32,wallShine:22,pillarShine:200,ceilCol:0x080a0e},
+    // 12: THE SPIRE — black marble floor + brushed glass-and-chrome walls + chrome pillars + velvet inner ceiling
+    {floorTex:_blackMarbleTex,floorRepeat:[3,4],wallTex:_marbleTex,wallRepeat:[2,1],
+     pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:_velvetTex,floorShine:220,wallShine:110,pillarShine:300,ceilCol:0x04060e}
+  ][Math.min(bn-1,11)];
   // Per-object Phong materials — now textured per building
   const fM=new THREE.MeshPhongMaterial({color:pc[0],map:_texProfile.floorTex,shininess:_texProfile.floorShine,specular:0x14161a});
   if(_texProfile.floorTex)_texProfile.floorTex.repeat.set(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]);
@@ -1078,9 +1225,10 @@ function buildLevel(scene,bn){
   const crM=new THREE.MeshPhongMaterial({color:pc[3],shininess:28,specular:0x0e100c}); // crates
   const dM=new THREE.MeshPhongMaterial({color:pc[1],map:_texProfile.wallTex,shininess:7,specular:0x080808});  // divider walls
   // Emissive trim accent — colour keyed to building palette
-  const trimCols=[0xffaa44,0xd4a040,0xff40c8,0x40c8ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff];
-  const trimM=new THREE.MeshBasicMaterial({color:trimCols[Math.min(bn-1,7)]});
-  const baseTrimM=new THREE.MeshBasicMaterial({color:new THREE.Color(trimCols[Math.min(bn-1,7)]).multiplyScalar(.38)});
+  const trimCols=[0xffaa44,0xd4a040,0xff40c8,0x40c8ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff,
+                   /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x6890b8, /* 12 */ 0xc8e0ff];
+  const trimM=new THREE.MeshBasicMaterial({color:trimCols[Math.min(bn-1,trimCols.length-1)]});
+  const baseTrimM=new THREE.MeshBasicMaterial({color:new THREE.Color(trimCols[Math.min(bn-1,trimCols.length-1)]).multiplyScalar(.38)});
   const hw=RW/2,hd=RD/2;
   // Preserve legacy thirds when RD=44 (z-split ≈ ±6); scales with RD for larger floors
   const ZONE_Z_SPLIT=RD*(6/44);
@@ -1345,8 +1493,36 @@ function buildLevel(scene,bn){
      zoneA:{col:0x40c8ff,int:2.6,pool:0x40c8ff},
      zoneB:{col:0x60a0ff,int:2.4,pool:0x60a0ff},
      zoneC:{col:0x80c0ff,int:2.2,pool:0x80c0ff},
-     fog:0x040810,fogD:.025}
-  ][Math.min(bn-1,7)];
+     fog:0x040810,fogD:.025},
+    // 9: BORDER CROSSING — pre-dawn desert, low warm sun behind hills
+    {ambCol:0x3a2818,ambInt:1.5,hemiSky:0xb87850,hemiGround:0x1c1208,hemiInt:0.75,
+     keyCol:0xffb060,keyInt:0.80,keyPos:[12,12,10],rimCol:0x4060a0,rimInt:0.40,rimPos:[-10,8,-14],
+     zoneA:{col:0xffb060,int:3.0,pool:0xffa050},
+     zoneB:{col:0xffd090,int:2.4,pool:0xffc070},
+     zoneC:{col:0x8090c0,int:2.0,pool:0x6878a8},
+     fog:0x180c08,fogD:.020},
+    // 10: CATHEDRAL — votive candle pools in deep gothic shadow
+    {ambCol:0x0c0a08,ambInt:0.85,hemiSky:0x8a4020,hemiGround:0x040402,hemiInt:0.35,
+     keyCol:0xffe8b0,keyInt:0.60,keyPos:[8,12,10],rimCol:0x603018,rimInt:0.35,rimPos:[-10,8,-12],
+     zoneA:{col:0xffe8b0,int:2.4,pool:0xffd090},
+     zoneB:{col:0xffc070,int:2.0,pool:0xffb060},
+     zoneC:{col:0xfff0d0,int:2.6,pool:0xffe0b0},
+     fog:0x080604,fogD:.038},
+    // 11: KARELIA — open-ocean fog at night, harsh deck floods
+    {ambCol:0x1c2430,ambInt:1.2,hemiSky:0x506880,hemiGround:0x080a10,hemiInt:0.55,
+     keyCol:0xb0c8e0,keyInt:0.55,keyPos:[10,13,12],rimCol:0xffa040,rimInt:0.55,rimPos:[-8,8,-12],
+     zoneA:{col:0xa0c0e0,int:2.4,pool:0x80a8d0},
+     zoneB:{col:0xc0d0e8,int:2.2,pool:0xa0b8d8},
+     zoneC:{col:0xff8040,int:2.6,pool:0xff6020},
+     fog:0x101820,fogD:.045},
+    // 12: THE SPIRE — pre-dawn city panorama, executive chrome
+    {ambCol:0x10141c,ambInt:1.3,hemiSky:0x6a90c8,hemiGround:0x040608,hemiInt:0.95,
+     keyCol:0xc8e0ff,keyInt:0.95,keyPos:[12,14,10],rimCol:0xffe060,rimInt:0.55,rimPos:[-10,9,-14],
+     zoneA:{col:0xc8e0ff,int:2.8,pool:0xa8c8f0},
+     zoneB:{col:0xb0c8e8,int:2.6,pool:0x90b0d0},
+     zoneC:{col:0xffd060,int:3.0,pool:0xffc040},
+     fog:0x040608,fogD:.014}
+  ][Math.min(bn-1,11)];
   // Apply fog to the scene
   scene.fog=new THREE.FogExp2(lightProfile.fog,lightProfile.fogD);
   // Ambient + hemisphere (sky/ground bounce)
@@ -1447,7 +1623,7 @@ function buildLevel(scene,bn){
   const signM=new THREE.MeshLambertMaterial({color:0x00cc44,emissive:0x00aa33});
   box(0,WT+3.7,-hd+WT*.6,1.4,.32,.08,signM);
   // ── WINDOWS — emissive skyline panes on the side walls ─────────────────────
-  const windowM=new THREE.MeshBasicMaterial({map:_skylinePerBuilding[Math.min(bn-1,7)]});
+  const windowM=new THREE.MeshBasicMaterial({map:_skylinePerBuilding[Math.min(bn-1,_skylinePerBuilding.length-1)]});
   const windowFrameM=new THREE.MeshPhongMaterial({color:0x14161c,shininess:60,specular:0x2a2c34});
   function addWindow(x,y,z,w,h,faceDir){
     // Window pane — emissive skyline texture, flush with the inner wall face
@@ -1474,7 +1650,7 @@ function buildLevel(scene,bn){
     }
   }
   // ── SKYBOX — large inverted sphere with per-building skyline texture, visible through windows
-  const skyMat=new THREE.MeshBasicMaterial({map:_skylinePerBuilding[Math.min(bn-1,7)],side:THREE.BackSide,fog:false});
+  const skyMat=new THREE.MeshBasicMaterial({map:_skylinePerBuilding[Math.min(bn-1,_skylinePerBuilding.length-1)],side:THREE.BackSide,fog:false});
   const sky=new THREE.Mesh(new THREE.SphereGeometry(80,28,16),skyMat);
   sky.position.set(0,4,0);scene.add(sky);ob.push(sky);
   // Distant building silhouette boxes outside the windows for parallax — only visible via windows
@@ -1523,7 +1699,8 @@ function buildLevel(scene,bn){
   }
   // ── PROPS & DECOR ───────────────────────────────────────────────────────────
   // Per-building variation tints for prop accents
-  const propAccent=[0xff6040,0x40ff80,0xffd040,0x60a0ff,0x80ffe0,0xff5040,0xa0c8ff,0x40e0ff][Math.min(bn-1,7)];
+  const propAccent=[0xff6040,0x40ff80,0xffd040,0x60a0ff,0x80ffe0,0xff5040,0xa0c8ff,0x40e0ff,
+                     /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x80b0d0, /* 12 */ 0xc8e0ff][Math.min(bn-1,11)];
   const sigM   =new THREE.MeshLambertMaterial({color:0xff4030,emissive:0x4a0e08});       // red signage
   const cautionM=new THREE.MeshLambertMaterial({color:0xffd040,emissive:0x4a3808});      // amber caution
   const monitorBezelM=new THREE.MeshPhongMaterial({color:0x14161c,shininess:90,specular:0x303838});
@@ -1704,8 +1881,9 @@ function buildLevel(scene,bn){
   const bnumM=new THREE.MeshLambertMaterial({color:0xffd060,emissive:0x4a3808});
   box(0,RH-1.3, hd-.06, .60,.40,.05, bnumM);
   // ── ACCENT FLOOR-LEVEL STRIP LIGHTS ──────────────────────────────────────
-  const accentColors=[0xff4040,0x40ff80,0xff8040,0x4080ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff];
-  const accentColor=accentColors[Math.min(bn-1,7)];
+  const accentColors=[0xff4040,0x40ff80,0xff8040,0x4080ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff,
+                       /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x80b0d0, /* 12 */ 0xc8e0ff];
+  const accentColor=accentColors[Math.min(bn-1,accentColors.length-1)];
   const accentM=new THREE.MeshBasicMaterial({color:accentColor,transparent:true,opacity:.85,blending:THREE.AdditiveBlending,depthWrite:false});
   // Strips along the inner wall bases — like emergency / accent lighting
   box(0,WT+.10, hd-.06, RW-1.0,.06,.04, accentM);  // front
@@ -3261,12 +3439,401 @@ function buildLevel(scene,bn){
     },
     accent: propAccent,
   });
+  // ── Per-building verticality (Phase A) ─────────────────────────────────
+  // B03 nightclub: sunken dance floor (FC) at -0.9m with a visible pit visual
+  // and a vault-up rim so the player can climb back out.
+  if(bn===3){
+    const pitFloorY=-0.9;
+    const px0=-5,px1=5,pz0=12,pz1=22;
+    floorRegion(px0,px1,pz0,pz1,pitFloorY);
+    // Lowered visual floor mesh (sits at pitFloorY)
+    const pitFloorM=new THREE.MeshPhongMaterial({color:0x1a0828,shininess:140,specular:0x60308a});
+    const pf=new THREE.Mesh(new THREE.BoxGeometry((px1-px0),0.10,(pz1-pz0)),pitFloorM);
+    pf.position.set((px0+px1)/2,pitFloorY+0.05,(pz0+pz1)/2);
+    scene.add(pf);ob.push(pf);
+    // Rim trim — magenta accent strip just below upper-floor level
+    const pitRimM=new THREE.MeshBasicMaterial({color:0xff40c8});
+    for(const seg of [
+      [px0,px1,pz0,pz0,(px1-px0)+0.10,0.06,0.05],
+      [px0,px1,pz1,pz1,(px1-px0)+0.10,0.06,0.05],
+      [px0,px0,pz0,pz1,0.05,0.06,(pz1-pz0)+0.10],
+      [px1,px1,pz0,pz1,0.05,0.06,(pz1-pz0)+0.10],
+    ]){
+      const cx=(seg[0]+seg[1])/2,cz=(seg[2]+seg[3])/2;
+      const m=new THREE.Mesh(new THREE.BoxGeometry(seg[4],seg[5],seg[6]),pitRimM);
+      m.position.set(cx,WT-0.02,cz);
+      scene.add(m);ob.push(m);
+    }
+    // Vault-up rim — vaultable AABBs around the four pit edges so the player
+    // can climb back out from inside.
+    function pitRim(x0,x1,z0,z1){
+      const aabb={x0,x1,z0,z1,height:WT};         // climb-up from pit floor (-0.9) to upper (0)
+      vl.push(aabb);
+    }
+    pitRim(px0-0.20,px1+0.20,pz0-0.20,pz0+0.05); // south rim
+    pitRim(px0-0.20,px1+0.20,pz1-0.05,pz1+0.20); // north rim
+    pitRim(px0-0.20,px0+0.05,pz0-0.20,pz1+0.20); // west rim
+    pitRim(px1-0.05,px1+0.20,pz0-0.20,pz1+0.20); // east rim
+    // Three-step deck on the south side leading down — knee-high vaultable.
+    const stepM=new THREE.MeshPhongMaterial({color:0x1a0820,shininess:80});
+    for(let i=0;i<3;i++){
+      const sy=-0.225-i*0.225;
+      const sw=4.0,sd=0.5;
+      const sx=0,sz=pz0-0.5-i*0.5;
+      box(sx,sy+0.05,sz,sw,0.10,sd,stepM);
+    }
+  }
+  // B02 Continental: half-floor mezzanine balcony at +2.4m around the back
+  // arc, with a grand staircase rising from BE.
+  if(bn===2){
+    const mzY=2.4;
+    floorRegion(-16,16,-26,-19,mzY);
+    // Mezzanine deck — visible from below
+    const deckM=new THREE.MeshPhongMaterial({color:0x281810,shininess:35,specular:0x402418});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(32,0.20,7.0),deckM);
+    dk.position.set(0,mzY-0.10,-22.5);
+    scene.add(dk);ob.push(dk);
+    // Brass-edged rim trim along the inner mezzanine edge
+    const rimM=new THREE.MeshBasicMaterial({color:0xd4b06a});
+    const rim=new THREE.Mesh(new THREE.BoxGeometry(32,0.08,0.06),rimM);
+    rim.position.set(0,mzY-0.02,-19);
+    scene.add(rim);ob.push(rim);
+    // Railing posts (cosmetic + small wall AABB at chest height for safety)
+    const railM=new THREE.MeshPhongMaterial({color:0x181208,shininess:80});
+    for(let x=-15;x<=15;x+=3.0){
+      const post=new THREE.Mesh(new THREE.BoxGeometry(0.10,1.1,0.10),railM);
+      post.position.set(x,mzY+0.55,-19);
+      scene.add(post);ob.push(post);
+    }
+    // Horizontal rail along the inner edge
+    const railTop=new THREE.Mesh(new THREE.BoxGeometry(30,0.10,0.10),railM);
+    railTop.position.set(0,mzY+1.05,-19);
+    scene.add(railTop);ob.push(railTop);
+    // Grand staircase from BE up to the mezzanine — 5 steps. Each step is
+    // both a walkable floor region AND a vaultable barrier.
+    const stairM=new THREE.MeshPhongMaterial({color:0x382010,shininess:50});
+    for(let i=0;i<5;i++){
+      const sy=0.50+i*0.50;
+      const stepZ=-13.5-i*0.85;
+      box(13,sy-0.10,stepZ,4.0,0.20,0.85,stairM);
+      vl.push({x0:11,x1:15,z0:stepZ-0.42,z1:stepZ+0.42,height:sy});
+      floorRegion(11,15,stepZ-0.42,stepZ+0.42,sy);
+    }
+    // Top of staircase joins the mezzanine — a small bridge region linking
+    // the last step (y=2.5) to the mezzanine (y=2.4) so the player doesn't
+    // fall off the gap between them.
+    floorRegion(11,15,-18.0,-17.5,2.4);
+    // Vault-up entry at the edge of the mezzanine in case the player approaches from the west side
+    vl.push({x0:-15,x1:-13,z0:-19.2,z1:-18.8,height:mzY});
+    // Wall trim on the mezzanine outer edge (back wall side, hides ceiling clip)
+    box(0,mzY+1.6,-25.6,32,0.20,WT*0.6,deckM);
+  }
+  // B06 Subway Line 7: lowered track pit at -1.2m running the building's
+  // length (z=18..-22 along x=-3..3). Live rail on one side.
+  if(bn===6){
+    const trackY=-1.2;
+    floorRegion(-3.5,3.5,-22,18,trackY);
+    // Pit floor visual
+    const trackM=new THREE.MeshPhongMaterial({color:0x0a0c10,shininess:60,specular:0x303838});
+    const tk=new THREE.Mesh(new THREE.BoxGeometry(7.0,0.10,40),trackM);
+    tk.position.set(0,trackY+0.05,-2);
+    scene.add(tk);ob.push(tk);
+    // Rails — two parallel steel lines
+    const railSteelM=new THREE.MeshPhongMaterial({color:0x808890,shininess:240,specular:0xc0c8d0});
+    for(const rx of [-1.0,1.0]){
+      const rail=new THREE.Mesh(new THREE.BoxGeometry(0.10,0.12,40),railSteelM);
+      rail.position.set(rx,trackY+0.11,-2);
+      scene.add(rail);ob.push(rail);
+    }
+    // Live rail (third rail) — visible red glow along one edge; just visual
+    const liveM=new THREE.MeshBasicMaterial({color:0xff5040});
+    const live=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.10,40),liveM);
+    live.position.set(2.8,trackY+0.10,-2);
+    scene.add(live);ob.push(live);
+    live.userData.noBlock=true;
+    // Platform edge trim (yellow/black hazard stripes) along both pit lips
+    const stripeM=new THREE.MeshBasicMaterial({color:0xfff060});
+    for(const px of [-3.5,3.5]){
+      const stripe=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.05,40),stripeM);
+      stripe.position.set(px,WT+0.02,-2);
+      scene.add(stripe);ob.push(stripe);
+    }
+    // Vault-up rim around the pit lips so the player can climb out
+    function trackRim(x0,x1,z0,z1){vl.push({x0,x1,z0,z1,height:WT});}
+    trackRim(-3.8,3.8,-22.0,-21.8); // south
+    trackRim(-3.8,3.8,17.8,18.0);    // north
+    trackRim(-3.8,-3.6,-22.0,18.0);  // west
+    trackRim(3.6,3.8,-22.0,18.0);     // east
+  }
+  // B12 Spire: raised helipad at the BC apex, +0.6m, with a wide entry stair
+  if(bn===12){
+    const padY=0.6;
+    floorRegion(-7,7,-22,-12,padY);
+    // Helipad deck (dark with cyan rim)
+    const padM=new THREE.MeshPhongMaterial({color:0x10141c,shininess:200,specular:0x80a0c0});
+    const pad=new THREE.Mesh(new THREE.BoxGeometry(14,0.16,10),padM);
+    pad.position.set(0,padY-0.08,-17);
+    scene.add(pad);ob.push(pad);
+    // Painted H ring
+    const ringM=new THREE.MeshBasicMaterial({color:0xc8e0ff,transparent:true,opacity:0.65,depthWrite:false});
+    const ring=new THREE.Mesh(new THREE.RingGeometry(2.4,2.7,28),ringM);
+    ring.rotation.x=-Math.PI/2;
+    ring.position.set(0,padY+0.01,-17);
+    scene.add(ring);ob.push(ring);
+    ring.userData.noBlock=true;
+    // 2-step entry from FC side — walkable floor regions + vaultable.
+    const padStairM=new THREE.MeshPhongMaterial({color:0x080a10,shininess:140});
+    for(let i=0;i<2;i++){
+      const sy=0.20+i*0.20;
+      const sz=-11.4-i*0.6;
+      box(0,sy-0.10,sz,4.2,0.20,0.6,padStairM);
+      vl.push({x0:-2.1,x1:2.1,z0:sz-0.3,z1:sz+0.3,height:sy});
+      floorRegion(-2.1,2.1,sz-0.3,sz+0.3,sy);
+    }
+    // Rim glow strips along the pad edges
+    const rimM=new THREE.MeshBasicMaterial({color:0xc8e0ff});
+    for(const seg of [
+      [-7,7,-12,-12, 14,0.05,0.05],
+      [-7,7,-22,-22, 14,0.05,0.05],
+      [-7,-7,-22,-12, 0.05,0.05,10],
+      [7,7,-22,-12, 0.05,0.05,10],
+    ]){
+      const cx=(seg[0]+seg[1])/2,cz=(seg[2]+seg[3])/2;
+      const r=new THREE.Mesh(new THREE.BoxGeometry(seg[4],seg[5],seg[6]),rimM);
+      r.position.set(cx,padY+0.01,cz);
+      scene.add(r);ob.push(r);
+    }
+  }
+  // B04 Penthouse: sunken conversation pit at FE — hard cover from FC bar
+  if(bn===4){
+    const cpY=-0.6;
+    floorRegion(8,16,11,19,cpY);
+    // Pit floor (carpet-dark with gold rim)
+    const pitFloorM=new THREE.MeshPhongMaterial({color:0x100612,shininess:80,specular:0x402030});
+    const pf=new THREE.Mesh(new THREE.BoxGeometry(8,0.10,8),pitFloorM);
+    pf.position.set(12,cpY+0.05,15);
+    scene.add(pf);ob.push(pf);
+    // Gold rim
+    const rimM=new THREE.MeshBasicMaterial({color:0xffd060});
+    for(const seg of [[8,16,11,11,8.1,0.06,0.05],[8,16,19,19,8.1,0.06,0.05],[8,8,11,19,0.05,0.06,8.1],[16,16,11,19,0.05,0.06,8.1]]){
+      const cx=(seg[0]+seg[1])/2,cz=(seg[2]+seg[3])/2;
+      const m=new THREE.Mesh(new THREE.BoxGeometry(seg[4],seg[5],seg[6]),rimM);
+      m.position.set(cx,WT-0.02,cz);scene.add(m);ob.push(m);
+    }
+    // Climb-up rim
+    vl.push({x0:7.8,x1:16.2,z0:10.8,z1:11.0,height:WT});
+    vl.push({x0:7.8,x1:16.2,z0:19.0,z1:19.2,height:WT});
+    vl.push({x0:7.8,x1:8.0,z0:11,z1:19,height:WT});
+    vl.push({x0:16.0,x1:16.2,z0:11,z1:19,height:WT});
+  }
+  // B05 Sterling Medical: roof bridge connecting FE → BE at y=+2.5m
+  if(bn===5){
+    const bgY=2.5;
+    floorRegion(13,17,-22,22,bgY);
+    // Bridge deck (clinical light grey + green stripe)
+    const deckM=new THREE.MeshPhongMaterial({color:0x404a52,shininess:40,specular:0x60707a});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(4,0.16,44),deckM);
+    dk.position.set(15,bgY-0.08,0);
+    scene.add(dk);ob.push(dk);
+    // Medical green inlay
+    const stripeM=new THREE.MeshBasicMaterial({color:0x40ff80});
+    const stripe=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.04,44),stripeM);
+    stripe.position.set(15,bgY+0.02,0);
+    scene.add(stripe);ob.push(stripe);
+    // Railing posts both sides
+    const railM=new THREE.MeshPhongMaterial({color:0x60707a,shininess:120});
+    for(let z=-21;z<=21;z+=3.5){
+      for(const rx of [13,17]){
+        const post=new THREE.Mesh(new THREE.BoxGeometry(0.08,1.05,0.08),railM);
+        post.position.set(rx,bgY+0.52,z);scene.add(post);ob.push(post);
+      }
+    }
+    // Stair access at south (FE) and north (BE) — each step is a walkable
+    // floor region + vaultable barrier.
+    const stairM=new THREE.MeshPhongMaterial({color:0x303840,shininess:50});
+    for(let i=0;i<5;i++){
+      const sy=0.50+i*0.50;
+      // South stair
+      const sZ=13+i*0.9;
+      box(15,sy-0.10,sZ,3.6,0.20,0.9,stairM);
+      vl.push({x0:13.2,x1:16.8,z0:sZ-0.4,z1:sZ+0.4,height:sy});
+      floorRegion(13.2,16.8,sZ-0.4,sZ+0.4,sy);
+      // North stair
+      const nZ=-13-i*0.9;
+      box(15,sy-0.10,nZ,3.6,0.20,0.9,stairM);
+      vl.push({x0:13.2,x1:16.8,z0:nZ-0.4,z1:nZ+0.4,height:sy});
+      floorRegion(13.2,16.8,nZ-0.4,nZ+0.4,sy);
+    }
+  }
+  // B07 Azure Yacht: aft deck raised slightly at BE (+0.3m) — exterior deck
+  if(bn===7){
+    const aftY=0.3;
+    floorRegion(8,14,-22,-10,aftY);
+    const deckM=new THREE.MeshPhongMaterial({color:0x281408,shininess:80,specular:0x402418});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(6,0.12,12),deckM);
+    dk.position.set(11,aftY-0.06,-16);
+    scene.add(dk);ob.push(dk);
+    // Teak-stripe pattern on top
+    const stripeM=new THREE.MeshLambertMaterial({color:0x402a14});
+    for(let x=8.3;x<14;x+=0.6){
+      const stripe=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.005,11.8),stripeM);
+      stripe.position.set(x,aftY+0.005,-16);scene.add(stripe);ob.push(stripe);
+    }
+    // Single step at the south edge
+    box(11,0.10,-9.6,5.4,0.20,0.6,deckM);
+    vl.push({x0:8.3,x1:13.7,z0:-9.9,z1:-9.3,height:aftY});
+  }
+  // B08 Server Farm Δ: raised floor (cable management) at ME at +0.4m
+  if(bn===8){
+    const rfY=0.4;
+    floorRegion(8,18,-7,7,rfY);
+    const deckM=new THREE.MeshPhongMaterial({color:0x10141c,shininess:120,specular:0x40c8ff});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(10,0.18,14),deckM);
+    dk.position.set(13,rfY-0.09,0);
+    scene.add(dk);ob.push(dk);
+    // Cyan rim lights
+    const rimM=new THREE.MeshBasicMaterial({color:0x40c8ff});
+    for(const seg of [[8,18,-7,-7,10.1,0.06,0.05],[8,18,7,7,10.1,0.06,0.05],[8,8,-7,7,0.05,0.06,14.1],[18,18,-7,7,0.05,0.06,14.1]]){
+      const cx=(seg[0]+seg[1])/2,cz=(seg[2]+seg[3])/2;
+      const m=new THREE.Mesh(new THREE.BoxGeometry(seg[4],seg[5],seg[6]),rimM);
+      m.position.set(cx,WT+0.42,cz);scene.add(m);ob.push(m);
+    }
+    // Step up from west
+    box(8,0.15,0,0.6,0.30,14,deckM);
+    vl.push({x0:7.7,x1:8.3,z0:-7,z1:7,height:rfY});
+  }
+  // B09 Border Crossing: watchtower platform at BW (+2.6m) — sniper hide
+  if(bn===9){
+    const wtY=2.6;
+    floorRegion(-16,-12,-22,-14,wtY);
+    const deckM=new THREE.MeshPhongMaterial({color:0x4a3820,shininess:30,specular:0x40280c});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(4,0.20,8),deckM);
+    dk.position.set(-14,wtY-0.10,-18);
+    scene.add(dk);ob.push(dk);
+    // Sandbag rim (low half-wall)
+    const sbM=new THREE.MeshPhongMaterial({color:0x6a4828,shininess:5});
+    for(const seg of [[-16,-12,-14,-14,4.1,0.5,0.5],[-16,-12,-22,-22,4.1,0.5,0.5],[-16,-16,-22,-14,0.5,0.5,8.1],[-12,-12,-22,-14,0.5,0.5,8.1]]){
+      const cx=(seg[0]+seg[1])/2,cz=(seg[2]+seg[3])/2;
+      const m=new THREE.Mesh(new THREE.BoxGeometry(seg[4],seg[5],seg[6]),sbM);
+      m.position.set(cx,wtY+0.25,cz);scene.add(m);ob.push(m);
+    }
+    // Ladder/stairs from south — walkable floor regions + vaultable barriers.
+    const ladderM=new THREE.MeshPhongMaterial({color:0x402810,shininess:30});
+    for(let i=0;i<6;i++){
+      const sy=0.50+i*0.45;
+      const sz=-12-i*0.6;
+      box(-14,sy-0.10,sz,2.6,0.18,0.6,ladderM);
+      vl.push({x0:-15.3,x1:-12.7,z0:sz-0.3,z1:sz+0.3,height:sy});
+      floorRegion(-15.3,-12.7,sz-0.3,sz+0.3,sy);
+    }
+  }
+  // B10 Cathedral: choir loft at BC arc (+2.4m) — the iconic sniper hide
+  if(bn===10){
+    const chY=2.4;
+    floorRegion(-7,7,-26,-19,chY);
+    // Stone deck
+    const deckM=new THREE.MeshPhongMaterial({color:0x381810,shininess:50,specular:0x80604a});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(14,0.20,7),deckM);
+    dk.position.set(0,chY-0.10,-22.5);
+    scene.add(dk);ob.push(dk);
+    // Carved railing (more ornate posts)
+    const railM=new THREE.MeshPhongMaterial({color:0xffd060,shininess:200,specular:0xffe8b0});
+    for(let x=-6;x<=6;x+=1.5){
+      const post=new THREE.Mesh(new THREE.BoxGeometry(0.12,1.1,0.12),railM);
+      post.position.set(x,chY+0.55,-19);
+      scene.add(post);ob.push(post);
+    }
+    // Candle pickups (visual lamps)
+    for(const cx of [-5,-2,2,5]){
+      const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,0.30,8),new THREE.MeshBasicMaterial({color:0xffe8b0,emissive:0xffd060,emissiveIntensity:0.8}));
+      candle.position.set(cx,chY+0.40,-22);
+      scene.add(candle);ob.push(candle);
+    }
+    // Spiral stair from BE side (straight stairs) — walkable floor regions
+    // + vaultable barriers.
+    const stairM=new THREE.MeshPhongMaterial({color:0x281810,shininess:40});
+    for(let i=0;i<5;i++){
+      const sy=0.50+i*0.50;
+      const sz=-22+i*0.8;
+      box(8,sy-0.10,sz,3.0,0.20,0.8,stairM);
+      vl.push({x0:6.5,x1:9.5,z0:sz-0.4,z1:sz+0.4,height:sy});
+      floorRegion(6.5,9.5,sz-0.4,sz+0.4,sy);
+    }
+  }
+  // B11 Karelia: bridge wing at BC (+1.0m) — captain's command post
+  if(bn===11){
+    const bwY=1.0;
+    floorRegion(-6,6,-22,-15,bwY);
+    const deckM=new THREE.MeshPhongMaterial({color:0x1a2028,shininess:60,specular:0x4a5060});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(12,0.16,7),deckM);
+    dk.position.set(0,bwY-0.08,-18.5);
+    scene.add(dk);ob.push(dk);
+    // Steel railing
+    const railM=new THREE.MeshPhongMaterial({color:0x6890b8,shininess:200});
+    for(let x=-5;x<=5;x+=2){
+      const post=new THREE.Mesh(new THREE.BoxGeometry(0.08,1.0,0.08),railM);
+      post.position.set(x,bwY+0.50,-15);
+      scene.add(post);ob.push(post);
+    }
+    const railTop=new THREE.Mesh(new THREE.BoxGeometry(11,0.06,0.06),railM);
+    railTop.position.set(0,bwY+1.0,-15);
+    scene.add(railTop);ob.push(railTop);
+    // Steps from FC side (3 steps) — walkable floor regions + vaultable.
+    const stairM=new THREE.MeshPhongMaterial({color:0x1a2028,shininess:50});
+    for(let i=0;i<3;i++){
+      const sy=0.33+i*0.33;
+      const sz=-14.4-i*0.6;
+      box(0,sy-0.10,sz,3.0,0.20,0.6,stairM);
+      vl.push({x0:-1.5,x1:1.5,z0:sz-0.3,z1:sz+0.3,height:sy});
+      floorRegion(-1.5,1.5,sz-0.3,sz+0.3,sy);
+    }
+  }
+  // B01 loading dock: raised catwalk along BE side at +2.0m
+  if(bn===1){
+    const cwY=2.0;
+    floorRegion(13,18,-22,-10,cwY);
+    // Catwalk visual deck (slightly thicker for read)
+    const deckM=new THREE.MeshPhongMaterial({color:0x2a2c30,shininess:30,specular:0x40484a});
+    const dk=new THREE.Mesh(new THREE.BoxGeometry(5.0,0.18,12.0),deckM);
+    dk.position.set(15.5,cwY-0.09,-16);
+    scene.add(dk);ob.push(dk);
+    // Edge rim trim
+    const rimM=new THREE.MeshBasicMaterial({color:0xff7a30});
+    for(const xx of [13,18]){
+      const r=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,12.0),rimM);
+      r.position.set(xx,cwY-0.02,-16);scene.add(r);ob.push(r);
+    }
+    // Stair access at south end — each step is BOTH a floor region (so the
+    // player can walk up smoothly) AND a vaultable barrier (so manual vault
+    // still works if approached awkwardly).
+    const stairM=new THREE.MeshPhongMaterial({color:0x2a2c30,shininess:50});
+    for(let i=0;i<4;i++){
+      const sy=0.5+i*0.5;
+      const sz=-9-i*0.7;
+      box(15.5,sy-0.08,sz,3.0,0.16,0.7,stairM);
+      vl.push({x0:14,x1:17,z0:sz-0.4,z1:sz+0.4,height:sy});
+      floorRegion(14,17,sz-0.35,sz+0.35,sy);
+    }
+    // Catwalk vault-up (player can vault from main floor edge onto catwalk)
+    vl.push({x0:12.8,x1:13.2,z0:-22,z1:-10,height:cwY});
+  }
   const navGrid=_buildNavGrid(wl,0.5);
+  // Phase BA: bake a spatial index over walls + vault props so hot-path
+  // queries skip the 280-wall linear walk. The cell size is tuned for the
+  // typical building density (~2m).
+  const wallIndex=_buildWallSpatialIndex(wl,2.0);
+  // ── Phase 1 / Phase 2 cover-graph bake ───────────────────────────────────
+  const cornerEdges=_bakeCornerEdges(wl,navGrid);
+  const coverSlots=_bakeCoverSlots(cornerEdges,vl);
   // Exclude decorative additive/no-depth meshes (god-ray cones, beacon beams,
   // dust motes) from the bullet-collision list so they don't block shots.
   const solids=ob.filter(o=>{
     if(!o.isMesh)return false;
     if(o.userData&&o.userData.noBlock)return false;
+    // Tactical glass — transparent + depthWrite false but we DO want bullets
+    // to hit it so it can shatter. Override the transparent exclusion for
+    // meshes explicitly tagged glassPane.
+    if(o.userData&&o.userData.glassPane)return true;
     const m=o.material;
     if(m&&(m.depthWrite===false||m.blending===THREE.AdditiveBlending))return false;
     return true;
@@ -3308,27 +3875,37 @@ function buildLevel(scene,bn){
       }
     }
   }
-  return{walls:wl,vaultables:vl,exitZone:ez,spawns:sp,zoneSpawns,zoneBounds,unlockExit,cleanup,solids,ceilingLights,dustList,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,tickDynProps};
+  return{walls:wl,vaultables:vl,floorRegions,exitZone:ez,spawns:sp,zoneSpawns,zoneBounds,unlockExit,cleanup,solids,ceilingLights,dustList,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,wallIndex,cornerEdges,coverSlots,tickDynProps,dims:{RW,RD,RH}};
 }
 // ─── ENEMY ───────────────────────────────────────────────────────────────────
-const PATROL=0,ALERT=1,CHASE=2,ATTACK=3,SEARCH=4,FLANK=5;
+// Tactical-AI states (Phase 3 / LEVELS_AI_LEAN_UPGRADE_PLAN.md §6.1).
+// HOLD_CORNER, PEEK_FIRE, REPOSITION, SUPPRESS are layered on top of ATTACK —
+// when an enemy has a corner cover slot, ATTACK delegates to this sub-FSM
+// each tick instead of running the open-strafe pattern.
+const PATROL=0,ALERT=1,CHASE=2,ATTACK=3,SEARCH=4,FLANK=5,
+      HOLD_CORNER=6,PEEK_FIRE=7,REPOSITION=8,SUPPRESS=9;
 class Enemy{
   constructor(scene,pos,diff,type){
     this.scene=scene;this.diff=diff;this.type=type||'soldier';
     // Per-type config: hp, speed, attack range, ideal dist, burst, burstCD, shoot interval, damage, suit, helmet
+    // Per-type stats. Phase 3 adds:
+    //   peekRate   — peeks/s target when in HOLD_CORNER + threat alive
+    //   peekHoldMs — peek-pose hold duration (ms)
+    //   holdRiskCap— slot risk above which agent rejects the slot
+    //   useSuppress— archetype can be picked as suppressor in a pair
     const TS={
-      soldier:  {hp:100, spd:2.6+diff*.50, rng:13+diff*.8,  ideal:8+Math.random()*3,  bMax:2+Math.floor(diff*.8), bCD:1.1+Math.random()*.7, sit:.09+Math.random()*.08, dmg:10+diff*2, suit:0x3a4a3c,helm:0x1e1e24, visor:0xff2820, accent:0xff3030},
-      heavy:    {hp:220, spd:1.6+diff*.25, rng:10+diff*.6,  ideal:6+Math.random()*2,  bMax:6+Math.floor(diff),    bCD:2.0+Math.random()*.5, sit:.13+Math.random()*.04, dmg:18+diff*3, suit:0x4a3020,helm:0x2a1a10, visor:0xff8820, accent:0xff7020},
-      sniper:   {hp:75,  spd:2.0+diff*.30, rng:22+diff*1.2, ideal:16+Math.random()*4, bMax:1,                     bCD:3.5+Math.random(),    sit:.06+Math.random()*.04, dmg:30+diff*5, suit:0x2a3a2a,helm:0x101e10, visor:0x40a0ff, accent:0x40a0ff},
-      scout:    {hp:65,  spd:4.5+diff*.90, rng:9+diff*.5,   ideal:3+Math.random()*2,  bMax:3+Math.floor(diff*.6), bCD:0.7+Math.random()*.4, sit:.07+Math.random()*.05, dmg:7+diff,    suit:0x2a2a3a,helm:0x141428, visor:0x40ff80, accent:0x40ff80},
-      shielded: {hp:280, spd:1.3+diff*.20, rng:8+diff*.4,   ideal:5+Math.random()*1.5,bMax:3+Math.floor(diff*.5), bCD:1.4+Math.random()*.5, sit:.13+Math.random()*.06, dmg:14+diff*2, suit:0x282a2e,helm:0x141414, visor:0xff8020, accent:0xff4020},
-      pistolero:{hp:60,  spd:5.0+diff*.85, rng:14+diff*.6,  ideal:8+Math.random()*3,  bMax:5+Math.floor(diff*.5), bCD:0.7+Math.random()*.3, sit:.05+Math.random()*.04, dmg:6+diff,    suit:0x18181a,helm:0x14141a, visor:0xc060ff, accent:0xa040ff},
-      boss:     {hp:850, spd:3.4+diff*.3,  rng:18+diff*.8,  ideal:7+Math.random()*2,  bMax:7,                     bCD:1.3,                  sit:.06,                   dmg:18+diff*3, suit:0x18141a,helm:0x080808, visor:0xffd040, accent:0xffd040},
-      lieutenant:{hp:380,spd:3.0+diff*.4,  rng:16+diff*.7,  ideal:8+Math.random()*2,  bMax:5+Math.floor(diff*.5), bCD:1.4+Math.random()*.5, sit:.08,                   dmg:14+diff*3, suit:0x281410,helm:0x080808, visor:0xffd060, accent:0xffd060},
-      riot:     {hp:340, spd:1.8+diff*.20, rng:9+diff*.5,   ideal:6+Math.random()*1.5,bMax:4+Math.floor(diff*.4), bCD:1.6+Math.random()*.6, sit:.14+Math.random()*.06, dmg:16+diff*2, suit:0x14181c,helm:0x14141a, visor:0xff8040, accent:0xff5040},
-      demolitions:{hp:140,spd:2.4+diff*.40,rng:14+diff*.6,  ideal:9+Math.random()*2,  bMax:1,                     bCD:3.0+Math.random()*1.0,sit:.10,                   dmg:25+diff*4, suit:0x401818,helm:0x281008, visor:0xff5040, accent:0xff8040},
-      drone:    {hp:35,  spd:5.5+diff*.50, rng:7+diff*.4,   ideal:5+Math.random()*1.5,bMax:6,                     bCD:.7+Math.random()*.3,  sit:.05,                   dmg:5+diff,    suit:0x202028,helm:0x141420, visor:0x40c8ff, accent:0x40c8ff},
-      marksman: {hp:90,  spd:2.4+diff*.30, rng:20+diff*1.0, ideal:14+Math.random()*3, bMax:1,                     bCD:2.5+Math.random()*.8, sit:.07,                   dmg:24+diff*4, suit:0x1c2a1c,helm:0x101e10, visor:0xa0c8ff, accent:0xa0c8ff}
+      soldier:  {hp:100, spd:2.6+diff*.50, rng:13+diff*.8,  ideal:8+Math.random()*3,  bMax:2+Math.floor(diff*.8), bCD:1.1+Math.random()*.7, sit:.09+Math.random()*.08, dmg:10+diff*2, suit:0x3a4a3c,helm:0x1e1e24, visor:0xff2820, accent:0xff3030, peekRate:1.0, peekHoldMs:550, holdRiskCap:0.55, useSuppress:true},
+      heavy:    {hp:220, spd:1.6+diff*.25, rng:10+diff*.6,  ideal:6+Math.random()*2,  bMax:6+Math.floor(diff),    bCD:2.0+Math.random()*.5, sit:.13+Math.random()*.04, dmg:18+diff*3, suit:0x4a3020,helm:0x2a1a10, visor:0xff8820, accent:0xff7020, peekRate:0.4, peekHoldMs:1100,holdRiskCap:0.75, useSuppress:false},
+      sniper:   {hp:75,  spd:2.0+diff*.30, rng:22+diff*1.2, ideal:16+Math.random()*4, bMax:1,                     bCD:3.5+Math.random(),    sit:.06+Math.random()*.04, dmg:30+diff*5, suit:0x2a3a2a,helm:0x101e10, visor:0x40a0ff, accent:0x40a0ff, peekRate:0.6, peekHoldMs:300, holdRiskCap:0.30, useSuppress:false},
+      scout:    {hp:65,  spd:4.5+diff*.90, rng:9+diff*.5,   ideal:3+Math.random()*2,  bMax:3+Math.floor(diff*.6), bCD:0.7+Math.random()*.4, sit:.07+Math.random()*.05, dmg:7+diff,    suit:0x2a2a3a,helm:0x141428, visor:0x40ff80, accent:0x40ff80, peekRate:1.6, peekHoldMs:300, holdRiskCap:0.45, useSuppress:false},
+      shielded: {hp:280, spd:1.3+diff*.20, rng:8+diff*.4,   ideal:5+Math.random()*1.5,bMax:3+Math.floor(diff*.5), bCD:1.4+Math.random()*.5, sit:.13+Math.random()*.06, dmg:14+diff*2, suit:0x282a2e,helm:0x141414, visor:0xff8020, accent:0xff4020, peekRate:0.0, peekHoldMs:0,    holdRiskCap:0.95, useSuppress:false},
+      pistolero:{hp:60,  spd:5.0+diff*.85, rng:14+diff*.6,  ideal:8+Math.random()*3,  bMax:5+Math.floor(diff*.5), bCD:0.7+Math.random()*.3, sit:.05+Math.random()*.04, dmg:6+diff,    suit:0x18181a,helm:0x14141a, visor:0xc060ff, accent:0xa040ff, peekRate:1.4, peekHoldMs:400, holdRiskCap:0.50, useSuppress:false},
+      boss:     {hp:850, spd:3.4+diff*.3,  rng:18+diff*.8,  ideal:7+Math.random()*2,  bMax:7,                     bCD:1.3,                  sit:.06,                   dmg:18+diff*3, suit:0x18141a,helm:0x080808, visor:0xffd040, accent:0xffd040, peekRate:0.6, peekHoldMs:700, holdRiskCap:0.65, useSuppress:true},
+      lieutenant:{hp:380,spd:3.0+diff*.4,  rng:16+diff*.7,  ideal:8+Math.random()*2,  bMax:5+Math.floor(diff*.5), bCD:1.4+Math.random()*.5, sit:.08,                   dmg:14+diff*3, suit:0x281410,helm:0x080808, visor:0xffd060, accent:0xffd060, peekRate:0.9, peekHoldMs:550, holdRiskCap:0.55, useSuppress:true},
+      riot:     {hp:340, spd:1.8+diff*.20, rng:9+diff*.5,   ideal:6+Math.random()*1.5,bMax:4+Math.floor(diff*.4), bCD:1.6+Math.random()*.6, sit:.14+Math.random()*.06, dmg:16+diff*2, suit:0x14181c,helm:0x14141a, visor:0xff8040, accent:0xff5040, peekRate:0.0, peekHoldMs:0,    holdRiskCap:0.90, useSuppress:false},
+      demolitions:{hp:140,spd:2.4+diff*.40,rng:14+diff*.6,  ideal:9+Math.random()*2,  bMax:1,                     bCD:3.0+Math.random()*1.0,sit:.10,                   dmg:25+diff*4, suit:0x401818,helm:0x281008, visor:0xff5040, accent:0xff8040, peekRate:0.5, peekHoldMs:600, holdRiskCap:0.55, useSuppress:true},
+      drone:    {hp:35,  spd:5.5+diff*.50, rng:7+diff*.4,   ideal:5+Math.random()*1.5,bMax:6,                     bCD:.7+Math.random()*.3,  sit:.05,                   dmg:5+diff,    suit:0x202028,helm:0x141420, visor:0x40c8ff, accent:0x40c8ff, peekRate:0.0, peekHoldMs:0,    holdRiskCap:0.0,  useSuppress:false},
+      marksman: {hp:90,  spd:2.4+diff*.30, rng:20+diff*1.0, ideal:14+Math.random()*3, bMax:1,                     bCD:2.5+Math.random()*.8, sit:.07,                   dmg:24+diff*4, suit:0x1c2a1c,helm:0x101e10, visor:0xa0c8ff, accent:0xa0c8ff, peekRate:0.7, peekHoldMs:350, holdRiskCap:0.30, useSuppress:false}
     };
     const ts=TS[this.type]||TS.soldier;
     this.hp=ts.hp;this.maxHp=ts.hp;this.dead=false;this.removeNeeded=false;
@@ -3356,6 +3933,26 @@ class Enemy{
     this.burstCount=0;this.burstMax=ts.bMax;this.burstCooldown=0;this._burstCD=ts.bCD;this._sit=ts.sit;
     this.strafeDir=Math.random()>.5?1:-1;this.strafeChangeTimer=0;
     this.idealDist=ts.ideal;
+    // Phase 3 tactical fields ─────────────────────────────────────────────
+    // Phase 6 §9.1 — difficulty-scale peek cadence. diff ranges roughly 1..4
+    // (1 Easy/B1 → 4 Brutal/B4+). Easy: longer hold, fewer peeks. Brutal:
+    // snappier peeks, more frequent.
+    const _diffT=Math.max(1,Math.min(4,diff||2));
+    const _diffPeekHoldMul=({1:1.4,2:1.0,3:0.7,4:0.55})[_diffT|0]||1.0;
+    const _diffPeekRateMul=({1:0.7,2:1.0,3:1.3,4:1.5})[_diffT|0]||1.0;
+    this.peekRate=(ts.peekRate||0)*_diffPeekRateMul;
+    this.peekHoldMs=(ts.peekHoldMs||0)*_diffPeekHoldMul;
+    this.holdRiskCap=(ts.holdRiskCap==null)?0.55:ts.holdRiskCap;
+    this.useSuppress=!!ts.useSuppress;
+    this.coverSlot=null;                           // Phase 2 slot reference (replaces legacy coverPoint)
+    this.peekState='safe';                         // 'safe' | 'peeking'
+    this.peekStart=0;                              // performance.now() of peek start
+    this.peekCooldown=0;                           // seconds until next peek attempt
+    this.peekAmt=0;                                // smoothed 0..1 for anim
+    this.peekAmtTarget=0;
+    this.suppressUntil=0;                          // performance.now() ms — in SUPPRESS while now < this
+    this.suppressBurstsLeft=0;
+    this.slotRecalcT=0;                            // gate getBestPeekSlot calls (per-agent throttle)
     // Weapon aim & head look
     this.aimPitch=0;this.headLookY=0;this.patrolLookTimer=0;this.patrolLookAngle=0;
 
@@ -4198,6 +4795,16 @@ class Enemy{
 
   takeDamage(dmg,isHead,isMelee){
     if(this.dead)return false;
+    // Phase W: boss-phase I-frames — brief invulnerability during phase
+    // transitions (so the phase telegraph lands before the player can shred).
+    if(this._invulnUntil&&performance.now()<this._invulnUntil){
+      this.hitFlashTimer=Math.max(this.hitFlashTimer||0,0.08);
+      return false;
+    }
+    // Phase E: cache weapon flags for the death/awareness path. Set once per
+    // shot via setNextHitWeapon below.
+    this._lastHitFlags=Enemy._nextHitFlags||null;
+    Enemy._nextHitFlags=null;
     // Shielded enforcer: frontal bullets (not melee, not head) bounce off the
     // riot shield. Player must flank, close in for a knife, or use a grenade.
     if(this.type==='shielded' && !isMelee && !isHead){
@@ -4216,11 +4823,31 @@ class Enemy{
     if(isMelee){
       this.staggerTimer=0.22;this.staggerDur=0.22;this.staggerAmt=2.6;
       this.meleeHitTimer=0.38;this.hitFlashTimer=0.24;
+      this._lastHitWasHead=false;
     }else{
-      // Stronger bullet stagger + driven flinch animation
-      this.staggerTimer=0.14;this.staggerDur=0.14;this.staggerAmt=1.6;
+      // Stronger bullet stagger + driven flinch animation. Phase E:
+      // shotgun pellets land HEAVY stagger so close-range slugs visibly
+      // throw the target. Sniper hits also stagger longer due to caliber.
+      // Phase T: headshot stagger is shorter but sharper; record the hit
+      // location so the flinch animation can branch on it.
+      const flags=this._lastHitFlags||{};
+      const staggerMul=flags.shotgun?2.6:flags.sniper?1.8:isHead?1.4:1.0;
+      this.staggerTimer=0.14*staggerMul;
+      this.staggerDur=0.14*staggerMul;
+      this.staggerAmt=1.6*staggerMul;
       this.hitFlashTimer=0.20;
       this.bulletHitTimer=isHead?0.22:0.16;
+      this._lastHitWasHead=!!isHead;
+      // Phase T: directional pushback impulse — visibly nudge the body in
+      // the bullet direction over ~120ms. Heavies/shielded resist more.
+      const resist=this.type==='heavy'?0.2:this.type==='shielded'?0.15:this.type==='riot'?0.25:0.6;
+      const push=(flags.shotgun?0.30:flags.sniper?0.22:0.14)*resist;
+      this._pushImpulse={
+        x: -this.staggerDir.x*push,
+        z: -this.staggerDir.z*push,
+        until: performance.now()+120,
+        start: performance.now(),
+      };
     }
     if(this.hp<=0){this.die();return true;}
     if(this.state===PATROL)this.state=CHASE;
@@ -4238,6 +4865,23 @@ class Enemy{
     // Voice bark — non-drone death grunt
     if(this.type!=='drone'&&typeof sfxVoiceBark==='function'){
       sfxVoiceBark('death');
+    }
+    // Phase C+E: corpse-discovery propagation. Nearby alive enemies switch
+    // to SEARCH state with the death position as lastKnownPos. Suppressed
+    // weapons skip propagation entirely; suppressed-only stealth play is
+    // viable.
+    const _suppressedKill=(this._lastHitFlags&&this._lastHitFlags.suppressed);
+    if(typeof G!=='undefined'&&G.enemyMgr&&!_suppressedKill){
+      const dx0=this.group.position.x,dz0=this.group.position.z;
+      const sharePos=new THREE.Vector3(dx0,0,dz0);
+      for(const e of G.enemyMgr._list){
+        if(e===this||e.dead)continue;
+        const dxx=e.group.position.x-dx0,dzz=e.group.position.z-dz0;
+        if(dxx*dxx+dzz*dzz>14*14)continue;
+        e.lastKnownPos=sharePos;
+        e.alertFlashTimer=Math.max(e.alertFlashTimer||0,0.42);
+        if(e.state===PATROL){e.state=SEARCH;e.searchTimer=4.5+Math.random();}
+      }
     }
     // Kill any ongoing emissive so death looks clean
     this.bM.emissive.set(0);this.hM.emissive.set(0);
@@ -4358,19 +5002,34 @@ class Enemy{
       const sw=Math.sin(this.walkPhase);
       const sw2=Math.sin(this.walkPhase*2);
       const swA=Math.abs(sw);
+      // Phase R: foot-strike trigger — fires at the bottom of each leg phase
+      // (sw crosses zero from + to -). Used for impact emphasis.
+      const _phaseSwitch=this._lastSwSign==null?0:Math.sign(sw)-this._lastSwSign;
+      this._lastSwSign=Math.sign(sw);
+      if(_phaseSwitch!==0){this._footStrikeT=performance.now();}
+      const _strikeAge=(performance.now()-(this._footStrikeT||0))/1000;
+      const _strikePulse=Math.max(0,1-_strikeAge/0.18);
 
       const armAmt=(isRunning?1.10:.70)*typeGait.armAmt/.78;
       const legAmt=(isRunning?.92:.60)*typeGait.legAmt/.65;
 
       lARX= sw*armAmt; rARX=-sw*armAmt;
       lLRX=-sw*legAmt; rLRX= sw*legAmt;
+      // Phase R: asymmetric arm bias for sprint — lead arm pumps further than
+      // trail arm (carrying weight forward).
+      if(isRunning){
+        const leadBias=0.12;
+        lARX+=Math.max(0,sw)*leadBias;
+        rARX+=Math.max(0,-sw)*leadBias;
+      }
 
       // Elbow pumping — opposite arm bends more on forward stride
       lElbRX=0.32+Math.max(0,-sw)*(isRunning?.72:.30);
       rElbRX=0.32+Math.max(0, sw)*(isRunning?.72:.30);
-      // Knee bend follows leg phase — back leg bends more on push-off
-      this._lKneeBend=0.10+Math.max(0,sw)*(isRunning?.55:.30);
-      this._rKneeBend=0.10+Math.max(0,-sw)*(isRunning?.55:.30);
+      // Knee bend follows leg phase — back leg bends more on push-off.
+      // Phase R: stronger push-off curve, sharper foot-plant.
+      this._lKneeBend=0.10+Math.max(0,sw)*(isRunning?.62:.34)+_strikePulse*0.08*Math.max(0,sw);
+      this._rKneeBend=0.10+Math.max(0,-sw)*(isRunning?.62:.34)+_strikePulse*0.08*Math.max(0,-sw);
 
       // Torso forward lean at speed (heavier types lean less)
       bodyRX=isRunning?typeGait.leanRun:-.05;
@@ -4380,18 +5039,29 @@ class Enemy{
       const swayAmp=this.type==='heavy'?.13:this.type==='scout'?.045:.09;
       bodyRZ=sw*(isRunning?swayAmp:swayAmp*.55);
 
-      // Body vertical bob: compress at foot-strike, rise at mid-stride
+      // Body vertical bob: compress at foot-strike, rise at mid-stride.
+      // Phase R: add a sharp dip on actual foot-strike for impact.
       const bobScale=typeGait.bob/.025;
-      this.bMesh.position.y=.76-swA*(isRunning?.040:.018)*bobScale+sw2*(isRunning?.012:.006)*bobScale;
-      // Hip drop on each foot-strike (slight pelvis tilt)
+      const _strikeDip=_strikePulse*(isRunning?0.018:0.008);
+      this.bMesh.position.y=.76-swA*(isRunning?.040:.018)*bobScale+sw2*(isRunning?.012:.006)*bobScale-_strikeDip;
+      // Hip drop on each foot-strike — Phase R: bumped 30%.
       if(this.lLegGrp){
-        this.lLegGrp.position.y=.22-Math.max(0,sw)*(isRunning?.020:.010);
-        this.rLegGrp.position.y=.22-Math.max(0,-sw)*(isRunning?.020:.010);
+        this.lLegGrp.position.y=.22-Math.max(0,sw)*(isRunning?.026:.013);
+        this.rLegGrp.position.y=.22-Math.max(0,-sw)*(isRunning?.026:.013);
       }
-      // Head subtle counter-bob (look forward but absorb steps)
-      if(this.hMesh)this.hMesh.position.y=1.48-swA*.005;
+      // Head subtle counter-bob — Phase R: stronger absorption pulse on strike.
+      if(this.hMesh)this.hMesh.position.y=1.48-swA*.006-_strikeDip*0.5;
+      // Phase R: trace the moving-state for the smooth stop transition below.
+      this._wasMoving=true;
 
     }else{
+      // Phase R: brief deceleration settle when transitioning from moving → idle.
+      // The first ~250ms after stopping, residual hip/body bob fades out
+      // smoothly instead of snapping. Tracked via _wasMoving + _stopStart.
+      if(this._wasMoving){
+        this._stopStart=performance.now();
+        this._wasMoving=false;
+      }
       this._lKneeBend=0.10;this._rKneeBend=0.10;
       // ── Idle: breathing + weight shift + head micro-movements ──
       const ip=Date.now()*.001;
@@ -4428,11 +5098,31 @@ class Enemy{
         this.bMesh.position.y=.76-.06-coverCrouch;
         // Slight lean over weapon (right hand side)
         bodyRZ=-0.04;
-        // Peek-side oscillation when at cover (pop in/out subtly)
-        if(this.atCover){
-          const peek=Math.sin(Date.now()*.001+this.walkPhase)*.12;
-          bodyRZ+=peek*.05;
-          if(this.hMesh)this.hMesh.position.x=peek*.04;
+        // Phase 4: corner-peek lean overlay. Driven by peekAmt (0..1), with
+        // direction = slot edge tangent in world space projected onto the
+        // agent's right vector. When peeking, torso rolls along the edge,
+        // body twists slightly toward target, head pokes out.
+        if(this.coverSlot&&this.peekAmt>0.01){
+          const slot=this.coverSlot;
+          // Edge direction in world space → project onto agent's right vector
+          const yaw=this.group.rotation.y;
+          const rx=Math.cos(yaw),rz=-Math.sin(yaw);
+          const edgeProj=slot.edgeX*rx+slot.edgeZ*rz;       // signed: +/-1 ideal
+          const sideSign=Math.sign(edgeProj)||1;
+          const eased=this.peekAmt;
+          bodyRZ+=-0.18*sideSign*eased;
+          bodyRY+= 0.10*sideSign*eased;
+          if(this.hMesh){
+            this.hMesh.position.x=0.18*sideSign*eased;
+            this.hMesh.rotation.x=-0.05*eased;
+          }
+          if(this.weaponGrp){
+            this.weaponGrp.position.x=0.18*sideSign*eased;
+          }
+        }else if(this.weaponGrp){
+          // ease weapon offset back toward zero when not peeking
+          this.weaponGrp.position.x+=(0-this.weaponGrp.position.x)*Math.min(dt*9,1);
+          if(this.hMesh)this.hMesh.position.x+=(0-this.hMesh.position.x)*Math.min(dt*9,1);
         }
       }
     }
@@ -4463,21 +5153,71 @@ class Enemy{
       this.bulletHitTimer-=dt;
       const dur=this.bulletHitTimer>.18?.22:.16;
       const f=Math.sin((1-Math.max(0,this.bulletHitTimer)/dur)*Math.PI);
-      // Torso recoils opposite to bullet direction
-      this.bMesh.rotation.x=-f*.18;
-      this.bMesh.rotation.z+=f*(this.staggerDir.x*.10);
-      // Head whips back
-      this.hMesh.rotation.x=-f*.34;
-      this.hMesh.rotation.z=f*(this.staggerDir.x*-.18);
-      // Arms twitch outward
-      lARX-=f*.42;rARX-=f*.32;
-      lElbRX+=f*.30;rElbRX+=f*.30;
+      // Phase T: branch flinch on hit location. Headshot = sharper head
+      // snap with brief slump. Body shot = pronounced torso double-over.
+      if(this._lastHitWasHead){
+        // Head whips violently back, body slumps forward (limp neck)
+        this.hMesh.rotation.x=-f*0.55;
+        this.hMesh.rotation.z=f*(this.staggerDir.x*-0.28);
+        this.bMesh.rotation.x=f*0.05;        // tiny forward tip from neck snap
+        this.bMesh.rotation.z+=f*(this.staggerDir.x*0.06);
+        lARX-=f*0.30;rARX-=f*0.30;
+        lElbRX+=f*0.20;rElbRX+=f*0.20;
+      } else {
+        // Body shot — torso double-over, head dips with chest
+        this.bMesh.rotation.x=f*0.22;
+        this.bMesh.rotation.z+=f*(this.staggerDir.x*0.12);
+        this.hMesh.rotation.x=f*0.20;
+        this.hMesh.rotation.z=f*(this.staggerDir.x*-0.10);
+        lARX-=f*0.35;rARX-=f*0.30;
+        lElbRX+=f*0.40;rElbRX+=f*0.40;       // arms drop to clutch chest
+      }
+      // Phase T: apply directional pushback impulse — translates the group
+      // briefly in bullet direction.
+      const _nowMsT=performance.now();
+      if(this._pushImpulse&&_nowMsT<this._pushImpulse.until){
+        const pt=(_nowMsT-this._pushImpulse.start)/120;
+        const pe=Math.sin(Math.max(0,Math.min(1,pt))*Math.PI);
+        this.group.position.x+=this._pushImpulse.x*pe*dt*8;
+        this.group.position.z+=this._pushImpulse.z*pe*dt*8;
+      }
     }else{
       this.hMesh.rotation.x+=(0-this.hMesh.rotation.x)*Math.min(dt*9,1);
       this.hMesh.rotation.z+=(0-this.hMesh.rotation.z)*Math.min(dt*9,1);
       this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*Math.min(dt*9,1);
     }
 
+    // Phase S: combat tells — startle (PATROL→ALERT) and aim-raise
+    // (CHASE→ATTACK). Both apply additive on top of the gait targets, then
+    // lerp settles them naturally.
+    const _nowMs=performance.now();
+    if(this._startleStart){
+      const t=(_nowMs-this._startleStart)/(this._startleDur||250);
+      if(t<1){
+        // Brief head-back snap + body recoil arc (sin curve)
+        const e=Math.sin(Math.max(0,t)*Math.PI);
+        this.hMesh.rotation.x-=e*0.40;          // chin up startle
+        this.hMesh.rotation.z+=(Math.sign(this.headLookY||1))*e*0.18;
+        bodyRX-=e*0.10;                          // shoulders flinch back
+        // Arms snap up briefly — rifle "ready" position
+        lARX-=e*0.45;rARX-=e*0.45;
+      } else {
+        this._startleStart=null;
+      }
+    }
+    if(this._aimRaiseStart){
+      const t=(_nowMs-this._aimRaiseStart)/(this._aimRaiseDur||300);
+      if(t<1){
+        // Smooth rise: rifle shoulders up, body squares to target
+        const e=t<0.6?(t/0.6):(1-(t-0.6)/0.4);
+        const raise=Math.max(0,e);
+        lARX-=raise*0.55;rARX-=raise*0.55;       // both arms up onto weapon
+        lElbRX+=raise*0.30;rElbRX+=raise*0.30;   // forearms tighten
+        bodyRX-=raise*0.06;                       // micro-crouch into stance
+      } else {
+        this._aimRaiseStart=null;
+      }
+    }
     // --- Lerp limbs toward targets ---
     const ls=Math.min(dt*13,1);
     const lsQ=Math.min(dt*20,1); // quicker for extremities
@@ -4549,16 +5289,21 @@ class Enemy{
     const t=this.deathTimer;
     // Topple direction sign based on stagger (fall away from attacker)
     const topSgn=this.staggerDir.x>=0?1:-1;
+    // Phase T: variant flag — headshot kills get a sharper snap + straighter
+    // collapse; body shots use the existing topple arc.
+    const wasHead=!!this._lastHitWasHead;
 
     if(t<.20){
-      // Phase 1: explosive snap — violent backward push, head whips, arms flung wide
+      // Phase 1: explosive snap — violent backward push, head whips, arms flung wide.
+      // Phase T: headshot exaggerates head whip + reduces forward push (limp).
       const ph=t/.20,ease=1-Math.pow(1-ph,3);
-      this.group.position.addScaledVector(this.staggerDir,dt*5.0*(1-ph));
-      // Head whips back sharply
-      this.hMesh.rotation.x=-ease*.80;
-      this.hMesh.rotation.z=ease*(topSgn*.22);
+      const pushMul=wasHead?2.0:5.0;
+      this.group.position.addScaledVector(this.staggerDir,dt*pushMul*(1-ph));
+      // Head whips back sharply (more on headshot)
+      this.hMesh.rotation.x=-ease*(wasHead?1.10:.80);
+      this.hMesh.rotation.z=ease*(topSgn*(wasHead?.32:.22));
       // Torso shunts backward
-      this.bMesh.rotation.x=-ease*.32;
+      this.bMesh.rotation.x=-ease*(wasHead?.18:.32);
       // Arms flung wide and back
       this.lArmGrp.rotation.x=ease*1.40;
       this.rArmGrp.rotation.x=-ease*1.25;
@@ -4618,16 +5363,21 @@ class Enemy{
     }
   }
 
-  canSee(pp,walls){
+  canSee(pp,walls,leanOffset){
     const ex=this.group.position.x,ez=this.group.position.z;
-    const dx=pp.x-ex,dz=pp.z-ez;
+    // Phase 5: optionally shift the target by the player's lean offset, so an
+    // enemy "seeing the player" tracks the leaned head pose, not the stand
+    // pose. Caller passes {x,z} (world-space lean offset, NOT a sign).
+    const tx=pp.x+(leanOffset?leanOffset.x:0);
+    const tz=pp.z+(leanOffset?leanOffset.z:0);
+    const dx=tx-ex,dz=tz-ez;
     const dist=Math.sqrt(dx*dx+dz*dz);if(dist>22)return false;
     // Smoke zones block LOS — if any active smoke is along the segment between
     // enemy and player, the enemy can't see them.
     if(typeof G!=='undefined'&&G.smokeZones&&G.smokeZones.length){
       for(const sz of G.smokeZones){
         // Closest point on enemy→player line to smoke center
-        const lx=pp.x-ex,lz=pp.z-ez,len2=lx*lx+lz*lz;
+        const lx=tx-ex,lz=tz-ez,len2=lx*lx+lz*lz;
         if(len2<1e-4)continue;
         let t=((sz.x-ex)*lx+(sz.z-ez)*lz)/len2;
         t=Math.max(0,Math.min(1,t));
@@ -4645,10 +5395,30 @@ class Enemy{
     // Inflate wall AABBs slightly so a sample landing right on the wall
     // edge still counts as occluded.
     const PAD=0.02;
+    // Phase BA: spatial index — skip walls outside the sample's cell.
+    const _idx=(typeof G!=='undefined'&&G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
+    if(_idx){
+      let _lastCellId=-1,_cellWalls=null;
+      for(let i=1;i<steps;i++){
+        const t=i*invSteps,cx=ex+dx*t,cz=ez+dz*t;
+        const ix=((cx-_idx.xMin)/_idx.cs)|0,iz=((cz-_idx.zMin)/_idx.cs)|0;
+        if(ix<0||iz<0||ix>=_idx.nx||iz>=_idx.nz)continue;
+        const cellId=ix+iz*_idx.nx;
+        if(cellId!==_lastCellId){_cellWalls=_idx.cells[cellId];_lastCellId=cellId;}
+        if(!_cellWalls)continue;
+        for(let wi=0,wn=_cellWalls.length;wi<wn;wi++){
+          const w=_cellWalls[wi];
+          if(w.isWindow)continue;
+          if(cx>=w.x0-PAD&&cx<=w.x1+PAD&&cz>=w.z0-PAD&&cz<=w.z1+PAD)return false;
+        }
+      }
+      return true;
+    }
     for(let i=1;i<steps;i++){
       const t=i*invSteps,cx=ex+dx*t,cz=ez+dz*t;
       for(let wi=0,wn=walls.length;wi<wn;wi++){
         const w=walls[wi];
+        if(w.isWindow)continue;                          // tactical glass — see-through
         if(cx>=w.x0-PAD&&cx<=w.x1+PAD&&cz>=w.z0-PAD&&cz<=w.z1+PAD)return false;
       }
     }
@@ -4656,12 +5426,66 @@ class Enemy{
   }
   _tryMove(dx,dz,walls){
     const R=.38,nx=this.group.position.x+dx,nz=this.group.position.z+dz;
+    const cx=this.group.position.x,cz=this.group.position.z;
     let okX=true,okZ=true;
-    for(const w of walls){
-      if(nx+R>w.x0&&w.x1>nx-R&&this.group.position.z+R>w.z0&&w.z1>this.group.position.z-R)okX=false;
-      if(this.group.position.x+R>w.x0&&w.x1>this.group.position.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+    // Phase BA: spatial index — only check walls in the agent's current cell
+    // and the candidate-move cell. Falls back to linear walk if no index.
+    const _idx=(typeof G!=='undefined'&&G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
+    if(_idx){
+      // Collect the union of walls from the cell at nx,cz and cx,nz (and the
+      // agent's current cell). Avoid Set allocation — use a small temp array.
+      const cells=_idx.cells;
+      function _id(x,z){
+        const ix=((x-_idx.xMin)/_idx.cs)|0,iz=((z-_idx.zMin)/_idx.cs)|0;
+        if(ix<0||iz<0||ix>=_idx.nx||iz>=_idx.nz)return -1;
+        return ix+iz*_idx.nx;
+      }
+      const seenIds=[-1,-1,-1];
+      const cellsHit=[];
+      for(const [tx,tz] of [[nx,cz],[cx,nz],[cx,cz]]){
+        const id=_id(tx,tz);
+        if(id<0)continue;
+        if(seenIds[0]===id||seenIds[1]===id||seenIds[2]===id)continue;
+        if(seenIds[0]===-1)seenIds[0]=id;else if(seenIds[1]===-1)seenIds[1]=id;else seenIds[2]=id;
+        const c=cells[id];
+        if(c)cellsHit.push(c);
+      }
+      for(const c of cellsHit){
+        for(let i=0,n=c.length;i<n;i++){
+          const w=c[i];
+          if(w.broken)continue;
+          if(okX&&nx+R>w.x0&&w.x1>nx-R&&cz+R>w.z0&&w.z1>cz-R)okX=false;
+          if(okZ&&cx+R>w.x0&&w.x1>cx-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+          if(!okX&&!okZ)break;
+        }
+        if(!okX&&!okZ)break;
+      }
+    } else {
+      for(const w of walls){
+        if(w.broken)continue;                              // Phase L: shattered windows pass-through
+        if(nx+R>w.x0&&w.x1>nx-R&&cz+R>w.z0&&w.z1>cz-R)okX=false;
+        if(cx+R>w.x0&&w.x1>cx-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+      }
     }
     if(okX)this.group.position.x=nx;if(okZ)this.group.position.z=nz;
+    // Phase L: if the agent is currently inside a broken-window AABB, mark
+    // a brief vault arc so the body visibly hops the sill rather than
+    // teleporting at floor level. Drones skip (they fly).
+    if(this.type!=='drone'){
+      const px=this.group.position.x,pz=this.group.position.z;
+      let onBrokenWin=null;
+      for(const w of walls){
+        if(!w.broken)continue;
+        if(px>=w.x0-0.05&&px<=w.x1+0.05&&pz>=w.z0-0.05&&pz<=w.z1+0.05){onBrokenWin=w;break;}
+      }
+      const nowMs=performance.now();
+      if(onBrokenWin){
+        if(!this._windowVaultUntil||nowMs>this._windowVaultUntil){
+          this._windowVaultStart=nowMs;
+          this._windowVaultUntil=nowMs+650;
+        }
+      }
+    }
   }
   _moveTo(tgt,dt,walls){
     const dx=tgt.x-this.group.position.x,dz=tgt.z-this.group.position.z;
@@ -4729,13 +5553,54 @@ class Enemy{
     }
     // ── DRONE: hover, smooth circle around player, fast strafe
     if(this.type==='drone'){
-      // Y hover with bob
+      // Y hover with bob (relative to floor under it).
       this._hoverPhase=(this._hoverPhase||Math.random()*Math.PI*2)+dt*3.0;
-      this.group.position.y=1.10+Math.sin(this._hoverPhase)*.18;
+      const _dGround=(typeof G!=='undefined'&&G.levelData&&G.levelData.floorRegions)
+        ?_floorYAt(this.group.position.x,this.group.position.z,G.levelData.floorRegions):0;
+      this.group.position.y=_dGround+1.10+Math.sin(this._hoverPhase)*.18;
       // Spin rotors visually (handled per-frame)
       if(this.droneRotors){
         for(const r of this.droneRotors)r.rotation.y+=dt*36;
       }
+    } else if(!this.dead){
+      // Phase A + O: ground enemies follow floor regions, and when they cross
+      // a Y step (pit/catwalk/mezz boundary) we trigger a brief vault arc so
+      // traversal reads as athletic rather than as a teleport.
+      //
+      // Bugfix: enemy group.y baseline is WT (=0.4) because spawn pos uses
+      // `new Vector3(x, WT, z)`. The default _floorYAt returns 0 (player
+      // convention — player jumpH=0 on flat floor). Mapping the enemy's
+      // target Y from player convention: target = floorRegionY when inside
+      // a region, else WT. Use a sentinel: if _floorYAt found a region it
+      // returns a non-zero floorY; else 0 → fall back to WT for enemies.
+      const _regions=(typeof G!=='undefined'&&G.levelData&&G.levelData.floorRegions)||null;
+      const _eGroundRaw=_regions?_floorYAt(this.group.position.x,this.group.position.z,_regions):0;
+      // Inline membership check so we don't over-coerce when a region's
+      // floorY happens to equal 0.
+      let _inRegion=false;
+      if(_regions){
+        for(const r of _regions){
+          if(this.group.position.x>=r.x0&&this.group.position.x<=r.x1&&this.group.position.z>=r.z0&&this.group.position.z<=r.z1){_inRegion=true;break;}
+        }
+      }
+      const _eGround=_inRegion?_eGroundRaw:WT;
+      // Detect step transitions (lerp target jumps by more than 0.35m)
+      if(this._lastGroundY==null)this._lastGroundY=_eGround;
+      if(Math.abs(_eGround-this._lastGroundY)>0.35&&(!this._windowVaultUntil||performance.now()>this._windowVaultUntil)){
+        this._windowVaultStart=performance.now();
+        this._windowVaultUntil=performance.now()+550;
+      }
+      this._lastGroundY=_eGround;
+      // Phase L: vault arc — add a sine bump when crossing a broken window or a Y step.
+      let _vaultBump=0;
+      if(this._windowVaultUntil&&performance.now()<this._windowVaultUntil){
+        const t=(performance.now()-this._windowVaultStart)/650;
+        _vaultBump=Math.sin(Math.max(0,Math.min(1,t))*Math.PI)*0.45;
+        this.bMesh.rotation.x=Math.sin(t*Math.PI)*0.16;
+      }
+      // Lerp at a faster rate when crossing significant height to avoid floaty drift
+      const lerpRate=Math.abs(_eGround-this.group.position.y)>0.5?14:10;
+      this.group.position.y+=((_eGround+_vaultBump)-this.group.position.y)*Math.min(dt*lerpRate,1);
     }
 
     if(this.spawnIntro){
@@ -4753,7 +5618,13 @@ class Enemy{
     }
 
     const horizDist=Math.sqrt(pdx*pdx+pdz*pdz);
-    const cs=this.canSee(pp,walls);
+    // Phase 5: pass player lean offset so enemies see the leaned-out head pose.
+    const _pLean=(typeof P!=='undefined'&&P.lean!=null)?P.lean*(P.leanClipScale==null?1:P.leanClipScale):0;
+    const _leanOff=Math.abs(_pLean)>0.05?{
+      x:Math.cos(P.yaw)*_pLean*0.4,
+      z:-Math.sin(P.yaw)*_pLean*0.4
+    }:null;
+    const cs=this.canSee(pp,walls,_leanOff);
     let moving=false,shootResult=null;
 
     // Weapon barrel pitch — smoothly aim toward player eye level
@@ -4775,11 +5646,139 @@ class Enemy{
       this.hMesh.rotation.y=Math.max(-1.0,Math.min(1.0,this.headLookY));
     }
 
+    // Phase X: archetype-specific pre-state hooks ────────────────────────
+    //
+    // SCOUT — longer vision (24m vs 20m), faster squad alert: on first
+    //         contact immediately broadcasts to teammates instead of waiting
+    //         for the 0.5s awareness propagation tick.
+    // RIOT  — close-range melee charge: in ATTACK + horizDist<6, sprints at
+    //         player and applies melee damage on contact.
+    // SHIELDED — actively positions between player and wounded teammate
+    //         (already bounces frontal bullets; this adds tactical move).
+    // DRONE — multi-drone swarm coordination: when ≥2 drones see player,
+    //         their ideal angles fan out.
+    // DEMOLITIONS — grenade arc aimed at the player's nearest cover slot
+    //         (flush them out) rather than at player itself.
+    if(this.type==='scout'){
+      // Extended detection range
+      if(cs&&horizDist<24&&this.state===PATROL){
+        this.lastKnownPos=pp.clone();
+        // Instant squad broadcast — bypass the 0.5s awareness tick
+        if(typeof G!=='undefined'&&G.enemyMgr){
+          for(const t of G.enemyMgr._list){
+            if(t===this||t.dead)continue;
+            const ddx=t.group.position.x-this.group.position.x,ddz=t.group.position.z-this.group.position.z;
+            if(ddx*ddx+ddz*ddz<14*14){
+              t.lastKnownPos=pp.clone();
+              if(t.state===PATROL){t.state=SEARCH;t.searchTimer=3.0;}
+              t.alertFlashTimer=Math.max(t.alertFlashTimer||0,0.32);
+            }
+          }
+        }
+      }
+    } else if(this.type==='riot'&&this.state===ATTACK&&horizDist<6&&cs){
+      // Charge melee
+      const cdx=pdx/Math.max(0.01,horizDist),cdz=pdz/Math.max(0.01,horizDist);
+      const rush=this.speed*2.0*dt;
+      this._tryMove(cdx*rush,cdz*rush,walls);
+      if(horizDist<1.6){
+        // Apply melee damage to player + brief stagger
+        if(typeof takeDamage==='function'&&!P.dead){
+          this._riotMeleeT=this._riotMeleeT||0;
+          if(performance.now()-this._riotMeleeT>900){
+            this._riotMeleeT=performance.now();
+            takeDamage(20+this.diff*3);
+            if(typeof sfxDamage==='function')sfxDamage();
+            PP.shakeX+=(Math.random()-.5)*0.6;
+          }
+        }
+        moving=true;
+      }
+    } else if(this.type==='shielded'&&this.state===ATTACK&&typeof G!=='undefined'&&G.enemyMgr){
+      // Find a wounded teammate to body-block for. Tactical position = midpoint
+      // between player and teammate.
+      let wounded=null,bestHpFrac=1;
+      for(const t of G.enemyMgr._list){
+        if(t===this||t.dead)continue;
+        const hpFrac=t.hp/t.maxHp;
+        if(hpFrac>=0.5)continue;
+        const ddx=t.group.position.x-this.group.position.x,ddz=t.group.position.z-this.group.position.z;
+        if(ddx*ddx+ddz*ddz>10*10)continue;
+        if(hpFrac<bestHpFrac){bestHpFrac=hpFrac;wounded=t;}
+      }
+      if(wounded){
+        // Target: midpoint between player and wounded teammate, slight bias
+        // toward teammate
+        const mx=pp.x*0.4+wounded.group.position.x*0.6;
+        const mz=pp.z*0.4+wounded.group.position.z*0.6;
+        const tdx=mx-this.group.position.x,tdz=mz-this.group.position.z;
+        const td=Math.sqrt(tdx*tdx+tdz*tdz);
+        if(td>0.7){
+          const sp=this.speed*1.3*dt/td;
+          this._tryMove(tdx*sp,tdz*sp,walls);
+          this.group.rotation.y=Math.atan2(pdx,pdz);
+          moving=true;
+        }
+      }
+    } else if(this.type==='drone'&&this.state===ATTACK&&typeof G!=='undefined'&&G.enemyMgr){
+      // Swarm coordination — count other living drones engaging player; if
+      // ≥1, our ideal angle fans out so we attack from a unique angle.
+      let droneIdx=0,droneCount=0,myRank=0;
+      for(const t of G.enemyMgr._list){
+        if(t.dead||t.type!=='drone')continue;
+        droneCount++;
+        if(t===this)myRank=droneIdx;
+        droneIdx++;
+      }
+      if(droneCount>=2){
+        const angOffset=(myRank/droneCount)*Math.PI*2;
+        this._swarmAngBase=this._swarmAngBase||angOffset;
+        // Apply: ideal distance with rotated approach
+        const baseAng=Math.atan2(pdx,pdz);
+        const approachAng=baseAng+this._swarmAngBase+Math.PI;
+        const idl=this.idealDist;
+        const tx=pp.x+Math.sin(approachAng)*idl;
+        const tz=pp.z+Math.cos(approachAng)*idl;
+        const tdx=tx-this.group.position.x,tdz=tz-this.group.position.z;
+        const td=Math.sqrt(tdx*tdx+tdz*tdz);
+        if(td>0.5){
+          const sp=this.speed*1.0*dt/td;
+          this._tryMove(tdx*sp,tdz*sp,walls);
+        }
+      }
+    }
+    // Phase X: demolitions cover-aware grenade — adjust target before
+    // grenade spawn. We patch the existing demolitions throw in the ATTACK
+    // case by setting a target override.
+    if(this.type==='demolitions'&&G&&G.levelData&&G.levelData.coverSlots){
+      // Find slot the player is currently near
+      let best=null,bestD2=4*4;
+      for(const s of G.levelData.coverSlots){
+        const ddx=s.x-pp.x,ddz=s.z-pp.z;
+        const d2=ddx*ddx+ddz*ddz;
+        if(d2<bestD2){bestD2=d2;best=s;}
+      }
+      this._demolitionsTarget=best?new THREE.Vector3(best.x+best.peekDx*1.2,0,best.z+best.peekDz*1.2):null;
+    }
+
     switch(this.state){
       case PATROL:
         if(cs&&horizDist<20){
           this.lastKnownPos=pp.clone();
           this.state=ALERT;this.alertTimer=.28;this.alertFlashTimer=.28;
+          // Phase S: startle reaction — head whip + body recoil for 250ms
+          this._startleStart=performance.now();
+          this._startleDur=250;
+          // Phase AF: brief sharp breath cue — high-pass noise burst.
+          if(this.type!=='drone'){
+            const c=getAC();
+            const buf=c.createBuffer(1,~~(c.sampleRate*0.10),c.sampleRate),d=buf.getChannelData(0);
+            for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,1.4)*0.5;
+            const s=c.createBufferSource();s.buffer=buf;
+            const f=c.createBiquadFilter();f.type='highpass';f.frequency.value=2400;
+            const g=c.createGain();g.gain.value=0.10;
+            s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+          }
         }else{this._patrol(dt,walls);moving=true;}
         break;
 
@@ -4799,7 +5798,15 @@ class Enemy{
           else{this.state=PATROL;}
           break;
         }
-        if(horizDist<=this.attackRange&&cs){this.state=ATTACK;break;}
+        if(horizDist<=this.attackRange&&cs){
+          this.state=ATTACK;
+          // Phase S: aim-raise — shoulder lifts the weapon over a 300ms ramp
+          // when entering ATTACK from CHASE. Mirrors a real "raise rifle"
+          // beat that telegraphs the first shot.
+          this._aimRaiseStart=performance.now();
+          this._aimRaiseDur=300;
+          break;
+        }
         // Cover-aware chase: enemies hold ground at their assigned cover when
         // the player is far. Once at cover, fall through to attack range checks.
         // Squad rally is the fallback when no cover anchor is assigned.
@@ -4826,13 +5833,34 @@ class Enemy{
         this.searchTimer-=dt;
         if(cs&&horizDist<20){this.state=ATTACK;break;}
         if(this.searchTimer<=0||!this.lastKnownPos){this.state=PATROL;this.headLookY=0;break;}
+        // Phase 3: when arriving near lastKnownPos, slice the nearest corner
+        // edge by stepping into a safe pose and briefly peek-poking.
         this._pathToTarget(this.lastKnownPos,dt*.85,walls);moving=true;
         const sdx=this.lastKnownPos.x-this.group.position.x,sdz=this.lastKnownPos.z-this.group.position.z;
         if(Math.sqrt(sdx*sdx+sdz*sdz)<1.4){
-          // Arrived — pivot and scan
-          const lookA=Math.sin(Date.now()*.0014)*1.1;
-          this.group.rotation.y+=lookA*dt;
-          this.hMesh.rotation.y=Math.sin(Date.now()*.0009)*.7;
+          const lvl2=(typeof G!=='undefined'&&G.levelData)||null;
+          if(lvl2&&lvl2.coverSlots&&!this._sliceSlot){
+            // Pick the nearest unclaimed slot to lastKnownPos as a slicing point
+            let bestS=null,bestD=Infinity;
+            for(const s of lvl2.coverSlots){
+              const ddx=s.x-this.lastKnownPos.x,ddz=s.z-this.lastKnownPos.z;
+              const d=ddx*ddx+ddz*ddz;
+              if(d<bestD&&!s.claimedBy){bestD=d;bestS=s;}
+            }
+            if(bestS){this._sliceSlot=bestS;this._sliceTimer=2.0;}
+          }
+          if(this._sliceSlot){
+            this._sliceTimer-=dt;
+            if(this._sliceTimer<=0||this._sliceTimer<1.5){
+              // Trigger a brief peek pose to slice the corner
+              this.peekAmtTarget=Math.max(this.peekAmtTarget,1);
+            }
+            if(this._sliceTimer<=0){this._sliceSlot=null;this.peekAmtTarget=0;}
+          } else {
+            const lookA=Math.sin(Date.now()*.0014)*1.1;
+            this.group.rotation.y+=lookA*dt;
+            this.hMesh.rotation.y=Math.sin(Date.now()*.0009)*.7;
+          }
         }
         break;
       }
@@ -4841,7 +5869,9 @@ class Enemy{
         this.flankTimer-=dt;
         if(cs&&horizDist<=this.attackRange){this.state=ATTACK;this.flankTarget=null;break;}
         if(!this.flankTarget||this.flankTimer<=0){this.state=ATTACK;this.flankTarget=null;break;}
-        this._pathToTarget(this.flankTarget,dt,walls);moving=true;
+        // Phase 3 paired-flank speed boost
+        const _flankMul=(this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0;
+        this._pathToTarget(this.flankTarget,dt*_flankMul,walls);moving=true;
         this.group.rotation.y=Math.atan2(pdx,pdz);
         const fdx=this.flankTarget.x-this.group.position.x,fdz=this.flankTarget.z-this.group.position.z;
         if(Math.sqrt(fdx*fdx+fdz*fdz)<1.2){this.state=ATTACK;this.flankTarget=null;}
@@ -4869,17 +5899,50 @@ class Enemy{
           }
           if(Math.random()<.38)this.strafeDir*=-1;
         }
-        if(this.atCover&&this.coverPoint){
-          // Hold cover position with a subtle peek motion — sine-driven
-          // sidestep that gives a dynamic "leans out, fires, ducks back" feel.
-          const _t=performance.now()*.001;
-          const peek=Math.sin(_t*1.5+this.walkPhase)*0.32;
-          const tgtX=this.coverPoint.x+peek;
-          const tgtZ=this.coverPoint.z;
-          const cdx=tgtX-this.group.position.x;
-          const cdz=tgtZ-this.group.position.z;
-          this._tryMove(cdx*Math.min(dt*4,.7),cdz*Math.min(dt*4,.7),walls);
-          moving=Math.abs(cdx)+Math.abs(cdz)>0.04;
+        if(this.atCover&&(this.coverSlot||this.coverPoint)){
+          // Phase 3 corner-aware HOLD_CORNER / PEEK_FIRE sub-FSM.
+          // Replaces the legacy sine-wave fake peek. The agent sits at the
+          // slot's safe pose, raises a peek timer, then briefly leans into
+          // the peek pose to fire before retracting.
+          const slot=this.coverSlot;
+          const nowMs=performance.now();
+          if(slot){
+            // Maintain claim
+            slot.claimedBy=this;
+            // Peek scheduling
+            this.peekCooldown-=dt;
+            if(this.peekState==='safe'){
+              this.peekAmtTarget=0;
+              if(this.peekRate>0&&this.peekCooldown<=0&&cs){
+                this.peekState='peeking';this.peekStart=nowMs;
+                if(G&&G._aiPeekCount!=null)G._aiPeekCount++;
+              }
+            }
+            if(this.peekState==='peeking'){
+              this.peekAmtTarget=1;
+              const elapsed=nowMs-this.peekStart;
+              if(elapsed>=this.peekHoldMs){
+                this.peekState='safe';
+                this.peekCooldown=1/Math.max(0.05,this.peekRate);
+                this.peekAmtTarget=0;
+              }
+            }
+            // Translate toward safe pose (no sine wiggle)
+            const tgtX=slot.x+slot.peekDx*this.peekAmt;
+            const tgtZ=slot.z+slot.peekDz*this.peekAmt;
+            const cdx=tgtX-this.group.position.x;
+            const cdz=tgtZ-this.group.position.z;
+            this._tryMove(cdx*Math.min(dt*5,.7),cdz*Math.min(dt*5,.7),walls);
+            moving=Math.abs(cdx)+Math.abs(cdz)>0.04;
+          }else if(this.coverPoint){
+            // Legacy fallback — no corner slot assigned. Hold at coverPoint
+            // without the old sine-wave wiggle (which read as a glitch).
+            const cdx=this.coverPoint.x-this.group.position.x;
+            const cdz=this.coverPoint.z-this.group.position.z;
+            this._tryMove(cdx*Math.min(dt*4,.5),cdz*Math.min(dt*4,.5),walls);
+            this.peekAmtTarget=0;
+            moving=Math.abs(cdx)+Math.abs(cdz)>0.04;
+          }
         } else {
           // Default circular strafe + maintain ideal distance
           const invD=1/Math.max(horizDist,.01);
@@ -4899,7 +5962,11 @@ class Enemy{
             this._grenadeTimer=5+Math.random()*2.5;
             // Spawn enemy grenade
             if(typeof spawnEnemyGrenade==='function'){
-              spawnEnemyGrenade(this.group.position.clone(),pp.clone(),this);
+              // Phase X: cover-aware target — toss toward the player's
+              // current cover slot to flush them out rather than at the
+              // player position (which they might be hiding behind).
+              const _grTgt=this._demolitionsTarget||pp.clone();
+              spawnEnemyGrenade(this.group.position.clone(),_grTgt,this);
             }
             this.shootRecoilTimer=.20;
           }
@@ -4940,39 +6007,52 @@ class Enemy{
           this._poseTarget='takingCover';
           break;
         }
-        // ── PEEK-AND-DUCK pattern when at cover
-        if(this.atCover){
-          this._peekPhase=(this._peekPhase||Math.random()*Math.PI*2)+dt*1.6;
-          this._isDucked=Math.sin(this._peekPhase)<-.30;
-          if(this._isDucked){
-            // Visually hide - briefly lower body
-            this.bMesh.position.y=.55;
-            this.hMesh.position.y=1.20;
-            // Don't fire while ducked
+        // ── Phase 3: only fire while in PEEK_FIRE pose (peekAmt > 0.5) when
+        // a cover slot is assigned. Without a slot, fire freely (open ground).
+        if(this.atCover&&this.coverSlot&&this.peekState==='safe'&&this.peekAmt<0.5){
+          // Behind cover — don't shoot. Suppress also gates here.
+          if(!(this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0)){
             break;
-          } else {
-            this.bMesh.position.y=.76;
-            this.hMesh.position.y=1.48;
           }
         }
-        // Burst-fire logic (default for soldier/heavy/scout/etc)
+        // Burst-fire logic (default for soldier/heavy/scout/etc).
+        // Phase 3: SUPPRESS overrides — fire even without LOS, with reduced
+        // accuracy, while suppressBurstsLeft > 0.
+        const _isSuppressing=this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0;
         this.shootTimer-=dt;this.burstCooldown-=dt;
-if(this.burstCooldown<=0&&this.shootTimer<=0&&cs){
+        if(this.burstCooldown<=0&&this.shootTimer<=0&&(cs||_isSuppressing)){
           if(this.burstMax > this.burstCount){
             this.burstCount++;
             this.shootTimer=.09+Math.random()*.08;
             this.shootRecoilTimer=.18;
-            shootResult={shoot:true,dist:horizDist,accuracy:.065-this.diff*.007,src:this};
+            const accDeg=_isSuppressing?(.20-this.diff*.01):.065-this.diff*.007;
+            shootResult={shoot:true,dist:horizDist,accuracy:accDeg,src:this};
           }else{
             this.burstCount=0;
             this.burstCooldown=1.1+Math.random()*.9;
             this.shootTimer=this.burstCooldown;
+            if(_isSuppressing){
+              this.suppressBurstsLeft--;
+              if(this.suppressBurstsLeft<=0){this.suppressUntil=0;}
+            }
           }
         }
         break;
       }
     }
 
+    // Phase 3: smooth peekAmt toward target (used by Phase 4 lean anim).
+    if(this.peekAmtTarget!==this.peekAmt){
+      const rate=this.peekAmtTarget>this.peekAmt?12:8;
+      this.peekAmt+=(this.peekAmtTarget-this.peekAmt)*Math.min(dt*rate,1);
+      if(Math.abs(this.peekAmt-this.peekAmtTarget)<0.005)this.peekAmt=this.peekAmtTarget;
+    }
+    // If a peek-fire-pose shot just fired (shootResult.shoot && peekAmt>.5),
+    // tally for telemetry.
+    if(shootResult&&shootResult.shoot){
+      if(G&&G._aiAllShotsFired!=null)G._aiAllShotsFired++;
+      if(this.peekAmt>0.5&&G&&G._aiPeekShotsFired!=null)G._aiPeekShotsFired++;
+    }
     this._updateAnim(dt,moving);
     return shootResult;
   }
@@ -4990,37 +6070,231 @@ if(this.burstCooldown<=0&&this.shootTimer<=0&&cs){
 }
 // Helpers: find an enemy spawn position that does not clip a wall, vault barrier,
 // pillar, or crate. The collected `walls` AABB list includes all of these.
-function _isPosClearForEnemy(x,z,walls,R){
-  for(const w of walls){if(x+R>w.x0&&w.x1>x-R&&z+R>w.z0&&w.z1>z-R)return false;}
+// Phase AC: thin wrapper — implementation in ./cover-graph.js
+function _isPosClearForEnemy(x,z,walls,R){return _isPosClearForEnemyImpl(x,z,walls,R);}
+// ── Spatial wall index (Phase BA: FPS opt) ────────────────────────────────
+// Buckets every wall AABB into a 2D grid. Hot-path queries (`canSee`,
+// `_tryMove`, player movement collision) look up only the walls in cells
+// the query intersects, instead of iterating all ~280 walls per call.
+//
+// On B01 with ~178 walls + 12 enemies firing, the unindexed inline loops
+// were dominating frame time. With a 2m grid + ~3 walls/cell typical, a
+// single point query goes from 178 AABB tests → ~3.
+function _buildWallSpatialIndex(walls,cellSize){
+  const cs=cellSize||2.0;
+  if(!walls||!walls.length)return null;
+  let xMin=Infinity,xMax=-Infinity,zMin=Infinity,zMax=-Infinity;
+  for(let i=0;i<walls.length;i++){
+    const w=walls[i];
+    if(w.x0<xMin)xMin=w.x0;if(w.x1>xMax)xMax=w.x1;
+    if(w.z0<zMin)zMin=w.z0;if(w.z1>zMax)zMax=w.z1;
+  }
+  xMin-=1;zMin-=1;xMax+=1;zMax+=1;
+  const nx=Math.max(4,Math.ceil((xMax-xMin)/cs)+1);
+  const nz=Math.max(4,Math.ceil((zMax-zMin)/cs)+1);
+  const cells=new Array(nx*nz);
+  for(let i=0;i<cells.length;i++)cells[i]=null;
+  for(let wi=0;wi<walls.length;wi++){
+    const w=walls[wi];
+    const ix0=Math.max(0,Math.floor((w.x0-xMin)/cs));
+    const ix1=Math.min(nx-1,Math.floor((w.x1-xMin)/cs));
+    const iz0=Math.max(0,Math.floor((w.z0-zMin)/cs));
+    const iz1=Math.min(nz-1,Math.floor((w.z1-zMin)/cs));
+    for(let iz=iz0;iz<=iz1;iz++)for(let ix=ix0;ix<=ix1;ix++){
+      const k=ix+iz*nx;
+      if(!cells[k])cells[k]=[];
+      cells[k].push(w);                                  // store refs (not indices)
+    }
+  }
+  return{cs,xMin,zMin,nx,nz,cells};
+}
+function _cellWallsAt(idx,x,z){
+  if(!idx)return null;
+  const ix=((x-idx.xMin)/idx.cs)|0;
+  const iz=((z-idx.zMin)/idx.cs)|0;
+  if(ix<0||iz<0||ix>=idx.nx||iz>=idx.nz)return null;
+  return idx.cells[ix+iz*idx.nx];
+}
+
+// Peer-clearance helper — checks both wall AABBs AND existing enemy positions.
+// `peers` is an array of {x, z} of already-placed enemies in this wave (and
+// optionally living enemies the new spawn shouldn't overlap).
+function _isPosClearForEnemyAndPeers(x,z,walls,R,peers,peerR){
+  if(!_isPosClearForEnemy(x,z,walls,R))return false;
+  if(peers&&peers.length){
+    const pr=peerR||0.85;
+    const pr2=pr*pr;
+    for(let i=0,n=peers.length;i<n;i++){
+      const p=peers[i];
+      const dx=x-p.x,dz=z-p.z;
+      if(dx*dx+dz*dz<pr2)return false;
+    }
+  }
   return true;
 }
-function _findClearEnemySpawn(sp,walls,R){
+function _findClearEnemySpawn(sp,walls,R,peers){
   // Try increasing-radius jitters near the spawn anchor first, then bail out
-  // to a few hard-coded room-clear spots.
-  for(let i=0;i<14;i++){
-    const rad=(i<6)?2.2:5;
+  // to a few hard-coded room-clear spots. Phase: also reject positions that
+  // overlap already-placed enemies in this wave.
+  for(let i=0;i<24;i++){
+    const rad=(i<8)?2.2:(i<16)?4.0:7.0;
     const dx=(Math.random()-.5)*rad,dz=(Math.random()-.5)*rad;
     const x=sp.x+dx,z=sp.z+dz;
-    if(_isPosClearForEnemy(x,z,walls,R))return new THREE.Vector3(x,sp.y,z);
+    if(_isPosClearForEnemyAndPeers(x,z,walls,R,peers))return new THREE.Vector3(x,sp.y,z);
   }
   // Last-ditch fallbacks — known interior points of the building
-  const fallbacks=[[0,0],[0,4],[0,-4],[6,0],[-6,0],[0,10],[0,-10]];
-  for(const [fx,fz] of fallbacks){if(_isPosClearForEnemy(fx,fz,walls,R))return new THREE.Vector3(fx,sp.y,fz);}
+  const fallbacks=[[0,0],[0,4],[0,-4],[6,0],[-6,0],[0,10],[0,-10],[6,6],[-6,-6],[6,-6],[-6,6]];
+  for(const [fx,fz] of fallbacks){if(_isPosClearForEnemyAndPeers(fx,fz,walls,R,peers))return new THREE.Vector3(fx,sp.y,fz);}
   return sp.clone();
 }
 // Push a candidate spawn out of wall/cover AABBs (door spawns sit near perimeter props).
-function _snapSpawnOutOfWalls(x,z,y,walls,R){
-  if(_isPosClearForEnemy(x,z,walls,R))return new THREE.Vector3(x,y,z);
-  for(let ring=0;ring<6;ring++){
-    const rad=.25+ring*.38;
-    for(let k=0;k<12;k++){
-      const t=(k/12)*Math.PI*2;
+function _snapSpawnOutOfWalls(x,z,y,walls,R,peers){
+  if(_isPosClearForEnemyAndPeers(x,z,walls,R,peers))return new THREE.Vector3(x,y,z);
+  for(let ring=0;ring<8;ring++){
+    const rad=.30+ring*.42;
+    // Try more angular samples on outer rings so we find clear gaps even in
+    // crowded door corridors.
+    const steps=ring<3?12:18;
+    for(let k=0;k<steps;k++){
+      const t=(k/steps)*Math.PI*2;
       const tx=x+Math.cos(t)*rad,tz=z+Math.sin(t)*rad;
-      if(_isPosClearForEnemy(tx,tz,walls,R))return new THREE.Vector3(tx,y,tz);
+      if(_isPosClearForEnemyAndPeers(tx,tz,walls,R,peers))return new THREE.Vector3(tx,y,tz);
     }
   }
   return null;
 }
+// ── Floor-Y lookup (Phase A verticality) ──────────────────────────────────
+// Returns the floor Y at the given XZ. Default 0 (room floor). Pits return
+// negative Y; raised catwalks/mezzanines return positive Y. When multiple
+// regions overlap, the *highest* (most positive) wins so the player stands
+// on top of stacked platforms rather than falling through.
+// Phase AC: thin wrapper — implementation in ./cover-graph.js
+function _floorYAt(x,z,regions){return _floorYAtImpl(x,z,regions);}
+
+// ── Wall-AABB LOS raycast (Phase 2 cover-slot risk scoring) ───────────────
+// Standalone version of the loop inside Enemy.canSee — usable from non-Enemy
+// callers (slot-risk evaluation, player lean LOS, AI corner sliceing).
+// Phase AC: thin wrapper — implementation in ./cover-graph.js
+function _losClear(ax,az,bx,bz,walls){return _losClearImpl(ax,az,bx,bz,walls);}
+
+// Risk score: how exposed is this slot's *safe pose* to the given threat?
+// 0 = covered (good place to hold), 1 = fully exposed (reject).
+// Phase AC: thin wrappers — implementations in ./cover-graph.js
+function _coverSlotRisk(slot,threatPos,walls){return _coverSlotRiskImpl(slot,threatPos,walls);}
+function _getBestPeekSlot(coverSlots,agentX,agentZ,threatPos,walls,maxDist){
+  return _getBestPeekSlotImpl(coverSlots,agentX,agentZ,threatPos,walls,maxDist);
+}
+
+// ── Corner-edge bake (Phase 1 §4.5 / Phase 2 cover graph) ──────────────────
+// For every interior wall AABB we derive up to four "outside corner" peek
+// edges. Each edge carries a normal (out-of-wall) and an edge tangent. Used
+// downstream by coverSlots[] and the AI's HOLD_CORNER / PEEK_FIRE states.
+// Phase AC: thin wrapper — implementation in ./cover-graph.js
+function _navCellOpen(ng,x,z){return _navCellOpenImpl(ng,x,z);}
+function _bakeCornerEdges(walls,ng){
+  const out=[];
+  if(!walls||!walls.length)return out;
+  for(let i=0;i<walls.length;i++){
+    const w=walls[i];
+    const wx=w.x1-w.x0,wz=w.z1-w.z0;
+    if(wx<0.20||wz<0.20)continue;                       // ignore degenerate
+    if(wx>RW*0.85||wz>RD*0.85)continue;                 // perimeter walls
+    if(wx<0.90&&wz<0.90)continue;                       // pillars — too short to peek around
+    const longX=wx>wz;
+    if(longX){
+      for(const ex of [w.x0,w.x1]){
+        const axisOut=(ex===w.x0)?-1:1;
+        for(const zSide of [-1,1]){
+          const cz=(zSide<0)?w.z0:w.z1;
+          const px=ex+axisOut*0.55,pz=cz+zSide*0.55;
+          if(_navCellOpen(ng,px,pz)){
+            out.push({
+              x:ex,z:cz,
+              nx:axisOut,nz:0,
+              edgeDirX:0,edgeDirZ:zSide,
+              side:zSide,
+              height:Math.max(0.85,Math.min(2.0,RH*0.4)),
+              ownerWallIdx:i,kind:'wall'
+            });
+          }
+        }
+      }
+    }else{
+      for(const ez of [w.z0,w.z1]){
+        const axisOut=(ez===w.z0)?-1:1;
+        for(const xSide of [-1,1]){
+          const cx=(xSide<0)?w.x0:w.x1;
+          const px=cx+xSide*0.55,pz=ez+axisOut*0.55;
+          if(_navCellOpen(ng,px,pz)){
+            out.push({
+              x:cx,z:ez,
+              nx:0,nz:axisOut,
+              edgeDirX:xSide,edgeDirZ:0,
+              side:xSide,
+              height:Math.max(0.85,Math.min(2.0,RH*0.4)),
+              ownerWallIdx:i,kind:'wall'
+            });
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// ── Cover slots bake (Phase 2 §5.1 LEVELS_AI_LEAN_UPGRADE_PLAN.md) ─────────
+// A coverSlot is a standing position next to a corner edge, with the metadata
+// the AI needs to enter HOLD_CORNER / PEEK_FIRE. Each slot has both a "safe"
+// pose (this position) and an implicit "peek" pose offset along edgeDir.
+// Slots are also derived from vault props (full-height cover only).
+function _bakeCoverSlots(cornerEdges,vaultables){
+  const slots=[];
+  if(cornerEdges){
+    for(const ce of cornerEdges){
+      // Safe pose: step away from the corner along -normal and away from the
+      // edge tangent so the agent's body silhouette doesn't poke out.
+      const sx=ce.x+ce.nx*0.55-ce.edgeDirX*0.05;
+      const sz=ce.z+ce.nz*0.55-ce.edgeDirZ*0.05;
+      slots.push({
+        x:sx,z:sz,
+        faceX:-ce.nx,faceZ:-ce.nz,                    // face back toward open / threat side
+        edgeX:ce.edgeDirX,edgeZ:ce.edgeDirZ,
+        side:ce.side,height:ce.height,
+        owner:{type:'wall',idx:ce.ownerWallIdx},
+        riskScore:0,riskAt:0,riskFor:null,
+        claimedBy:null,
+        peekDx:ce.edgeDirX*0.55,                        // peek-pose offset
+        peekDz:ce.edgeDirZ*0.55,
+      });
+    }
+  }
+  if(vaultables&&vaultables.length){
+    for(let i=0;i<vaultables.length;i++){
+      const v=vaultables[i];
+      const cx=(v.x0+v.x1)/2,cz=(v.z0+v.z1)/2;
+      const hw=(v.x1-v.x0)/2,hd=(v.z1-v.z0)/2;
+      // For each face of the vault prop, one slot on the far side
+      const faces=[
+        {x:cx,z:cz+hd+0.65, fx:0,fz:-1},
+        {x:cx,z:cz-hd-0.65, fx:0,fz:1},
+        {x:cx+hw+0.65,z:cz, fx:-1,fz:0},
+        {x:cx-hw-0.65,z:cz, fx:1,fz:0},
+      ];
+      for(const f of faces){
+        slots.push({
+          x:f.x,z:f.z,faceX:f.fx,faceZ:f.fz,
+          edgeX:-f.fz,edgeZ:f.fx,
+          side:1,height:0.9,
+          owner:{type:'prop',idx:i},
+          riskScore:0,riskAt:0,riskFor:null,claimedBy:null,
+          peekDx:-f.fz*0.45,peekDz:f.fx*0.45,
+        });
+      }
+    }
+  }
+  return slots;
+}
+
 // ── Grid nav (2D A*) — baked per level from wall AABBs ─────────────────────
 function _buildNavGrid(walls,cellSize){
   const R=.36,pad=.85;
@@ -5034,85 +6308,9 @@ function _buildNavGrid(walls,cellSize){
   }
   return{cs,xMin,zMin,nx,nz,blocked};
 }
-function _navSnapOpen(ng,ix,iz){
-  const id=ix+iz*ng.nx;
-  if(!ng.blocked[id])return[ix,iz];
-  const q=[[ix,iz]];
-  const seen=new Uint8Array(ng.nx*ng.nz);
-  seen[id]=1;
-  for(let qi=0;qi<q.length;qi++){
-    const[cx,cz]=q[qi];
-    for(const[dx,dz]of[[1,0],[-1,0],[0,1],[0,-1]]){
-      const nx=cx+dx,ny=cz+dz;
-      if(nx<0||ny<0||nx>=ng.nx||ny>=ng.nz)continue;
-      const nid=nx+ny*ng.nx;
-      if(seen[nid])continue;
-      seen[nid]=1;
-      if(!ng.blocked[nid])return[nx,ny];
-      q.push([nx,ny]);
-    }
-  }
-  return[ix,iz];
-}
-function _navAStar(ng,x0,z0,x1,z1){
-  if(!ng||!ng.blocked)return null;
-  const{nx,nz,cs,xMin,zMin,blocked}=ng;
-  const NN=nx*nz;
-  let ix0=Math.floor((x0-xMin)/cs)|0,iz0=Math.floor((z0-zMin)/cs)|0;
-  let ix1=Math.floor((x1-xMin)/cs)|0,iz1=Math.floor((z1-zMin)/cs)|0;
-  ix0=Math.max(0,Math.min(nx-1,ix0));iz0=Math.max(0,Math.min(nz-1,iz0));
-  ix1=Math.max(0,Math.min(nx-1,ix1));iz1=Math.max(0,Math.min(nz-1,iz1));
-  let [sx,sz]=_navSnapOpen(ng,ix0,iz0);
-  let [gx,gz]=_navSnapOpen(ng,ix1,iz1);
-  const sid=sx+sz*nx,gid=gx+gz*nx;
-  if(blocked[sid]||blocked[gid])return null;
-  if(sid===gid)return[{x:x0,z:z0},{x:x1,z:z1}];
-  const gScr=new Float32Array(NN);gScr.fill(1e9);
-  const came=new Int32Array(NN);came.fill(-1);
-  const open=[];const inOpen=new Uint8Array(NN);
-  const mh=(ix,iz)=>(Math.abs(ix-gx)+Math.abs(iz-gz))*cs;
-  gScr[sid]=0;open.push(sid);inOpen[sid]=1;
-  while(open.length){
-    let bi=0,best=1e9;
-    for(let i=0,l=open.length;i<l;i++){
-      const id=open[i],ix=id%nx,iz=(id/nx)|0;
-      const f=gScr[id]+mh(ix,iz);
-      if(f<best){best=f;bi=i;}
-    }
-    const cid=open[bi];open[bi]=open[open.length-1];open.pop();inOpen[cid]=0;
-    if(cid===gid)break;
-    const cix=cid%nx,ciz=(cid/nx)|0;
-    for(const[dx,dz]of[[1,0],[-1,0],[0,1],[0,-1]]){
-      const nix=cix+dx,niz=ciz+dz;
-      if(nix<0||niz<0||nix>=nx||niz>=nz)continue;
-      const nid=nix+niz*nx;
-      if(blocked[nid])continue;
-      const tentative=gScr[cid]+cs;
-      if(tentative<gScr[nid]){came[nid]=cid;gScr[nid]=tentative;if(!inOpen[nid]){open.push(nid);inOpen[nid]=1;}}
-    }
-  }
-  if(gScr[gid]>1e8)return null;
-  const path=[];
-  let cur=gid;
-  while(cur>=0){
-    const cix=cur%nx,ciz=(cur/nx)|0;
-    path.push({x:xMin+(cix+.5)*cs,z:zMin+(ciz+.5)*cs});
-    if(cur===sid)break;
-    cur=came[cur];
-  }
-  path.reverse();
-  if(path.length>=3){
-    const simp=[path[0]];
-    for(let i=1;i<path.length-1;i++){
-      const a=simp[simp.length-1],b=path[i],c=path[i+1];
-      const cross=Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x));
-      if(cross>cs*cs*0.04)simp.push(b);
-    }
-    simp.push(path[path.length-1]);
-    return simp;
-  }
-  return path;
-}
+// Phase AC: thin wrappers — implementations in ./cover-graph.js
+function _navSnapOpen(ng,ix,iz){return _navSnapOpenImpl(ng,ix,iz);}
+function _navAStar(ng,x0,z0,x1,z1){return _navAStarImpl(ng,x0,z0,x1,z1);}
 // ── SQUAD AI ─────────────────────────────────────────────────────────────────
 // Lightweight squad coordinator: groups of 3-4 enemies share a leader + a state
 // (advance / suppress / flank). The leader picks a rally point relative to the
@@ -5239,6 +6437,11 @@ class EnemyManager{
       const cnt=perZone[z]|0;
       const zSpawns=spawnsByZone[z]&&spawnsByZone[z].length?spawnsByZone[z]:[new THREE.Vector3(0,WT||.4,(z===0?zf(12):z===1?0:zf(-12)))];
       const doorsZ=_doors.filter(d=>d.zoneId===z);
+      // Bugfix: peer list = positions of every enemy already spawned in this
+      // wave (across all zones) + any alive enemies left over from prior
+      // waves. New spawns reject overlap with any of these.
+      const _peers=[];
+      for(const e of this._list){if(!e.dead)_peers.push({x:e.group.position.x,z:e.group.position.z});}
       for(let i=0;i<cnt;i++){
         const sp=zSpawns[i%zSpawns.length];
         const _spawnR=.46;
@@ -5246,22 +6449,36 @@ class EnemyManager{
         if(doorsZ.length){
           doorUsed=doorsZ[i%doorsZ.length];
           const id=1.14;
-          let bx=doorUsed.ax+doorUsed.inwardX*id,bz=doorUsed.az+doorUsed.inwardZ*id;
-          pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,_spawnR);
+          // Stagger multiple enemies sharing the same door by stepping further
+          // into the room as the door index repeats.
+          const _doorOrdinal=Math.floor(i/doorsZ.length);
+          const extraStep=_doorOrdinal*0.95;
+          let bx=doorUsed.ax+doorUsed.inwardX*(id+extraStep),bz=doorUsed.az+doorUsed.inwardZ*(id+extraStep);
+          pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,_spawnR,_peers);
           if(!pos){
             const px=-doorUsed.inwardZ,py=doorUsed.inwardX;
-            pos=_snapSpawnOutOfWalls(bx+px*.55,bz+py*.55,WT,_walls,_spawnR)
-              ||_snapSpawnOutOfWalls(bx-px*.55,bz-py*.55,WT,_walls,_spawnR);
+            pos=_snapSpawnOutOfWalls(bx+px*.55,bz+py*.55,WT,_walls,_spawnR,_peers)
+              ||_snapSpawnOutOfWalls(bx-px*.55,bz-py*.55,WT,_walls,_spawnR,_peers);
           }
           if(!pos){
-            pos=_findClearEnemySpawn(sp,_walls,_spawnR);
+            pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers);
             doorUsed=null;
           }else if(Math.hypot(pos.x-doorUsed.ax,pos.z-doorUsed.az)>3.15){
             doorUsed=null;
           }
         }else{
-          pos=_findClearEnemySpawn(sp,_walls,_spawnR);
+          pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers);
         }
+        // Bugfix: final safety pass — if the chosen pos somehow ended up
+        // inside a wall (degenerate spawn anchor, fallback returning raw
+        // sp), push it out. Without this, enemies pin against geometry
+        // and can't move.
+        if(!_isPosClearForEnemy(pos.x,pos.z,_walls,_spawnR)){
+          const snap=_snapSpawnOutOfWalls(pos.x,pos.z,WT,_walls,_spawnR,_peers);
+          if(snap)pos=snap;
+        }
+        // Track the placed position so subsequent spawns avoid it
+        _peers.push({x:pos.x,z:pos.z});
         // Type-by-zone bias + authored sequence role contract.
         let type;
         const role=roleByZone[z]||null;
@@ -5288,17 +6505,43 @@ class EnemyManager{
         if(members.length>=2)this._squads.push(new Squad(this._squads.length,members));
       }
     }
-    // ── Cover anchor assignment ────────────────────────────────────────────
-    // Pick a cover prop in each enemy's zone. Cover anchor sits on the side
-    // of the prop closest to the enemy spawn, so they don't have to traverse
-    // the whole room to reach it. One anchor per prop (claimed) so enemies
-    // don't pile on the same crate.
+    // ── Phase 3: corner-slot assignment (preferred) ────────────────────────
+    // If the level baked coverSlots[], each non-peek-immune enemy claims the
+    // nearest valid slot in its zone. Falls back to the legacy coverPoint
+    // logic below when no slots are baked (defensive — should always exist).
+    const lvl=(typeof G!=='undefined'&&G.levelData)||null;
+    const slotPool=lvl&&Array.isArray(lvl.coverSlots)?lvl.coverSlots:[];
+    if(slotPool.length){
+      // Filter by zone: front (z>zSplit), middle (-zSplit<z<zSplit), back (z<-zSplit)
+      for(const e of this._list){
+        if(e.peekRate<=0)continue;                   // shielded/riot/drone never bind
+        const zb2=_zoneBounds();
+        let zLo,zHi;
+        if(e.zoneId===0){zLo=zb2.zSplit;zHi=zb2.halfDepth;}
+        else if(e.zoneId===1){zLo=-zb2.zSplit;zHi=zb2.zSplit;}
+        else{zLo=-zb2.halfDepth;zHi=-zb2.zSplit;}
+        let best=null,bestD2=Infinity;
+        for(const s of slotPool){
+          if(s.claimedBy)continue;
+          if(s.z<zLo||s.z>zHi)continue;
+          const dx=s.x-e.group.position.x,dz=s.z-e.group.position.z;
+          const d2=dx*dx+dz*dz;
+          if(d2<bestD2){bestD2=d2;best=s;}
+        }
+        if(best){
+          best.claimedBy=e;
+          e.coverSlot=best;
+          e.coverPoint={x:best.x,z:best.z};            // legacy hook still consumed by CHASE
+        }
+      }
+    }
     const coverWalls=_walls.filter(w=>(w.x1-w.x0)<5 && (w.z1-w.z0)<5);
     const claimed=new Set();
     const zLo0=zb.zSplit,zHi0=zb.halfDepth;
     const zLo1=-zb.zSplit,zHi1=zb.zSplit;
     const zLo2=-zb.halfDepth,zHi2=-zb.zSplit;
     for(const e of this._list){
+      if(e.coverSlot)continue;                       // Phase 3 corner-slot already bound
       let zLo,zHi;
       if(e.zoneId===0){zLo=zLo0;zHi=zHi0;}
       else if(e.zoneId===1){zLo=zLo1;zHi=zHi1;}
@@ -5326,6 +6569,113 @@ class EnemyManager{
     }
   }
   // Per-zone alive counts for the room-clear gate
+  // Phase 3 §6.3 — pick at most one suppress+flank pair per zone. The
+  // suppressor stands its slot and bursts at last-known-player; the flanker
+  // gets a temporary speed bonus and tries the opposite side.
+  _tryFormPairs(pp,walls){
+    const pairedZones=new Set();
+    const nowMs=performance.now();
+    // Clear stale suppress flags
+    for(const e of this._list){
+      if(e.suppressUntil&&nowMs>e.suppressUntil){
+        e.suppressUntil=0;e.suppressBurstsLeft=0;
+      }
+    }
+    for(const supp of this._list){
+      if(supp.dead||!supp.useSuppress)continue;
+      if(pairedZones.has(supp.zoneId))continue;
+      if(supp.state!==ATTACK&&supp.state!==CHASE)continue;
+      if(supp.suppressUntil&&nowMs<supp.suppressUntil)continue;
+      // Find a near partner who is alive, in same zone, not the suppressor
+      let partner=null;
+      for(const p of this._list){
+        if(p===supp||p.dead||p.zoneId!==supp.zoneId)continue;
+        if(p.state===FLANK)continue;
+        const dx=p.group.position.x-supp.group.position.x;
+        const dz=p.group.position.z-supp.group.position.z;
+        if(dx*dx+dz*dz>8*8)continue;
+        partner=p;break;
+      }
+      if(!partner)continue;
+      // Activate the pair
+      supp.suppressUntil=nowMs+2500;
+      supp.suppressBurstsLeft=Math.max(2,supp.burstMax);
+      // Partner flanks to the opposite side of the player
+      const px=pp.x-supp.group.position.x,pz=pp.z-supp.group.position.z;
+      const pl=Math.max(0.001,Math.sqrt(px*px+pz*pz));
+      const nx=px/pl,nz=pz/pl;
+      // Perpendicular, sign opposite of partner's current side
+      const sxPartner=partner.group.position.x-pp.x;
+      const szPartner=partner.group.position.z-pp.z;
+      const sign=(sxPartner*-nz+szPartner*nx)>=0?-1:1;
+      const fd=7.5;
+      partner.flankTarget=new THREE.Vector3(pp.x+(-nz*sign*fd),0,pp.z+(nx*sign*fd));
+      partner.flankTimer=3.4;
+      partner.state=FLANK;
+      partner._flankSpeedBoostUntil=nowMs+2500;
+      pairedZones.add(supp.zoneId);
+      if(typeof G!=='undefined'){G._aiPairsActive=(G._aiPairsActive||0)+1;}
+    }
+  }
+  // Phase W: dispatch a single boss-phase command list against a target enemy.
+  // Commands are intentionally narrow — additive on top of the existing AI
+  // state machine. Each command is interpreted inline.
+  _runBossPhase(ph,boss,pp){
+    const bx=boss.group.position.x,bz=boss.group.position.z;
+    for(const cmd of (ph.cmds||[])){
+      if(cmd.type==='banner'&&typeof attachToast==='function'){
+        attachToast('<div style="color:#ffd060;letter-spacing:.30em;font-size:18px;font-weight:900">▣ '+cmd.text+'</div>',cmd.duration||2400);
+      } else if(cmd.type==='invuln'){
+        boss._invulnUntil=performance.now()+(cmd.ms||1500);
+      } else if(cmd.type==='speedMul'){
+        boss.speed*=cmd.mul||1.3;
+      } else if(cmd.type==='damageMul'){
+        boss.enemyDmg=Math.round(boss.enemyDmg*(cmd.mul||1.4));
+      } else if(cmd.type==='heal'){
+        boss.hp=Math.min(boss.maxHp,boss.hp+(cmd.amt||boss.maxHp*0.15));
+      } else if(cmd.type==='addSpawn'){
+        // Spawn one or more adds near the boss
+        for(const a of (cmd.adds||[])){
+          const dx=a.dx||0,dz=a.dz||0;
+          const tx=bx+dx,tz=bz+dz;
+          const pos=new THREE.Vector3(tx,WT||.4,tz);
+          const newE=new Enemy(this.scene,pos,G.building||1,a.type||'soldier');
+          newE.zoneId=boss.zoneId||2;
+          this._list.push(newE);
+        }
+      } else if(cmd.type==='retreat'){
+        // Snap the boss into FLANK pointed at a retreat target
+        boss.flankTarget=new THREE.Vector3(bx+(cmd.dx||0),0,bz+(cmd.dz||-6));
+        boss.flankTimer=3.0;
+        boss.state=FLANK;
+      } else if(cmd.type==='peekBurst'){
+        // Bump peek rate temporarily for the duration of the phase
+        boss._peekRateOrig=boss._peekRateOrig||boss.peekRate;
+        boss.peekRate=boss._peekRateOrig*(cmd.mul||2.0);
+      } else if(cmd.type==='shatterWindows'&&G.levelData){
+        // Cascade-break every remaining window in the level — dramatic.
+        // Phase BA: cache the glass-pane list (built lazily once per level)
+        // so the boss phase doesn't traverse the entire scene graph.
+        let panes=G.levelData._glassPanes;
+        if(!panes){
+          panes=[];
+          for(const o of (G.levelData.solids||[])){
+            if(o&&o.userData&&o.userData.glassPane)panes.push(o);
+          }
+          G.levelData._glassPanes=panes;
+        }
+        for(const p of panes){
+          if(!p.userData._broken&&typeof _shatterMesh==='function'){
+            _shatterMesh(p,p.position);
+          }
+        }
+      } else if(cmd.type==='openZone'){
+        if(G.levelData&&typeof G.levelData.openZoneDoor==='function'){
+          G.levelData.openZoneDoor(cmd.zoneId||1);
+        }
+      }
+    }
+  }
   aliveInZone(z){let n=0;for(const e of this._list)if(!e.dead&&e.zoneId===z)n++;return n;}
   get aliveCount(){return this._list.filter(e=>!e.dead).length;}
   get allDead(){return this._list.length>0&&this._list.every(e=>e.dead);}
@@ -5333,6 +6683,57 @@ class EnemyManager{
   update(dt,pp,walls){
     // Squad coordination tick
     for(const sq of this._squads)sq.update(dt,pp);
+    // Phase 3: suppress + flank pair coordination. Run at most once per
+    // ~2s, cap one active pair per zone.
+    this._pairT=(this._pairT||0)+dt;
+    if(this._pairT>2.0){
+      this._pairT=0;
+      this._tryFormPairs(pp,walls);
+    }
+    // Phase W: boss-phase interpreter — watches each `boss`/`lieutenant`
+    // enemy, fires authored commands at HP thresholds (50%, 25%). Phases
+    // declared on G.campaignLevel.bossPhases. Each phase has `at` (HP frac),
+    // `fired` (set on trigger), `cmds[]` of dispatchable commands.
+    if(G.campaignLevel&&Array.isArray(G.campaignLevel.bossPhases)){
+      const phases=G.campaignLevel.bossPhases;
+      for(const e of this._list){
+        if(e.dead)continue;
+        if(e.type!=='boss'&&e.type!=='lieutenant'&&!e._isBoss)continue;
+        const hpPct=e.hp/Math.max(1,e.maxHp);
+        for(const ph of phases){
+          if(ph.fired)continue;
+          if(hpPct<=ph.at){
+            ph.fired=true;
+            this._runBossPhase(ph,e,pp);
+          }
+        }
+      }
+    }
+    // Phase C: awareness propagation. ~2× per second, any alive enemy with
+    // current LOS broadcasts the player's lastKnownPos to nearby teammates.
+    // Cheap O(n^2) scan capped at active enemy count.
+    this._awareT=(this._awareT||0)+dt;
+    if(this._awareT>0.5){
+      this._awareT=0;
+      const alive=[];
+      for(const e of this._list)if(!e.dead)alive.push(e);
+      for(const a of alive){
+        if(!a.lastKnownPos)continue;
+        if(!(a.state===CHASE||a.state===ATTACK||a.state===PEEK_FIRE))continue;
+        // Only share when this agent has fresh LOS (within last update).
+        const sx=a.group.position.x,sz=a.group.position.z;
+        for(const b of alive){
+          if(b===a)continue;
+          if(b.lastKnownPos&&b.state!==PATROL)continue;
+          const dxx=b.group.position.x-sx,dzz=b.group.position.z-sz;
+          if(dxx*dxx+dzz*dzz>12*12)continue;
+          // Pass the contact along
+          b.lastKnownPos=a.lastKnownPos.clone();
+          if(b.state===PATROL){b.state=SEARCH;b.searchTimer=3.0+Math.random()*1.2;}
+          b.alertFlashTimer=Math.max(b.alertFlashTimer||0,0.32);
+        }
+      }
+    }
     const shots=[];
     for(const e of this._list){
       const r=e.update(dt,pp,walls);
@@ -5368,8 +6769,10 @@ class EnemyManager{
   clear(){for(const e of this._list)e.remove();this._list=[];}
 }
 // ── AUDIO ────────────────────────────────────────────────────────────────────────────
-let AC=null;
-function getAC(){return AC||(AC=new AudioContext());}
+// Phase G: getAC, sfxHit, sfxReload, sfxDamage, sfxWaveClear moved to ./audio.js.
+// Keeping local function shadows here would shadow the imports — delete them
+// instead and rely on the imports above. The remaining sfx* defs stay local
+// for now; future modularization passes can keep extracting.
 function sfxShoot(weaponIdx){
   const c=getAC();
   const idx=(weaponIdx===undefined)?(typeof P!=='undefined'?P.weaponIdx:0):weaponIdx;
@@ -5378,7 +6781,10 @@ function sfxShoot(weaponIdx){
     0:{dur:.07,freq:900, q:.6,gain:.55,decay:2.0,filter:'bandpass'}, // M4
     1:{dur:.05,freq:1300,q:1.0,gain:.30,decay:3.2,filter:'bandpass'}, // USP-T (suppressed)
     3:{dur:.22,freq:140, q:.4,gain:.95,decay:1.0,filter:'lowpass'},  // Shotgun
-    4:{dur:.045,freq:1500,q:1.2,gain:.22,decay:3.0,filter:'bandpass'} // Suppressed SMG
+    4:{dur:.045,freq:1500,q:1.2,gain:.22,decay:3.0,filter:'bandpass'}, // Suppressed SMG
+    5:{dur:.13,freq:560, q:.5,gain:.75,decay:1.4,filter:'bandpass'}, // MK14 DMR — heavy snap
+    6:{dur:.05,freq:1200,q:1.0,gain:.30,decay:3.0,filter:'bandpass'}, // P226 supp — quieter
+    7:{dur:.18,freq:380, q:.4,gain:.95,decay:1.0,filter:'bandpass'}  // AWM sniper — booming crack
   }[idx]||{dur:.07,freq:900,q:.6,gain:.55,decay:2.0,filter:'bandpass'};
   const b=c.createBuffer(1,~~(c.sampleRate*cfg.dur),c.sampleRate),d=b.getChannelData(0);
   for(let i=0;d.length>i;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,cfg.decay)*.9;
@@ -5386,6 +6792,47 @@ function sfxShoot(weaponIdx){
   const f=c.createBiquadFilter();f.type=cfg.filter;f.frequency.value=cfg.freq;f.Q.value=cfg.q;
   const g=c.createGain();g.gain.value=cfg.gain;
   s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  // Phase Z: slap-back delay tail — feeds the main shot through a short
+  // ~70ms delay at -12 dB to simulate room response. Unsuppressed weapons
+  // only; suppressed weapons skip for that "quiet" feel.
+  const suppressed=(idx===1||idx===4||idx===6);
+  if(!suppressed){
+    const s2=c.createBufferSource();s2.buffer=b;
+    const f2=c.createBiquadFilter();f2.type=cfg.filter;f2.frequency.value=cfg.freq*0.78;f2.Q.value=cfg.q*0.8;
+    const g2=c.createGain();g2.gain.value=cfg.gain*0.25;
+    const dly=c.createDelay();dly.delayTime.value=0.068;
+    s2.connect(f2);f2.connect(dly);dly.connect(g2);g2.connect(c.destination);
+    s2.start(c.currentTime+0.0);
+  }
+  // Phase Z: layered low-thump for unsuppressed rifle-class weapons —
+  // gives every shot a chest-felt body in addition to the bandpass crack.
+  if(idx===0||idx===5||idx===7){
+    const lo=c.createOscillator(),lg=c.createGain();
+    lo.type='sine';
+    lo.frequency.setValueAtTime(idx===7?72:idx===5?98:120,c.currentTime);
+    lo.frequency.exponentialRampToValueAtTime(idx===7?36:idx===5?52:62,c.currentTime+.10);
+    lg.gain.setValueAtTime(idx===7?.55:idx===5?.45:.30,c.currentTime);
+    lg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.14);
+    lo.connect(lg);lg.connect(c.destination);lo.start();lo.stop(c.currentTime+.16);
+  }
+  // Phase Z: high-frequency crackle for M4/DMR (gunpowder hiss)
+  if(idx===0||idx===5){
+    const cb=c.createBuffer(1,~~(c.sampleRate*0.04),c.sampleRate),cd=cb.getChannelData(0);
+    for(let i=0;i<cd.length;i++)cd[i]=(Math.random()*2-1)*Math.pow(1-i/cd.length,4);
+    const cs2=c.createBufferSource();cs2.buffer=cb;
+    const cf=c.createBiquadFilter();cf.type='highpass';cf.frequency.value=4200;
+    const cg=c.createGain();cg.gain.value=.18;
+    cs2.connect(cf);cf.connect(cg);cg.connect(c.destination);cs2.start();
+  }
+  // Phase Z: sniper roll — a brief sustained decay after the crack for AWM
+  if(idx===7){
+    const o=c.createOscillator(),og=c.createGain();
+    o.type='sawtooth';o.frequency.setValueAtTime(180,c.currentTime+0.04);
+    o.frequency.exponentialRampToValueAtTime(60,c.currentTime+0.30);
+    og.gain.setValueAtTime(.20,c.currentTime+0.04);
+    og.gain.exponentialRampToValueAtTime(.001,c.currentTime+0.34);
+    o.connect(og);og.connect(c.destination);o.start(c.currentTime+0.04);o.stop(c.currentTime+0.36);
+  }
   // USP-T mechanical accent: brief "click-thwip" — slide cycle clack layered
   // under the suppressed bandpass body. Quick high tick + softer mid pop.
   if(idx===1){
@@ -5472,9 +6919,13 @@ function reverbSetBuilding(bn){
     {dur:1.80,decay:2.2,wet:0.45}, // 5: hospital — clinical hard surfaces
     {dur:3.20,decay:1.3,wet:0.65}, // 6: subway — long tunnel echo
     {dur:0.85,decay:2.8,wet:0.32}, // 7: yacht — soft cabin damping
-    {dur:1.10,decay:2.4,wet:0.38}  // 8: server farm — flat-tone hum
+    {dur:1.10,decay:2.4,wet:0.38}, // 8: server farm — flat-tone hum
+    {dur:2.20,decay:1.6,wet:0.40}, // 9: border crossing — wide open desert wash
+    {dur:3.60,decay:1.2,wet:0.62}, // 10: cathedral — long stone reverb
+    {dur:0.95,decay:2.5,wet:0.34}, // 11: karelia freighter — damped steel
+    {dur:1.55,decay:1.8,wet:0.42}  // 12: spire — glass+chrome shimmer
   ];
-  const p=profiles[Math.min(bn-1,7)];
+  const p=profiles[Math.min(bn-1,profiles.length-1)];
   REVERB.conv.buffer=_makeIR(c,p.dur,p.decay);
   REVERB.sendGain.gain.value=p.wet;
 }
@@ -5620,10 +7071,13 @@ function sfxBulletWhip(){
   const g=c.createGain();g.gain.value=.42;
   s.connect(f);f.connect(g);g.connect(c.destination);s.start();
 }
-function sfxHit(hs){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.frequency.value=hs?950:200;o.type='sine';g.gain.setValueAtTime(hs?.45:.3,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(hs?.11:.07));o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);}
-function sfxReload(){const c=getAC();[[0,320],[.07,200],[.14,260]].forEach(([t,f])=>{const o=c.createOscillator(),g=c.createGain();o.frequency.value=f;g.gain.setValueAtTime(.25,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+.035);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+.05);});}
-function sfxDamage(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sawtooth';o.frequency.value=110;g.gain.setValueAtTime(.35,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);}
-function sfxWaveClear(){const c=getAC();[440,554,660,880].forEach((f,i)=>{const o=c.createOscillator(),g=c.createGain();o.frequency.value=f;g.gain.setValueAtTime(.2,c.currentTime+i*.1);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.1+.35);o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.1);o.stop(c.currentTime+i*.1+.4);});}
+// Phase G: these wrappers delegate to ./audio.js so existing call sites keep
+// working after the extraction. Future passes can replace each call site
+// with a direct import.
+function sfxHit(hs){return _sfxHit(hs);}
+function sfxReload(){return _sfxReload();}
+function sfxDamage(){return _sfxDamage();}
+function sfxWaveClear(){return _sfxWaveClear();}
 function sfxMeleeSwing(combo){
   const c=getAC();
   // Whoosh: pitched noise burst — harder/heavier for later combo hits
@@ -5811,7 +7265,7 @@ function checkMeleeHit(){
       const baseDmg=MELEE.isLunge?120:MELEE.comboCount===2?140:82;
       const dmg=(baseDmg*comboMult)|0;
       const killed=e.takeDamage(dmg,false,true);
-      sfxMeleeHit(MELEE.comboCount);showHM(false);
+      sfxMeleeHit(MELEE.comboCount);showHM('body',Math.min(1,dmg/120));
       // Hit-stop: almost-freeze swing advancement for tactile crunch
       MELEE.hitStop=MELEE.HIT_STOP_DUR;
       MELEE.hitFlashTimer=0.22;
@@ -6979,7 +8433,7 @@ function updateKnives(dt){
       if(hits.length){
         const h=hits[0];const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
         const killed=enemy.takeDamage(isHead?999:200,isHead);
-        addBlood(h.point,isHead);showHM(isHead);sfxHit(isHead);sfxKnifeStick();
+        addBlood(h.point,isHead);showHM(isHead?'head':'body');sfxHit(isHead);sfxKnifeStick();
         if(killed){killFeed(isHead);awardKillMoney(enemy,isHead);cinematicKill(h.point);if(Math.random()<.30)spawnAmmoPickup(enemy.group.position.clone());setTimeout(()=>checkZoneClears(),60);}
         // Stick the knife at the impact point (visual)
         k.grp.position.copy(h.point);
@@ -7107,7 +8561,10 @@ const H={
   reticlePhase:0
 };
 const EYE=1.7,PR=0.35;
-const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],campaignLevel:null,currentBeat:null,mastery:null,runModifiers:null};
+const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],campaignLevel:null,currentBeat:null,mastery:null,runModifiers:null,
+  // Phase 6 — AI/lean telemetry counters (read by __game.debug.snapshot)
+  _aiPeekCount:0,_aiPeekShotsFired:0,_aiAllShotsFired:0,_aiPairsActive:0,
+  _playerLeanShots:0,_playerTotalShots:0};
 function _defaultAttachments(){
   return {scope:null,mag:null,muzzle:null,foregrip:null};
 }
@@ -7187,7 +8644,7 @@ function tryPistolWhip(){
     const h=hits[0];const enemy=h.object.userData.enemy;
     enemy.lastPlayerDir.set(fwd.x,0,fwd.z).normalize();
     const killed=enemy.takeDamage(30,false,true);
-    addBlood(h.point,false);showHM(false);sfxHit(false);
+    addBlood(h.point,false);showHM('body');sfxHit(false);
     if(killed){killFeed(false);awardKillMoney(enemy,false);cinematicKill(h.point);setTimeout(()=>checkZoneClears(),60);}
   }
   // Audio cue — meaty thump
@@ -7396,7 +8853,15 @@ document.addEventListener('keyup',e=>{delete K[e.code];if(e.code==='KeyC')P.crou
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
 const $e=id=>document.getElementById(id);
 function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}const level=G.campaignLevel||getCampaignLevel(G.building);const beat=G.currentBeat&&G.currentBeat.meta;const roomCount=G.zoneClears?G.zoneClears.filter(c=>c).length:0;$e('wave-num').textContent=(beat?beat.label+' · ':'')+'ROOMS '+roomCount+' / 3';$e('building-num').textContent='B'+G.building+' · '+(level?level.callsign:'BUILDING');if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
-function showHM(kind='body'){const hm=$e('hitmark');if(!hm)return;hm.style.opacity='1';hm.className='hm hm-'+kind;G.hitMarkTimer=(kind==='head')?.22:.14;}
+function showHM(kind='body',mag=1){
+  // Phase AA: hit-marker scale punch — `mag` (0..1+) bumps a brief CSS
+  // transform so heavier hits feel more substantial.
+  const hm=$e('hitmark');if(!hm)return;
+  hm.style.opacity='1';hm.className='hm hm-'+kind;
+  const scale=kind==='head'?1.45:1.0+Math.min(0.6,mag*0.5);
+  hm.style.transform=`translate(-50%,-50%) scale(${scale.toFixed(2)})`;
+  G.hitMarkTimer=(kind==='head')?.22:.14;
+}
 function killFeed(hs,opts){
   const el=document.createElement('div');
   el.className='kf-entry'+(hs?' hs':'');
@@ -7847,7 +9312,31 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const SETTINGS=(()=>{let s={sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,aiSkipFramesModulo:3,raycastSpatialIndex:true,maxParticlesBlood:120,maxParticlesSmoke:80,cheapMaterials:false,reducedBloomish:false};try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}return s;})();
+const SETTINGS=(()=>{
+  // Defaults FIRST — then merge the saved values on top. Phase 6: new tactical
+  // and lean fields default to enabled; loading an older settings JSON simply
+  // doesn't override them (the keys are missing) so old saves are forward-
+  // compatible.
+  let s={
+    sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,
+    scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
+    pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,
+    aiSkipFramesModulo:3,raycastSpatialIndex:true,
+    maxParticlesBlood:120,maxParticlesSmoke:80,
+    cheapMaterials:false,reducedBloomish:false,
+    // Phase 6 — tactical AI + lean toggles
+    aiTacticalEnabled:true,
+    aiPeekDebugRender:false,
+    playerLeanAntiClip:true,
+    playerLeanBodyRig:true,
+  };
+  try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}
+  // Force-on the new tactical flags if a legacy save explicitly nulled them
+  if(s.aiTacticalEnabled==null)s.aiTacticalEnabled=true;
+  if(s.playerLeanAntiClip==null)s.playerLeanAntiClip=true;
+  if(s.playerLeanBodyRig==null)s.playerLeanBodyRig=true;
+  return s;
+})();
 function _goreMul(){return ({low:.30,med:1.0,high:1.5}[SETTINGS.gore])||1.0;}
 function saveSettings(){try{localStorage.setItem('clearance_settings',JSON.stringify(SETTINGS));}catch(_){}}
 function applyQuality(){
@@ -7936,6 +9425,19 @@ function addBlood(pos,hs){
       const vel=new THREE.Vector3((Math.random()-.5)*4,Math.random()*3,(Math.random()-.5)*4);
       scene.add(mesh);
       G.trails.push({mesh,mat,vel,timer:.40,maxTime:.40,isSmoke:true});
+    }
+  } else {
+    // Phase AB: body-shot mist — softer + shorter than headshot mist but
+    // still gives the hit a "puff" tell. Skipped at low gore tier.
+    if(typeof _goreMul==='function'&&_goreMul()>=1.0){
+      for(let i=0;i<4;i++){
+        const mat=new THREE.MeshBasicMaterial({color:0x801018,transparent:true,opacity:.40,depthWrite:false});
+        const mesh=new THREE.Mesh(new THREE.SphereGeometry(.018+Math.random()*.024,4,3),mat);
+        mesh.position.copy(pos);
+        const vel=new THREE.Vector3((Math.random()-.5)*2.4,Math.random()*1.6,(Math.random()-.5)*2.4);
+        scene.add(mesh);
+        G.trails.push({mesh,mat,vel,timer:.30,maxTime:.30,isSmoke:true});
+      }
     }
   }
 }
@@ -8599,7 +10101,7 @@ function tickProjectiles(dt){
         const dmg=isHead?p.damageHs:p.damageBase;
         const killed=enemy.takeDamage(dmg,isHead);
         if(typeof spawnDmgNumber==='function')spawnDmgNumber(h.point.clone().add(new THREE.Vector3(0,.4,0)),dmg,isHead,killed);
-        if(typeof showHM==='function')showHM(isHead);
+        if(typeof showHM==='function')showHM(isHead?'head':'body',Math.min(1,dmg/120));
         if(typeof sfxHit==='function')sfxHit(isHead);
         if(typeof addBlood==='function')addBlood(h.point,isHead);
         if(killed){
@@ -8683,6 +10185,20 @@ function shoot(){
   const W=WEAPONS[P.weaponIdx];
   const now=performance.now()/1000;if(W.fireRate>now-P.lastShot)return;
   P.lastShot=now;P.ammo--;sfxShoot(P.weaponIdx);if(typeof incrementMagShot==='function')incrementMagShot();
+  // Phase 6 telemetry — count lean-fire ratio
+  if(G&&G._playerTotalShots!=null){
+    G._playerTotalShots++;
+    if(Math.abs(P.lean||0)>0.4)G._playerLeanShots++;
+  }
+  P._tutFired=true;
+  // Phase E: stash this shot's weapon flags so takeDamage/die() can read
+  // suppressed/shotgun/sniper for stagger and corpse-propagation gating.
+  Enemy._nextHitFlags={
+    suppressed:!!W.suppressed,
+    shotgun:P.weaponIdx===3,
+    sniper:!!W.bigZoom||P.weaponIdx===7,
+    weaponIdx:P.weaponIdx
+  };
   // ── RECOIL PATTERN — track shot index in current spray (resets after >.45s no fire)
   const _timeSinceLast=now-(RECOIL_STATE.lastShotT||0);
   if(_timeSinceLast>.45){
@@ -8849,12 +10365,13 @@ function shoot(){
       // Floating damage number
       spawnDmgNumber(hitPt.clone().add(new THREE.Vector3(0,.4,0)),finalDmg,isHead,killed);
       pelletHit=true;
-      if(pellet===0){showHM(isHead);sfxHit(isHead);sfxHitConfirm(isHead);if(typeof _registerDmgDealt==='function')_registerDmgDealt(finalDmg);}
+      if(pellet===0){showHM(isHead?'head':'body',Math.min(1,finalDmg/120));sfxHit(isHead);sfxHitConfirm(isHead);if(typeof _registerDmgDealt==='function')_registerDmgDealt(finalDmg);}
       if(allowFx){addParticle(hitPt,isHead);addBlood(hitPt,isHead);}
       if(killed){
         const _d=hitPt.distanceTo(camera.position);
         killFeed(isHead,{dist:_d});awardKillMoney(enemy,isHead);cinematicKill(h.point);
         P.kills++;if(isHead){P.headshots++;_registerHsKill();}else _registerNonHsKill();
+        if(typeof _killKickFx==='function')_killKickFx(isHead);
         comboKill(isHead);
         if(typeof _registerMultikill==='function')_registerMultikill();
         // ADRENALINE: close-range kill heals + speed boost
@@ -8908,6 +10425,16 @@ function shoot(){
         // Explosive prop hit?
         if(wh.object&&wh.object.userData&&wh.object.userData.explosive){
           _explodeProp(wh.object,hitPt);
+        }
+        // Phase P: cover degradation — props with userData.coverHP decrement
+        // per hit and shatter/remove when HP <= 0. Mid-fight cover shifts.
+        if(wh.object&&wh.object.userData&&wh.object.userData.coverHP){
+          wh.object.userData.coverHP-=1;
+          // Visual feedback — small impact dust + scorch already from addImpact.
+          if(wh.object.userData.coverHP<=0&&!wh.object.userData._degraded){
+            wh.object.userData._degraded=true;
+            _shatterMesh(wh.object,hitPt);
+          }
         }
         // Electrical arc hazard hit?
         if(wh.object&&wh.object.userData&&wh.object.userData.arcing){
@@ -12480,7 +14007,7 @@ const CREDITS_TEXT=[
   '★ THE OPERATOR SURVIVES ★',
   '',
   'Six years of preparation.',
-  'Eight buildings.',
+  'Twelve buildings.',
   'One night.',
   'No witnesses.',
   '',
@@ -12568,11 +14095,15 @@ const TIER_RARITY_WEIGHTS=[
   [.10,.35,.40,.15], // 5: hospital
   [.05,.25,.50,.20], // 6: subway
   [.05,.20,.50,.25], // 7: yacht
-  [.02,.15,.45,.38]  // 8: server farm
+  [.02,.15,.45,.38], // 8: server farm
+  [.02,.18,.45,.35], // 9: border crossing — high-end trickle continues into Act III
+  [.02,.14,.42,.42], // 10: cathedral — older, finer gear
+  [.01,.12,.40,.47], // 11: karelia — military-grade
+  [.00,.08,.35,.57]  // 12: spire — apex tier dominates
 ];
 // Roll an attachment tier weighted by current building
 function rollAttachmentTier(bn){
-  const w=TIER_RARITY_WEIGHTS[Math.min((bn|0)-1,7)]||TIER_RARITY_WEIGHTS[0];
+  const w=TIER_RARITY_WEIGHTS[Math.min((bn|0)-1,TIER_RARITY_WEIGHTS.length-1)]||TIER_RARITY_WEIGHTS[0];
   const r=Math.random();
   let acc=0;
   for(let i=0;i<w.length;i++){acc+=w[i];if(r<=acc)return i+1;}
@@ -12587,7 +14118,7 @@ const ACHIEVEMENTS_EXT=[
   {id:'rangeKing',   name:'Range King',       desc:'Score 1500+ on the training range',  check:()=>(PROGRESS._bestRange||0)>=1500},
   {id:'endlessTen',  name:'Iron Endless',     desc:'Reach wave 10 in endless',           check:()=>(PROGRESS._endlessBest||0)>=10},
   {id:'allOps',      name:'Roster',           desc:'Win a run with each operator',       check:()=>!!(PROGRESS._winsByOp&&Object.keys(PROGRESS._winsByOp).length>=4)},
-  {id:'allBuildings',name:'Eight & Out',      desc:'Clear all 8 buildings',              check:()=>!!PROGRESS._finalKill},
+  {id:'allBuildings',name:'Twelve & Out',     desc:'Clear all 12 buildings',             check:()=>!!PROGRESS._finalKill},
   {id:'noDeath',     name:'Untouchable',      desc:'Beat the campaign without dying',    check:()=>!!PROGRESS._winNoDeath},
   {id:'difficultyMaster',name:'Lethal',       desc:'Beat the campaign on Lethal',        check:()=>!!PROGRESS._winLethal}
 ];
@@ -12818,6 +14349,184 @@ function startBuildingIntro(){
   // Show building name overlay during intro
   attachToast(`<div style="color:#ffd060;letter-spacing:.40em;font-size:18px;font-weight:900">▣ ${BUILDING_INFO[G.building-1].name}</div>`,3500);
 }
+// ── TUTORIAL — first-run B01 prompts (Phase F) ─────────────────────────
+// Queues short toast prompts; each advances when the player performs the
+// expected action. State lives on G._tutState; PROGRESS._tutorialSeen
+// persists "saw it once, don't show again."
+const TUTORIAL_STEPS=[
+  { id:'move',   text:'MOVE: <b>W A S D</b>',                check:()=>(P._tutMoved===true) },
+  { id:'look',   text:'LOOK: <b>MOUSE</b>',                  check:()=>(P._tutLooked===true) },
+  { id:'ads',    text:'AIM DOWN SIGHTS: <b>RMB</b>',          check:()=>(P.ads>0.4) },
+  { id:'fire',   text:'FIRE: <b>LMB</b>',                     check:()=>(P._tutFired===true) },
+  { id:'reload', text:'RELOAD: <b>R</b>',                     check:()=>(P.reloading||P._tutReloaded===true) },
+  { id:'lean',   text:'LEAN AROUND CORNERS: <b>Q / E</b>',    check:()=>(Math.abs(P.lean||0)>0.5) },
+  { id:'sprint', text:'SPRINT: <b>SHIFT + W</b>',             check:()=>(P.sprintLatched===true) },
+  { id:'vault',  text:'VAULT BARRIERS: <b>SPACE</b> near a ledge', check:()=>(P.vaulting===true||P._tutVaulted===true) },
+];
+// ── Phase Y: per-building mission objectives ──────────────────────────
+// Three buildings get bespoke objective verbs surfaced in the HUD ticker.
+//
+//   B05 Sterling Medical — "expose the surgery records": visit 3 chart
+//                          stations (player within 2m for 0.5s) to unlock boss
+//   B07 Azure Yacht       — "quiet the deck": stealth gate — if any enemy
+//                          gets LOS on the player, alarm raises, difficulty bumps
+//   B10 Cathedral         — "reach the bell tower before midnight mass ends":
+//                          90s countdown, fail mastery if expired before boss
+//
+// G._objective is the runtime state; null when no objective applies.
+const OBJECTIVE_DEFS={
+  5: {kind:'stations',stations:[{x:-13,z:-16},{x:0,z:-18},{x:13,z:-15}],radius:2.0,dwellMs:500,total:3,
+      labelFn:o=>'EXPOSE SURGERY RECORDS — '+(o.visited||0)+' / '+o.total},
+  7: {kind:'stealth',label:'QUIET THE DECK — NO ALARM',
+      labelFn:o=>o.alarmed?'ALARM RAISED — REINFORCEMENTS DOUBLED':'QUIET THE DECK — NO ALARM'},
+  10:{kind:'timer',timerS:90,label:'REACH THE BELL TOWER',
+      labelFn:o=>'BELL TOWER — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
+};
+function _initObjectiveForBuilding(bn){
+  // Always tear down previous HUD element
+  const prior=document.getElementById('objective-ticker');
+  if(prior&&prior.parentNode)prior.parentNode.removeChild(prior);
+  // Also drop the shotgun-pellets HUD between buildings so it doesn't leak
+  // across runs that ended in ADS pose.
+  const sg=document.getElementById('sg-pellets');
+  if(sg)sg.style.opacity='0';
+  G._objective=null;
+  const def=OBJECTIVE_DEFS[bn];
+  if(!def)return;
+  // Construct runtime state
+  G._objective={
+    bn, def,
+    visited: def.kind==='stations'?0:undefined,
+    visitedFlags: def.kind==='stations'?new Array(def.total).fill(false):undefined,
+    dwellStart: null,
+    alarmed: def.kind==='stealth'?false:undefined,
+    remainingS: def.kind==='timer'?def.timerS:undefined,
+    completed:false,
+    failed:false,
+  };
+  // Build HUD element
+  const el=document.createElement('div');
+  el.id='objective-ticker';
+  el.style.cssText='position:fixed;left:14px;top:14px;z-index:30;font:700 13px Rajdhani,sans-serif;color:#ffd060;letter-spacing:.16em;background:rgba(8,10,14,.72);padding:8px 14px;border-left:3px solid #ffd060;box-shadow:0 2px 12px rgba(0,0,0,.45);pointer-events:none';
+  el.textContent='▣ '+(def.labelFn?def.labelFn(G._objective):def.label);
+  document.body.appendChild(el);
+}
+function tickObjective(dt){
+  const o=G._objective;
+  if(!o||o.completed||o.failed)return;
+  const def=o.def;
+  if(def.kind==='stations'){
+    // Check distance to each station
+    for(let i=0;i<def.stations.length;i++){
+      if(o.visitedFlags[i])continue;
+      const st=def.stations[i];
+      const dx=P.pos.x-st.x,dz=P.pos.z-st.z;
+      if(dx*dx+dz*dz<def.radius*def.radius){
+        if(o.dwellStart==null||o._dwellIdx!==i){o.dwellStart=performance.now();o._dwellIdx=i;}
+        if(performance.now()-o.dwellStart>=def.dwellMs){
+          o.visitedFlags[i]=true;
+          o.visited=(o.visited||0)+1;
+          o.dwellStart=null;
+          if(typeof attachToast==='function')attachToast('<div style="color:#ffd060;letter-spacing:.20em">▣ CHART '+o.visited+' / '+o.total+'</div>',1400);
+          if(o.visited>=o.total)o.completed=true;
+        }
+        break;
+      } else if(o._dwellIdx===i){o.dwellStart=null;o._dwellIdx=-1;}
+    }
+  } else if(def.kind==='stealth'){
+    // If any non-dead enemy currently has LOS to the player, alarm.
+    if(!o.alarmed&&G.enemyMgr){
+      for(const e of G.enemyMgr._list){
+        if(e.dead)continue;
+        // Use the cheap canSee call — only for ones in ATTACK / CHASE / ALERT
+        if(e.state===ATTACK||e.state===CHASE){
+          if(e.canSee(P.pos,G.levelData.walls||[])){
+            o.alarmed=true;
+            // Bump difficulty: spawn extras + flash banner
+            if(typeof attachToast==='function')attachToast('<div style="color:#ff5040;letter-spacing:.20em">⚠ ALARM RAISED</div>',2200);
+            if(G.enemyMgr){
+              for(let k=0;k<2;k++){
+                const e2=new Enemy(scene,new THREE.Vector3(P.pos.x+(Math.random()*8-4),WT,P.pos.z+(Math.random()*8-4)),G.building||1,'soldier');
+                e2.zoneId=1;G.enemyMgr._list.push(e2);
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+  } else if(def.kind==='timer'){
+    o.remainingS=Math.max(0,o.remainingS-dt);
+    if(o.remainingS<=0&&!o.completed){
+      o.failed=true;
+      if(G.mastery)G.mastery.failed=true;
+      if(typeof attachToast==='function')attachToast('<div style="color:#ff5040;letter-spacing:.20em">⏱ BELL TOWER TIMED OUT</div>',2200);
+    }
+  }
+  // Phase AF: on completion, banner + dismiss HUD after fade. Objective
+  // success cues mastery success on the appropriate buildings.
+  if(o.completed&&!o._announced){
+    o._announced=true;
+    if(typeof attachToast==='function')attachToast('<div style="color:#5fcb52;letter-spacing:.20em;font-weight:900">✓ OBJECTIVE COMPLETE</div>',2200);
+    const el2=document.getElementById('objective-ticker');
+    if(el2){el2.style.borderLeftColor='#5fcb52';el2.style.color='#5fcb52';
+      setTimeout(()=>{el2.style.transition='opacity .8s';el2.style.opacity='0';
+        setTimeout(()=>{if(el2.parentNode)el2.parentNode.removeChild(el2);},900);},1800);}
+  }
+  // Update HUD — throttled. textContent writes trigger relayout, and the
+  // ticker text only changes when state changes anyway.
+  const el=document.getElementById('objective-ticker');
+  if(el){
+    const txt='▣ '+(def.labelFn?def.labelFn(o):def.label);
+    if(el._lastTxt!==txt){el.textContent=txt;el._lastTxt=txt;}
+  }
+}
+
+function startInteractiveTutorial(){
+  if(PROGRESS._tutorialSeen)return;
+  G._tutState={ idx:0, fadeIn:0, fadeOut:0, doneAt:0, started:performance.now(), elementId:'tutorial-prompt' };
+  // Build the DOM once
+  let el=document.getElementById(G._tutState.elementId);
+  if(!el){
+    el=document.createElement('div');
+    el.id=G._tutState.elementId;
+    el.style.cssText='position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:42;font:600 16px Rajdhani,sans-serif;color:#ffd060;letter-spacing:.18em;background:rgba(8,10,14,.75);padding:10px 18px;border:1px solid rgba(255,200,80,.45);box-shadow:0 4px 22px rgba(255,180,40,.15);opacity:0;pointer-events:none;transition:opacity .35s';
+    document.body.appendChild(el);
+  }
+}
+function tickTutorial(dt){
+  const s=G._tutState;
+  if(!s)return;
+  const step=TUTORIAL_STEPS[s.idx];
+  const el=document.getElementById(s.elementId);
+  if(!step||!el){
+    // Done — fade out + persist
+    if(el){el.style.opacity='0';setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},500);}
+    PROGRESS._tutorialSeen=true;
+    if(typeof saveProgressFile==='function')saveProgressFile();
+    G._tutState=null;
+    return;
+  }
+  // Update text and ensure visible
+  if(el.dataset.id!==step.id){
+    el.dataset.id=step.id;
+    el.innerHTML=step.text;
+    el.style.opacity='1';
+  }
+  // Track simple input events
+  if(K&&(K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']))P._tutMoved=true;
+  if(M&&(M.dx||M.dy))P._tutLooked=true;
+  if(K&&K['KeyR'])P._tutReloaded=true;
+  if(P.vaulting)P._tutVaulted=true;
+  // Hook fire from shoot() via a flag set there
+  // Check condition
+  if(step.check()){
+    el.style.opacity='0';
+    s.idx++;
+    setTimeout(()=>{ if(el)el.style.opacity='1'; }, 700);
+  }
+}
+
 function tickIntro(dt){
   if(!INTRO.active)return;
   INTRO.t+=dt;
@@ -13302,12 +15011,59 @@ function hasActivePowerup(id){
 }
 // ── EXPLOSIVE / ELECTRICAL HAZARDS ──────────────────────────────
 // userData.explosive / userData.arcing. On shot they trigger AOE damage / stun.
+// Phase V: small camera punch on kill confirmation. Layered on top of the
+// existing kill-feed/HM toast so the kill physically *lands* in the camera.
+function _killKickFx(isHead){
+  // Tiny shake + roll — capped so headshots feel sharper but never disorient.
+  const intensity=isHead?1.0:0.6;
+  PP.shakeX+=(Math.random()-.5)*0.18*intensity;
+  PP.shakeY+=(Math.random()-.5)*0.10*intensity;
+  // Brief pitch/roll punch decays via the existing dmgRoll/Pitch lanes
+  P.dmgRoll+=(Math.random()<.5?-1:1)*0.012*intensity;
+  P.dmgPitch+=0.008*intensity;
+  // Quick weapon dip (recoil-style settle)
+  if(typeof gunGrp!=='undefined'){gunGrp.rotation.x-=0.012*intensity;}
+  // Phase AF: short tonal kill-confirm — distinct from sfxHitConfirm so
+  // it pops on top of the hit marker chirp.
+  try{
+    const c=getAC();
+    const o=c.createOscillator(),g=c.createGain();
+    o.type='triangle';
+    o.frequency.setValueAtTime(isHead?1480:880,c.currentTime);
+    o.frequency.exponentialRampToValueAtTime(isHead?760:520,c.currentTime+0.10);
+    g.gain.setValueAtTime(0.10*intensity,c.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,c.currentTime+0.12);
+    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+0.14);
+  }catch(_){}
+}
+
 function _explodeProp(mesh,hitPt){
   if(!mesh||mesh.userData._exploded)return;
   mesh.userData._exploded=true;
   const pos=mesh.position.clone();
   // Visual: spawn explosion (re-uses spawnExplosionFx)
   if(typeof spawnExplosionFx==='function')spawnExplosionFx(pos);
+  // Phase M / Phase BA: chain-detonate nearby explosives. Use a cached
+  // explosive-props list on G.levelData so we don't traverse the entire
+  // scene every detonation (which can fire 5-10× per chain).
+  if(G.levelData){
+    const CHAIN_R=3.5;
+    let list=G.levelData._explosiveProps;
+    if(!list){
+      list=[];
+      for(const o of (G.levelData.solids||[])){
+        if(o&&o.userData&&o.userData.explosive)list.push(o);
+      }
+      G.levelData._explosiveProps=list;
+    }
+    for(const o of list){
+      if(o===mesh||!o.userData.explosive||o.userData._exploded)continue;
+      const dx=o.position.x-pos.x,dy=(o.position.y-pos.y)||0,dz=o.position.z-pos.z;
+      if(dx*dx+dy*dy+dz*dz<CHAIN_R*CHAIN_R){
+        setTimeout(()=>_explodeProp(o,o.position.clone()),140+Math.random()*120);
+      }
+    }
+  }
   // Damage logic — same as grenade explosion
   const RADIUS=4.2;
   if(G.enemyMgr){
@@ -13372,6 +15128,49 @@ function _shatterMesh(mesh,hitPt){
   // Dispose original
   const cx=mesh.position.x,cy=mesh.position.y,cz=mesh.position.z;
   const col=mesh.material&&mesh.material.color?mesh.material.color.clone():new THREE.Color(0xffffff);
+  // Phase B: glass-pane integration — when a window pane breaks, clear the
+  // isWindow flag on the linked AABB so AI can now path through, mark the
+  // vault entry as "open" (still usable), and remove the highlight sibling.
+  // Phase B+P: when any breakable mesh has a linked wall AABB, mark it broken
+  // so navGrid/AI path/player movement no longer treat it as solid. Same hook
+  // also clears the vault entry. Rebuilds navGrid on glass break specifically
+  // (crates clear the wall AABB; nav A* skips broken walls via _isPosClearForEnemy).
+  {
+    const aabb=mesh.userData.linkedAABB;
+    if(aabb){aabb.broken=true;if(aabb.isWindow)aabb.isWindow=false;}
+    const vlEntry=mesh.userData.linkedVault;
+    if(vlEntry){vlEntry.broken=true;}
+    const sib=mesh.userData.linkedSibling;
+    if(sib){scene.remove(sib);if(sib.geometry)sib.geometry.dispose();if(sib.material&&sib.material.dispose)sib.material.dispose();}
+  }
+  if(mesh.userData.glassPane){
+    // Phase D: rebuild navGrid so AI can path through the new opening.
+    if(G.levelData&&G.levelData.walls){
+      G.levelData.navGrid=_buildNavGrid(G.levelData.walls,0.5);
+    }
+    // Phase AB: smoke wisps drifting through the broken pane — adds an
+    // "open air" tell for the new firing lane.
+    for(let i=0;i<6;i++){
+      const sM=new THREE.MeshBasicMaterial({color:0xc8d8e8,transparent:true,opacity:.34,depthWrite:false});
+      const sm=new THREE.Mesh(new THREE.SphereGeometry(.08+Math.random()*.06,5,4),sM);
+      sm.position.set(cx+(Math.random()-.5)*0.4,cy+(Math.random()-.4)*0.4,cz+(Math.random()-.5)*0.4);
+      const vel=new THREE.Vector3((Math.random()-.5)*.5,0.4+Math.random()*0.4,(Math.random()-.5)*.5);
+      scene.add(sm);
+      G.trails.push({mesh:sm,mat:sM,vel,timer:1.6,maxTime:1.6,isSmoke:true});
+    }
+    // Trigger AI awareness around the break — soldiers within ~10m turn to
+    // investigate the noise.
+    if(typeof G!=='undefined'&&G.enemyMgr){
+      for(const en of G.enemyMgr._list){
+        if(en.dead)continue;
+        const dx=en.group.position.x-cx,dz=en.group.position.z-cz;
+        if(dx*dx+dz*dz<10*10){
+          en.lastKnownPos=new THREE.Vector3(cx,0,cz);
+          if(en.state===0){en.state=4;en.searchTimer=4.0;}    // PATROL→SEARCH
+        }
+      }
+    }
+  }
   scene.remove(mesh);
   if(mesh.geometry)mesh.geometry.dispose();
   if(mesh.material&&mesh.material.dispose)mesh.material.dispose();
@@ -13566,6 +15365,12 @@ function spawnDmgNumber(worldPos,amt,isHead,killed,labelExtra){
   const sy=(-v.y*.5+.5)*window.innerHeight;
   const el=document.createElement('div');
   el.className='dmg-num'+(isHead?' crit':'')+(killed?' kill':'');
+  // Phase AA: scale damage number with magnitude — heavy hits read bigger.
+  const big=amt>=80,med=amt>=40;
+  const scale=big?1.45:med?1.18:1.0;
+  // Headshot gold tint via inline style override (works alongside any CSS).
+  if(isHead){el.style.color='#ffd060';el.style.textShadow='0 0 8px rgba(255,200,80,.65)';}
+  el.style.fontSize=(15*scale)+'px';
   let text=Math.round(amt);
   if(labelExtra)text=text+' '+labelExtra;
   else if(isHead)text=text+'  HS';
@@ -14366,6 +16171,16 @@ function startBuilding(){
   normalizePlayerRuntime();
   applyPerks();
   comboInit();
+  // Phase F: first-run tutorial. Fires once on B01 and persists across runs.
+  if(G.building===1&&!PROGRESS._tutorialSeen&&typeof startInteractiveTutorial==='function'){
+    setTimeout(()=>startInteractiveTutorial(),900);
+  }
+  // Phase Y: per-building mission objective. Three buildings get bespoke
+  // verbs surfaced through the HUD ticker. Falls through cleanly for
+  // buildings without an objective.
+  if(typeof _initObjectiveForBuilding==='function'){
+    _initObjectiveForBuilding(G.building);
+  }
   P.execs=0;
   if(typeof _resetReinforce==='function')_resetReinforce();
   // Clean up dropped weapons from previous building
@@ -15085,27 +16900,47 @@ function updateDodge(dt){
   PP.shakeY-=Math.sin(ph*Math.PI)*.08;
 }
 // ── STORY NARRATIVE — typewriter intro + epilogue cards ──────────────
+// Three-act campaign:
+//   Act I    (B01-B04): the family's foundation — break the spine.
+//   Act II   (B05-B08): the family's command — burn the head.
+//   Act III  (B09-B12): "The Apparatus" — the network above the family.
 const STORY_BEATS=[
-  // Building 1 prelude
+  // ── Act I prelude ───────────────────────────────────────────────
   {after:0, lines:[
     'Six years ago they took everything.',
     'Tonight, you take it all back.',
-    'Eight names. Eight buildings. One night.',
+    'Twelve names. One night.',
     "The Vasari syndicate doesn't know it yet — they're already dead."
   ]},
-  // After building 4 — midpoint pivot
+  // ── Act I → Act II pivot (after building 4) ────────────────────
   {after:4, lines:[
-    "Four down. Four to go.",
-    "The Patriarch knows you're coming.",
-    "He's calling everyone home.",
+    "Four down. The family's spine is broken.",
+    "The Patriarch is in his bunker now.",
+    "He thinks the back doors save him.",
     "Good. Easier to find them all in one place."
   ]},
-  // Final epilogue (after 8)
+  // ── Act II climax / Act III opening (after building 8) ─────────
+  // Old "epilogue after 8" replaced with a new pivot: the Patriarch
+  // is dead — but the customs ledger names someone higher.
   {after:8, lines:[
-    "It's done.",
-    "The family is finished.",
-    "You walk out the way you came in. Quiet. Dark.",
-    "There are no witnesses."
+    "The Patriarch is dead.",
+    "You found the ledger in his vault.",
+    "The family was paying someone above them — every month, in cash.",
+    "Tonight isn't over yet."
+  ]},
+  // ── Act III midpoint (after building 10 — Cathedral) ───────────
+  {after:10, lines:[
+    "The Cardinal kept books in three languages.",
+    "All of them named the same man.",
+    "Eldritch Asteria. The Director.",
+    "He's boarding a helicopter at the Spire — four-forty-four."
+  ]},
+  // ── True ending (after building 12) ────────────────────────────
+  {after:12, lines:[
+    "He didn't even run.",
+    "Just stood there, in the glass, watching the sunrise.",
+    "Said you were always part of the apparatus too.",
+    "Maybe. But you're the part that left.",
   ]}
 ];
 function showStoryBeat(idx,cb){
@@ -15346,8 +17181,16 @@ function advanceBuilding(){
     setTimeout(()=>showVictoryScreen(),1400);
     return;
   }
-  // Story midpoint pivot at building 5 (after first 4 cleared)
-  const showStoryFirst=(G.building===5)?(cb)=>showStoryBeat(4,cb):(cb)=>cb();
+  // Story act-pivot story beats. Each beat plays before the listed building:
+  //   5  → "after 4"  (Act I → Act II) — family spine broken
+  //   9  → "after 8"  (Act II → Act III) — Patriarch dead, the apparatus surfaces
+  //   11 → "after 10" (Act III midpoint) — the Director is named
+  //   (After-12 "true ending" plays from the victory cinematic, not here.)
+  let _beatIdx=null;
+  if(G.building===5)_beatIdx=4;
+  else if(G.building===9)_beatIdx=8;
+  else if(G.building===11)_beatIdx=10;
+  const showStoryFirst=(_beatIdx!==null)?(cb)=>showStoryBeat(_beatIdx,cb):(cb)=>cb();
   // Show dossier between buildings (closes → continues into briefing card)
   showStoryFirst(()=>{
     showDossierFor(G.building, ()=>{
@@ -15493,7 +17336,12 @@ const BUILDING_INFO=[
   {name:'STERLING MEDICAL', time:'0612 HRS', sub:'STAFF EVAC IN PROGRESS',       threat:'HIGH',target:'DR. MARCUS HUYNH',role:'ASSET LAUNDERER',intel:['Hospital wing under syndicate control','Stores cartel surgery records','Heavy security in ICU']},
   {name:'SUBWAY LINE 7',    time:'0743 HRS', sub:'TUNNEL CONTROL — RAILS COLD',  threat:'HIGH',target:'PYOTR DEMIDOV',role:'WEAPONS RUNNER',   intel:['Routes contraband through the tunnels','Keeps a personal commando team','Knows the maintenance shafts']},
   {name:'AZURE YACHT',      time:'0901 HRS', sub:'SHIP UNDERWAY · NO WITNESSES', threat:'CRITICAL',target:'LUCIA VASARI',role:'CONSIGLIERA',  intel:['Daughter of the Patriarch','Holds family ledger','Crew is loyal personal guard']},
-  {name:'SERVER FARM Δ',    time:'1014 HRS', sub:'PRIMARY OBJECTIVE — END IT',   threat:'EXTREME',target:'IL PATRIARCA',role:'SYNDICATE HEAD',intel:['Final target — the man at the top','Hardened operation room','3-phase security protocol']}
+  {name:'SERVER FARM Δ',    time:'1014 HRS', sub:'PRIMARY OBJECTIVE — END IT',   threat:'EXTREME',target:'IL PATRIARCA',role:'SYNDICATE HEAD',intel:['Final target — the man at the top','Hardened operation room','3-phase security protocol']},
+  // ── ACT III — The Apparatus ───────────────────────────────────────────
+  {name:'BORDER CROSSING',  time:'0510 HRS', sub:'INTERCEPT THE PIPELINE HANDOFF', threat:'HIGH',target:'SAITO MURANO',role:'PIPELINE OPERATOR',intel:['Cartel was a front — the pipeline still moves','Watchtower marksman holds the long lane','Customs ledger names the next ring up']},
+  {name:'CATHEDRAL SAN MARCO',time:'0035 HRS', sub:'BLACK MONEY SANCTUARY · MIDNIGHT MASS', threat:'HIGH',target:'CARDINAL LAZARETTI',role:'SACRED LAUNDERER',intel:['Funnels syndicate cash through votive accounts','Choir loft hides a sniper hide','Vault is in the bell tower']},
+  {name:'KARELIA FREIGHTER',time:'0322 HRS', sub:'OPEN OCEAN · NO BACKUP',          threat:'CRITICAL',target:'CAPT. RENKO STANNIS',role:'ROUTE MASTER',intel:['Routes the trafficking line through neutral water','Container maze on the cargo deck','Bridge access through engine room only']},
+  {name:'THE SPIRE',        time:'0444 HRS', sub:'APEX TARGET — HELIPAD IN 4 MIN',  threat:'EXTREME',target:'ELDRITCH ASTERIA',role:'THE DIRECTOR',intel:['The mastermind above the syndicate','Helicopter is fueled and waiting','Glass walls — sniper lines from anywhere']}
 ];
 const ENCOUNTER_BEATS={
   read:{label:'READ',pace:'scan',announce:'Identify lanes and pick the first angle.'},
@@ -15507,11 +17355,26 @@ const CAMPAIGN_LEVELS=[
   {building:1,id:'B01_LOADING_DOCK',name:'Loading Dock',callsign:'DOCK 7',target:'Eugene Prado',role:'Cartel Enforcer',threat:'LOW',time:'0312 HRS',missionVerb:'Breach the harbor intake and stop the alarm chain.',signaturePressure:'Containment alarm',setpiece:'alarm',mastery:{id:'dock_no_alarm',label:'No Alarm Clear',desc:'Clear the middle zone before reinforcements trigger.',reward:'Service catwalk route marked on replay.'},shortcut:'Service Catwalk',reward:'Harbor ledger fragment',beats:['read','brawl','boss'],enemyBias:['soldier','scout','heavy'],visual:{accent:'#ff9d40',landmark:'Forklift crown and relay beacon'},intel:['Runs the harbor smuggling lane','Alarm doors wake adjacent rooms','Catwalk silhouettes point toward the relay cage']},
   {building:2,id:'B02_CONTINENTAL_LOBBY',name:'Continental Lobby',callsign:'CONTINENTAL',target:'Irina Kovac',role:'Bagman / Fixer',threat:'MED',time:'0345 HRS',missionVerb:'Protect civilians while extracting the route key.',signaturePressure:'Hostage protocol',setpiece:'hostage',mastery:{id:'lobby_civilians_safe',label:'Civilians Safe',desc:'Clear the hostage beat without friendly fire.',reward:'Concierge service bypass unlocked.'},shortcut:'Concierge Bypass',reward:'Decryption key',beats:['read','hold','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#d4b06a',landmark:'Marble portico and hostage-lit atrium'},intel:['Hostages turn the middle zone into a restraint test','Formal columns hide side pushes','The target carries route credentials']},
   {building:3,id:'B03_NIGHTCLUB',name:'Nightclub',callsign:'CLUB OBSIDIAN',target:'Xavier Roux',role:'Information Broker',threat:'MED',time:'0421 HRS',missionVerb:'Push through the floor before the VIP rooms collapse on you.',signaturePressure:'Club ambush',setpiece:'ambush',mastery:{id:'club_vip_fastline',label:'VIP Fastline',desc:'Clear the dance-floor ambush without breaking combo.',reward:'VIP stair split highlighted on replay.'},shortcut:'VIP Stair Split',reward:'Broker drive',beats:['read','brawl','boss'],enemyBias:['scout','riot','demolitions'],visual:{accent:'#ff40c8',landmark:'Neon dance bowl and mirror lounge'},intel:['Security floods from both sides once the floor wakes','The DJ booth frames the best first read','VIP route rewards momentum']},
-  {building:4,id:'B04_PENTHOUSE',name:'Penthouse',callsign:'VASARI SUITE',target:'Tommaso Vasari',role:'Underboss',threat:'HIGH',time:'0500 HRS',missionVerb:'Win a precision ascent through glass and gold.',signaturePressure:'Precision hunt',setpiece:'sniper',mastery:{id:'penthouse_precision',label:'Precision Hunt',desc:'Land the required headshot streak before missing.',reward:'Maintenance rail route marked on replay.'},shortcut:'Facade Rail',reward:'Family ledger page',beats:['snipe','brawl','boss'],enemyBias:['marksman','heavy','soldier'],visual:{accent:'#ffd060',landmark:'Glass crown, skyline rail, and suite arch'},intel:['Long sightlines punish careless sprinting','The underboss guards the first-act turning point','Sniper tells should be readable before impact']},
+  {building:4,id:'B04_PENTHOUSE',name:'Penthouse',callsign:'VASARI SUITE',target:'Tommaso Vasari',role:'Underboss',threat:'HIGH',time:'0500 HRS',missionVerb:'Win a precision ascent through glass and gold.',signaturePressure:'Precision hunt',setpiece:'sniper',mastery:{id:'penthouse_precision',label:'Precision Hunt',desc:'Land the required headshot streak before missing.',reward:'Maintenance rail route marked on replay.'},shortcut:'Facade Rail',reward:'Family ledger page',beats:['snipe','brawl','boss'],enemyBias:['marksman','heavy','soldier'],visual:{accent:'#ffd060',landmark:'Glass crown, skyline rail, and suite arch'},intel:['Long sightlines punish careless sprinting','The underboss guards the first-act turning point','Sniper tells should be readable before impact'],bossPhases:[
+    {at:0.5,cmds:[{type:'banner',text:'PHASE 2 — GLASS BREAKS'},{type:'invuln',ms:1200},{type:'shatterWindows'},{type:'addSpawn',adds:[{type:'marksman',dx:6,dz:0},{type:'marksman',dx:-6,dz:0}]},{type:'peekBurst',mul:2.0}]},
+    {at:0.25,cmds:[{type:'banner',text:'PHASE 3 — RAGE'},{type:'invuln',ms:900},{type:'speedMul',mul:1.35},{type:'damageMul',mul:1.30}]},
+  ]},
   {building:5,id:'B05_STERLING_MEDICAL',name:'Sterling Medical',callsign:'STERLING MED',target:'Dr. Marcus Huynh',role:'Asset Launderer',threat:'HIGH',time:'0612 HRS',missionVerb:'Cross the blackout ward and expose the surgery records.',signaturePressure:'Blackout ward',setpiece:'dark',mastery:{id:'medical_blackout_clean',label:'Blackout Clean',desc:'Clear the power-cut beat with low damage.',reward:'ICU service gate remains marked.'},shortcut:'ICU Service Gate',reward:'Surgery record cache',beats:['stealth_or_loud','hold','boss'],enemyBias:['riot','drone','marksman'],visual:{accent:'#40ff80',landmark:'Triage curtains and surgical-light pit'},intel:['Darkness changes both route reading and enemy pressure','Medical glass should telegraph silhouettes','Low damage earns the cleanest route']},
   {building:6,id:'B06_SUBWAY_LINE_7',name:'Subway Line 7',callsign:'LINE 7',target:'Pyotr Demidov',role:'Weapons Runner',threat:'HIGH',time:'0743 HRS',missionVerb:'Hold the platform until the rail window opens.',signaturePressure:'Platform hold',setpiece:'survival',mastery:{id:'subway_platform_hold',label:'Platform Held',desc:'Survive the platform timer without using a heal.',reward:'Trackside bypass marked on replay.'},shortcut:'Trackside Bypass',reward:'Weapons manifest',beats:['read','hold','boss'],enemyBias:['demolitions','riot','drone'],visual:{accent:'#ff5040',landmark:'Live rail trench and switch chamber'},intel:['The route is narrow, loud, and flank-prone','Power panels cue danger states','Explosives force movement out of comfort cover']},
   {building:7,id:'B07_AZURE_YACHT',name:'Azure Yacht',callsign:'AZURE YACHT',target:'Lucia Vasari',role:'Consigliera',threat:'CRITICAL',time:'0901 HRS',missionVerb:'Repel boarding pressure across a narrow luxury deck.',signaturePressure:'Deck boarded',setpiece:'ambush',mastery:{id:'yacht_no_heal',label:'No-Heal Boarding',desc:'Clear the deck ambush without using a heal pack.',reward:'Crew hatch bypass marked on replay.'},shortcut:'Crew Hatch',reward:'Family ledger',beats:['stealth_or_loud','brawl','boss'],enemyBias:['marksman','demolitions','heavy'],visual:{accent:'#a0c8ff',landmark:'Teak salon, crew hatch, and bridge suite'},intel:['Narrow geometry rewards decisive pushes','Boarding waves arrive from below-deck doors','Lucia is the final family shield before command']},
-  {building:8,id:'B08_SERVER_FARM',name:'Server Farm Delta',callsign:'SERVER FARM D',target:'Il Patriarca',role:'Syndicate Head',threat:'EXTREME',time:'1014 HRS',missionVerb:'Break the command protocol and end the family.',signaturePressure:'Final lockdown',setpiece:'alarm',mastery:{id:'server_lockdown_solved',label:'Lockdown Broken',desc:'Clear the final alarm before phase-three berserk.',reward:'Final grade mastery bonus.'},shortcut:'Core Vault Fastline',reward:'Campaign complete',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','riot','heavy'],visual:{accent:'#40e0ff',landmark:'Cold aisles, battery bay, and core vault'},intel:['Final level stacks every prior pressure type','Boss phases should feel authored, not just tougher','Lockdown completion is the campaign payoff']}
+  {building:8,id:'B08_SERVER_FARM',name:'Server Farm Delta',callsign:'SERVER FARM D',target:'Il Patriarca',role:'Syndicate Head',threat:'EXTREME',time:'1014 HRS',missionVerb:'Break the command protocol and end the family.',signaturePressure:'Final lockdown',setpiece:'alarm',mastery:{id:'server_lockdown_solved',label:'Lockdown Broken',desc:'Clear the final alarm before phase-three berserk.',reward:'Family arc grade mastery bonus.'},shortcut:'Core Vault Fastline',reward:'Family ledger sealed',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','riot','heavy'],visual:{accent:'#40e0ff',landmark:'Cold aisles, battery bay, and core vault'},intel:['End of Act II — the Patriarch falls here','Stacks every prior pressure type','Lockdown completion seals the family arc'],bossPhases:[
+    {at:0.66,cmds:[{type:'banner',text:'PHASE 2 — DRONE SWARM'},{type:'invuln',ms:1200},{type:'addSpawn',adds:[{type:'drone',dx:4,dz:0},{type:'drone',dx:-4,dz:0},{type:'drone',dx:0,dz:4}]},{type:'speedMul',mul:1.15}]},
+    {at:0.33,cmds:[{type:'banner',text:'PHASE 3 — LOCKDOWN OVERRIDE'},{type:'invuln',ms:1500},{type:'addSpawn',adds:[{type:'lieutenant',dx:0,dz:-4},{type:'riot',dx:3,dz:-2},{type:'heavy',dx:-3,dz:-2}]},{type:'peekBurst',mul:2.5},{type:'damageMul',mul:1.4}]},
+  ]},
+  // ── ACT III — The Apparatus (B09–B12) ─────────────────────────────────
+  {building:9,id:'B09_BORDER_CROSSING',name:'Border Crossing',callsign:'BORDER 09',target:'Saito Murano',role:'Pipeline Operator',threat:'HIGH',time:'0510 HRS',missionVerb:'Intercept the handoff before the route disappears.',signaturePressure:'Open desert sniper',setpiece:'sniper',mastery:{id:'border_pipeline_intact',label:'Ledger Intact',desc:'Reach the customs office before the courier burns the ledger.',reward:'Sand vent bypass marked on replay.'},shortcut:'Sand Vent Bypass',reward:'Customs ledger',beats:['snipe','read','boss'],enemyBias:['marksman','soldier','demolitions'],visual:{accent:'#ffb060',landmark:'Sandstone watchtower above the cargo gantry'},intel:['Cartel was a front — the pipeline still moves above them','Watchtower marksman owns the long axis','Ledger names the financiers — read it before they burn it']},
+  {building:10,id:'B10_CATHEDRAL',name:'Cathedral of San Marco',callsign:'SAN MARCO',target:'Cardinal Vittorio Lazaretti',role:'Sacred Launderer',threat:'HIGH',time:'0035 HRS',missionVerb:'Break the sanctuary vault under cover of midnight mass.',signaturePressure:'Holy ground',setpiece:'ambush',mastery:{id:'cathedral_silent_choir',label:'Silent Choir',desc:'Reach the choir loft without firing in the nave.',reward:'Confessional service corridor marked on replay.'},shortcut:'Confessional Run',reward:'Votive account keys',beats:['stealth_or_loud','brawl','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#ffe8b0',landmark:'Stained-glass apse and bell-tower vault'},intel:['Funnels syndicate cash through fake votive accounts','Choir loft hides a sniper above the nave','The vault is in the bell tower — Lazaretti holds the key']},
+  {building:11,id:'B11_KARELIA',name:'Karelia Freighter',callsign:'KARELIA MV-11',target:'Capt. Renko Stannis',role:'Route Master',threat:'CRITICAL',time:'0322 HRS',missionVerb:'Storm the bridge while the ship is at sea.',signaturePressure:'Open ocean',setpiece:'survival',mastery:{id:'karelia_no_engine_alarm',label:'Cold Engines',desc:'Reach the bridge before the engine alarm goes off.',reward:'Crew companionway shortcut marked on replay.'},shortcut:'Crew Companionway',reward:'Trafficking manifest',beats:['hold','brawl','boss'],enemyBias:['heavy','drone','marksman'],visual:{accent:'#6890b8',landmark:'Container maze and bridge wing'},intel:['No backup — only the sea','Container rows shift LOS — the cargo is alive','Stannis pilots the route — drop him to drop the line']},
+  {building:12,id:'B12_THE_SPIRE',name:'The Spire',callsign:'APEX TOWER',target:'Eldritch Asteria',role:'The Director',threat:'EXTREME',time:'0444 HRS',missionVerb:'End it before the helicopter clears the helipad.',signaturePressure:'Apex',setpiece:'alarm',mastery:{id:'spire_no_helo',label:'Grounded',desc:'Reach the helipad before the helicopter lifts off.',reward:'Apex grade and campaign closure.'},shortcut:'Maintenance Apex',reward:'Campaign concluded',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','heavy','riot','lieutenant'],visual:{accent:'#c8e0ff',landmark:'Glass crown, executive vault, and helipad'},intel:['Last level — the true mastermind above the family','Glass walls give nowhere to hide','The helicopter is fueled — race the boss out, or lose the run'],bossPhases:[
+    {at:0.7,cmds:[{type:'banner',text:'PHASE 2 — VAULT BREACH'},{type:'invuln',ms:1000},{type:'addSpawn',adds:[{type:'lieutenant',dx:0,dz:-3},{type:'marksman',dx:5,dz:0},{type:'marksman',dx:-5,dz:0}]}]},
+    {at:0.4,cmds:[{type:'banner',text:'PHASE 3 — GLASS APEX'},{type:'invuln',ms:1500},{type:'shatterWindows'},{type:'speedMul',mul:1.25},{type:'peekBurst',mul:2.5}]},
+    {at:0.15,cmds:[{type:'banner',text:'PHASE 4 — HELIPAD RUN'},{type:'invuln',ms:1200},{type:'retreat',dx:0,dz:-8},{type:'addSpawn',adds:[{type:'drone',dx:3,dz:-3},{type:'drone',dx:-3,dz:-3}]}]},
+  ]}
 ];
 function getCampaignLevel(bn=G.building){
   const n=Math.max(1,Math.min(CAMPAIGN_LEVELS.length,Number(bn)||1));
@@ -15531,6 +17394,12 @@ function syncCampaignRuntime(){
     zoneTimes:[0,0,0],
     startTime:performance.now()
   };
+  // Phase W: re-arm bossPhases so each visit fires them fresh. The .fired
+  // flag is a runtime marker on the same object the campaign reads, so we
+  // clear it here.
+  if(Array.isArray(level.bossPhases)){
+    for(const ph of level.bossPhases)ph.fired=false;
+  }
   G.runModifiers={enemyBias:level.enemyBias||[],signaturePressure:level.signaturePressure};
   return level;
 }
@@ -15561,7 +17430,12 @@ function _briefSilhouette(bn){
     5:{sky:'#1c2840',light:'#a0c8e0',accent:'#40c8ff'},
     6:{sky:'#0a0a14',light:'#ff5040',accent:'#fff060'},
     7:{sky:'#0a1840',light:'#ffe0a0',accent:'#a0c8ff'},
-    8:{sky:'#040820',light:'#40c8ff',accent:'#40ff80'}
+    8:{sky:'#040820',light:'#40c8ff',accent:'#40ff80'},
+    // Act III silhouettes
+    9:{sky:'#221a14',light:'#ffb060',accent:'#ffe090'},
+    10:{sky:'#06040a',light:'#ffe8b0',accent:'#ffd060'},
+    11:{sky:'#0a1018',light:'#a0c0e0',accent:'#ff8040'},
+    12:{sky:'#080a16',light:'#c8e0ff',accent:'#ffd060'}
   })[bn]||{sky:'#1a2640',light:'#ffaa50',accent:'#ff5040'};
   // Building shapes: warehouses (B1 wide rectangle), hotel (tall narrow), club (medium with marquee), penthouse (tall tower)
   // Hospital (cross silhouette), subway (flat with tunnel mouth), yacht (boat hull), server farm (industrial shed)
@@ -15671,11 +17545,118 @@ function _briefSilhouette(bn){
       for(let j=0;j<4;j++)main+=`<rect x="${x+4}" y="${y+8+j*12}" width="32" height="2" fill="${palette.light}" opacity="${(.5+Math.random()*.35).toFixed(2)}"/>`;
     }
     signage=`<text x="280" y="195" text-anchor="middle" fill="${palette.light}" font-family="Rajdhani, sans-serif" font-size="18" font-weight="800" letter-spacing="3">SECTOR Δ</text>`;
+  } else if(bn===9){
+    // Border crossing — sandstone customs station + watchtower
+    main=`<rect x="40" y="130" width="480" height="70" fill="#1a1208"/>`;
+    // Mesa background
+    main+=`<path d="M 0 130 L 100 110 L 200 124 L 320 102 L 420 122 L 560 112 L 560 130 Z" fill="#3a2418" opacity=".85"/>`;
+    // Watchtower (tall narrow on right)
+    main+=`<rect x="430" y="68" width="34" height="132" fill="#1a1208"/>`;
+    main+=`<rect x="426" y="62" width="42" height="12" fill="#2a1810"/>`;
+    main+=`<rect x="428" y="58" width="38" height="4" fill="${palette.accent}" opacity=".85"/>`;
+    main+=`<rect x="446" y="40" width="2" height="22" fill="${palette.accent}"/>`;
+    // Pulsing watchtower light
+    main+=`<circle cx="447" cy="70" r="5" fill="${palette.light}" opacity=".90"/>`;
+    main+=`<circle cx="447" cy="70" r="10" fill="${palette.light}" opacity=".25"/>`;
+    // Customs gate arches
+    main+=`<rect x="80" y="120" width="200" height="80" fill="#0a0604"/>`;
+    main+=`<rect x="80" y="118" width="200" height="6" fill="${palette.accent}" opacity=".70"/>`;
+    // Striped barrier arms across the road
+    main+=`<rect x="100" y="158" width="84" height="6" fill="${palette.light}"/>`;
+    main+=`<rect x="100" y="158" width="14" height="6" fill="#1a0a04"/>`;
+    main+=`<rect x="128" y="158" width="14" height="6" fill="#1a0a04"/>`;
+    main+=`<rect x="156" y="158" width="14" height="6" fill="#1a0a04"/>`;
+    // Containers stacked at gate
+    for(let i=0;i<3;i++){
+      const x=300+i*46,y=148;
+      const cols=['#5a3820','#3a4a58','#5a3820'];
+      main+=`<rect x="${x}" y="${y}" width="40" height="32" fill="${cols[i]}" opacity=".85"/>`;
+    }
+    windows=_wDots(90,128,184,38,14);
+    signage=`<text x="180" y="106" text-anchor="middle" fill="${palette.light}" font-family="Rajdhani, sans-serif" font-size="18" font-weight="800" letter-spacing="3">BORDER 09</text>`;
+  } else if(bn===10){
+    // Cathedral — gothic with central rose window + two bell towers
+    main=`<rect x="80" y="110" width="400" height="90" fill="#0c0808"/>`;
+    // Two bell towers
+    main+=`<rect x="84" y="40" width="44" height="160" fill="#0c0808"/>`;
+    main+=`<rect x="432" y="40" width="44" height="160" fill="#0c0808"/>`;
+    // Tower peaks (triangular spires)
+    main+=`<polygon points="84,40 106,16 128,40" fill="#0a0606"/>`;
+    main+=`<polygon points="432,40 454,16 476,40" fill="#0a0606"/>`;
+    // Spire tips
+    main+=`<rect x="105" y="14" width="2" height="6" fill="${palette.accent}"/>`;
+    main+=`<rect x="453" y="14" width="2" height="6" fill="${palette.accent}"/>`;
+    // Central nave with pointed arch
+    main+=`<path d="M 200 200 L 200 130 Q 280 70 360 130 L 360 200 Z" fill="#100a0a"/>`;
+    main+=`<path d="M 200 130 Q 280 70 360 130" stroke="${palette.accent}" stroke-width="2" fill="none" opacity=".65"/>`;
+    // Rose window — circle with cross
+    main+=`<circle cx="280" cy="110" r="20" fill="${palette.light}" opacity=".90"/>`;
+    main+=`<circle cx="280" cy="110" r="20" fill="none" stroke="${palette.accent}" stroke-width="2"/>`;
+    main+=`<rect x="278" y="92" width="4" height="36" fill="#06040a"/>`;
+    main+=`<rect x="262" y="108" width="36" height="4" fill="#06040a"/>`;
+    // Bell hint in left tower window
+    main+=`<rect x="98" y="80" width="16" height="22" fill="${palette.light}" opacity=".70"/>`;
+    main+=`<rect x="446" y="80" width="16" height="22" fill="${palette.light}" opacity=".70"/>`;
+    // Doors at base
+    main+=`<path d="M 260 200 L 260 170 Q 280 152 300 170 L 300 200 Z" fill="#040202" stroke="${palette.accent}" stroke-width="1.5"/>`;
+    windows=_wDots(212,160,136,36,16);
+    signage=`<text x="280" y="184" text-anchor="middle" fill="${palette.light}" font-family="Rajdhani, sans-serif" font-size="16" font-weight="800" letter-spacing="3">SAN MARCO</text>`;
+  } else if(bn===11){
+    // Karelia — cargo freighter at sea, container stack with bridge
+    // Sea
+    main=`<rect x="0" y="160" width="560" height="40" fill="#0a0e16"/>`;
+    // Hull (long low rectangle on the sea)
+    main+=`<path d="M 30 160 L 530 160 L 500 188 L 60 188 Z" fill="#1a2028"/>`;
+    // Hull stripe
+    main+=`<rect x="30" y="166" width="500" height="3" fill="${palette.accent}" opacity=".70"/>`;
+    // Container stacks across the deck (3 rows × 6 columns)
+    for(let row=0;row<3;row++){
+      for(let col=0;col<8;col++){
+        const x=80+col*52,y=140-row*18;
+        const cols=['#405060','#6a4830','#3a3a48','#605040','#406050','#503830'];
+        main+=`<rect x="${x}" y="${y}" width="48" height="16" fill="${cols[(col+row)%cols.length]}" opacity="${(.78-row*.05).toFixed(2)}"/>`;
+      }
+    }
+    // Bridge / superstructure (aft right)
+    main+=`<rect x="440" y="70" width="60" height="70" fill="#181c24"/>`;
+    main+=`<rect x="436" y="64" width="68" height="8" fill="#22282e"/>`;
+    // Bridge windows
+    main+=`<rect x="448" y="80" width="44" height="10" fill="${palette.light}" opacity=".88"/>`;
+    // Forward mast + radar
+    main+=`<rect x="100" y="52" width="2" height="100" fill="#2a323a"/>`;
+    main+=`<rect x="84" y="68" width="34" height="2" fill="#2a323a"/>`;
+    // Running lights — red port, green starboard
+    main+=`<circle cx="40" cy="166" r="3" fill="#ff4020" opacity=".95"/>`;
+    main+=`<circle cx="510" cy="166" r="3" fill="#40c060" opacity=".95"/>`;
+    signage=`<text x="280" y="120" text-anchor="middle" fill="${palette.light}" font-family="Rajdhani, sans-serif" font-size="18" font-weight="800" letter-spacing="3">M/V KARELIA</text>`;
+  } else if(bn===12){
+    // The Spire — apex skyscraper with helipad on top
+    // Distant skyline behind
+    for(let i=0;i<10;i++){
+      const x=40+i*55,w=18+Math.random()*22,h=30+Math.random()*60;
+      main+=`<rect x="${x}" y="${200-h}" width="${w}" height="${h}" fill="#0a0d18" opacity=".70"/>`;
+    }
+    // The Spire itself — tall narrow tower center
+    main+=`<rect x="230" y="20" width="100" height="180" fill="#06080e"/>`;
+    // Glass facade vertical lines
+    for(let i=0;i<6;i++)main+=`<rect x="${236+i*16}" y="22" width="2" height="176" fill="${palette.accent}" opacity=".30"/>`;
+    // Crown / antenna at top
+    main+=`<rect x="276" y="2" width="6" height="20" fill="${palette.accent}"/>`;
+    main+=`<circle cx="279" cy="2" r="3" fill="${palette.light}"/>`;
+    // Helipad on top — circle with H
+    main+=`<ellipse cx="280" cy="28" rx="36" ry="6" fill="#06080e" stroke="${palette.accent}" stroke-width="1.5"/>`;
+    main+=`<text x="280" y="32" text-anchor="middle" fill="${palette.accent}" font-family="Rajdhani, sans-serif" font-size="12" font-weight="900">H</text>`;
+    // Helicopter rotor blur (subtle dashes above helipad)
+    main+=`<rect x="246" y="20" width="68" height="1" fill="${palette.light}" opacity=".55"/>`;
+    main+=`<rect x="278" y="14" width="4" height="6" fill="${palette.light}" opacity=".70"/>`;
+    // Window grid (illuminated executive floors)
+    windows=_wDots(238,40,84,150,55);
+    signage=`<text x="280" y="118" text-anchor="middle" fill="${palette.light}" font-family="Rajdhani, sans-serif" font-size="18" font-weight="800" letter-spacing="3">APEX TOWER</text>`;
   }
   return bg+stars+main+windows+signage;
 }
 function showBriefingCard(bn,durMs){
-  const info=getCampaignLevel(bn)||BUILDING_INFO[Math.min((bn|0)-1,7)]||{name:'OBJECTIVE',time:'0500 HRS',sub:'PROCEED'};
+  const info=getCampaignLevel(bn)||BUILDING_INFO[Math.min((bn|0)-1,BUILDING_INFO.length-1)]||{name:'OBJECTIVE',time:'0500 HRS',sub:'PROCEED'};
   $e('brief-tag').textContent='B'+bn+' · '+(info.callsign||'CLEARANCE');
   $e('brief-name').textContent=info.name;
   $e('brief-time').textContent=info.time;
@@ -16325,6 +18306,8 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickEndless==='function')tickEndless(dt);
   if(typeof tickOnboard==='function')tickOnboard(dt);
   if(typeof tickIntro==='function')tickIntro(dt);
+  if(typeof tickTutorial==='function'&&G._tutState)tickTutorial(dt);
+  if(typeof tickObjective==='function'&&G._objective&&G.started)tickObjective(dt);
   if(typeof tickFootsteps==='function'&&G.started)tickFootsteps();
   if(typeof tickCompass==='function'&&G.started)tickCompass();
   if(typeof tickRadar==='function'&&G.started)tickRadar(dt);
@@ -16365,7 +18348,11 @@ renderer.setAnimationLoop(()=>{
       const ri=renderer.info;
       PERF.txtA.textContent=`fps ${PERF.emaFps.toFixed(1)} | frame ${PERF.emaMs.toFixed(2)}ms | p99 ${p99.toFixed(2)}ms`;
       PERF.txtB.textContent=`draw ${ri.render.calls} tri ${ri.render.triangles} geo ${ri.memory.geometries} tex ${ri.memory.textures}`;
-      PERF.txtC.textContent=`lines ${ri.render.lines} pts ${ri.render.points}`;
+      // Phase 6 §9.4 — tactical AI counters
+      const _ce=G.levelData&&G.levelData.cornerEdges?G.levelData.cornerEdges.length:0;
+      const _cs=G.levelData&&G.levelData.coverSlots?G.levelData.coverSlots.length:0;
+      const _pk=G._aiPeekCount|0,_pr=G._aiPairsActive|0;
+      PERF.txtC.textContent=`lines ${ri.render.lines} pts ${ri.render.points} | corners ${_ce} slots ${_cs} | peeks ${_pk} pairs ${_pr}`;
     }
     if(nowMs-PERF.lastMemLog>5000){
       PERF.lastMemLog=nowMs;
@@ -16412,14 +18399,62 @@ renderer.setAnimationLoop(()=>{
   }
   M.dx=0;M.dy=0;
   if(P.pitch>1.35)P.pitch=1.35;if(-1.35>P.pitch)P.pitch=-1.35;
-  // Lean
+  // Lean — Phase 5 upgrade with anti-clip + sprint/slide cancel.
   P.leanTarget=K['KeyQ']?-1:K['KeyE']?1:0;
+  // Cancel lean when sprinting or sliding — the body can't sustain lean while running.
+  if(P.sprintLatched||P.sliding||P.slideAmt>0.2||P.dead||P.vaulting)P.leanTarget=0;
   P.lean+=(P.leanTarget-P.lean)*Math.min(dt*10,1);
+  // Anti-clip: cast a horizontal ray from player center along the right vector
+  // by leanOff distance; if a wall AABB intersects, scale lean toward 0 so the
+  // camera stops short of the wall by ~0.08m.
+  if(SETTINGS.playerLeanAntiClip!==false){
+    const _rx=Math.cos(P.yaw),_rz=-Math.sin(P.yaw);
+    const desiredOff=P.lean*0.4;
+    const probeX=P.pos.x+_rx*desiredOff;
+    const probeZ=P.pos.z+_rz*desiredOff;
+    const PAD=0.08;
+    let blockedFrac=1.0;
+    if(G.levelData&&G.levelData.walls){
+      for(const w of G.levelData.walls){
+        if(probeX+PAD>w.x0&&w.x1>probeX-PAD&&probeZ+PAD>w.z0&&w.z1>probeZ-PAD){
+          // Pull back to first non-colliding scale
+          let scale=Math.abs(desiredOff)>0.001?Math.abs(desiredOff):0.001;
+          // Binary-search-ish: 8 steps from full to 0
+          let lo=0,hi=1;
+          for(let s=0;s<6;s++){
+            const mid=(lo+hi)*0.5;
+            const tx=P.pos.x+_rx*desiredOff*mid;
+            const tz=P.pos.z+_rz*desiredOff*mid;
+            let hit=false;
+            for(const w2 of G.levelData.walls){
+              if(tx+PAD>w2.x0&&w2.x1>tx-PAD&&tz+PAD>w2.z0&&w2.z1>tz-PAD){hit=true;break;}
+            }
+            if(hit)hi=mid;else lo=mid;
+          }
+          blockedFrac=lo;
+          break;
+        }
+      }
+    }
+    // Apply: scale lean so camera doesn't push through wall
+    P.leanClipScale=blockedFrac;
+  } else {
+    P.leanClipScale=1;
+  }
   const lv=$e('lean-vignette');
   // Fade out lean vignette while ADS so it doesn't compound with the scope
   // vignette and crush the scene to near-black at the edges.
-  lv.style.opacity=String(Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0));
-  lv.className=P.lean<-.15?'left':P.lean>.15?'right':'';
+  // Phase BA: throttle DOM writes to every-other-frame. Track the last value
+  // to skip writes when nothing changed (avoids style-recompute thrash).
+  const _leanOpacity=Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0);
+  if(((G._frameAlt|0)&1)===0){
+    if(Math.abs((P._lastLeanOpacity||0)-_leanOpacity)>0.005){
+      lv.style.opacity=String(_leanOpacity);
+      P._lastLeanOpacity=_leanOpacity;
+    }
+    const _leanCls=P.lean<-.15?'left':P.lean>.15?'right':'';
+    if(P._lastLeanCls!==_leanCls){lv.className=_leanCls;P._lastLeanCls=_leanCls;}
+  }
     // ADS — disabled while running. Sprint NOW allowed during reload (gun-fu fluidity).
     // Sprint latches on with Shift+movement and stays on hands-free until cancelled,
     // so you can release Shift and press Ctrl to slide with one finger.
@@ -16447,9 +18482,29 @@ renderer.setAnimationLoop(()=>{
     camera.fov+=(targetFov-camera.fov)*Math.min(dt*8,1);
     camera.updateProjectionMatrix();
     if(P.ads>.6)$e('xhair').classList.add('ads');else $e('xhair').classList.remove('ads');
-    // Dynamic crosshair: scales with weapon spread (running/firing pushes it wider)
+    // Phase BA: throttle per-frame HUD DOM writes (crosshair scale, shotgun
+    // pellet count, lean vignette) to every-other-frame. The eye won't catch
+    // the 60→30 Hz drop on these but the savings add up under heavy load.
+    const _hudFrame=((G._frameAlt|0)&1)===0;
+    if(P.weaponIdx===3&&P.ads>0.55&&_hudFrame){
+      let _shi=document.getElementById('sg-pellets');
+      if(!_shi){
+        _shi=document.createElement('div');
+        _shi.id='sg-pellets';
+        _shi.style.cssText='position:fixed;left:50%;top:50%;z-index:35;transform:translate(28px,-30px);font:800 13px Rajdhani,sans-serif;color:#ffd060;letter-spacing:.16em;background:rgba(8,10,14,.65);padding:3px 8px;border:1px solid rgba(255,200,80,.45);pointer-events:none';
+        document.body.appendChild(_shi);
+      }
+      const _wpn=WEAPONS[3];
+      _shi.textContent='× '+(_wpn&&_wpn.pellets?_wpn.pellets:7);
+      _shi.style.opacity=String(0.65+(P.ads-0.55)*0.78);
+    } else {
+      const _shi=document.getElementById('sg-pellets');
+      if(_shi)_shi.style.opacity='0';
+    }
+    // Dynamic crosshair: scales with weapon spread (running/firing pushes it wider).
+    // Phase BA: throttled to every-other-frame; visually identical at 60 Hz.
     const _xhEl=$e('xhair');
-    if(_xhEl){
+    if(_xhEl&&((G._frameAlt|0)&1)===0){
       const _W=WEAPONS[P.weaponIdx];
       const baseSpread=(_W&&_W.spread)||.025;
       const sinceShot=Math.max(0,1-(performance.now()/1000-P.lastShot)/.18);
@@ -16464,7 +18519,12 @@ renderer.setAnimationLoop(()=>{
     if(P.vaulting){
       P.vaultT+=dt/P.vaultDur;
       if(P.vaultT>=1){
-        P.vaultT=1;P.vaulting=false;P.grounded=true;P.vy=0;P.jumpH=0;
+        P.vaultT=1;P.vaulting=false;P.grounded=true;P.vy=0;
+        // Phase A: land on the floor region at the destination XZ. Returns 0
+        // for normal vault-over-cover; returns positive Y when vaulting onto
+        // a catwalk/mezzanine; returns negative Y when dropping into a pit.
+        const _regions2=G.levelData&&G.levelData.floorRegions;
+        P.jumpH=_floorYAt(P.pos.x,P.pos.z,_regions2);
         const vp=$e('vault-prompt');if(vp)vp.style.opacity='0';
       } else {
         const t=P.vaultT;
@@ -16477,13 +18537,24 @@ renderer.setAnimationLoop(()=>{
         P.bobAmt=Math.max(P.bobAmt-dt*12,0);
       }
     } else {
-      // ── Jump physics
+      // ── Jump + per-region floor (Phase A verticality)
+      const _regions=G.levelData&&G.levelData.floorRegions;
+      const _groundY=_floorYAt(P.pos.x,P.pos.z,_regions);
+      // Walked off a ledge: grounded but currently above floor → start falling
+      if(P.grounded && P.jumpH > _groundY + 0.05){
+        P.grounded=false;P.vy=0;
+      }
+      // Stepped onto a raised area: snap up if step <0.65m (allows 0.5m
+      // stair risers, which are the standard rise across the campaign).
+      if(P.grounded && P.jumpH < _groundY - 0.05 && (_groundY - P.jumpH) < 0.65){
+        P.jumpH=_groundY;
+      }
       if(!P.grounded){
         P.vy-=22*dt;P.jumpH+=P.vy*dt;
-        if(P.jumpH<=0){
+        if(P.jumpH<=_groundY){
           // Landing — kick camera + shake based on impact velocity
           const impact=Math.abs(P.vy);
-          P.jumpH=0;P.vy=0;P.grounded=true;
+          P.jumpH=_groundY;P.vy=0;P.grounded=true;
           P._lastLandT=performance.now();
           P._didDoubleJump=false;
           if(impact>2.5){
@@ -16564,9 +18635,36 @@ renderer.setAnimationLoop(()=>{
       if(mx||mz){
         const R=PR,nx=P.pos.x+mx,nz=P.pos.z+mz;
         let okX=true,okZ=true;
-        for(const w of walls){
-          if(nx+R>w.x0&&w.x1>nx-R&&P.pos.z+R>w.z0&&w.z1>P.pos.z-R)okX=false;
-          if(P.pos.x+R>w.x0&&w.x1>P.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+        // Phase BA: spatial index — limit wall checks to nearby cells.
+        const _pIdx=(G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
+        if(_pIdx){
+          const cells=_pIdx.cells;
+          const seenIds=[-1,-1,-1];
+          const cellsHit=[];
+          for(const [tx,tz] of [[nx,P.pos.z],[P.pos.x,nz],[P.pos.x,P.pos.z]]){
+            const ix=((tx-_pIdx.xMin)/_pIdx.cs)|0,iz=((tz-_pIdx.zMin)/_pIdx.cs)|0;
+            if(ix<0||iz<0||ix>=_pIdx.nx||iz>=_pIdx.nz)continue;
+            const id=ix+iz*_pIdx.nx;
+            if(seenIds[0]===id||seenIds[1]===id||seenIds[2]===id)continue;
+            if(seenIds[0]===-1)seenIds[0]=id;else if(seenIds[1]===-1)seenIds[1]=id;else seenIds[2]=id;
+            const c=cells[id];if(c)cellsHit.push(c);
+          }
+          for(const c of cellsHit){
+            for(let i=0,n=c.length;i<n;i++){
+              const w=c[i];
+              if(w.broken)continue;
+              if(okX&&nx+R>w.x0&&w.x1>nx-R&&P.pos.z+R>w.z0&&w.z1>P.pos.z-R)okX=false;
+              if(okZ&&P.pos.x+R>w.x0&&w.x1>P.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+              if(!okX&&!okZ)break;
+            }
+            if(!okX&&!okZ)break;
+          }
+        } else {
+          for(const w of walls){
+            if(w.broken)continue;
+            if(nx+R>w.x0&&w.x1>nx-R&&P.pos.z+R>w.z0&&w.z1>P.pos.z-R)okX=false;
+            if(P.pos.x+R>w.x0&&w.x1>P.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+          }
         }
         if(okX)P.pos.x=nx;if(okZ)P.pos.z=nz;
         // Running bob: faster + deeper
@@ -16575,7 +18673,8 @@ renderer.setAnimationLoop(()=>{
       }else{P.bobAmt=Math.max(P.bobAmt-dt*8,0);}
   }
   // ── Camera — incorporate jump height, vault tilt, landing dip, ADS breath
-  const leanOff=P.lean*.4,bY=Math.sin(P.bobPhase)*P.bobAmt,bX=Math.cos(P.bobPhase*.5)*P.bobAmt*.5;
+  const _leanEff=P.lean*(P.leanClipScale==null?1:P.leanClipScale);
+  const leanOff=_leanEff*.4,bY=Math.sin(P.bobPhase)*P.bobAmt,bX=Math.cos(P.bobPhase*.5)*P.bobAmt*.5;
   // Landing dip — exponential decay
   P.landKick*=Math.exp(-dt*9);
   // Subtle ADS breath sway (held breath wobble)
@@ -16628,7 +18727,7 @@ renderer.setAnimationLoop(()=>{
   P.dmgPitch*=Math.exp(-dt*7);
   camera.rotation.y=P.yaw;
   camera.rotation.x=P.pitch+vaultPitch+P.dmgPitch;
-  camera.rotation.z=P.lean*-.12+vaultRoll+P.dmgRoll;
+  camera.rotation.z=_leanEff*-.12+vaultRoll+P.dmgRoll;
   // Gun settle / vault one-hand animation — varies by direction
   if(P.vaulting){
     const t=P.vaultT;
@@ -16682,17 +18781,41 @@ renderer.setAnimationLoop(()=>{
       // Smoothed lerp so the transition into / out of sprint feels heavy.
       const _sprintTarget=(P.running&&!P.ads&&!P.reloading)?1:0;
       P.sprintAmt+=(_sprintTarget-P.sprintAmt)*Math.min(dt*7,1);
-      // Idle figure-8 sway — disappears when ADS active; sprint amplifies bob
+      // Idle figure-8 sway — disappears when ADS active; sprint amplifies bob.
+      // Phase U: enriched with weapon-weight cues —
+      //   • lateral drift opposite to recent strafe (inertia carry),
+      //   • subtle breath cycle (slow up/down), distinct from gun-bob,
+      //   • crouch dip so the weapon visibly settles when the player crouches.
       const _gT=performance.now()*.001;
       const _swAmt=(1-P.ads)*(P.bobAmt>.01?.016:.008)*(1+P.sprintAmt*.6);
-      gunGrp.position.x=.12-P.ads*.12+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt;
-      gunGrp.position.y=-.11+P.ads*.032-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45;
+      // Track strafe inertia for a subtle weight-shift effect
+      const _stxNow=(K['KeyA']?-1:0)+(K['KeyD']?1:0);
+      P._gunInertia=(P._gunInertia||0);
+      P._gunInertia+=(_stxNow-P._gunInertia)*Math.min(dt*4,1);
+      const _strafeBias=P._gunInertia*0.020*(1-P.ads);
+      // Slow breath wave — separate from sway
+      const _breath=(1-P.ads)*Math.sin(_gT*0.95)*0.0035;
+      // Crouch settle — gun dips when crouching, easier to read
+      const _crouchDip=(P.crouchAmt||0)*0.022;
+      gunGrp.position.x=.12-P.ads*.12+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias;
+      gunGrp.position.y=-.11+P.ads*.032-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip;
       {const _scOn=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
      const _zT=_scOn?(-.22+P.ads*.10):-.22;
      gunGrp.position.z+=(_zT-gunGrp.position.z)*Math.min(dt*18,1);}
       // Sprint tilt — barrel angles down + slight roll
       gunGrp.rotation.x+=(P.sprintAmt*.32-gunGrp.rotation.x)*Math.min(dt*9,1);
       gunGrp.rotation.z+=(P.sprintAmt*-.18-gunGrp.rotation.z)*Math.min(dt*9,1);
+      // Phase 5: body lean — weapon viewmodel follows the body, not just the
+      // head. Adds a small lateral push + extra roll on top of the camera's
+      // existing -.12 roll, so the weapon visibly leans with the player.
+      //
+      // The PIP scope camera setup (further down) explicitly mirrors these
+      // offsets when capturing the lens view, so the body-rig lean stays at
+      // full strength during ADS without misaligning the scope.
+      if(SETTINGS.playerLeanBodyRig!==false&&Math.abs(_leanEff)>0.01){
+        gunGrp.position.x+=_leanEff*-0.07;
+        gunGrp.rotation.z+=_leanEff*-0.06;
+      }
     }
   // Fire / throw — fire mode controls auto vs burst vs single
   if(M.lmbHeld&&!MELEE.out){
@@ -17172,8 +19295,24 @@ renderer.setAnimationLoop(()=>{
         const _pipAlpha=Math.min(_pipMax,Math.max(0,(P.ads-.06)/.76));
         const _vig=$e('scope-vignette');
         if(_vig)_vig.style.setProperty('--scope-tint',_scopeAtt.vignetteColor||'rgba(80,180,255,.12)');
+        // Scope PIP camera: stays at the player's head position (so the
+        // captured view is from the natural eye pose), but applies the same
+        // *roll* the gunGrp picks up from the body-rig lean. The lens quad
+        // (child of gunGrp) ends up rolled by camera roll + gun extra roll;
+        // we apply the matching extra roll to scopeCamera so the rendered
+        // texture content rolls in lockstep with its container.
+        //
+        // Lateral position offsets on the gun (gunGrp.position.x shift) are
+        // intentionally NOT mirrored here — they're inside the camera-local
+        // viewmodel frame; mirroring them would shift the scope camera away
+        // from the head and parallax-warp the view.
         scopeCamera.position.copy(camera.position);
         scopeCamera.quaternion.copy(camera.quaternion);
+        const _leanForScope=(typeof P!=='undefined'&&P.lean!=null)?P.lean*(P.leanClipScale==null?1:P.leanClipScale):0;
+        if(Math.abs(_leanForScope)>0.01){
+          // Roll around the camera's own forward axis to match gunGrp.rotation.z
+          scopeCamera.rotateZ(_leanForScope*-0.06);
+        }
         scopeCamera.fov=Number.isFinite(_scopeAtt.pipFov)?_scopeAtt.pipFov:14;
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
         if(SETTINGS.scopePipEnabled){
@@ -17194,20 +19333,138 @@ renderer.setAnimationLoop(()=>{
 
 window.__game={
   debug:{
-    snapshot:()=>({
-      hp:P.hp,
-      ammo:P.ammo,
-      ammoSlots:Array.isArray(P.weaponAmmo)?P.weaponAmmo.length:0,
-      reserveSlots:Array.isArray(P.weaponRes)?P.weaponRes.length:0,
-      building:G.building,
-      campaign:G.campaignLevel?{id:G.campaignLevel.id,name:G.campaignLevel.name,target:G.campaignLevel.target}:null,
-      beat:G.currentBeat?{zone:G.currentBeat.zone,id:G.currentBeat.id,label:G.currentBeat.meta&&G.currentBeat.meta.label}:null,
-      mastery:G.mastery?{id:G.mastery.objective&&G.mastery.objective.id,failed:!!G.mastery.failed}:null,
-      wave:G.wave,
-      alive:G.enemyMgr?G.enemyMgr.aliveCount:0,
-      pos:[P.pos.x.toFixed(1),P.pos.z.toFixed(1)],
-      perf:window.__PERF&&window.__PERF.snapshot?window.__PERF.snapshot():null
-    }),
+    snapshot:()=>{
+      const _safeDiv=(a,b)=>b>0?(a/b):0;
+      return {
+        hp:P.hp,
+        ammo:P.ammo,
+        ammoSlots:Array.isArray(P.weaponAmmo)?P.weaponAmmo.length:0,
+        reserveSlots:Array.isArray(P.weaponRes)?P.weaponRes.length:0,
+        building:G.building,
+        campaign:G.campaignLevel?{id:G.campaignLevel.id,name:G.campaignLevel.name,target:G.campaignLevel.target}:null,
+        beat:G.currentBeat?{zone:G.currentBeat.zone,id:G.currentBeat.id,label:G.currentBeat.meta&&G.currentBeat.meta.label}:null,
+        mastery:G.mastery?{id:G.mastery.objective&&G.mastery.objective.id,failed:!!G.mastery.failed}:null,
+        wave:G.wave,
+        alive:G.enemyMgr?G.enemyMgr.aliveCount:0,
+        pos:[P.pos.x.toFixed(1),P.pos.z.toFixed(1)],
+        lean:Number(P.lean||0).toFixed(2),
+        // Phase 6 — AI tactical + lean telemetry
+        peek:{
+          totalPeeks:G._aiPeekCount|0,
+          peekShotsFired:G._aiPeekShotsFired|0,
+          peekRatio:Number(_safeDiv(G._aiPeekShotsFired,G._aiAllShotsFired).toFixed(3)),
+          pairsActive:G._aiPairsActive|0,
+          playerLeanShots:G._playerLeanShots|0,
+          playerTotalShots:G._playerTotalShots|0,
+          playerLeanShotsRatio:Number(_safeDiv(G._playerLeanShots,G._playerTotalShots).toFixed(3)),
+        },
+        cornerEdgesCount:(G.levelData&&G.levelData.cornerEdges)?G.levelData.cornerEdges.length:0,
+        coverSlotsCount:(G.levelData&&G.levelData.coverSlots)?G.levelData.coverSlots.length:0,
+        perf:window.__PERF&&window.__PERF.snapshot?window.__PERF.snapshot():null
+      };
+    },
+    // Debug helpers for Phase 7 probe scripts
+    cornerEdges:()=>(G.levelData&&G.levelData.cornerEdges)||[],
+    coverSlots:()=>(G.levelData&&G.levelData.coverSlots)||[],
+    settings:()=>SETTINGS,
+    getCampaignLevel:(bn)=>getCampaignLevel(bn),
+    campaignLength:()=>campaignLength(),
+    showLevelSelect:()=>showLevelSelect(),
+    // Phase H: rebuild a level + return a perf-relevant snapshot of its
+    // baked geometry for cheap regression tracking.
+    // Phase AF: dispose prior levelData first to avoid accumulation.
+    perfSnapshotForBuilding:(bn)=>{
+      if(G.levelData&&typeof G.levelData.cleanup==='function'){
+        try{G.levelData.cleanup();}catch(_){}
+      }
+      const ld=buildLevel(scene,bn);
+      G.levelData=ld;G.building=bn;
+      const ri=renderer.info||{render:{},memory:{}};
+      return {
+        bn,
+        walls:ld.walls.length,
+        vaultables:ld.vaultables.length,
+        floorRegions:(ld.floorRegions||[]).length,
+        cornerEdges:(ld.cornerEdges||[]).length,
+        coverSlots:(ld.coverSlots||[]).length,
+        windows:ld.walls.filter(w=>w.isWindow).length,
+        navCells:ld.navGrid?(ld.navGrid.nx*ld.navGrid.nz):0,
+        navBlocked:ld.navGrid?Array.from(ld.navGrid.blocked).reduce((a,b)=>a+b,0):0,
+        renderCalls:ri.render.calls|0,
+        renderTris:ri.render.triangles|0,
+        memGeo:ri.memory.geometries|0,
+        memTex:ri.memory.textures|0,
+      };
+    },
+    // Phase AD: stress sample — builds the level, spawns N enemies, fires
+    // a few player shots, then returns timing + render counters. Used to
+    // surface regressions when adding density.
+    // Phase AF: properly dispose the previous levelData before rebuild so
+    // back-to-back stress probes don't accumulate dead geometry.
+    perfStressForBuilding:(bn,enemies=12,shots=5)=>{
+      if(G.levelData&&typeof G.levelData.cleanup==='function'){
+        try{G.levelData.cleanup();}catch(_){}
+      }
+      const ld=buildLevel(scene,bn);
+      G.levelData=ld;G.building=bn;
+      if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
+      G.enemyMgr.clear();
+      // Spawn enemies scattered around mid-zone
+      const types=['soldier','heavy','scout','riot','sniper','marksman'];
+      for(let i=0;i<enemies;i++){
+        const t=types[i%types.length];
+        const ang=(i/enemies)*Math.PI*2;
+        const r=6+(i%3)*1.5;
+        const px=Math.sin(ang)*r,pz=Math.cos(ang)*r;
+        const pos=new THREE.Vector3(px,WT,pz);
+        const e=new Enemy(scene,pos,bn,t);
+        e.zoneId=1;
+        G.enemyMgr._list.push(e);
+      }
+      // Place the player and run a few simulated frames
+      P.pos.set(0,.2,0);P.yaw=Math.PI;P.pitch=0;
+      // Fire a few shots
+      for(let s=0;s<shots;s++){
+        if(typeof shoot==='function')shoot();
+      }
+      // One render to bake counts
+      try{renderer.render(scene,camera);}catch(_){}
+      const ri2=renderer.info||{render:{},memory:{}};
+      return {
+        bn, enemies, shots,
+        renderCalls:ri2.render.calls|0,
+        renderTris:ri2.render.triangles|0,
+        memGeo:ri2.memory.geometries|0,
+        memTex:ri2.memory.textures|0,
+        aliveEnemies:G.enemyMgr.aliveCount,
+      };
+    },
+    warpTo:(x,z)=>{if(P&&P.pos){P.pos.x=x;P.pos.z=z;return true;}return false;},
+    spawnAt:(type,x,z)=>{
+      if(!G.enemyMgr)return false;
+      const pos=new THREE.Vector3(x,WT||.4,z);
+      const e=new Enemy(scene,pos,G.building||1,type||'soldier');
+      e.zoneId=1;
+      e._probeTag=true;                                                // Phase 7 finder
+      G.enemyMgr._list.push(e);
+      // Phase 7 probe convenience — bind nearest unclaimed cover slot so the
+      // probe-spawned agent can exercise HOLD_CORNER / PEEK_FIRE immediately.
+      if(G.levelData&&Array.isArray(G.levelData.coverSlots)){
+        let best=null,bestD2=Infinity;
+        for(const s of G.levelData.coverSlots){
+          if(s.claimedBy)continue;
+          const dx=s.x-x,dz=s.z-z;
+          const d2=dx*dx+dz*dz;
+          if(d2<bestD2){bestD2=d2;best=s;}
+        }
+        if(best){
+          best.claimedBy=e;
+          e.coverSlot=best;
+          e.coverPoint={x:best.x,z:best.z};
+        }
+      }
+      return true;
+    },
     // Expose internals for headless tests (NOT for production):
     scene: () => scene,
     camera: () => camera,
