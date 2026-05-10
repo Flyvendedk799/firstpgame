@@ -1,4 +1,5 @@
-import { STORY_LEVELS } from './levels.js';
+import { DEPLOY_STORY_LEVELS } from './levels.js';
+import { DEPLOY_ONLY_LEVEL_MANIFEST, filterDeployLevels } from './deployManifest.js';
 
 const BASE_PHASES = ['read', 'engage', 'spike', 'breath', 'choice'];
 
@@ -25,6 +26,8 @@ const LEVEL_SIGNATURES = {
   L12_ASHEN_HEART: ['collapse', 'wave', 'duel']
 };
 
+const BEAT_TYPES = ['read', 'brawl', 'hold', 'snipe', 'stealth_or_loud', 'boss'];
+
 function makeRoomCards(level) {
   return level.criticalPath.map((roomName, idx) => {
     const role = idx === 0 ? 'entry' : idx === level.criticalPath.length - 1 ? 'boss_threshold' : 'midflow';
@@ -41,7 +44,8 @@ function makeRoomCards(level) {
         'mixed-range lane trading',
         'vertical pressure and flank denial'
       ][idx % 3],
-      interactionSet: ['breakable cover', 'lockable door', 'alert console', 'environmental stun'][idx % 4]
+      interactionSet: ['breakable cover', 'lockable door', 'alert console', 'environmental stun'][idx % 4],
+      encounterBeatType: role === 'boss_threshold' ? 'boss' : BEAT_TYPES[idx % (BEAT_TYPES.length - 1)]
     };
   });
 }
@@ -70,6 +74,8 @@ function makeEncounterScript(level) {
       archetype: arch,
       pressureModel: data.pressure,
       enemyRoles: data.enemies,
+      reinforcementTelegraph: { preDoorLights: true, audibleRumble: true, breachDelaySec: 1.5 + idx * 0.5 },
+      adaptivePressure: { holdLaneFlankTrigger: true, speedRunEliteInjection: true, respiteBeforeBoss: idx === signature.length - 1 },
       phaseTimeline: BASE_PHASES.map((phase, phaseIdx) => ({
         phase,
         seconds: 8 + phaseIdx * 6 + idx * 2,
@@ -126,7 +132,7 @@ function makeReplayMastery(level) {
   };
 }
 
-export const STORY_DEPTH_PACK = STORY_LEVELS.map((level) => ({
+export const STORY_DEPTH_PACK = filterDeployLevels(DEPLOY_STORY_LEVELS).map((level) => ({
   levelId: level.id,
   title: level.title,
   fantasy: `${level.buildingType} in ${level.district}`,
@@ -158,8 +164,10 @@ export function getStoryDepthLevel(levelId) {
 }
 
 export function validateStoryDepthPack() {
+  const manifestSet = new Set(DEPLOY_ONLY_LEVEL_MANIFEST);
   const errors = [];
   for (const level of STORY_DEPTH_PACK) {
+    if (!manifestSet.has(level.levelId)) errors.push(`${level.levelId}: not in deploy manifest`);
     if (level.roomCards.length < 4) errors.push(`${level.levelId}: needs >=4 room cards`);
     if (level.encounterScript.length < 3) errors.push(`${level.levelId}: needs >=3 encounter scripts`);
     for (const enc of level.encounterScript) {
