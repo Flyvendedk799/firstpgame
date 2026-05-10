@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CLEARANCE — FPS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:'Rajdhani',sans-serif;color:#fff}
+#c{display:block;width:100vw;height:100vh}
+#hud{position:fixed;inset:0;pointer-events:none;user-select:none}
+#xhair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;transition:transform .08s}
+#xhair .bar{position:absolute;background:#fff;box-shadow:0 0 4px rgba(0,0,0,.8);transition:background .08s,box-shadow .08s}
+#xhair.on-target .bar{background:#ff5048;box-shadow:0 0 8px #ff5048}
+#xhair.on-head .bar{background:#ffd060;box-shadow:0 0 12px #ffd060}
+#xhair .t{width:2px;height:7px;top:0;left:9px}
+#xhair .b{width:2px;height:7px;bottom:0;left:9px}
+#xhair .l{height:2px;width:7px;left:0;top:9px}
+#xhair .r{height:2px;width:7px;right:0;top:9px}
+#xhair.ads .t,#xhair.ads .b,#xhair.ads .l,#xhair.ads .r{opacity:.35}
+#xhair.ads::after{content:'';position:absolute;width:4px;height:4px;background:#ffe;border-radius:50%;top:8px;left:8px;box-shadow:0 0 6px #ff3}
+#hitmark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0;transition:opacity .1s}
+#hitmark span{position:absolute;width:3px;height:10px;background:#ff3232;box-shadow:0 0 5px #f00}
+#hitmark span:nth-child(1){transform:translate(-8px,-5px) rotate(45deg)}
+#hitmark span:nth-child(2){transform:translate(5px,-5px) rotate(-45deg)}
+#hitmark span:nth-child(3){transform:translate(-8px,1px) rotate(-45deg)}
+#hitmark span:nth-child(4){transform:translate(5px,1px) rotate(45deg)}
+#hitmark.hs span{background:#ff0;box-shadow:0 0 8px #ff0}
+#bottom{position:absolute;bottom:28px;left:0;right:0;display:flex;justify-content:space-between;padding:0 36px;align-items:flex-end}
+.hud-label{font-size:10px;letter-spacing:.18em;color:rgba(255,255,255,.4);font-weight:600;text-transform:uppercase}
+.hud-val{font-size:28px;font-weight:700;letter-spacing:.04em;line-height:1.1}
+#hp-bar{width:180px;height:4px;background:rgba(255,255,255,.12);border-radius:2px;margin-top:5px}
+#hp-fill{height:100%;background:#4cff88;border-radius:2px;transition:width .2s,background .2s}
+#ammo-val{font-size:36px;font-weight:800;font-variant-numeric:tabular-nums}
+#top{position:absolute;top:22px;left:0;right:0;display:flex;justify-content:center;gap:48px;align-items:center}
+#wave-num{font-size:22px;font-weight:800;letter-spacing:.1em}
+#wave-sub{font-size:11px;letter-spacing:.2em;color:rgba(255,255,255,.4);margin-top:1px}
+#building-num{font-size:13px;letter-spacing:.25em;color:rgba(255,200,80,.7);font-weight:700;text-transform:uppercase}
+#killfeed{position:absolute;top:60px;right:20px;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.kf-entry{font-size:13px;font-weight:600;padding:3px 10px;background:rgba(0,0,0,.5);border-right:3px solid #ff3232;letter-spacing:.04em;transition:opacity .8s;display:flex;gap:8px;align-items:baseline}
+.kf-entry.hs{border-right-color:#ff0;color:#ffe83d}
+.kf-w{color:rgba(255,200,80,.85);font-weight:800;font-size:11px;letter-spacing:.16em}
+.kf-action{font-size:13px;font-weight:800}
+.kf-dist{font-size:10px;color:rgba(255,255,255,.55);letter-spacing:.10em;margin-left:auto}
+#overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 50%,rgba(20,16,8,.65) 0%,rgba(0,0,0,.95) 78%);backdrop-filter:blur(4px);gap:14px;z-index:100;transition:opacity .35s;overflow:hidden}
+#overlay.hidden{opacity:0;pointer-events:none}
+#overlay h1{font-size:72px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;line-height:1}
+#overlay h2{font-size:18px;font-weight:500;letter-spacing:.2em;color:rgba(255,255,255,.5)}
+#menu-bg-fx{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.menu-scanline{position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,200,80,.04) 0px,rgba(255,200,80,.04) 1px,transparent 1px,transparent 4px);pointer-events:none}
+.menu-glow{position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none}
+.menu-glow-1{width:600px;height:600px;background:radial-gradient(circle,rgba(255,180,40,.25) 0%,rgba(255,180,40,0) 70%);top:8%;left:-15%;animation:glowPulse 6s ease-in-out infinite}
+.menu-glow-2{width:500px;height:500px;background:radial-gradient(circle,rgba(40,140,255,.20) 0%,rgba(40,140,255,0) 70%);bottom:-5%;right:-10%;animation:glowPulse 8s ease-in-out infinite reverse}
+@keyframes glowPulse{0%,100%{opacity:.6}50%{opacity:1}}
+.menu-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,200,80,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,200,80,.04) 1px,transparent 1px);background-size:80px 80px;mask-image:radial-gradient(ellipse at 50% 50%,#000 0%,transparent 70%);-webkit-mask-image:radial-gradient(ellipse at 50% 50%,#000 0%,transparent 70%)}
+#menu-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:8px}
+#stats-panel{position:relative;z-index:2;width:min(560px,90vw);background:linear-gradient(180deg,rgba(14,16,22,.92),rgba(8,10,14,.92));border:1px solid rgba(255,200,80,.30);padding:30px 30px;font-family:'Rajdhani',sans-serif}
+#stats-content{display:grid;grid-template-columns:auto auto;gap:10px 36px;font-size:14px;color:rgba(255,255,255,.85)}
+.menu-cta{background:linear-gradient(180deg,rgba(20,24,32,.85),rgba(10,12,18,.95));border:1px solid rgba(255,200,80,.35);color:#ffd060;font-family:'Rajdhani',sans-serif;font-weight:800;font-size:14px;letter-spacing:.24em;padding:14px 28px;cursor:pointer;text-transform:uppercase;transition:transform .12s ease-out,background .12s,border-color .12s,box-shadow .12s;outline:none}
+.menu-cta:hover{transform:translateY(-1px);background:linear-gradient(180deg,rgba(40,32,16,.95),rgba(18,14,8,.95));border-color:#ffd060;box-shadow:0 4px 24px rgba(255,180,40,.20)}
+.menu-cta-go{background:linear-gradient(180deg,#ffd060,#c08820);color:#1a1206;border-color:#ffd060;box-shadow:0 0 22px rgba(255,180,40,.50)}
+.menu-cta-go:hover{background:linear-gradient(180deg,#ffe080,#d09830);box-shadow:0 4px 30px rgba(255,200,60,.65)}
+.menu-mode{background:rgba(14,16,22,.78);border:1px solid rgba(255,255,255,.10);color:#e0e0e8;font-family:'Rajdhani',sans-serif;font-weight:700;padding:14px 22px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:border-color .12s,background .12s,box-shadow .12s;min-width:130px}
+.menu-mode:hover{border-color:rgba(255,200,80,.50)}
+.menu-mode.menu-mode-active{border-color:#ffd060;background:linear-gradient(180deg,rgba(50,40,18,.85),rgba(20,15,8,.92));box-shadow:0 0 18px rgba(255,180,40,.30)}
+.mm-tag{font-size:9px;letter-spacing:.30em;color:rgba(255,200,80,.65);font-weight:700}
+.mm-name{font-size:18px;letter-spacing:.10em;font-weight:900}
+.mm-desc{font-size:10px;letter-spacing:.16em;color:rgba(255,255,255,.40);font-weight:500}
+.kb{display:inline-block;border:1px solid rgba(255,200,80,.30);color:#ffd060;padding:1px 6px;border-radius:2px;font-weight:700;font-size:10px;font-family:'Rajdhani',monospace;letter-spacing:.04em}
+#menu-stats{font-size:13px;letter-spacing:.10em;color:rgba(255,255,255,.55);font-weight:600}
+#menu-stats .ms-block{display:flex;flex-direction:column;align-items:center;gap:2px}
+#menu-stats .ms-num{font-size:22px;color:#ffd060;font-weight:800;font-variant-numeric:tabular-nums}
+#menu-stats .ms-lbl{font-size:9px;letter-spacing:.30em;color:rgba(255,255,255,.40);font-weight:700;text-transform:uppercase}
+.ov-hint{font-size:14px;letter-spacing:.15em;color:rgba(255,255,255,.45);margin-top:16px;border:1px solid rgba(255,255,255,.15);padding:8px 22px;border-radius:2px;cursor:pointer}
+.ov-sub{font-size:11px;letter-spacing:.25em;color:rgba(255,255,255,.28);text-transform:uppercase}
+.ov-stat{font-size:13px;color:rgba(255,255,255,.38);letter-spacing:.08em}
+#wave-announce{position:absolute;top:36%;left:50%;transform:translate(-50%,-50%);text-align:center;opacity:0;pointer-events:none;transition:opacity .3s}
+#wave-announce h2{font-size:44px;font-weight:900;letter-spacing:.12em;text-shadow:0 0 30px rgba(255,80,80,.6)}
+#wave-announce p{font-size:13px;letter-spacing:.2em;color:rgba(255,255,255,.45);margin-top:5px}
+#exit-prompt{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);text-align:center;opacity:0;pointer-events:none;transition:opacity .4s}
+#exit-prompt h3{font-size:26px;font-weight:800;letter-spacing:.12em;color:#4cff88;text-shadow:0 0 20px #4cff88}
+#exit-prompt p{font-size:12px;letter-spacing:.2em;color:rgba(255,255,255,.38);margin-top:4px}
+#reload-bar{position:absolute;bottom:78px;left:50%;transform:translateX(-50%);width:120px;display:none;flex-direction:column;align-items:center;gap:4px}
+#reload-bar .rl{font-size:10px;letter-spacing:.2em;color:rgba(255,255,255,.45)}
+#reload-track{width:100%;height:3px;background:rgba(255,255,255,.15);border-radius:2px}
+#reload-fill{height:100%;background:#fff;width:0%;border-radius:2px;transition:width .04s linear}
+#lean-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}
+#scope-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:6;background:radial-gradient(ellipse at 50% 50%, transparent 22%, rgba(0,0,0,.55) 70%, rgba(0,0,0,.78) 100%);transition:opacity .08s linear}
+/* Cinematic color grade — subtle teal lift in shadows, warm cast in lower screen */
+#color-grade{position:fixed;inset:0;pointer-events:none;z-index:4;mix-blend-mode:overlay;opacity:.28;background:linear-gradient(180deg,rgba(20,55,95,.22) 0%,rgba(0,0,0,0) 38%,rgba(0,0,0,0) 60%,rgba(120,55,25,.16) 100%)}
+/* Kill micro-beat — quick bright flash on every confirmed kill */
+#kill-beat{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:8;background:rgba(255,255,255,.7);mix-blend-mode:overlay;transition:opacity .08s ease-out}
+/* Cinematic briefing card — building intro between transitions */
+#briefing-card{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 50%,rgba(0,0,0,.45) 0%,rgba(0,0,0,.92) 75%);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);z-index:55;opacity:1;transition:opacity .55s;font-family:'Rajdhani',sans-serif;pointer-events:none}
+#briefing-card.brief-hidden{opacity:0}
+#brief-silhouette{width:min(560px,80vw);height:200px;margin-bottom:18px;opacity:.85;animation:briefIn 1.0s ease-out both}
+#brief-svg{width:100%;height:100%;display:block}
+#brief-tag{font-size:13px;letter-spacing:.40em;color:#ffd060;font-weight:700;margin-bottom:14px;animation:briefIn .6s ease-out both}
+#brief-name{font-size:58px;letter-spacing:.18em;color:#fff;font-weight:900;margin-bottom:18px;animation:briefIn .8s .15s ease-out both;text-shadow:0 0 30px rgba(255,180,40,.20)}
+#brief-time{font-size:14px;letter-spacing:.32em;color:rgba(255,255,255,.55);font-weight:600;margin-bottom:8px;animation:briefIn .8s .30s ease-out both}
+#brief-sub{font-size:11px;letter-spacing:.40em;color:rgba(255,200,80,.65);font-weight:600;animation:briefIn .8s .45s ease-out both}
+@keyframes briefIn{0%{opacity:0;transform:translateY(8px)}100%{opacity:1;transform:translateY(0)}}
+#lean-vignette.left{background:radial-gradient(ellipse at 0% 50%, rgba(0,0,0,.32) 0%, transparent 55%)}
+#lean-vignette.right{background:radial-gradient(ellipse at 100% 50%, rgba(0,0,0,.32) 0%, transparent 55%)}
+#dmg-flash{position:fixed;inset:0;pointer-events:none;opacity:0;background:rgba(255,0,0,.25);z-index:10;transition:opacity .06s}
+#low-hp{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 100%, rgba(255,0,0,.55) 0%, transparent 65%);opacity:0;z-index:8;transition:opacity .3s}
+/* Chromatic aberration ring at low HP — pulses with heartbeat */
+#chrom{position:fixed;inset:0;pointer-events:none;z-index:9;opacity:0;mix-blend-mode:screen}
+#chrom.show{opacity:.7;animation:chromPulse 1.6s ease-in-out infinite}
+#chrom::before,#chrom::after{content:'';position:absolute;inset:0;background:radial-gradient(circle at 50% 50%,transparent 50%,rgba(255,0,0,.18) 75%,rgba(255,0,0,.40) 100%)}
+#chrom::before{transform:translate(-3px,0);background:radial-gradient(circle at 50% 50%,transparent 55%,rgba(64,200,255,.25) 80%,rgba(64,200,255,.40) 100%)}
+#chrom::after{transform:translate(3px,0);background:radial-gradient(circle at 50% 50%,transparent 55%,rgba(255,80,40,.25) 80%,rgba(255,80,40,.40) 100%)}
+@keyframes chromPulse{0%,100%{opacity:.55}50%{opacity:.85}}
+#lock-hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:10px;letter-spacing:.18em;color:rgba(255,255,255,.18);white-space:nowrap}
+#slash-fx{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#melee-canvas{position:fixed;inset:0;pointer-events:none;z-index:12;opacity:0;display:block}
+#melee-hit-flash{position:fixed;inset:0;pointer-events:none;z-index:11;opacity:0;background:radial-gradient(ellipse at 50% 40%,rgba(200,0,0,.45) 0%,rgba(160,0,0,.18) 45%,transparent 75%)}
+#combo-indicator{position:fixed;bottom:110px;right:36px;pointer-events:none;z-index:20;opacity:0;transition:opacity .18s;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.combo-dot{width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.25);transition:background .1s,transform .1s,border-color .1s}
+.combo-dot.active{background:#ff4422;border-color:#ff7744;transform:scale(1.35);box-shadow:0 0 8px #ff4422}
+#combo-label{font-size:10px;letter-spacing:.22em;color:rgba(255,160,100,.7);font-weight:700;text-transform:uppercase;margin-top:2px}
+@keyframes slashFade{0%{opacity:1}80%{opacity:.7}100%{opacity:0}}
+@keyframes impactRipple{0%{transform:scale(0.4);opacity:.9}100%{transform:scale(2.8);opacity:0}}
+@keyframes sparkOut{0%{opacity:1;transform:translate(0,0)}100%{opacity:0;transform:translate(var(--sx),var(--sy))}}
+@keyframes moneyFloat{0%{opacity:0;transform:translateY(0)}15%{opacity:1}100%{opacity:0;transform:translateY(-26px)}}
+/* ── PAUSE MENU ────────────────────────────────────────────────────────── */
+#pause-menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.62);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);z-index:60;opacity:1;transition:opacity .22s;font-family:'Rajdhani',sans-serif}
+#pause-menu.pause-hidden{opacity:0;pointer-events:none}
+#pause-panel{width:min(440px,86vw);background:linear-gradient(180deg,rgba(14,16,22,.95),rgba(8,10,14,.95));border:1px solid rgba(255,200,80,.30);box-shadow:0 0 60px rgba(255,170,40,.10),inset 0 0 30px rgba(0,0,0,.4);padding:32px 30px;text-align:center;position:relative}
+#pause-panel::before,#pause-panel::after{content:'';position:absolute;width:18px;height:18px;border:1px solid rgba(255,200,80,.55)}
+#pause-panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+#pause-panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+#pause-title{font-size:36px;font-weight:900;letter-spacing:.30em;color:#ffd060}
+#pause-sub{font-size:11px;letter-spacing:.30em;color:rgba(255,255,255,.45);font-weight:600;margin:4px 0 28px}
+#pause-buttons{display:flex;flex-direction:column;gap:10px}
+.pause-btn{background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.30);color:#ffd060;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:15px;letter-spacing:.20em;padding:13px;cursor:pointer;text-transform:uppercase;transition:background .15s,border-color .15s;outline:none}
+.pause-btn:hover{background:rgba(40,32,16,.85);border-color:#ffd060}
+.pause-btn.pause-quit{color:#ff8060;border-color:rgba(255,80,80,.30)}
+.pause-btn.pause-quit:hover{background:rgba(40,16,16,.85);border-color:#ff8060}
+#pause-settings{margin-top:6px;text-align:left}
+.pause-row{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.pause-label{flex:0 0 110px;font-size:11px;letter-spacing:.20em;color:rgba(255,255,255,.55);font-weight:700;text-transform:uppercase}
+.pause-row input[type=range]{flex:1;accent-color:#ffd060;height:4px}
+.pause-val{flex:0 0 50px;text-align:right;font-size:14px;color:#ffd060;font-weight:800;font-variant-numeric:tabular-nums}
+.quality-btn{flex:1;background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.30);color:rgba(255,255,255,.55);font-family:'Rajdhani',sans-serif;font-weight:700;font-size:11px;letter-spacing:.16em;padding:6px 4px;cursor:pointer;text-transform:uppercase;transition:background .12s,border-color .12s,color .12s}
+.quality-btn:hover{border-color:#ffd060}
+.quality-btn.active{background:#ffd060;color:#1a1206;border-color:#ffd060}
+/* ── FOCUS MODE ─────────────────────────────────────────────────────────── */
+#focus-bar{position:absolute;top:50%;right:36px;transform:translateY(-50%);width:6px;height:120px;background:rgba(40,80,140,.20);border:1px solid rgba(64,200,255,.32);border-radius:3px;overflow:hidden;display:flex;flex-direction:column-reverse;z-index:9}
+#focus-bar.active{box-shadow:0 0 16px #40c8ff;border-color:#40c8ff}
+#focus-fill{width:100%;background:linear-gradient(0deg,#40c8ff,#a0e0ff);border-radius:2px;transition:width .12s}
+#focus-label{position:absolute;top:50%;right:50px;transform:translateY(-50%);font-size:9px;letter-spacing:.32em;color:rgba(64,200,255,.55);font-weight:700;writing-mode:vertical-rl;text-orientation:mixed;z-index:9;text-shadow:0 0 6px rgba(64,200,255,.45)}
+body.focus-on::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:7;background:radial-gradient(ellipse at 50% 50%,transparent 30%,rgba(8,32,80,.35) 78%,rgba(2,18,48,.55) 100%);mix-blend-mode:screen}
+body.focus-on #color-grade{opacity:.55;background:linear-gradient(180deg,rgba(40,90,160,.30) 0%,rgba(0,8,32,0) 50%,rgba(20,30,80,.18) 100%)}
+/* ── COMPASS ──────────────────────────────────────────────────────────── */
+#compass{position:absolute;top:62px;left:50%;transform:translateX(-50%);width:340px;height:18px;border-top:1px solid rgba(255,255,255,.25);border-bottom:1px solid rgba(255,255,255,.10);overflow:hidden;pointer-events:none;mask-image:linear-gradient(90deg,transparent 0%,#000 18%,#000 82%,transparent 100%);-webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 18%,#000 82%,transparent 100%)}
+#compass-strip{position:absolute;top:0;left:0;height:100%;width:1440px;will-change:transform}
+.cp-mark{position:absolute;top:0;width:1px;height:60%;background:rgba(255,255,255,.50)}
+.cp-mark.maj{height:100%;background:rgba(255,200,80,.85)}
+.cp-label{position:absolute;top:4px;font-size:11px;letter-spacing:.10em;color:rgba(255,200,80,.95);font-weight:800;transform:translateX(-50%);font-family:'Rajdhani',sans-serif}
+.cp-tick{position:absolute;top:0;width:1px;height:50%;background:rgba(255,255,255,.30)}
+#waypoint-arrow{position:absolute;top:84px;left:50%;transform:translateX(-50%);font-size:11px;letter-spacing:.18em;color:rgba(255,200,80,.85);font-weight:700}
+/* ── DAMAGE INDICATOR ──────────────────────────────────────────────── */
+#dmg-indicators{position:fixed;inset:0;pointer-events:none;z-index:13}
+.dmg-ind{position:absolute;left:50%;top:50%;width:80px;height:80px;margin-left:-40px;margin-top:-40px;background:radial-gradient(ellipse at 50% 5%,rgba(255,40,40,.85) 0%,rgba(255,80,40,.55) 25%,transparent 60%);border-radius:50% 50% 0 0;transform-origin:50% 100%;opacity:0;transition:opacity .25s}
+/* ── VICTORY / END SCREEN ─────────────────────────────────────────── */
+#endscreen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);z-index:90;font-family:'Rajdhani',sans-serif;opacity:0;pointer-events:none;transition:opacity .55s}
+#endscreen.show{opacity:1;pointer-events:auto}
+#es-title{font-size:64px;letter-spacing:.16em;font-weight:900;color:#ffd060;text-shadow:0 0 30px rgba(255,180,40,.45);margin-bottom:8px}
+#es-sub{font-size:14px;letter-spacing:.40em;color:rgba(255,255,255,.45);margin-bottom:30px}
+#es-grade{font-size:120px;font-weight:900;letter-spacing:0;line-height:1;text-shadow:0 0 60px currentColor;margin:18px 0}
+#es-stats{display:grid;grid-template-columns:auto auto;gap:8px 36px;font-size:15px;letter-spacing:.06em;color:rgba(255,255,255,.85);margin-top:8px;font-variant-numeric:tabular-nums}
+.es-lbl{color:rgba(255,200,80,.65);text-transform:uppercase;font-size:11px;letter-spacing:.20em;font-weight:700;align-self:center}
+.es-val{color:#fff;font-size:18px;font-weight:800}
+#es-buttons{display:flex;gap:14px;margin-top:32px}
+#es-buttons .pause-btn{min-width:160px}
+/* ── TUTORIAL TOAST ──────────────────────────────────────────────── */
+#tutorial-toast{position:fixed;bottom:140px;left:50%;transform:translateX(-50%);font-size:13px;letter-spacing:.20em;color:rgba(255,255,255,.85);font-weight:700;background:rgba(8,12,20,.80);padding:10px 24px;border-left:2px solid #40c8ff;border-right:2px solid #40c8ff;backdrop-filter:blur(4px);opacity:0;transition:opacity .3s;pointer-events:none;z-index:25;text-transform:uppercase}
+/* ── BOSS HEALTH BAR ────────────────────────────────────────────── */
+#boss-bar{position:fixed;top:74px;left:50%;transform:translateX(-50%);width:480px;display:none;flex-direction:column;align-items:center;gap:5px;z-index:18;pointer-events:none}
+#boss-bar.show{display:flex}
+#boss-name{font-size:14px;letter-spacing:.30em;color:#ff4030;font-weight:800;text-shadow:0 0 14px rgba(255,40,40,.65);text-transform:uppercase}
+#boss-track{width:100%;height:8px;background:rgba(40,8,8,.55);border:1px solid rgba(255,40,40,.45);border-radius:0;overflow:hidden}
+#boss-fill{height:100%;background:linear-gradient(90deg,#ff4030 0%,#ff8040 100%);transition:width .25s;width:100%}
+.boss-phase{font-size:11px;letter-spacing:.20em;color:rgba(255,150,80,.65);font-weight:600}
+/* ── MISSION HUD ────────────────────────────────────────────── */
+#mission-hud{position:absolute;top:170px;right:18px;width:140px;background:rgba(8,12,20,.55);border-left:2px solid rgba(64,200,255,.40);padding:8px 12px;font-family:'Rajdhani',sans-serif;font-size:13px;z-index:10;backdrop-filter:blur(2px)}
+.mh-row{display:flex;justify-content:space-between;align-items:baseline;line-height:1.4;font-variant-numeric:tabular-nums}
+.mh-lbl{font-size:9px;letter-spacing:.30em;color:rgba(255,255,255,.45);font-weight:700}
+#mh-time,#mh-kills,#mh-chain,#mh-score{font-size:13px;font-weight:800;color:#fff}
+#mh-chain{color:#ffd060}
+#mh-score{color:#5fcb52}
+/* ── ALERT INDICATORS ─────────────────────────────────────── */
+#alert-indicators{position:fixed;inset:0;pointer-events:none;z-index:11;overflow:hidden}
+.alert-ind{position:absolute;font-family:'Rajdhani',sans-serif;font-weight:900;font-size:24px;text-shadow:0 0 6px rgba(0,0,0,.85),0 1px 2px rgba(0,0,0,.95);transform:translate(-50%,-50%);will-change:transform;animation:alertPulse 1.0s ease-in-out infinite}
+.alert-ind.engaged{color:#ff5048;font-size:28px}
+.alert-ind.alert{color:#ffd060}
+@keyframes alertPulse{0%,100%{opacity:.85}50%{opacity:1;transform:translate(-50%,-55%) scale(1.10)}}
+/* ── DAMAGE NUMBERS ─────────────────────────────────────────── */
+#dmg-numbers{position:fixed;inset:0;pointer-events:none;z-index:11;overflow:hidden}
+.dmg-num{position:absolute;font-family:'Rajdhani',sans-serif;font-weight:900;font-size:18px;color:#fff;letter-spacing:.04em;text-shadow:0 0 8px rgba(0,0,0,.85),0 1px 2px rgba(0,0,0,.95);will-change:transform,opacity;animation:dmgFloat 1.0s ease-out forwards;font-variant-numeric:tabular-nums}
+.dmg-num.crit{color:#ffd060;font-size:24px;text-shadow:0 0 14px rgba(255,200,80,.55),0 1px 2px rgba(0,0,0,.95)}
+.dmg-num.kill{color:#ff5048;font-size:26px}
+@keyframes dmgFloat{0%{opacity:0;transform:translate(-50%,0) scale(.9)}10%{opacity:1;transform:translate(-50%,-4px) scale(1.05)}100%{opacity:0;transform:translate(-50%,-40px) scale(.95)}}
+/* ── ENEMY HP BAR (targeted) ──────────────────────────────── */
+#enemy-hp{position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);width:220px;display:none;flex-direction:column;align-items:center;gap:3px;z-index:10;pointer-events:none}
+#enemy-hp.show{display:flex}
+#ehp-name{font-size:11px;letter-spacing:.20em;color:rgba(255,200,80,.85);font-weight:700;text-shadow:0 1px 2px #000}
+#ehp-track{width:100%;height:3px;background:rgba(180,40,40,.30);border:1px solid rgba(255,80,40,.45)}
+#ehp-fill{height:100%;background:linear-gradient(90deg,#ff5040 0%,#ffaa40 100%);width:100%;transition:width .1s}
+/* ── RADAR ──────────────────────────────────────────────────── */
+#radar{position:absolute;top:18px;right:18px;width:140px;height:140px;border:1px solid rgba(64,200,255,.35);border-radius:50%;background:rgba(8,16,28,.72);box-shadow:0 0 18px rgba(64,200,255,.15),inset 0 0 24px rgba(0,0,0,.35);z-index:11;pointer-events:none}
+/* ── LOADOUT VIEWER ─────────────────────────────────────── */
+#loadout-viewer{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);z-index:78;opacity:0;pointer-events:none;transition:opacity .25s;font-family:'Rajdhani',sans-serif}
+#loadout-viewer.show{opacity:1;pointer-events:auto}
+.lv-frame{width:min(540px,92vw);max-height:88vh;overflow:auto;background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);padding:30px 36px;text-align:center}
+.lv-name{margin-bottom:4px}
+.lv-slot{font-size:11px;letter-spacing:.30em;color:rgba(255,200,80,.55);font-weight:700;margin-bottom:18px}
+.lv-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 14px;margin-bottom:22px}
+.lv-stat{display:flex;flex-direction:column;align-items:center;gap:2px;background:rgba(20,24,32,.60);border-left:2px solid rgba(255,200,80,.30);padding:8px 4px}
+.lv-lbl{font-size:9px;letter-spacing:.25em;color:rgba(255,255,255,.45);font-weight:700}
+.lv-val{font-size:14px;color:#fff;font-weight:800}
+.lv-att-title{font-size:11px;letter-spacing:.30em;color:rgba(255,200,80,.65);font-weight:700;margin-bottom:10px}
+.lv-attlist{display:flex;flex-direction:column;gap:6px;margin-bottom:18px;text-align:left}
+.lv-att{display:flex;justify-content:space-between;background:rgba(20,24,32,.60);padding:6px 10px;border-left:2px solid rgba(255,200,80,.30)}
+.lv-aty{font-size:10px;letter-spacing:.20em;color:rgba(255,255,255,.45);font-weight:700}
+.lv-an{font-size:12px;color:#fff;font-weight:700}
+/* ── LEVEL SELECT ───────────────────────────────────────── */
+#level-select{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);z-index:78;opacity:0;pointer-events:none;transition:opacity .25s;font-family:'Rajdhani',sans-serif}
+#level-select.show{opacity:1;pointer-events:auto}
+.ls-frame{width:min(880px,95vw);max-height:86vh;overflow:auto;background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);padding:32px 36px;text-align:center}
+.ls-title{font-size:22px;font-weight:900;letter-spacing:.30em;color:#ffd060}
+.ls-sub{font-size:11px;letter-spacing:.30em;color:rgba(255,255,255,.40);margin-bottom:24px}
+#ls-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.ls-tile{background:linear-gradient(180deg,rgba(20,24,32,.85),rgba(10,12,18,.95));border:1px solid rgba(255,200,80,.30);color:#fff;padding:18px 14px;cursor:pointer;font-family:'Rajdhani',sans-serif;text-align:center;transition:transform .12s,border-color .12s,box-shadow .12s;display:flex;flex-direction:column;gap:5px;align-items:center}
+.ls-tile:hover{transform:translateY(-2px);border-color:#ffd060;box-shadow:0 4px 22px rgba(255,180,40,.20)}
+.ls-tile.ls-locked{opacity:.40;cursor:not-allowed}
+.ls-tile.ls-completed{border-color:#5fcb52}
+.ls-tile.ls-locked:hover{transform:none;border-color:rgba(255,200,80,.30);box-shadow:none}
+.ls-num{font-size:11px;letter-spacing:.30em;color:rgba(255,200,80,.65);font-weight:700}
+.ls-name{font-size:18px;font-weight:900;letter-spacing:.06em;color:#fff;text-transform:uppercase}
+.ls-time{font-size:11px;letter-spacing:.20em;color:rgba(255,200,80,.65);font-weight:600}
+.ls-target{font-size:12px;color:rgba(255,255,255,.55);font-weight:600;margin-top:4px}
+.ls-status{font-size:10px;letter-spacing:.20em;color:rgba(255,255,255,.40);margin-top:6px}
+/* ── ONBOARD CARD ─────────────────────────────────────────── */
+#onboard-card{position:absolute;bottom:170px;left:36px;background:rgba(8,12,20,.85);border-left:3px solid #ffd060;padding:10px 18px;font-family:'Rajdhani',sans-serif;font-size:13px;color:rgba(255,255,255,.85);max-width:380px;opacity:0;pointer-events:none;transition:opacity .3s,transform .15s;z-index:14;backdrop-filter:blur(2px)}
+#onboard-card.show{opacity:1}
+#onboard-card.ob-pop{transform:scale(1.04);background:rgba(40,30,12,.85)}
+.ob-text{line-height:1.5}
+.ob-text kbd{display:inline-block;background:rgba(255,200,80,.15);border:1px solid rgba(255,200,80,.45);color:#ffd060;padding:1px 6px;font-family:'Rajdhani',monospace;font-size:11px;margin:0 1px;border-radius:2px;font-weight:800}
+.ob-skip{font-size:9px;letter-spacing:.20em;color:rgba(255,255,255,.30);margin-top:5px}
+/* ── FULL MAP ──────────────────────────────────────────────── */
+#full-map{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);z-index:78;opacity:0;pointer-events:none;transition:opacity .25s;font-family:'Rajdhani',sans-serif}
+#full-map.show{opacity:1;pointer-events:auto}
+.fm-frame{background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);padding:24px 28px;text-align:center}
+.fm-title{font-size:18px;letter-spacing:.30em;color:#ffd060;font-weight:900;margin-bottom:14px}
+#full-map-canvas{border:1px solid rgba(64,200,255,.30);background:#0a0d14;display:block;margin:0 auto 14px}
+/* ── RADIAL ─────────────────────────────────────────────────── */
+#radial{position:fixed;top:50%;left:50%;width:240px;height:240px;margin-left:-120px;margin-top:-120px;display:none;z-index:50;font-family:'Rajdhani',sans-serif;pointer-events:auto}
+#radial.show{display:block}
+.rad-slot{position:absolute;width:64px;height:64px;margin-left:-32px;margin-top:-32px;background:rgba(8,12,20,.92);border:1px solid rgba(255,200,80,.40);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:transform .12s,border-color .12s,background .12s}
+.rad-slot:hover,.rad-slot.rad-hover{border-color:#ffd060;background:rgba(40,32,12,.95);transform:scale(1.10);box-shadow:0 0 18px rgba(255,180,40,.40)}
+.rad-slot.rad-current{border-color:#5fcb52}
+.rad-num{font-size:11px;letter-spacing:.20em;color:rgba(255,200,80,.65);font-weight:700}
+.rad-name{font-size:10px;letter-spacing:.10em;color:#fff;font-weight:800;margin-top:1px}
+.rad-center{position:absolute;left:50%;top:50%;width:120px;height:120px;margin-left:-60px;margin-top:-60px;background:rgba(8,12,20,.92);border:1px solid rgba(255,200,80,.65);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#ffd060}
+.rad-c-name{font-size:11px;letter-spacing:.25em;font-weight:800}
+.rad-c-hint{font-size:9px;letter-spacing:.20em;color:rgba(255,255,255,.45);margin-top:4px}
+/* ── BREATH BAR ──────────────────────────────────────────── */
+#breath-bar{position:absolute;top:230px;left:50%;transform:translateX(-50%);width:140px;display:flex;flex-direction:column;gap:3px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
+#breath-bar.show{opacity:1}
+.bb-row{display:flex;justify-content:center;align-items:baseline;font-family:'Rajdhani',sans-serif}
+.bb-label{font-size:9px;letter-spacing:.30em;color:rgba(64,200,255,.85);font-weight:800}
+.bb-track{width:100%;height:3px;background:rgba(64,200,255,.20)}
+.bb-fill{height:100%;background:#40c8ff;width:100%;transition:width .12s}
+/* ── SETPIECE BAR ─────────────────────────────────────────────── */
+#setpiece-bar{position:absolute;top:110px;left:50%;transform:translateX(-50%);width:280px;display:flex;flex-direction:column;gap:5px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
+#setpiece-bar.show{opacity:1}
+.sp-row{display:flex;justify-content:space-between;align-items:baseline;font-family:'Rajdhani',sans-serif}
+.sp-label{font-size:11px;letter-spacing:.30em;color:#ff8040;font-weight:800}
+.sp-time{font-size:14px;color:#fff;font-weight:800;letter-spacing:.05em;font-variant-numeric:tabular-nums}
+.sp-track{width:100%;height:4px;background:rgba(255,128,64,.20)}
+.sp-fill{height:100%;background:linear-gradient(90deg,#ff5040,#ffaa40);width:100%;transition:width .12s}
+/* ── COMBO HUD ─────────────────────────────────────────────────── */
+#combo-hud{position:absolute;top:160px;right:36px;width:180px;display:flex;flex-direction:column;align-items:flex-end;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
+#combo-hud.show{opacity:1}
+.cm-row{display:flex;align-items:baseline;gap:10px;font-family:'Rajdhani',sans-serif}
+.cm-label{font-size:10px;letter-spacing:.32em;color:rgba(255,200,80,.65);font-weight:700}
+.cm-count{font-size:22px;font-weight:900;color:#ffd060;letter-spacing:.05em;font-variant-numeric:tabular-nums}
+.cm-mult{font-size:14px;font-weight:700;color:#fff;letter-spacing:.05em;font-variant-numeric:tabular-nums}
+.cm-track{width:100%;height:3px;background:rgba(255,200,80,.20);margin-top:4px}
+.cm-fill{height:100%;background:#ffd060;width:100%;transition:width .12s}
+/* ── STORY CARD ─────────────────────────────────────────────── */
+#story-card{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;z-index:80;opacity:0;pointer-events:none;transition:opacity .8s;font-family:'Rajdhani',sans-serif}
+#story-card.show{opacity:1;pointer-events:auto}
+#story-frame{max-width:780px;padding:0 40px;text-align:left;color:#fff}
+#story-lines{font-size:24px;line-height:1.65;letter-spacing:.04em;color:rgba(255,255,255,.92);font-weight:500;text-shadow:0 0 14px rgba(255,200,80,.10)}
+.story-line{margin-bottom:12px;color:#fff}
+.story-line:nth-child(odd){color:rgba(255,200,80,.95)}
+.story-blink{font-size:24px;color:#ffd060;display:inline-block;animation:storyBlink 1.0s step-end infinite}
+@keyframes storyBlink{50%{opacity:0}}
+/* ── DOSSIER CARD ─────────────────────────────────────────────── */
+#dossier-card{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 50%,rgba(20,16,8,.85),rgba(0,0,0,.97));backdrop-filter:blur(8px);z-index:75;opacity:0;pointer-events:none;transition:opacity .55s;font-family:'Rajdhani',sans-serif}
+#dossier-card.show{opacity:1;pointer-events:auto}
+#dc-frame{width:min(720px,92vw);background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);box-shadow:0 0 80px rgba(255,180,40,.20),inset 0 0 40px rgba(0,0,0,.55);padding:24px 28px;display:grid;grid-template-columns:200px 1fr;grid-template-rows:auto 1fr;gap:18px;position:relative}
+#dc-frame::before,#dc-frame::after{content:'';position:absolute;width:24px;height:24px;border:1.5px solid rgba(255,200,80,.85)}
+#dc-frame::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+#dc-frame::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+#dc-tag{grid-column:1/3;font-size:11px;letter-spacing:.40em;color:#ffd060;font-weight:700;border-bottom:1px solid rgba(255,200,80,.30);padding-bottom:10px;text-transform:uppercase}
+#dc-portrait{grid-row:2/3;display:flex;flex-direction:column;align-items:center;gap:8px}
+.dc-port-fr{width:160px;height:160px;border:2px solid rgba(255,200,80,.55);background:repeating-linear-gradient(0deg,rgba(255,200,80,.06) 0px,rgba(255,200,80,.06) 1px,transparent 1px,transparent 4px),linear-gradient(180deg,#181820,#0a0c14);position:relative;display:flex;align-items:center;justify-content:center}
+.dc-port-fr::after{content:'';position:absolute;inset:0;border:1px solid rgba(255,200,80,.20);pointer-events:none}
+#dc-port-svg{width:120px;height:120px;opacity:.65}
+#dc-info{grid-row:2/3;display:flex;flex-direction:column;gap:8px}
+#dc-target{font-size:30px;font-weight:900;letter-spacing:.10em;color:#fff;text-transform:uppercase}
+#dc-role{font-size:13px;letter-spacing:.30em;color:rgba(255,200,80,.85);font-weight:700;text-transform:uppercase;margin-bottom:8px}
+.dc-lbl{font-size:10px;letter-spacing:.30em;color:rgba(255,255,255,.40);font-weight:700;display:inline-block;width:90px}
+#dc-threat-row,#dc-time-row,#dc-loc-row{font-size:13px;color:#fff}
+#dc-threat-row span:last-child{color:#ff5048;font-weight:800;letter-spacing:.05em}
+#dc-time-row span:last-child{color:#ffd060;font-weight:700}
+#dc-loc-row span:last-child{color:#ffd060;font-weight:700}
+#dc-intel-title{font-size:11px;letter-spacing:.30em;color:rgba(255,200,80,.65);font-weight:700;margin-top:14px}
+#dc-intel{font-size:14px;color:rgba(255,255,255,.85);line-height:1.7;list-style:none;padding-left:0}
+#dc-intel li{padding-left:18px;position:relative}
+#dc-intel li::before{content:'▸';position:absolute;left:0;color:#ffd060;font-weight:800}
+#dc-bottom{margin-top:14px;text-align:right}
+/* ── SKILL TREE PANEL ─────────────────────────────────────────── */
+#skill-tree{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);z-index:78;opacity:1;transition:opacity .25s;font-family:'Rajdhani',sans-serif}
+#skill-tree.st-hidden{opacity:0;pointer-events:none}
+.st-panel{width:min(640px,92vw);max-height:88vh;overflow:auto;background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);padding:24px 28px;position:relative}
+.st-panel::before,.st-panel::after{content:'';position:absolute;width:20px;height:20px;border:1.5px solid rgba(255,200,80,.65)}
+.st-panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.st-panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.st-title{font-size:22px;font-weight:900;letter-spacing:.30em;color:#ffd060;text-align:center;margin-bottom:6px}
+.st-pts{font-size:12px;letter-spacing:.24em;color:rgba(255,255,255,.55);text-align:center;margin-bottom:16px;font-weight:700}
+.st-cats{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid rgba(255,200,80,.20)}
+.st-cat-tab{flex:1;font-size:11px;letter-spacing:.20em;color:rgba(255,255,255,.45);font-weight:700;padding:9px;cursor:pointer;text-align:center;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.st-cat-tab.active{color:#ffd060;border-bottom-color:#ffd060}
+.st-cat-tab:hover{color:#ffe080}
+.st-list{display:flex;flex-direction:column;gap:8px}
+.st-perk{display:flex;align-items:center;gap:14px;background:rgba(20,24,32,.55);border-left:3px solid rgba(255,200,80,.30);padding:12px 14px}
+.st-perk.locked{opacity:.55}
+.st-perk.owned{border-left-color:#5fcb52;background:rgba(20,40,28,.55)}
+.st-perk-icon{font-size:24px;width:36px;text-align:center;color:#ffd060}
+.st-perk-body{flex:1}
+.st-perk-name{font-size:14px;letter-spacing:.10em;font-weight:800;color:#fff;text-transform:uppercase}
+.st-perk-desc{font-size:11px;color:rgba(255,255,255,.55);margin-top:2px}
+.st-perk-cost{font-size:12px;color:#ffd060;font-weight:800;letter-spacing:.10em;margin-right:4px}
+.st-perk-buy{background:rgba(40,32,16,.85);border:1px solid rgba(255,200,80,.45);color:#ffd060;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:11px;letter-spacing:.18em;padding:6px 12px;cursor:pointer;text-transform:uppercase}
+.st-perk-buy:hover:not(:disabled){background:#ffd060;color:#1a1206}
+.st-perk-buy:disabled{opacity:.35;cursor:not-allowed}
+.st-perk-owned{font-size:11px;color:#5fcb52;letter-spacing:.18em;font-weight:800}
+.st-bottom{text-align:center;margin-top:16px}
+/* ── ACHIEVEMENTS PANEL ────────────────────────────────────────── */
+#achievements-panel{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);z-index:78;opacity:1;transition:opacity .25s;font-family:'Rajdhani',sans-serif}
+#achievements-panel.ap-hidden{opacity:0;pointer-events:none}
+.ap-frame{width:min(540px,92vw);max-height:80vh;overflow:auto;background:linear-gradient(180deg,rgba(14,16,22,.96),rgba(8,10,14,.96));border:1px solid rgba(255,200,80,.50);padding:24px 28px}
+.ap-title{font-size:18px;font-weight:900;letter-spacing:.30em;color:#ffd060;text-align:center;margin-bottom:14px}
+.ap-list{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.ap-row{display:flex;align-items:center;gap:14px;padding:8px 12px;background:rgba(20,24,32,.55);border-left:3px solid rgba(255,200,80,.30)}
+.ap-row.unlocked{border-left-color:#5fcb52;background:rgba(20,40,28,.55)}
+.ap-row .ap-tick{font-size:18px;color:#5fcb52;width:24px;text-align:center}
+.ap-row.locked .ap-tick{color:rgba(255,255,255,.20)}
+.ap-row-name{flex:1;font-size:13px;color:#fff;font-weight:800;letter-spacing:.06em}
+.ap-row-desc{flex:0 0 60%;font-size:11px;color:rgba(255,255,255,.55)}
+.ap-daily{margin-top:14px;padding:14px;background:rgba(40,30,15,.55);border:1px solid rgba(255,200,80,.40)}
+.ap-d-title{font-size:11px;letter-spacing:.30em;color:#ffd060;font-weight:700;margin-bottom:6px}
+.ap-d-row{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:#fff}
+.ap-d-row span:last-child{color:#ffd060;font-weight:800}
+.ap-bottom{text-align:center;margin-top:18px}
+/* ── ENDING OVERLAY ────────────────────────────────────────────── */
+#ending-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#000;z-index:120;font-family:'Rajdhani',sans-serif;flex-direction:column;color:#fff}
+#ending-overlay.show{display:flex}
+#ending-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;animation:endingFlash 1.5s ease-out forwards}
+@keyframes endingFlash{0%{opacity:0}10%{opacity:1}100%{opacity:0}}
+#ending-content{position:relative;z-index:2;text-align:center;max-width:760px;padding:0 30px}
+#ending-title{font-size:64px;letter-spacing:.16em;font-weight:900;color:#ffd060;text-shadow:0 0 60px rgba(255,180,40,.55);animation:endIn 1.2s .8s both}
+#ending-sub{font-size:14px;letter-spacing:.42em;color:rgba(255,255,255,.55);margin-top:8px;animation:endIn 1.2s 1.2s both}
+#ending-stats{margin-top:30px;display:grid;grid-template-columns:auto auto;gap:8px 30px;font-size:14px;color:rgba(255,255,255,.78);animation:endIn 1.2s 1.6s both}
+#ending-credits{margin-top:30px;font-size:13px;line-height:1.8;color:rgba(255,255,255,.55);animation:endIn 1.2s 2.0s both}
+#ending-back{margin-top:30px;animation:endIn 1.2s 2.4s both}
+@keyframes endIn{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<main><canvas id="c"></canvas></main>
+<div id="hud">
+  <div id="xhair"><div class="bar t"></div><div class="bar b"></div><div class="bar l"></div><div class="bar r"></div></div>
+  <div id="hitmark"><span></span><span></span><span></span><span></span></div>
+  <div id="top">
+    <div id="building-num">Building 1</div>
+    <div style="text-align:center"><div id="wave-num">WAVE 1/3</div><div id="wave-sub">enemies: <span id="enemy-count">0</span></div></div>
+    <div style="font-size:12px;letter-spacing:.2em;color:rgba(255,255,255,.25)">CLEARANCE</div>
+  </div>
+  <div id="bottom">
+    <div>
+      <div class="hud-label">health</div>
+      <div class="hud-val" id="hp-val">100</div>
+      <div id="hp-bar"><div id="hp-fill"></div></div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:14px">
+        <div><div class="hud-label" style="color:rgba(255,210,80,.55)">credits</div><div style="font-size:18px;font-weight:800;color:#ffd060;letter-spacing:.04em" id="money-val">0</div></div>
+        <div><div class="hud-label" style="color:rgba(120,255,160,.6)">packs · H</div><div style="font-size:18px;font-weight:800;color:#5fff90;letter-spacing:.04em" id="pack-val">0</div></div>
+        <div><div class="hud-label" style="color:rgba(255,170,80,.6)">grnd · G</div><div style="font-size:18px;font-weight:800;color:#ff9d40;letter-spacing:.04em" id="gren-val">0</div></div>
+      </div>
+    </div>
+      <div style="text-align:right">
+        <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-bottom:2px">
+          <div id="weapon-name" style="font-size:10px;letter-spacing:.22em;color:rgba(255,190,60,.75);font-weight:700;text-transform:uppercase">M4A1</div>
+          <div id="weapon-num" style="font-size:9px;letter-spacing:.15em;color:rgba(255,255,255,.25)">[1/2]</div>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:4px">
+          <div id="ammo-val" class="hud-val">12</div>
+          <div class="hud-val" style="font-size:18px;color:rgba(255,255,255,.45)">/ <span id="ammo-res">60</span></div>
+        </div>
+      </div>
+    </div>
+    <div id="killfeed"></div>
+    <div id="wave-announce"><h2 id="wa-text">WAVE 1</h2><p id="wa-sub">Eliminate all enemies</p></div>
+    <div id="exit-prompt"><h3>EXIT UNLOCKED</h3><p>Walk through the door to advance</p></div>
+    <div id="reload-bar"><div class="rl">RELOADING</div><div id="reload-track"><div id="reload-fill"></div></div></div>
+    <div id="lock-hint">Click to aim · WASD · SHIFT Run · SPACE Vault/Jump · LMB Shoot · RMB ADS · R Reload · 1/2 Weapon · Q Swap · V Knife · Q/E Lean</div>
+</div>
+<div id="vault-prompt" style="position:fixed;top:42%;left:50%;transform:translate(-50%,-50%);font-size:14px;letter-spacing:.35em;color:rgba(255,200,70,.95);font-weight:700;text-shadow:0 0 20px rgba(255,170,0,.8),0 0 40px rgba(255,120,0,.4);opacity:0;transition:opacity .15s;pointer-events:none;z-index:20">▲ SPACE to VAULT</div>
+<div id="pickup-prompt" style="position:fixed;top:55%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:13px;letter-spacing:.20em;color:rgba(255,225,170,.95);font-weight:700;opacity:0;transition:opacity .15s;pointer-events:none;z-index:21">
+  <div style="display:flex;align-items:center;gap:10px;justify-content:center"><span style="background:rgba(255,200,80,.18);border:1px solid rgba(255,200,80,.55);padding:2px 9px;border-radius:2px;color:#ffd060">F</span><span id="pickup-prompt-text">PICK UP</span></div>
+  <div id="pickup-prompt-sub" style="font-size:10px;letter-spacing:.18em;color:rgba(255,255,255,.5);font-weight:500;margin-top:5px;text-transform:uppercase"></div>
+</div>
+<div id="attach-toast" style="position:fixed;top:20%;left:50%;transform:translate(-50%,-50%);font-size:14px;letter-spacing:.14em;font-weight:700;text-align:center;opacity:0;transition:opacity .25s;pointer-events:none;z-index:22;background:rgba(8,10,16,.78);border-left:3px solid #ffd060;border-right:3px solid #ffd060;padding:14px 28px;backdrop-filter:blur(4px)"></div>
+<div id="pause-menu" class="pause-hidden">
+  <div id="pause-panel">
+    <div id="pause-title">PAUSED</div>
+    <div id="pause-sub">Tactical halt</div>
+    <div id="pause-buttons">
+      <button class="pause-btn" id="pause-resume">RESUME</button>
+      <button class="pause-btn" id="pause-loadout-btn">⚒ LOADOUT</button>
+      <button class="pause-btn" id="pause-skills-btn">▣ SKILLS</button>
+      <button class="pause-btn" id="pause-ach-btn">★ ACHIEVEMENTS</button>
+      <button class="pause-btn" id="pause-settings-btn">SETTINGS</button>
+      <button class="pause-btn pause-quit" id="pause-quit">QUIT TO MAIN MENU</button>
+    </div>
+    <div id="pause-settings" style="display:none">
+      <div class="pause-row"><label class="pause-label">SENSITIVITY</label><input id="set-sens" type="range" min="0.4" max="3" step="0.05"><span id="set-sens-val" class="pause-val">1.00</span></div>
+      <div class="pause-row"><label class="pause-label">FOV</label><input id="set-fov" type="range" min="60" max="110" step="1"><span id="set-fov-val" class="pause-val">75</span></div>
+      <div class="pause-row"><label class="pause-label">QUALITY</label>
+        <div style="flex:1;display:flex;gap:6px"><button class="quality-btn" data-q="low">LOW</button><button class="quality-btn" data-q="medium">MED</button><button class="quality-btn" data-q="high">HIGH</button><button class="quality-btn" data-q="ultra">ULTRA</button></div>
+      </div>
+      <div class="pause-row"><label class="pause-label">ADS SENS</label><input id="set-adsens" type="range" min="0.4" max="1.6" step="0.05"><span id="set-adsens-val" class="pause-val">1.00</span></div>
+      <div class="pause-row"><label class="pause-label">VOLUME</label><input id="set-vol" type="range" min="0" max="1" step="0.01"><span id="set-vol-val" class="pause-val">1.00</span></div>
+      <div class="pause-row"><label class="pause-label">INVERT Y</label>
+        <div style="flex:1"><button class="quality-btn" id="set-invy" data-on="false">OFF</button></div>
+      </div>
+      <div class="pause-row"><label class="pause-label">RADAR</label>
+        <div style="flex:1"><button class="quality-btn" id="set-radar" data-on="true">ON</button></div>
+      </div>
+      <div class="pause-row"><label class="pause-label">DMG #</label>
+        <div style="flex:1"><button class="quality-btn" id="set-dmgnum" data-on="true">ON</button></div>
+      </div>
+      <button class="pause-btn" id="set-back" style="margin-top:8px">BACK</button>
+    </div>
+  </div>
+</div>
+<div id="focus-bar"><div id="focus-fill"></div></div>
+<div id="focus-label">FOCUS · F</div>
+<div id="compass"><div id="compass-strip"></div></div>
+<div id="waypoint-arrow"></div>
+<div id="dmg-indicators"></div>
+<div id="boss-bar"><div id="boss-name">THE MARK</div><div id="boss-track"><div id="boss-fill"></div></div><div class="boss-phase" id="boss-phase">PHASE 1 / 3</div></div>
+<div id="mission-hud">
+  <div class="mh-row"><span class="mh-lbl">TIME</span><span id="mh-time">00:00</span></div>
+  <div class="mh-row"><span class="mh-lbl">KILLS</span><span id="mh-kills">0</span></div>
+  <div class="mh-row"><span class="mh-lbl">CHAIN</span><span id="mh-chain">0</span></div>
+  <div class="mh-row"><span class="mh-lbl">DPS</span><span id="mh-dps">0</span></div>
+  <div class="mh-row"><span class="mh-lbl">SCORE</span><span id="mh-score">0</span></div>
+</div>
+<canvas id="radar"></canvas>
+<div id="dmg-numbers"></div>
+<div id="alert-indicators"></div>
+<div id="enemy-hp">
+  <div id="ehp-name"></div>
+  <div id="ehp-track"><div id="ehp-fill"></div></div>
+</div>
+<div id="onboard-card"><div class="ob-text">Move with WASD</div><div class="ob-skip">[<kbd>?</kbd> to skip]</div></div>
+<div id="loadout-viewer"><div class="lv-frame"><div class="lv-content"></div><button class="menu-cta" id="lv-back">CLOSE</button></div></div>
+<div id="level-select">
+  <div class="ls-frame">
+    <div class="ls-title">▣ LEVEL SELECT</div>
+    <div class="ls-sub">REPLAY ANY CLEARED BUILDING</div>
+    <div id="ls-grid"></div>
+    <button class="menu-cta" id="ls-back">← BACK</button>
+  </div>
+</div>
+<div id="radial"></div>
+<div id="full-map"><div class="fm-frame"><div class="fm-title">▣ TACTICAL MAP</div><canvas id="full-map-canvas" width="540" height="420"></canvas><button class="menu-cta" id="fm-back">CLOSE</button></div></div>
+<div id="breath-bar"><div class="bb-row"><span class="bb-label">SHIFT</span></div><div class="bb-track"><div class="bb-fill"></div></div></div>
+<div id="setpiece-bar">
+  <div class="sp-row"><div class="sp-label">SETPIECE</div><div class="sp-time">--</div></div>
+  <div class="sp-track"><div class="sp-fill"></div></div>
+</div>
+<div id="combo-hud">
+  <div class="cm-row"><div class="cm-label">CHAIN</div><div class="cm-count">× 0</div><div class="cm-mult">1.00×</div></div>
+  <div class="cm-track"><div class="cm-fill"></div></div>
+</div>
+<div id="story-card">
+  <div id="story-frame">
+    <div id="story-lines"></div>
+    <div class="story-blink">▮</div>
+  </div>
+</div>
+<div id="dossier-card">
+  <div id="dc-frame">
+    <div id="dc-tag">CLASSIFIED · TARGET DOSSIER</div>
+    <div id="dc-portrait"><div class="dc-port-fr"><svg id="dc-port-svg" viewBox="0 0 100 100"><circle cx="50" cy="38" r="18" fill="#404048"/><rect x="22" y="56" width="56" height="40" fill="#404048"/></svg></div></div>
+    <div id="dc-info">
+      <div id="dc-target">TOMMASO VASARI</div>
+      <div id="dc-role">UNDERBOSS</div>
+      <div id="dc-threat-row"><span class="dc-lbl">THREAT</span> <span id="dc-threat">HIGH</span></div>
+      <div id="dc-time-row"><span class="dc-lbl">TIME</span> <span id="dc-time">0500 HRS</span></div>
+      <div id="dc-loc-row"><span class="dc-lbl">LOCATION</span> <span id="dc-location">PENTHOUSE</span></div>
+      <div id="dc-intel-title">INTEL</div>
+      <ul id="dc-intel"></ul>
+      <div id="dc-bottom"><button class="menu-cta menu-cta-go" id="dc-breach">▶ BREACH</button></div>
+    </div>
+  </div>
+</div>
+<div id="skill-tree" class="st-hidden">
+  <div class="st-panel">
+    <div class="st-title">▣ SKILLS</div>
+    <div class="st-pts" id="st-pts">3 POINTS AVAILABLE</div>
+    <div class="st-cats">
+      <div class="st-cat-tab active" data-cat="Combat">COMBAT</div>
+      <div class="st-cat-tab" data-cat="Movement">MOVEMENT</div>
+      <div class="st-cat-tab" data-cat="Tactical">TACTICAL</div>
+    </div>
+    <div class="st-list" id="st-list"></div>
+    <div class="st-bottom"><button class="menu-cta" id="st-close">CLOSE</button></div>
+  </div>
+</div>
+<div id="achievements-panel" class="ap-hidden">
+  <div class="ap-frame">
+    <div class="ap-title">★ ACHIEVEMENTS</div>
+    <div class="ap-list" id="ap-list"></div>
+    <div class="ap-daily">
+      <div class="ap-d-title">DAILY CHALLENGE</div>
+      <div class="ap-d-row"><span id="ap-d-desc">—</span><span id="ap-d-bonus">+500</span></div>
+    </div>
+    <div class="ap-bottom"><button class="menu-cta" id="ap-close">CLOSE</button></div>
+  </div>
+</div>
+<div id="ending-overlay">
+  <div id="ending-flash"></div>
+  <div id="ending-content">
+    <div id="ending-title">OPERATION COMPLETE</div>
+    <div id="ending-sub">CLEARANCE GRANTED</div>
+    <div id="ending-stats"></div>
+    <div id="ending-credits"></div>
+    <button class="menu-cta menu-cta-go" id="ending-back">RETURN TO MAIN MENU</button>
+  </div>
+</div>
+<div id="tutorial-toast"></div>
+<div id="endscreen">
+  <div id="es-title">MISSION COMPLETE</div>
+  <div id="es-sub" id="es-sub-text">TARGET ELIMINATED</div>
+  <div id="es-grade">S</div>
+  <div id="es-stats"></div>
+  <div id="es-buttons">
+    <button class="pause-btn" id="es-restart">PLAY AGAIN</button>
+    <button class="pause-btn pause-quit" id="es-quit">MAIN MENU</button>
+  </div>
+</div>
+<div id="lean-vignette"></div>
+<div id="scope-vignette"></div>
+<div id="color-grade"></div>
+<div id="kill-beat"></div>
+<div id="briefing-card" class="brief-hidden">
+  <div id="brief-silhouette"><svg id="brief-svg" viewBox="0 0 560 200"></svg></div>
+  <div id="brief-tag">BUILDING 1</div>
+  <div id="brief-name">LOADING DOCK</div>
+  <div id="brief-time">0312 HRS</div>
+  <div id="brief-sub">PROCEED TO TARGET</div>
+</div>
+<div id="dmg-flash"></div>
+<div id="chrom"></div>
+<div id="low-hp"></div>
+<div id="slash-fx"></div>
+<canvas id="melee-canvas"></canvas>
+<div id="melee-hit-flash"></div>
+<div id="combo-indicator">
+  <div class="combo-dot" id="cd0"></div>
+  <div class="combo-dot" id="cd1"></div>
+  <div class="combo-dot" id="cd2"></div>
+  <div class="combo-dot" id="cd3"></div>
+  <div id="combo-label">COMBO</div>
+</div>
+<div id="overlay">
+  <div id="menu-bg-fx">
+    <div class="menu-scanline"></div>
+    <div class="menu-glow menu-glow-1"></div>
+    <div class="menu-glow menu-glow-2"></div>
+    <div class="menu-grid"></div>
+  </div>
+  <div id="menu-content">
+    <div style="font-size:11px;letter-spacing:.50em;color:rgba(255,200,80,.85);font-weight:700;margin-bottom:6px">▣ CLASSIFIED · TACTICAL OPERATIONS</div>
+    <h1 style="font-size:96px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;line-height:.9;text-shadow:0 0 60px rgba(255,180,40,.30),0 0 20px rgba(255,255,255,.15);background:linear-gradient(180deg,#fff5dc 0%,#ffd060 60%,#a07020 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">CLEARANCE</h1>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:-2px"><div style="height:1px;width:50px;background:rgba(255,200,80,.6)"></div><h2 style="font-size:13px;font-weight:600;letter-spacing:.34em;color:rgba(255,200,80,.85);text-transform:uppercase">Operator · Mission Brief</h2><div style="height:1px;width:50px;background:rgba(255,200,80,.6)"></div></div>
+    <div style="font-size:14px;font-weight:400;letter-spacing:.06em;color:rgba(255,255,255,.55);margin-top:14px;max-width:540px;text-align:center;line-height:1.5">Four buildings. One target at the top. Move, shoot, swap. Lose momentum, lose the run.</div>
+    <div id="menu-stats" style="margin-top:22px;display:flex;gap:34px;align-items:center;justify-content:center"></div>
+    <div id="menu-operators" style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:center"></div>
+    <div id="menu-modes" style="display:flex;gap:14px;margin-top:18px">
+      <button class="menu-mode menu-mode-active" data-diff="normal"><span class="mm-tag">STORY</span><span class="mm-name">NORMAL</span><span class="mm-desc">balanced</span></button>
+      <button class="menu-mode" data-diff="hard"><span class="mm-tag">VETERAN</span><span class="mm-name">HARD</span><span class="mm-desc">tougher AI</span></button>
+      <button class="menu-mode" data-diff="lethal"><span class="mm-tag">LETHAL</span><span class="mm-name">EXPERT</span><span class="mm-desc">no heals</span></button>
+    </div>
+    <div id="menu-buttons" style="display:flex;gap:14px;margin-top:24px;flex-wrap:wrap;justify-content:center">
+      <button class="menu-cta menu-cta-go" id="start-btn">▶ DEPLOY</button>
+      <button class="menu-cta" id="menu-continue-btn" style="display:none">▶ CONTINUE</button>
+      <button class="menu-cta" id="menu-tutorial-btn">▷ RANGE</button>
+      <button class="menu-cta" id="menu-endless-btn">∞ ENDLESS</button>
+      <button class="menu-cta" id="menu-levelsel-btn">▣ LEVEL SELECT</button>
+      <button class="menu-cta" id="menu-skills-btn">▣ SKILLS</button>
+      <button class="menu-cta" id="menu-ach-btn">★ ACHIEVE</button>
+      <button class="menu-cta" id="menu-stats-btn">≡ STATS</button>
+    </div>
+    <div id="menu-controls-hint" style="margin-top:18px;font-size:11px;letter-spacing:.18em;color:rgba(255,255,255,.32);text-align:center;line-height:1.7">
+      <div><span class="kb">WASD</span> Move &nbsp; <span class="kb">SHIFT</span> Run &nbsp; <span class="kb">CTRL</span> Slide &nbsp; <span class="kb">SPACE</span> Vault &nbsp; <span class="kb">Q/E</span> Lean</div>
+      <div><span class="kb">LMB</span> Shoot &nbsp; <span class="kb">RMB</span> ADS &nbsp; <span class="kb">R</span> Reload &nbsp; <span class="kb">F</span> Focus &nbsp; <span class="kb">V</span> Melee &nbsp; <span class="kb">G</span> Grenade &nbsp; <span class="kb">H</span> Heal</div>
+      <div><span class="kb">1</span> M4 &nbsp; <span class="kb">2</span> Deagle &nbsp; <span class="kb">3</span> Knife &nbsp; <span class="kb">4</span> Shotgun &nbsp; <span class="kb">5</span> SMG &nbsp; <span class="kb">B</span> Shop &nbsp; <span class="kb">Tab</span> Loadout</div>
+    </div>
+  </div>
+  <div id="stats-panel" style="display:none">
+    <div style="font-size:13px;letter-spacing:.30em;color:rgba(255,200,80,.85);font-weight:700;text-align:center;margin-bottom:18px">▣ OPERATIVE FILE</div>
+    <div id="stats-content"></div>
+    <div style="text-align:center;margin-top:22px"><button class="menu-cta" id="stats-back">← BACK</button></div>
+  </div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
+
