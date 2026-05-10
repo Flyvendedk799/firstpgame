@@ -56,3 +56,41 @@ Same caveat for `attachDeagleGlbModel()`.
 - **Asset normalization** — apply transforms in Blender so the Armature scale is 1.0; then the auto-fit math becomes uninteresting.
 - **Modularize** — split `src/main.js` (currently 16,800 lines) into `building.js`, `enemies.js`, `weapons.js`, etc. Vite hot-reloads modules independently.
 - **Steam shell** — Electron + `steamworks.js` per `THREE_UPGRADE_PLAN.md` §11.
+
+## Story mode level package
+
+`src/story/levels.js` now contains a 12-level story-mode production blueprint with authored districts, building identities, pacing tone, objective framing, traversal features, critical-path room chains, optional spaces, and boss arenas.
+
+This file is data-first so gameplay systems can consume it incrementally:
+- Route graph generation
+- Encounter scripting
+- Unlock/shortcut persistence
+- Narrative sequencing
+
+### Story level runtime builder
+
+In addition to metadata, `src/story/levelFactory.js` now creates actual runtime 3D level groups for all 12 story levels:
+- Separate critical-path rooms per level
+- Hallway connectors between rooms
+- Per-room props and lighting
+- Built-in pulsing light animation hooks
+- Spawn-point metadata and objective payloads for gameplay systems
+
+Key exports:
+- `createStoryLevelRuntime(THREE, levelOrder)`
+- `tickStoryLevelAnimations(levelGroup, elapsedSeconds)`
+- `getStoryLevelCatalog()`
+
+### Sifu-depth design package
+
+`src/story/sifuDepthPack.js` expands each of the 12 story levels into a systems-ready depth model:
+- Route layers (`public`, `operational`, `control`, `sanctum`, loopbacks)
+- Room cards (narrative + tactical identity + interactions)
+- Encounter scripts with 5-phase pacing (`read`, `engage`, `spike`, `breath`, `choice`)
+- Reactive world-state rules (`alarm`, `power_shift`, `intel_control`)
+- Replay mastery goals, unlocks, and scoring weights
+- Environmental story beats + cinematic moment cues
+
+Validation helpers:
+- `validateStoryDepthPack()`
+- `scripts/story-depth-check.mjs`
