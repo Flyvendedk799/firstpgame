@@ -14,6 +14,9 @@ import { EffectComposer }    from 'three/addons/postprocessing/EffectComposer.js
 import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass }   from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
+import { createStoryLevelRuntime, tickStoryLevelAnimations } from './story/levelFactory.js';
+import { STORY_LEVELS } from './story/levels.js';
+import { getStoryDepthLevel } from './story/sifuDepthPack.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
 // so we can re-attach the addons under the same `THREE.X` names the legacy
@@ -16915,6 +16918,9 @@ renderer.setAnimationLoop(()=>{
     PP.shakeX*=Math.max(0,1-dt*PP.shakeDecay);
     PP.shakeY*=Math.max(0,1-dt*PP.shakeDecay);
       hudUpdate();
+      if(STORY_MODE.enabled&&STORY_MODE.levelGroup){
+        tickStoryLevelAnimations(STORY_MODE.levelGroup,now);
+      }
       // ── PIP scope render — only when scope equipped + ADS engaged
       const _hasScope=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
       if(_hasScope&&P.ads>.05){
@@ -16940,6 +16946,63 @@ renderer.setAnimationLoop(()=>{
       if(_composer)_composer.render();
       else renderer.render(scene,camera);
 });
+
+// ── Story Campaign Runtime (12 levels) ───────────────────────────────────────
+const STORY_MODE={
+  enabled:false,
+  levelOrder:1,
+  levelGroup:null,
+  objectiveEl:null,
+  lastObjective:''
+};
+function ensureStoryHUD(){
+  if(STORY_MODE.objectiveEl) return STORY_MODE.objectiveEl;
+  const el=document.createElement('div');
+  el.id='story-mode-objective';
+  el.style.cssText='position:fixed;left:16px;top:72px;max-width:480px;padding:10px 12px;border:1px solid rgba(160,220,255,.6);background:rgba(4,10,20,.78);color:#d6efff;font:12px/1.4 monospace;z-index:12000;border-radius:6px;white-space:pre-line;pointer-events:none;display:none';
+  document.body.appendChild(el);
+  STORY_MODE.objectiveEl=el;
+  return el;
+}
+function unloadStoryLevel(){
+  if(STORY_MODE.levelGroup){
+    scene.remove(STORY_MODE.levelGroup);
+    STORY_MODE.levelGroup=null;
+  }
+}
+function loadStoryLevel(order){
+  unloadStoryLevel();
+  STORY_MODE.levelOrder=Math.max(1,Math.min(STORY_LEVELS.length,order|0));
+  const group=createStoryLevelRuntime(THREE,STORY_MODE.levelOrder);
+  if(!group) return;
+  STORY_MODE.levelGroup=group;
+  group.position.set(0,0,-90);
+  scene.add(group);
+  const meta=group.userData.levelMeta;
+  const depth=getStoryDepthLevel(meta.id);
+  const el=ensureStoryHUD();
+  const layer=depth?`Layers: ${Object.keys(depth.routeLayers).join(', ')}`:'';
+  STORY_MODE.lastObjective=`STORY ${meta.order}/12 · ${meta.title}\n${meta.objective}\nBoss Arena: ${meta.bossArena}\n${layer}`;
+  el.textContent=STORY_MODE.lastObjective;
+  el.style.display='block';
+}
+function setStoryMode(enabled){
+  STORY_MODE.enabled=!!enabled;
+  const el=ensureStoryHUD();
+  if(STORY_MODE.enabled){
+    loadStoryLevel(STORY_MODE.levelOrder||1);
+    el.style.display='block';
+  } else {
+    unloadStoryLevel();
+    el.style.display='none';
+  }
+}
+window.addEventListener('keydown',e=>{
+  if(e.code==='F6'){ setStoryMode(!STORY_MODE.enabled); }
+  if(!STORY_MODE.enabled) return;
+  if(e.code==='BracketRight'){ loadStoryLevel(STORY_MODE.levelOrder+1); }
+  if(e.code==='BracketLeft'){ loadStoryLevel(STORY_MODE.levelOrder-1); }
+});
 window.__game={
   debug:{
     snapshot:()=>({hp:P.hp,ammo:P.ammo,building:G.building,wave:G.wave,alive:G.enemyMgr?G.enemyMgr.aliveCount:0,pos:[P.pos.x.toFixed(1),P.pos.z.toFixed(1)]}),
@@ -16954,5 +17017,9 @@ window.__game={
     deagleGlb_loaded: () => !!DEAGLE_GLB,
     soldier_loaded: () => !!SOLDIER_GLTF,
     switchWeapon: (i) => switchWeapon(i),
+    storyMode: () => STORY_MODE,
+    storyEnable: () => setStoryMode(true),
+    storyDisable: () => setStoryMode(false),
+    storyLoad: (order) => loadStoryLevel(order),
   }
 };
