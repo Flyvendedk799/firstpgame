@@ -236,3 +236,47 @@ export function getStoryLevelByOrder(order) {
 export function getStoryLevelById(id) {
   return STORY_LEVELS.find((level) => level.id === id) ?? null;
 }
+
+
+const DEPLOY_LEVEL_ENRICHMENT = {
+  L01_BROKEN_ENTRY: {
+    spatialSignature: 'pinch_spine_mix',
+    verticalLayers: ['ground', 'catwalk'],
+    landmarkSet: ['Forklift Crown', 'Broken Gate Silhouette', 'Relay Cage Beacon'],
+    threatLanes: { primary: 'Shipping Bay Spine', secondary: 'Service Hall Return', offAxis: 'Vent Flank' },
+    stateMachines: ['alarm', 'power_shift', 'hazard_primed'],
+    replayUnlockGraph: [{ from: 'clear_no_alarm', unlock: 'service_vent', to: 'replay_route_a' }]
+  },
+  L02_VELVET_CORRIDOR: { spatialSignature: 'atrium_pocket_mix', verticalLayers: ['ground', 'mezzanine'], landmarkSet: ['Neon Dance Bowl', 'VIP Stair Ribbon', 'Mirror Lounge Beacon'], threatLanes: { primary: 'Dance Floor Center', secondary: 'VIP Spine Stair', offAxis: 'Bar Wraparound' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'service_pass_found', unlock: 'booth_crawl_bypass', to: 'replay_route_b' }] },
+  L03_HOLLOW_STACK: { spatialSignature: 'spine_vertical_maze', verticalLayers: ['ground', 'mezzanine', 'catwalk'], landmarkSet: ['Rotunda Core', 'Shelf Canyon Marker', 'Vault Beacon'], threatLanes: { primary: 'Records Spine', secondary: 'Reading Floor Balconies', offAxis: 'Archive Chute' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'stack_keychain_complete', unlock: 'third_sector_chute', to: 'replay_route_a' }] },
+  L04_IRON_REFINERY: { spatialSignature: 'spine_pinch_mix', verticalLayers: ['ground', 'catwalk', 'pit'], landmarkSet: ['Furnace Mouth', 'Crane Arm Silhouette', 'Foundry Beacon'], threatLanes: { primary: 'Assembly Grid Main', secondary: 'Crane Bridge', offAxis: 'Slag Trench' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'shutdown_without_damage', unlock: 'insulated_tunnel', to: 'replay_route_b' }] },
+  L05_GLASS_SPINE: { spatialSignature: 'atrium_spine_mix', verticalLayers: ['ground', 'mezzanine', 'catwalk'], landmarkSet: ['Skybridge Atrium', 'Escalator V', 'Helipad Beacon'], threatLanes: { primary: 'Reception Atrium Axis', secondary: 'Boarding Gallery Rail', offAxis: 'Facade Maintenance Rail' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'badge_reader_hack', unlock: 'executive_bypass', to: 'replay_route_a' }] },
+  L06_DEEP_SWITCH: { spatialSignature: 'pinch_pocket_mix', verticalLayers: ['ground', 'pit'], landmarkSet: ['Breaker Halo', 'Trackside Marker', 'Switch Chamber Beacon'], threatLanes: { primary: 'Signal Tunnel Run', secondary: 'Power Hall Platforms', offAxis: 'Conduit Crawl' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'blackout_controlled_clear', unlock: 'dormant_commuter_tunnel', to: 'replay_route_b' }] },
+  L07_CROWN_MERCY: { spatialSignature: 'spine_pocket_mix', verticalLayers: ['ground', 'mezzanine'], landmarkSet: ['Observation Theater Oculus', 'ICU Gate Marker', 'Recovery Beacon'], threatLanes: { primary: 'Ward Spine', secondary: 'Surgical Core Lanes', offAxis: 'Service Elevator Drop' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'low_damage_run', unlock: 'persistent_icu_gate', to: 'replay_route_a' }] },
+  L08_RAIN_TEMPLE: { spatialSignature: 'atrium_courtyard_mix', verticalLayers: ['ground', 'mezzanine', 'catwalk'], landmarkSet: ['Prayer Court Canopy', 'Bell Tower Needle', 'Sanctum Beacon'], threatLanes: { primary: 'Inner Cloister Axis', secondary: 'Courtyard Perimeter', offAxis: 'Hidden Passage' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'silent_route_mastery', unlock: 'cloister_fastline', to: 'replay_route_b' }] },
+  L09_BLACK_DOCKET: { spatialSignature: 'pocket_spine_mix', verticalLayers: ['ground', 'mezzanine'], landmarkSet: ['Ledger Gallery Wall', 'Detention Loop Marker', 'Vault Beacon'], threatLanes: { primary: 'Docket Floor Hall', secondary: 'Evidence Chain Lift', offAxis: 'Archive Crawlspace' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'evidence_integrity_bonus', unlock: 'confiscation_tunnel', to: 'replay_route_a' }] },
+  L10_SUNDERED_LAB: { spatialSignature: 'spine_pinch_mix', verticalLayers: ['ground', 'catwalk'], landmarkSet: ['Containment Glass Spine', 'Airlock Beacon', 'Nexus Core Marker'], threatLanes: { primary: 'Biosecure Hall', secondary: 'Observation Catwalk', offAxis: 'Specimen Venting Route' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'decon_chain_completed', unlock: 'decon_service_spine', to: 'replay_route_b' }] },
+  L11_SKYCOURT: { spatialSignature: 'atrium_spine_mix', verticalLayers: ['ground', 'mezzanine', 'catwalk'], landmarkSet: ['Grand Stair Fan', 'Tribunal Arc Marker', 'High Bench Beacon'], threatLanes: { primary: 'Hall of Petitions', secondary: 'Gallery Arc', offAxis: 'Advocate Corridor' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'advocate_seal_collected', unlock: 'discreet_corridor', to: 'replay_route_a' }] },
+  L12_ASHEN_HEART: { spatialSignature: 'pinch_atrium_mix', verticalLayers: ['ground', 'mezzanine', 'pit'], landmarkSet: ['War Room Ring', 'Blast Door Teeth', 'Heart Reactor Beacon'], threatLanes: { primary: 'Command Transit', secondary: 'Mezzanine Loop', offAxis: 'Emergency Shaft' }, stateMachines: ['alarm', 'power_shift', 'hazard_primed'], replayUnlockGraph: [{ from: 'full_mastery_chain', unlock: 'final_shaft_skip', to: 'replay_route_final' }] }
+};
+
+const REQUIRED_LEVEL_KEYS = ['spatialSignature', 'verticalLayers', 'landmarkSet', 'threatLanes', 'stateMachines', 'replayUnlockGraph'];
+
+export const DEPLOY_STORY_LEVELS = STORY_LEVELS.map((level) => ({ ...level, ...DEPLOY_LEVEL_ENRICHMENT[level.id] }));
+
+export function validateDeployStoryLevels(levels = DEPLOY_STORY_LEVELS) {
+  const errors = [];
+  for (const level of levels) {
+    for (const key of REQUIRED_LEVEL_KEYS) {
+      if (level[key] == null || (Array.isArray(level[key]) && level[key].length === 0)) {
+        errors.push(`${level.id}: missing required key ${key}`);
+      }
+    }
+    if (level.threatLanes) {
+      for (const lane of ['primary', 'secondary', 'offAxis']) {
+        if (!level.threatLanes[lane]) errors.push(`${level.id}: threatLanes.${lane} is required`);
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
