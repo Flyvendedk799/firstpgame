@@ -18806,15 +18806,20 @@ renderer.setAnimationLoop(()=>{
       gunGrp.rotation.x+=(P.sprintAmt*.32-gunGrp.rotation.x)*Math.min(dt*9,1);
       gunGrp.rotation.z+=(P.sprintAmt*-.18-gunGrp.rotation.z)*Math.min(dt*9,1);
       // Phase 5: body lean — weapon viewmodel follows the body, not just the
-      // head. Adds a small lateral push + extra roll on top of the camera's
+      // head. Adds a lateral push + extra roll on top of the camera's
       // existing -.12 roll, so the weapon visibly leans with the player.
       //
-      // The PIP scope camera setup (further down) explicitly mirrors these
-      // offsets when capturing the lens view, so the body-rig lean stays at
-      // full strength during ADS without misaligning the scope.
+      // ADS handling:
+      //   • The lateral X shift fades out as ADS engages — otherwise the
+      //     scope lens drifts off-center on screen, and the reticle stops
+      //     aligning with where the camera is looking.
+      //   • The roll stays at full strength always — the scope PIP camera
+      //     mirrors it (further down) so the lens content rolls in sync
+      //     with its container, and the lean still feels dramatic.
       if(SETTINGS.playerLeanBodyRig!==false&&Math.abs(_leanEff)>0.01){
-        gunGrp.position.x+=_leanEff*-0.07;
-        gunGrp.rotation.z+=_leanEff*-0.06;
+        const _adsFade=1-Math.min(1,P.ads*1.4);   // gone by ~70% ADS
+        gunGrp.position.x+=_leanEff*-0.07*_adsFade;
+        gunGrp.rotation.z+=_leanEff*-0.06;          // full roll always
       }
     }
   // Fire / throw — fire mode controls auto vs burst vs single
