@@ -17,6 +17,7 @@ import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
 import { createStoryLevelRuntime, tickStoryLevelAnimations } from './story/levelFactory.js';
 import { STORY_LEVELS } from './story/levels.js';
 import { getStoryDepthLevel } from './story/sifuDepthPack.js';
+import { applySequenceLayout } from './levelSequences.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
 // so we can re-attach the addons under the same `THREE.X` names the legacy
@@ -86,7 +87,8 @@ function _meshyToast(msg,color){
 // assets/desert_eagle.glb and the attachDeagleStaticModel function below as
 // dead code so this can be re-enabled with a one-line change if needed.
 // ─── BUILDING ────────────────────────────────────────────────────────────────
-const RW=28,RD=44,RH=4,WT=0.4;
+// Clearance-floor footprint (~+30% area vs prototype) — zone math uses RD/RW ratios
+const RW=36,RD=52,RH=4.25,WT=0.4;
 // Soft radial alpha texture — used for floor light pools so edges fade smoothly
 // instead of showing a hard disc rim. Generated once and shared across buildings.
 const _softRadialTex=(()=>{
@@ -1075,6 +1077,10 @@ function buildLevel(scene,bn){
   const trimM=new THREE.MeshBasicMaterial({color:trimCols[Math.min(bn-1,7)]});
   const baseTrimM=new THREE.MeshBasicMaterial({color:new THREE.Color(trimCols[Math.min(bn-1,7)]).multiplyScalar(.38)});
   const hw=RW/2,hd=RD/2;
+  // Preserve legacy thirds when RD=44 (z-split ≈ ±6); scales with RD for larger floors
+  const ZONE_Z_SPLIT=RD*(6/44);
+  const zoneBounds={zSplit:ZONE_Z_SPLIT,halfDepth:hd};
+  const zp=z=>z*RD/44,fp=x=>x*RW/28;
   box(0,WT/2,0,RW,WT,RD,fM);
   box(0,RH+WT/2,0,RW+WT*2,WT,RD+WT*2,cM);
   function ow(x,y,z,w,h,d){box(x,y,z,w,h,d,wM);}
@@ -1095,13 +1101,13 @@ function buildLevel(scene,bn){
   box(-hw+.03,by2,0,.04,.05,RD,baseTrimM);
   box(hw-.03,by2,0,.04,.05,RD,baseTrimM);
   if(layout===0){
-    for(const pz of[-12,-2,8])for(const px of[-9,9]){
+    for(const pz of[zp(-12),zp(-2),zp(8)])for(const px of[fp(-9),fp(9)]){
       box(px,RH/2+WT/2,pz,.6,RH,.6,pM);wl.push({x0:px-.35,x1:px+.35,z0:pz-.35,z1:pz+.35});
       box(px,WT+.018,pz,.74,.04,.74,trimM);
       box(px,RH+WT-.028,pz,.74,.04,.74,trimM);
     }
   }else{
-    for(const[px,pz]of[[-10.5,-11],[10.5,-11],[-10.5,7],[10.5,7],[-7,0],[7,0],[0,12]]){
+    for(const[px,pz]of[[fp(-10.5),zp(-11)],[fp(10.5),zp(-11)],[fp(-10.5),zp(7)],[fp(10.5),zp(7)],[fp(-7),0],[fp(7),0],[0,zp(12)]]){
       box(px,RH/2+WT/2,pz,.6,RH,.6,pM);wl.push({x0:px-.35,x1:px+.35,z0:pz-.35,z1:pz+.35});
       box(px,WT+.018,pz,.74,.04,.74,trimM);
       box(px,RH+WT-.028,pz,.74,.04,.74,trimM);
@@ -1138,13 +1144,13 @@ function buildLevel(scene,bn){
   }
   let alertDoorways;
   if(layout===0){
-    interiorWall(6, 5.0, 1.8);
-    interiorWall(-6, -5.0, 1.8);
-    alertDoorways=[{x:5,z:6},{x:-5,z:-6}];
+    interiorWall(ZONE_Z_SPLIT, 5.0, 1.8);
+    interiorWall(-ZONE_Z_SPLIT, -5.0, 1.8);
+    alertDoorways=[{x:5,z:ZONE_Z_SPLIT},{x:-5,z:-ZONE_Z_SPLIT}];
   }else{
-    interiorWall(6, -5.0, 1.8);
-    interiorWall(-6, 5.0, 1.8);
-    alertDoorways=[{x:-5,z:6},{x:5,z:-6}];
+    interiorWall(ZONE_Z_SPLIT, -5.0, 1.8);
+    interiorWall(-ZONE_Z_SPLIT, 5.0, 1.8);
+    alertDoorways=[{x:-5,z:ZONE_Z_SPLIT},{x:5,z:-ZONE_Z_SPLIT}];
   }
   // ── ZONE DOORS — closed at start, slide open when the zone behind clears ──
   // Door at z=6 opens when FRONT zone is cleared; door at z=-6 opens when
@@ -1172,11 +1178,11 @@ function buildLevel(scene,bn){
     return{mesh:door,stripe,stripe2,handle,wallEntry,baseY:RH/2+WT/2,targetY:RH/2+WT/2,opened:false};
   }
   if(layout===0){
-    zoneDoors.push(makeZoneDoor(5.0, 6,  1.8));
-    zoneDoors.push(makeZoneDoor(-5.0,-6, 1.8));
+    zoneDoors.push(makeZoneDoor(5.0, ZONE_Z_SPLIT,  1.8));
+    zoneDoors.push(makeZoneDoor(-5.0,-ZONE_Z_SPLIT, 1.8));
   }else{
-    zoneDoors.push(makeZoneDoor(-5.0, 6, 1.8));
-    zoneDoors.push(makeZoneDoor(5.0, -6, 1.8));
+    zoneDoors.push(makeZoneDoor(-5.0, ZONE_Z_SPLIT, 1.8));
+    zoneDoors.push(makeZoneDoor(5.0, -ZONE_Z_SPLIT, 1.8));
   }
   function openZoneDoor(zoneId){
     // zoneId 0 (front clear) opens the z=6 door; zoneId 1 (middle clear) opens
@@ -1211,7 +1217,7 @@ function buildLevel(scene,bn){
     }
   }
   // Keep the existing partial corner-fillers
-  dw(-hw+3.5,-14,WT,8);dw(hw-3.5,14,WT,8);
+  dw(-hw+3.5,zp(-14),WT,8);dw(hw-3.5,zp(14),WT,8);
   const microThick=WT*0.65;
   if(layout===0){
     // Middle-zone east/west micro-divider with central doorway
@@ -1222,10 +1228,10 @@ function buildLevel(scene,bn){
     box(0,RH/2,-2.0, .12, RH, .12, postM);
     box(0,RH/2, 2.0, .12, RH, .12, postM);
     box(0,RH-0.18, 0, .12, .12, 4.4, postM);
-    box(-hw+5.0, RH/2+WT/2, -11.0, microThick, RH, 3.6, dM);
-    wl.push({x0:-hw+4.7,x1:-hw+5.3,z0:-12.8,z1:-9.2});
-    box(-hw+5.0, RH/2+WT/2, 15.5, microThick, RH, 3.0, dM);
-    wl.push({x0:-hw+4.7,x1:-hw+5.3,z0:14.0,z1:17.0});
+    box(-hw+5.0, RH/2+WT/2, zp(-11.0), microThick, RH, 3.6, dM);
+    wl.push({x0:-hw+4.7,x1:-hw+5.3,z0:zp(-12.8),z1:zp(-9.2)});
+    box(-hw+5.0, RH/2+WT/2, zp(15.5), microThick, RH, 3.0, dM);
+    wl.push({x0:-hw+4.7,x1:-hw+5.3,z0:zp(14.0),z1:zp(17.0)});
   }else{
     // Lobby layout — paired E/W splitting walls plus offset alcoves
     box(-5.0,RH/2+WT/2,0, microThick, RH, 2.6, dM);
@@ -1263,17 +1269,17 @@ function buildLevel(scene,bn){
     vl.push(entry);wl.push({x0:entry.x0,x1:entry.x1,z0:entry.z0,z1:entry.z1});
   }
   if(layout===0){
-    vb(7, 8,  1.5, .8, .32);
-    vb(-7,-8, 1.5, .8, .32);
-    vb(-1,-12,.32, .8, 3);
-    vb(2, 14, .32, .8, 3);
+    vb(fp(7), zp(8),  1.5, .8, .32);
+    vb(fp(-7),zp(-8), 1.5, .8, .32);
+    vb(fp(-1),zp(-12),.32, .8, 3);
+    vb(fp(2), zp(14), .32, .8, 3);
   }else{
-    vb(-8, 8.5, 1.4, .8, .34);
-    vb(8, -8.5, 1.4, .8, .34);
-    vb(1.2,-12.5,.34, .8, 2.6);
-    vb(-2.2, 14,.34, .8, 2.4);
+    vb(fp(-8), zp(8.5), 1.4, .8, .34);
+    vb(fp(8), zp(-8.5), 1.4, .8, .34);
+    vb(fp(1.2),zp(-12.5),.34, .8, 2.6);
+    vb(fp(-2.2),zp(14),.34, .8, 2.4);
   }
-  for(let z=-16;z<=16;z+=8){
+  for(let z=-20;z<=20;z+=10){
     const lg=new THREE.Mesh(new THREE.PlaneGeometry(1.5,.4),new THREE.MeshBasicMaterial({color:0xffeedd,side:THREE.DoubleSide}));
     lg.rotation.x=Math.PI/2;lg.position.set(0,RH+WT-.01,z);scene.add(lg);ob.push(lg);
   }
@@ -1347,10 +1353,10 @@ function buildLevel(scene,bn){
   const key=new THREE.DirectionalLight(lightProfile.keyCol,lightProfile.keyInt);
   key.position.set(...lightProfile.keyPos);scene.add(key);ob.push(key);
   const ceilingLights=[];
-  for(let z=-16;z<=16;z+=8){
+  for(let z=-20;z<=20;z+=10){
     let prof;
-    if(z>6) prof=lightProfile.zoneA;
-    else if(z>=-6) prof=lightProfile.zoneB;
+    if(z>ZONE_Z_SPLIT) prof=lightProfile.zoneA;
+    else if(z>=-ZONE_Z_SPLIT) prof=lightProfile.zoneB;
     else prof=lightProfile.zoneC;
     const pl=new THREE.PointLight(prof.col,prof.int,32);pl.position.set(0,RH-.2,z);scene.add(pl);ob.push(pl);
     pl.userData.baseIntensity=prof.int;ceilingLights.push(pl);
@@ -1487,7 +1493,7 @@ function buildLevel(scene,bn){
   // Per-building window count + size variation
   const winY=2.45, winW=1.20, winH=1.50;
   // 4 windows along each side wall, evenly spaced
-  for(const z of [-14,-5,4,12]){
+  for(const z of [zp(-14),zp(-5),zp(4),zp(12)]){
     addWindow(-hw+.012, winY, z, winW, winH, '+x'); // left wall
     addWindow( hw-.012, winY, z, winW, winH, '-x'); // right wall
   }
@@ -1501,14 +1507,13 @@ function buildLevel(scene,bn){
   const sp=(layout===0
     ?[[-10,-16],[10,-13],[-11,-1],[11,4],[-5,12],[5,15],[0,18],[-9,-8],[9,-18],[2,9],[-6,-3],[6,-5],[-3,0],[3,-1],[-7,7],[7,-9]]
     :[[11,-15],[-12,-14],[10,-2],[-10,1],[-7,13],[8,16],[0,18],[-11,-7],[12,-17],[-3,10],[7,-5],[-5,0],[4,-2],[-8,8],[9,-11]]
-  ).map(([x,z])=>new THREE.Vector3(x,WT,z));
+  ).map(([x,z])=>new THREE.Vector3(fp(x),WT,zp(z)));
   // Bucket spawns by zone — drives the "Clear Room" zone-by-zone progression.
-  // Front zone (z > 6): closest to player spawn, easiest. Middle (-6..6): the
-  // meat of the room. Back (z < -6): final approach to the exit door.
+  // Front (z > zSplit toward spawn), middle band, then back toward exit.
   const zoneSpawns=[[],[],[]]; // [front, middle, back]
   for(const v of sp){
-    if(v.z>6) zoneSpawns[0].push(v);
-    else if(v.z>=-6) zoneSpawns[1].push(v);
+    if(v.z>ZONE_Z_SPLIT) zoneSpawns[0].push(v);
+    else if(v.z>=-ZONE_Z_SPLIT) zoneSpawns[1].push(v);
     else zoneSpawns[2].push(v);
   }
   // ── PROPS & DECOR ───────────────────────────────────────────────────────────
@@ -1550,11 +1555,14 @@ function buildLevel(scene,bn){
     }
   }
   // Sandbag stacks — placed at natural sightline crossings, NOT on wall lines
-  sandbagStack(-7,-2);    // middle zone, west sightline
-  sandbagStack(7,2);      // middle zone, east sightline
-  if(bn>=2)sandbagStack(0,3);     // front zone approach to doorway
-  if(bn>=3)sandbagStack(-3,12);   // front zone advanced cover
-  if(bn>=2)sandbagStack(-2,-15);  // back zone, near exit
+  sandbagStack(fp(-7),zp(-2));    // middle zone, west sightline
+  sandbagStack(fp(7),zp(2));      // middle zone, east sightline
+  if(bn>=2)sandbagStack(0,zp(3));     // front zone approach to doorway
+  if(bn>=3)sandbagStack(fp(-3),zp(12));   // front zone advanced cover
+  if(bn>=2)sandbagStack(fp(-2),zp(-15));  // back zone, near exit
+  sandbagStack(fp(-11),zp(6));   // wide room: lane into front doorway
+  sandbagStack(fp(11),zp(-8));   // back third, east flank
+  sandbagStack(0,zp(-10));       // exit approach choke helper
   // Steel barrels — color varies per building
   function barrelAt(x,z){
     const b=blockingBox(x,WT+.45,z, .40,.90,.40, barrelM);
@@ -1562,8 +1570,8 @@ function buildLevel(scene,bn){
     box(x,WT+.62,z, .42,.04,.42, barrelStripeM);
     return b;
   }
-  barrelAt(-12,8);barrelAt(12,-10);
-  if(bn>=2){barrelAt(-1,-9);barrelAt(2,5);}
+  barrelAt(fp(-12),zp(8));barrelAt(fp(12),zp(-10));
+  if(bn>=2){barrelAt(fp(-1),zp(-9));barrelAt(fp(2),zp(5));}
   // File cabinets along the side walls (4 cabinets per building)
   function cabinet(x,z,rotY){
     const w=.42,h=1.10,d=.50;
@@ -1590,10 +1598,10 @@ function buildLevel(scene,bn){
       else       box(x,y+off,z+nz*-.012, .36,.012,.03, ventBarM);
     }
   }
-  wallVent(-hw+.04, RH-1.1,-12, 1,0);
-  wallVent( hw-.04, RH-1.1, 12,-1,0);
-  wallVent(-hw+.04, RH-1.1, 8,  1,0);
-  wallVent( hw-.04, RH-1.1,-6, -1,0);
+  wallVent(-hw+.04, RH-1.1,zp(-12), 1,0);
+  wallVent( hw-.04, RH-1.1,zp(12),-1,0);
+  wallVent(-hw+.04, RH-1.1,zp(8),  1,0);
+  wallVent( hw-.04, RH-1.1,zp(-6), -1,0);
   // Computer monitors mounted on walls — glowing screens
   function wallMonitor(x,y,z,nx,nz){
     const orient=Math.abs(nx)>0;
@@ -1604,8 +1612,8 @@ function buildLevel(scene,bn){
     box(x+nx*-.05,y-.30,z+nz*-.05, .12,.20,.12, monitorBezelM);
   }
   wallMonitor(-hw+.04, 2.4,-3, 1,0);
-  wallMonitor( hw-.04, 2.4, 6,-1,0);
-  if(bn>=2)wallMonitor(-hw+.04, 2.4, 14, 1,0);
+  wallMonitor( hw-.04, 2.4, zp(6),-1,0);
+  if(bn>=2)wallMonitor(-hw+.04, 2.4, zp(14), 1,0);
   // Pipes running along upper walls
   function wallPipe(x0,z0,x1,z1,y){
     const dx=x1-x0,dz=z1-z0,L=Math.sqrt(dx*dx+dz*dz);
@@ -1638,10 +1646,10 @@ function buildLevel(scene,bn){
       scene.add(seg);ob.push(seg);
     }
   }
-  ceilingCable(-4,-18,18);
-  ceilingCable( 4,-18,18);
+  ceilingCable(-4,zp(-18),zp(18));
+  ceilingCable( 4,zp(-18),zp(18));
   // Hanging lamp shades — frustum cone over each ceiling light
-  for(let z=-16;z<=16;z+=8){
+  for(let z=-20;z<=20;z+=10){
     const shade=new THREE.Mesh(new THREE.CylinderGeometry(.20,.55,.42,16,1,true),lampShadeM);
     shade.position.set(0,RH-.45,z);
     scene.add(shade);ob.push(shade);
@@ -1685,7 +1693,7 @@ function buildLevel(scene,bn){
     const w=orient?.04:.50, d=orient?.50:.04;
     box(x,y,z, w,.20,d, cautionM);
   }
-  if(layout===0){cautionSign(-5,WT+1.5,6, 0,1);cautionSign(5,WT+1.5,-6, 0,-1);}
+  if(layout===0){cautionSign(-5,WT+1.5,ZONE_Z_SPLIT, 0,1);cautionSign(5,WT+1.5,-ZONE_Z_SPLIT, 0,-1);}
   else{cautionSign(-8,WT+1.5,8.5, 0,1);cautionSign(8,WT+1.5,-8.5, 0,-1);}
   // Building number sign on the back wall (always visible behind player at spawn)
   const bnumM=new THREE.MeshLambertMaterial({color:0xffd060,emissive:0x4a3808});
@@ -3120,21 +3128,22 @@ function buildLevel(scene,bn){
     // Skip if too close to player spawn (z>14)
     if(z>14)return;
     // Skip if in door corridor (centerline)
-    if(Math.abs(z-6)<1.0||Math.abs(z+6)<1.0)return;
+    if(Math.abs(z-ZONE_Z_SPLIT)<1.0||Math.abs(z+ZONE_Z_SPLIT)<1.0)return;
     // Random skip — keep variety
     if(Math.random()<.30)return;
     coverPositions.push({x,z,w:w||.65,d:d||.65});
   };
-  // Generate 12-16 candidate positions
-  for(let z=10;z>=-15;z-=2.5){
-    for(const x of[-9,-3.5,3.5,9]){
-      tryAdd(x+(Math.random()-.5)*1.5,z+(Math.random()-.5)*1.5);
+  // Dense candidate grid — tactical corners across expanded floor
+  const _zMax=Math.min(12,hd-3),_zMin=Math.max(-18,-hd+4);
+  for(let z=_zMax;z>=_zMin;z-=2.2){
+    for(const x of[-12,-6.5,0,6.5,12]){
+      tryAdd(fp(x)+(Math.random()-.5)*1.6,z+(Math.random()-.5)*1.4);
     }
   }
   // Spawn cover meshes
   const coverColM=new THREE.MeshPhongMaterial({color:cset.colors[0],shininess:25});
   const coverColM2=new THREE.MeshPhongMaterial({color:cset.colors[1]||cset.colors[0],shininess:25});
-  for(let i=0;i<Math.min(coverPositions.length,7);i++){
+  for(let i=0;i<Math.min(coverPositions.length,13);i++){
     const c=coverPositions[i];
     if(cset.name==='crate'){
       // Wooden crate
@@ -3228,6 +3237,25 @@ function buildLevel(scene,bn){
       }
     }
   }
+  // ── PER-BUILDING SEQUENCE LAYOUT ──────────────────────────────────────────
+  // Subdivides the room into 8 named themed cells (front-W/C/E, mid-W/E,
+  // back-W/C/E) and decorates each with building-specific cover, props,
+  // hazards, and accent lighting. Partition walls and cell colliders are
+  // pushed into wl[]/vl[] before the nav-grid bake below.
+  applySequenceLayout({
+    THREE, scene, ob, wl, vl,
+    bn, layout,
+    helpers: { box, _addBox, blockingBox, _setBreak },
+    dims: { RW, RD, RH, WT, hw, hd, zSplit: ZONE_Z_SPLIT },
+    materials: {
+      wM, pM, dM, crM, trimM, baseTrimM, postM,
+      cabinetM, cabinetHdlM, sandbagM, sandbagStripeM,
+      barrelM, barrelStripeM, ventM, ventBarM, pipeM, cableM,
+      lampShadeM, stripeM, stripeDarkM, sigM, cautionM,
+      monitorBezelM, monitorScreenM, fM, cM
+    },
+    accent: propAccent,
+  });
   const navGrid=_buildNavGrid(wl,0.5);
   // Exclude decorative additive/no-depth meshes (god-ray cones, beacon beams,
   // dust motes) from the bullet-collision list so they don't block shots.
@@ -3275,7 +3303,7 @@ function buildLevel(scene,bn){
       }
     }
   }
-  return{walls:wl,vaultables:vl,exitZone:ez,spawns:sp,zoneSpawns,unlockExit,cleanup,solids,ceilingLights,dustList,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,tickDynProps};
+  return{walls:wl,vaultables:vl,exitZone:ez,spawns:sp,zoneSpawns,zoneBounds,unlockExit,cleanup,solids,ceilingLights,dustList,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,tickDynProps};
 }
 // ─── ENEMY ───────────────────────────────────────────────────────────────────
 const PATROL=0,ALERT=1,CHASE=2,ATTACK=3,SEARCH=4,FLANK=5;
@@ -5195,9 +5223,12 @@ class EnemyManager{
     const _walls=walls||[];
     const _doors=spawnDoors||[];
     let globalIdx=0,totalCount=perZone.reduce((a,b)=>a+b,0);
+    const zb=_zoneBounds();
+    const rd=zb.halfDepth*2;
+    const zf=n=>n*rd/44;
     for(let z=0;z<3;z++){
       const cnt=perZone[z]|0;
-      const zSpawns=spawnsByZone[z]&&spawnsByZone[z].length?spawnsByZone[z]:[new THREE.Vector3(0,WT||.4,(z===0?12:z===1?0:-12))];
+      const zSpawns=spawnsByZone[z]&&spawnsByZone[z].length?spawnsByZone[z]:[new THREE.Vector3(0,WT||.4,(z===0?zf(12):z===1?0:zf(-12)))];
       const doorsZ=_doors.filter(d=>d.zoneId===z);
       for(let i=0;i<cnt;i++){
         const sp=zSpawns[i%zSpawns.length];
@@ -5253,12 +5284,18 @@ class EnemyManager{
     // don't pile on the same crate.
     const coverWalls=_walls.filter(w=>(w.x1-w.x0)<5 && (w.z1-w.z0)<5);
     const claimed=new Set();
+    const zLo0=zb.zSplit,zHi0=zb.halfDepth;
+    const zLo1=-zb.zSplit,zHi1=zb.zSplit;
+    const zLo2=-zb.halfDepth,zHi2=-zb.zSplit;
     for(const e of this._list){
-      const zRange=e.zoneId===0?[6,22]:e.zoneId===1?[-6,6]:[-22,-6];
+      let zLo,zHi;
+      if(e.zoneId===0){zLo=zLo0;zHi=zHi0;}
+      else if(e.zoneId===1){zLo=zLo1;zHi=zHi1;}
+      else{zLo=zLo2;zHi=zHi2;}
       const cands=coverWalls.filter((w,idx)=>{
         if(claimed.has(idx))return false;
         const cz=(w.z0+w.z1)/2;
-        return cz>zRange[0]&&cz<zRange[1];
+        return cz>zLo&&cz<zHi;
       });
       if(!cands.length)continue;
       // Sort by distance to this enemy, take nearest available
@@ -7036,7 +7073,7 @@ const H={
   reticlePhase:0
 };
 const EYE=1.7,PR=0.35;
-const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[]};
+const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],storyTestMode:false,_storyAmbient:null,_storyFogBk:null};
 // ── INPUT ─────────────────────────────────────────────────────────────────────
 const K={};const M={dx:0,dy:0,lmbHeld:false,rmbDown:false,mmbDown:false};let locked=false;let gameFocused=false;
 let _quickThrowCD=0;
@@ -7287,7 +7324,7 @@ document.addEventListener('keydown',e=>{K[e.code]=true;gameFocused=true;if(!G.st
 document.addEventListener('keyup',e=>{delete K[e.code];if(e.code==='KeyC')P.crouching=false;});
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
 const $e=id=>document.getElementById(id);
-function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}$e('wave-num').textContent='ROOMS '+(G.zoneClears?G.zoneClears.filter(c=>c).length:0)+' / 3';$e('building-num').textContent='Building '+G.building;if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
+function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}if(G.storyTestMode){$e('wave-num').textContent='STORY ROUTE';$e('building-num').textContent='STORY GEO';}else{$e('wave-num').textContent='ROOMS '+(G.zoneClears?G.zoneClears.filter(c=>c).length:0)+' / 3';$e('building-num').textContent='Building '+G.building;}if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
 function showHM(hs){$e('hitmark').style.opacity='1';$e('hitmark').classList.toggle('hs',hs);G.hitMarkTimer=hs?.22:.14;}
 function killFeed(hs,opts){
   const el=document.createElement('div');
@@ -7759,6 +7796,9 @@ function openMenu(){G.menuOpen=true;$e('pause-menu').classList.remove('pause-hid
 function closeMenu(){G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';if(G.started&&!P.dead)tryLock();}
 function quitToMain(){
   closeMenu();
+  G.storyTestMode=false;STORY_MODE.enabled=false;if(STORY_MODE.objectiveEl)STORY_MODE.objectiveEl.style.display='none';
+  unloadStoryLevel();
+  if(G._storyAmbient){scene.remove(G._storyAmbient);G._storyAmbient=null;}
   if(G.levelData){G.levelData.cleanup();G.levelData=null;}
   if(G.enemyMgr){G.enemyMgr.clear();}
   clearPickups();
@@ -7767,6 +7807,7 @@ function quitToMain(){
   $e('overlay').querySelector('h2').textContent='Fight through waves. Clear the building. Advance.';
   $e('start-btn').textContent='Click to Start';
   $e('overlay').classList.remove('hidden');
+  if(scene.fog&&G._storyFogBk!=null&&typeof G._storyFogBk==='number'){scene.fog.density=G._storyFogBk;G._storyFogBk=null;}
 }
 function announce(txt,sub,dur){$e('wa-text').textContent=txt;$e('wa-sub').textContent=sub||'';$e('wave-announce').style.opacity='1';setTimeout(()=>$e('wave-announce').style.opacity='0',dur||2600);}
 // ── FX / TRAILS ──────────────────────────────────────────────────────────────
@@ -11035,15 +11076,22 @@ const BUILDING_DETAIL_LORE={
   }
 };
 // ── COMPREHENSIVE GAME-STATE QUERIES — small helpers for game logic
+function _zoneBounds(){
+  const b=G.levelData&&G.levelData.zoneBounds;
+  if(b&&typeof b.zSplit==='number'&&typeof b.halfDepth==='number')return b;
+  return{zSplit:6,halfDepth:22};
+}
 function isInZone(pos,zoneId){
-  if(zoneId===0)return pos.z>6;
-  if(zoneId===1)return pos.z<=6&&pos.z>=-6;
-  if(zoneId===2)return pos.z<-6;
+  const zs=_zoneBounds().zSplit;
+  if(zoneId===0)return pos.z>zs;
+  if(zoneId===1)return pos.z<=zs&&pos.z>=-zs;
+  if(zoneId===2)return pos.z<-zs;
   return false;
 }
 function getZoneOf(pos){
-  if(pos.z>6)return 0;
-  if(pos.z>=-6)return 1;
+  const zs=_zoneBounds().zSplit;
+  if(pos.z>zs)return 0;
+  if(pos.z>=-zs)return 1;
   return 2;
 }
 function getEnemiesInZone(zoneId){
@@ -11080,9 +11128,9 @@ function getEnemyTypeCounts(){
   return counts;
 }
 function isDoorBetween(p1,p2){
-  // Check if a zone divider (z=±6) is between two points
+  const zs=_zoneBounds().zSplit;
   const zMin=Math.min(p1.z,p2.z),zMax=Math.max(p1.z,p2.z);
-  return (zMin<6&&zMax>6)||(zMin<-6&&zMax>-6);
+  return (zMin<zs&&zMax>zs)||(zMin<-zs&&zMax>-zs);
 }
 function distance3(a,b){
   const dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
@@ -12551,7 +12599,7 @@ function showLieutenantIntro(bn){
 // Show lieutenant intro line when arriving in back zone
 function _checkLieuIntro(){
   if(G._lieuIntroShown)return;
-  if(G.boss&&P.pos.z<-6&&!G.boss.isBoss){
+  if(G.boss&&P.pos.z<-_zoneBounds().zSplit&&!G.boss.isBoss){
     G._lieuIntroShown=true;
     showLieutenantIntro(G.building);
   }
@@ -12974,6 +13022,87 @@ function startSingleBuildingRun(bn){
   P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyOperator();
   tryLock();musicInit();showBriefingCard(bn,2000);startBuilding();
+}
+function storyPlaytestApplyColliders(levelGroup){
+  if(!levelGroup)return;
+  if(scene.fog&&G._storyFogBk==null&&typeof scene.fog.density==='number'){G._storyFogBk=scene.fog.density;scene.fog.density*=0.42;}
+  levelGroup.updateMatrixWorld(true);
+  const wl=[],solids=[];
+  const bbTmp=new THREE.Box3();
+  levelGroup.traverse(obj=>{
+    if(!obj.isMesh||!obj.geometry)return;
+    if(!obj.geometry.boundingBox)obj.geometry.computeBoundingBox();
+    bbTmp.copy(obj.geometry.boundingBox);
+    bbTmp.applyMatrix4(obj.matrixWorld);
+    const mn=bbTmp.min,mx=bbTmp.max;
+    const ax=mx.x-mn.x,ay=mx.y-mn.y,az=mx.z-mn.z,xzArea=ax*az;
+    if(ay<1.35&&xzArea>42)return;
+    if(Math.min(ax,az)<0.08)return;
+    wl.push({x0:mn.x,x1:mx.x,z0:mn.z,z1:mx.z});
+    solids.push(obj);
+  });
+  const noExit={x0:9e9,x1:9e9+1,z0:9e9,z1:9e9+1};
+  G.levelData={
+    _storyPlaytest:true,walls:wl,solids,vaultables:[],exitZone:noExit,spawns:[],zoneSpawns:[[],[],[]],
+    spawnDoors:[],alertDoorways:[],ceilingLights:[],dustList:null,zoneDoors:null,
+    unlockExit(){},openZoneDoor(){},tickZoneDoors(){},tickSpawnDoors(){},tickDynProps(){},
+    navGrid:null,
+    cleanup(){
+      if(G._storyAmbient){scene.remove(G._storyAmbient);G._storyAmbient=null;}
+      if(scene.fog&&G._storyFogBk!=null&&typeof G._storyFogBk==='number'){scene.fog.density=G._storyFogBk;G._storyFogBk=null;}
+      unloadStoryLevel();STORY_MODE.levelGroup=null;G.levelData=null;
+    }
+  };
+  if(!G._storyAmbient){
+    const g=new THREE.Group();g.name='story_ambient_fill';
+    g.add(new THREE.AmbientLight(0x8090a0,.52),new THREE.HemisphereLight(0xa8c8f0,0x1a1820,.42));
+    scene.add(g);G._storyAmbient=g;
+  }
+  G.vaultables=[];
+  G.exitUnlocked=false;
+  const rt=levelGroup.userData.storyRuntime;
+  const pt=rt&&rt.spawnPoints&&rt.spawnPoints[0];
+  if(pt){
+    P.pos.set(pt.position.x,pt.position.y||WT+.9,pt.position.z);
+    P.yaw=-Math.PI/2;
+    P.pitch=P.lean=P.leanTarget=P.ads=P.adsTarget=0;
+    P.grounded=true;P.jumpH=P.vy=0;
+    P.hp=Math.max(P.hp,100);P.dead=false;
+  }
+}
+// Walk the story authored block at origin — no procedural clearance building
+function startStoryTestFromMenu(){
+  if(G.started&&!G.storyTestMode){
+    attachToast('Quit your current run to use story test.',2800);return;
+  }
+  RANGE.active=false;ENDLESS.active=false;
+  G.storyTestMode=true;
+  G.building=1;
+  G.wave=1;G.wavesTotal=1;
+  G.difficulty='normal';G.endlessMode=false;
+  P.money=300;P.healPacks=2;P.grenades=2;P.smokes=1;P.flashes=1;
+  P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};
+  G.started=true;gameFocused=true;
+  $e('overlay').classList.add('hidden');hideEndScreen();
+  _resetRunStats();applyUnlocks();applyOperator();
+  tryLock();musicInit();
+  clearPickups();
+  if(G.levelData&&!G.levelData._storyPlaytest){G.levelData.cleanup();G.levelData=null;}
+  unloadStoryLevel();
+  G.enemyMgr=G.enemyMgr||new EnemyManager(scene);G.enemyMgr.clear();
+  G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[];
+  G.zoneClears=[false,false,false];G.advancePending=false;G.exitUnlocked=false;
+  $e('exit-prompt').style.opacity='0';
+  P.weaponIdx=0;if(typeof M4_MESHES!=='undefined'){M4_MESHES.forEach(m=>{m.visible=true;});DE_MESHES.forEach(m=>{m.visible=false;});}
+  refreshAttachmentVisuals();
+  const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;P.hp=100;P.ammo=W0.mag;
+  P.weaponAmmo=[W0.mag,WEAPONS[1].mag,999];
+  P.weaponRes=[W0.res+18,WEAPONS[1].res+8,99];
+  $e('weapon-name').textContent=W0.name;$e('weapon-num').textContent=W0.slot;
+  hudUpdate();
+  STORY_MODE.enabled=true;
+  loadStoryLevel(STORY_MODE.levelOrder||1,true);
+  attachToast('<div style="color:#ffd060;letter-spacing:.24em;font-weight:800">STORY WALKTHROUGH</div><div style="font-size:11px;opacity:.78;margin-top:4px;line-height:1.45">Cyan halls = doors to the next room (+X).<br>F7 or Alt+T — leave story &nbsp;·&nbsp; [ ] — chapters &nbsp;·&nbsp; ESC — pause menu</div>',4800);
 }
 // Track max building cleared
 function recordBuildingClear(bn){
@@ -14035,12 +14164,14 @@ function tickCompass(){
   // x-coord on strip: heading*2 + 360 (offset for negative range)
   const x=(heading+180)*2;
   strip.style.transform=`translateX(${(170-x).toFixed(1)}px)`;
-  // Waypoint distance to next door / exit
+  // Waypoint distance to next door / exit (story walkthrough uses halls, no zone doors — hide)
   const wp=$e('waypoint-arrow');
-  if(wp&&G.levelData){
+  if(wp){
+    if(G.storyTestMode||!G.levelData){wp.style.opacity='0';}else{
     let target=null,label='';
     if(G.exitUnlocked){
-      target={x:0,z:-22};label='EXIT';
+      const hd=(G.levelData.zoneBounds&&G.levelData.zoneBounds.halfDepth)||22;
+      target={x:0,z:-hd+4};label='EXIT';
     } else if(G.zoneClears){
       // Find nearest unclosed door in next zone
       const zd=G.levelData.zoneDoors;
@@ -14064,6 +14195,7 @@ function tickCompass(){
       wp.textContent=label+' · '+d.toFixed(0)+'m';
       wp.style.opacity='1';
     } else {wp.style.opacity='0';}
+    }
   }
 }
 function tickFootsteps(){
@@ -14094,6 +14226,7 @@ function sfxVault(){const c=getAC();[[0,300,.12],[.08,200,.09],[.18,260,.07]].fo
 // start. Per-frame zone-clear detection fires the ROOM CLEAR beat. Building
 // exit unlocks when every zone is clear.
 function checkZoneClears(){
+  if(G.storyTestMode)return;
   if(!G.enemyMgr||!G.zoneClears||G.exitUnlocked)return;
   for(let z=0;z<3;z++){
     if(G.zoneClears[z])continue;
@@ -14139,8 +14272,9 @@ function propagateGunfire(srcZone){
     e.alertFlashTimer=0.40;
     // Orient toward the doorway between the noise zone and this zone
     const doors=G.levelData&&G.levelData.alertDoorways;
-    const d0=doors&&doors[0]?doors[0]:{x:5,z:6};
-    const d1=doors&&doors[1]?doors[1]:{x:-5,z:-6};
+    const zb=_zoneBounds();
+    const d0=doors&&doors[0]?doors[0]:{x:5,z:zb.zSplit};
+    const d1=doors&&doors[1]?doors[1]:{x:-5,z:-zb.zSplit};
     let door;
     if((srcZone===0&&e.zoneId===1)||(srcZone===1&&e.zoneId===0))door=d0;
     else door=d1;
@@ -14148,15 +14282,17 @@ function propagateGunfire(srcZone){
   }
 }
 function playerZone(){
-  if(P.pos.z>6)return 0;
-  if(P.pos.z>=-6)return 1;
+  const zs=_zoneBounds().zSplit;
+  if(P.pos.z>zs)return 0;
+  if(P.pos.z>=-zs)return 1;
   return 2;
 }
 function populateBuilding(){
+  if(G.storyTestMode)return;
   // Total enemy count escalating with building number, back-loaded so the
   // final approach is the hardest fight. Difficulty multiplier:
   const diffMul={normal:1.0,hard:1.25,lethal:1.45}[G.difficulty||'normal']||1.0;
-  const totalRaw=Math.max(7,5+G.building*3);
+  const totalRaw=Math.max(9,6+G.building*4);
   const total=Math.round(totalRaw*diffMul);
   const back=Math.ceil(total/3)+1;
   const middle=Math.ceil(total/3);
@@ -15678,6 +15814,7 @@ $e('menu-stats-btn').addEventListener('click',showStatsPanel);
 $e('stats-back').addEventListener('click',hideStatsPanel);
 $e('menu-tutorial-btn').addEventListener('click',()=>{startRange&&startRange();});
 $e('menu-endless-btn').addEventListener('click',()=>{startEndlessMode&&startEndlessMode();});
+$e('menu-story-test-btn').addEventListener('click',()=>{startStoryTestFromMenu();});
 $e('menu-levelsel-btn').addEventListener('click',()=>showLevelSelect());
 $e('ls-back').addEventListener('click',()=>hideLevelSelect());
 $e('menu-skills-btn').addEventListener('click',showSkillTree);
@@ -16839,7 +16976,7 @@ renderer.setAnimationLoop(()=>{
     }
   }
   // Exit zone
-  if(G.exitUnlocked&&G.levelData){
+  if(G.exitUnlocked&&G.levelData&&!G.storyTestMode){
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
@@ -16957,21 +17094,28 @@ function unloadStoryLevel(){
     STORY_MODE.levelGroup=null;
   }
 }
-function loadStoryLevel(order){
+function loadStoryLevel(order,opt){
+  const playtest=typeof opt==='boolean'?opt:G.storyTestMode;
+  if(G.storyTestMode)G.levelData=null;
   unloadStoryLevel();
   STORY_MODE.levelOrder=Math.max(1,Math.min(STORY_LEVELS.length,order|0));
   const group=createStoryLevelRuntime(THREE,STORY_MODE.levelOrder);
   if(!group) return;
   STORY_MODE.levelGroup=group;
-  group.position.set(0,0,-90);
+  if(playtest)group.position.set(0,0,0);
+  else group.position.set(0,0,-90);
   scene.add(group);
   const meta=group.userData.levelMeta;
   const depth=getStoryDepthLevel(meta.id);
   const el=ensureStoryHUD();
   const layer=depth?`Layers: ${Object.keys(depth.routeLayers).join(', ')}`:'';
   STORY_MODE.lastObjective=`STORY ${meta.order}/12 · ${meta.title}\n${meta.objective}\nBoss Arena: ${meta.bossArena}\n${layer}`;
+  if(playtest&&G.storyTestMode){
+    STORY_MODE.lastObjective+='\n\n▸ Follow the cyan-lit halls — they link each grey “room” volume along +X.\n▸ Exit: F7 or Alt+T (closes story & returns here) · or ESC → pause → quit.\n▸ Chapters: [ and ]';
+  }
   el.textContent=STORY_MODE.lastObjective;
   el.style.display='block';
+  if(playtest)storyPlaytestApplyColliders(group);
 }
 function setStoryMode(enabled){
   STORY_MODE.enabled=!!enabled;
@@ -16980,15 +17124,29 @@ function setStoryMode(enabled){
     loadStoryLevel(STORY_MODE.levelOrder||1);
     el.style.display='block';
   } else {
+    if(G.storyTestMode){
+      if(G.levelData)G.levelData.cleanup();
+      else unloadStoryLevel();
+      G.storyTestMode=false;
+      G.levelData=null;
+      el.style.display='none';
+      quitToMain();
+      return;
+    }
     unloadStoryLevel();
     el.style.display='none';
   }
 }
 window.addEventListener('keydown',e=>{
-  if(e.code==='F6'){ setStoryMode(!STORY_MODE.enabled); }
-  if(!STORY_MODE.enabled) return;
-  if(e.code==='BracketRight'){ loadStoryLevel(STORY_MODE.levelOrder+1); }
-  if(e.code==='BracketLeft'){ loadStoryLevel(STORY_MODE.levelOrder-1); }
+  const toggleStory=e.code==='F6'||e.code==='F7'||(e.altKey&&e.code==='KeyT');
+  if(toggleStory){
+    if(e.altKey&&e.code==='KeyT')e.preventDefault();
+    setStoryMode(!STORY_MODE.enabled);
+    return;
+  }
+  if(!STORY_MODE.enabled)return;
+  if(e.code==='BracketRight'){loadStoryLevel(STORY_MODE.levelOrder+1);}
+  if(e.code==='BracketLeft'){loadStoryLevel(STORY_MODE.levelOrder-1);}
 });
 window.__game={
   debug:{
@@ -17008,5 +17166,6 @@ window.__game={
     storyEnable: () => setStoryMode(true),
     storyDisable: () => setStoryMode(false),
     storyLoad: (order) => loadStoryLevel(order),
+    buildLevel: (bn) => buildLevel(scene, bn),
   }
 };

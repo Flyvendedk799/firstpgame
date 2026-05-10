@@ -91,14 +91,46 @@ function connectRooms(THREE, fromRoom, toRoom) {
   const dz = b.z - a.z;
   const length = Math.hypot(dx, dz);
 
+  const grp = new THREE.Group();
+  const cx = (a.x + b.x) * 0.5;
+  const cz = (a.z + b.z) * 0.5;
+  grp.position.set(cx, 0, cz);
+
+  const hallLen = Math.max(6, length - 16);
   const hall = new THREE.Mesh(
-    new THREE.BoxGeometry(4.2, 3.2, Math.max(6, length - 16)),
-    new THREE.MeshStandardMaterial({ color: 0x3d434c, roughness: 0.8, metalness: 0.05 })
+    new THREE.BoxGeometry(4.2, 3.2, hallLen),
+    new THREE.MeshStandardMaterial({
+      color: 0x3a4858,
+      roughness: 0.72,
+      metalness: 0.14,
+      emissive: 0x0a2840,
+      emissiveIntensity: 0.22
+    })
   );
-  hall.position.set((a.x + b.x) * 0.5, 1.6, (a.z + b.z) * 0.5);
+  hall.position.set(0, 1.6, 0);
   hall.rotation.y = Math.atan2(dx, dz);
   hall.name = `${fromRoom.name}_to_${toRoom.name}`;
-  return hall;
+  grp.add(hall);
+
+  const portalLight = new THREE.PointLight(0x62f0ff, 2.75, 44, 1.85);
+  portalLight.position.set(0, 2.9, 0);
+  portalLight.userData.storyAnim = { type: 'pulse', base: 2.2, amp: 0.82, speed: 2.0 };
+  grp.add(portalLight);
+
+  const lintelM = new THREE.MeshBasicMaterial({
+    color: 0x4af0ff,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.22, 0.08), lintelM);
+  lintel.position.set(0, 3.1, 0);
+  lintel.rotation.y = hall.rotation.y;
+  grp.add(lintel);
+
+  grp.name = `Hallway_${hall.name}`;
+  return grp;
 }
 
 export function createStoryLevelRuntime(THREE, levelOrder = 1) {
