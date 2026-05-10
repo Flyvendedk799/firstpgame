@@ -17,7 +17,7 @@ import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
 import { createStoryLevelRuntime, tickStoryLevelAnimations } from './story/levelFactory.js';
 import { STORY_LEVELS } from './story/levels.js';
 import { getStoryDepthLevel } from './story/sifuDepthPack.js';
-import { applySequenceLayout } from './levelSequences.js';
+import { applySequenceLayout, getSequenceGameplayProfile } from './levelSequences.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
 // so we can re-attach the addons under the same `THREE.X` names the legacy
@@ -88,7 +88,14 @@ function _meshyToast(msg,color){
 // dead code so this can be re-enabled with a one-line change if needed.
 // ─── BUILDING ────────────────────────────────────────────────────────────────
 // Clearance-floor footprint (~+30% area vs prototype) — zone math uses RD/RW ratios
-const RW=36,RD=52,RH=4.25,WT=0.4;
+const DEFAULT_RW=36,DEFAULT_RD=52,RH=4.25,WT=0.4;
+const BUILDING_DIMS={
+  1:{RW:44,RD:64},2:{RW:38,RD:56},3:{RW:36,RD:52},4:{RW:32,RD:60},
+  5:{RW:40,RD:60},6:{RW:36,RD:70},7:{RW:28,RD:64},8:{RW:44,RD:56},
+};
+function getBuildingDims(bn){return BUILDING_DIMS[bn]||{RW:DEFAULT_RW,RD:DEFAULT_RD};}
+// Runtime footprint used by utility renderers/minimap after level build.
+let RW=DEFAULT_RW,RD=DEFAULT_RD;
 // Soft radial alpha texture — used for floor light pools so edges fade smoothly
 // instead of showing a hard disc rim. Generated once and shared across buildings.
 const _softRadialTex=(()=>{
@@ -1009,6 +1016,7 @@ const _padTex=(()=>{
   return t;
 })();
 function buildLevel(scene,bn){
+  const bDims=getBuildingDims(bn); RW=bDims.RW; RD=bDims.RD;
   const layout=(bn-1)%2; // 0=dock (baseline), 1=lobby (mirrored doors + different core obstacles)
   const ob=[],wl=[],vl=[];
   function box(x,y,z,w,h,d,mat){
@@ -5195,6 +5203,8 @@ class EnemyManager{
   // with `zoneId` so we can track per-zone alive counts for the room-clear gate.
   // Difficulty + per-zone counts compose to give a forward-escalating challenge.
   spawnByZone(perZone,spawnsByZone,diff,walls,spawnDoors){
+    const profile=getSequenceGameplayProfile(diff);
+    const roleByZone=(profile&&profile.zoneRoles)||[];
     const basePool=['soldier','soldier','soldier'];
     if(diff>=2)basePool.push('heavy');
     if(diff>=2)basePool.push('sniper');
@@ -5253,9 +5263,11 @@ class EnemyManager{
         }else{
           pos=_findClearEnemySpawn(sp,_walls,_spawnR);
         }
-        // Type-by-zone bias: front/easier, back/harder. Sniper anchors back zone.
+        // Type-by-zone bias + authored sequence role contract.
         let type;
-        if(z===2&&i===0&&diff>=2)type='sniper';
+        const role=roleByZone[z]||null;
+        if(role&&i===cnt-1&&role.reinforce)type=role.reinforce;
+        else if(z===2&&i===0&&diff>=2)type='sniper';
         else if(z===2&&i===1&&diff>=3)type='heavy';
         else if(z===0&&i===cnt-1&&cnt>=2)type='scout';
         else if(globalIdx===0&&diff>=2&&totalCount>=4)type='heavy';
@@ -13164,7 +13176,8 @@ function startEndlessMode(){
   if(G.levelData)G.levelData.cleanup();
   G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[];
   G.exitUnlocked=false;G.advancePending=false;G.zoneClears=[true,true,true]; // pre-cleared for endless
-  G.levelData=buildLevel(scene,G.building);G.vaultables=G.levelData.vaultables||[];
+  G.levelData=buildLevel(scene,G.building);
+  G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
@@ -14252,6 +14265,11 @@ function onZoneCleared(zoneId){
   const cleared=G.zoneClears.filter(c=>c).length;
   announce('ROOM CLEAR · '+ROOM_NAMES[zoneId],cleared+' / 3 ROOMS',1800);
   if(G.levelData&&G.levelData.openZoneDoor)G.levelData.openZoneDoor(zoneId);
+  if(G.levelState){
+    if(zoneId===0)G.levelState.alarm=true;
+    else if(zoneId===1)G.levelState.powerDown=true;
+    else if(zoneId===2)G.levelState.hazardPrimed=true;
+  }
   if(typeof setpieceOnZoneCleared==='function')setpieceOnZoneCleared(zoneId);
 }
 // Adjacent-zone alert propagation — gunfire wakes the next room.
@@ -14392,7 +14410,8 @@ function startBuilding(){
   G.exitUnlocked=false;G.advancePending=false;
   G.zoneClears=[false,false,false];
   $e('exit-prompt').style.opacity='0';
-  G.levelData=buildLevel(scene,G.building);G.vaultables=G.levelData.vaultables||[];
+  G.levelData=buildLevel(scene,G.building);
+  G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;

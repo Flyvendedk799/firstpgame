@@ -1773,3 +1773,32 @@ const SEQUENCE_DEFS = {
     ],
   },
 };
+
+
+const DEFAULT_ZONE_ROLES = [
+  { tag: 'read', verb: 'push', reinforce: 'scout' },
+  { tag: 'brawl', verb: 'flank', reinforce: 'riot' },
+  { tag: 'boss', verb: 'clear', reinforce: 'heavy' },
+];
+
+const BUILDING_ZONE_ROLES = {
+  1: [
+    { tag: 'read', verb: 'push', reinforce: 'scout' },
+    { tag: 'brawl', verb: 'flank', reinforce: 'demolitions' },
+    { tag: 'boss', verb: 'clear', reinforce: 'heavy' },
+  ],
+  2: [
+    { tag: 'read', verb: 'hold', reinforce: 'marksman' },
+    { tag: 'hold', verb: 'hold', reinforce: 'riot' },
+    { tag: 'boss', verb: 'defend', reinforce: 'heavy' },
+  ],
+  3: [
+    { tag: 'read', verb: 'push', reinforce: 'scout' },
+    { tag: 'brawl', verb: 'flank', reinforce: 'demolitions' },
+    { tag: 'boss', verb: 'clear', reinforce: 'riot' },
+  ],
+};
+
+export function getSequenceGameplayProfile(bn){
+  return { zoneRoles: BUILDING_ZONE_ROLES[bn] || DEFAULT_ZONE_ROLES };
+}
