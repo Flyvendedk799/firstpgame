@@ -3884,6 +3884,49 @@ function buildLevel(scene,bn){
 // each tick instead of running the open-strafe pattern.
 const PATROL=0,ALERT=1,CHASE=2,ATTACK=3,SEARCH=4,FLANK=5,
       HOLD_CORNER=6,PEEK_FIRE=7,REPOSITION=8,SUPPRESS=9;
+const ENEMY_PERSONALITIES={
+  disciplined:{id:'disciplined',label:'DISCIPLINED',speedMul:1.00,aimMul:.92,repositionMul:1.00,flankMul:1.00,holdMul:1.10,barkMul:.75,jitter:.55,courage:.72},
+  aggressive: {id:'aggressive', label:'AGGRESSIVE', speedMul:1.08,aimMul:.86,repositionMul:.86,flankMul:1.32,holdMul:.78,barkMul:1.15,jitter:.80,courage:.92},
+  cautious:   {id:'cautious',   label:'CAUTIOUS',   speedMul:.95,aimMul:1.05,repositionMul:1.34,flankMul:.74,holdMul:1.32,barkMul:.62,jitter:.45,courage:.58},
+  veteran:    {id:'veteran',    label:'VETERAN',    speedMul:1.02,aimMul:.78,repositionMul:1.18,flankMul:1.08,holdMul:1.04,barkMul:.55,jitter:.35,courage:.84},
+  showboat:   {id:'showboat',   label:'SHOWBOAT',   speedMul:1.04,aimMul:.95,repositionMul:.92,flankMul:1.22,holdMul:.82,barkMul:1.55,jitter:1.10,courage:.88},
+  nervous:    {id:'nervous',    label:'NERVOUS',    speedMul:1.02,aimMul:1.18,repositionMul:1.42,flankMul:.66,holdMul:.72,barkMul:1.25,jitter:1.55,courage:.36}
+};
+const ENEMY_PERSONALITY_WEIGHTS={
+  soldier:['disciplined','aggressive','cautious','veteran','nervous'],
+  heavy:['disciplined','aggressive','veteran','cautious'],
+  sniper:['cautious','veteran','disciplined'],
+  marksman:['veteran','cautious','disciplined'],
+  scout:['aggressive','showboat','nervous','veteran'],
+  pistolero:['showboat','aggressive','veteran','nervous'],
+  shielded:['disciplined','veteran','cautious'],
+  riot:['aggressive','disciplined','veteran'],
+  demolitions:['cautious','disciplined','showboat','veteran'],
+  drone:['disciplined'],
+  lieutenant:['veteran','aggressive','disciplined'],
+  boss:['veteran']
+};
+const ENEMY_TACTICS={
+  soldier:{mag:18,reload:1.45,aim:.34,repositionEvery:4.8,coverSeek:.70,flank:.32,advance:.50,juke:.10,closeBreak:3.2},
+  heavy:{mag:46,reload:2.65,aim:.58,repositionEvery:8.4,coverSeek:.46,flank:.08,advance:.28,juke:.02,closeBreak:2.6,brace:true},
+  sniper:{mag:5,reload:2.50,aim:.95,repositionEvery:6.8,coverSeek:.95,flank:.04,advance:.08,juke:.02,closeBreak:8.0,relocateAfterShot:true},
+  scout:{mag:22,reload:1.05,aim:.22,repositionEvery:2.7,coverSeek:.36,flank:.82,advance:.92,juke:.62,closeBreak:2.0},
+  shielded:{mag:12,reload:1.70,aim:.42,repositionEvery:6.5,coverSeek:.42,flank:.05,advance:.82,juke:.02,closeBreak:1.8},
+  pistolero:{mag:14,reload:1.10,aim:.18,repositionEvery:2.9,coverSeek:.22,flank:.76,advance:.88,juke:.70,closeBreak:2.4},
+  boss:{mag:30,reload:1.35,aim:.24,repositionEvery:3.8,coverSeek:.42,flank:.72,advance:.82,juke:.48,closeBreak:2.8},
+  lieutenant:{mag:26,reload:1.25,aim:.26,repositionEvery:3.6,coverSeek:.50,flank:.62,advance:.78,juke:.42,closeBreak:2.8},
+  riot:{mag:18,reload:1.80,aim:.38,repositionEvery:4.7,coverSeek:.34,flank:.18,advance:.88,juke:.08,closeBreak:1.9},
+  demolitions:{mag:8,reload:1.85,aim:.46,repositionEvery:5.2,coverSeek:.76,flank:.24,advance:.42,juke:.08,closeBreak:5.0},
+  drone:{mag:18,reload:.85,aim:.16,repositionEvery:1.9,coverSeek:.00,flank:.72,advance:.95,juke:.90,closeBreak:1.5},
+  marksman:{mag:8,reload:1.90,aim:.82,repositionEvery:5.8,coverSeek:.92,flank:.18,advance:.16,juke:.05,closeBreak:7.0,relocateAfterShot:true}
+};
+function _pickEnemyPersonality(type,diff){
+  const ids=ENEMY_PERSONALITY_WEIGHTS[type]||ENEMY_PERSONALITY_WEIGHTS.soldier;
+  let id=ids[Math.floor(Math.random()*ids.length)];
+  if((diff||1)>=4&&Math.random()<.22)id='veteran';
+  if(type==='boss')id='veteran';
+  return ENEMY_PERSONALITIES[id]||ENEMY_PERSONALITIES.disciplined;
+}
 class Enemy{
   constructor(scene,pos,diff,type){
     this.scene=scene;this.diff=diff;this.type=type||'soldier';
@@ -3908,10 +3951,13 @@ class Enemy{
       marksman: {hp:90,  spd:2.4+diff*.30, rng:20+diff*1.0, ideal:14+Math.random()*3, bMax:1,                     bCD:2.5+Math.random()*.8, sit:.07,                   dmg:24+diff*4, suit:0x1c2a1c,helm:0x101e10, visor:0xa0c8ff, accent:0xa0c8ff, peekRate:0.7, peekHoldMs:350, holdRiskCap:0.30, useSuppress:false}
     };
     const ts=TS[this.type]||TS.soldier;
+    this.personality=_pickEnemyPersonality(this.type,diff);
+    this.tactic=ENEMY_TACTICS[this.type]||ENEMY_TACTICS.soldier;
+    this.personaId=this.personality.id;
     this.hp=ts.hp;this.maxHp=ts.hp;this.dead=false;this.removeNeeded=false;
     this.state=PATROL;this.alertTimer=0;
     this.shootTimer=(this.type==='sniper'?2.2:0.9)+Math.random()*(this.type==='sniper'?1.2:.8);
-    this.speed=ts.spd;this.attackRange=ts.rng;this.enemyDmg=ts.dmg;
+    this.speed=ts.spd*(this.personality.speedMul||1);this.attackRange=ts.rng;this.enemyDmg=ts.dmg;
     // Animation state
     this.walkPhase=Math.random()*Math.PI*2;
     this.hitFlashTimer=0;this.deathTimer=0;this.deathStartY=0;
@@ -3932,7 +3978,7 @@ class Enemy{
     this.flankTarget=null;this.flankTimer=0;
     this.burstCount=0;this.burstMax=ts.bMax;this.burstCooldown=0;this._burstCD=ts.bCD;this._sit=ts.sit;
     this.strafeDir=Math.random()>.5?1:-1;this.strafeChangeTimer=0;
-    this.idealDist=ts.ideal;
+    this.idealDist=ts.ideal*(this.personality.id==='aggressive'?.86:this.personality.id==='cautious'?1.14:1.0);
     // Phase 3 tactical fields ─────────────────────────────────────────────
     // Phase 6 §9.1 — difficulty-scale peek cadence. diff ranges roughly 1..4
     // (1 Easy/B1 → 4 Brutal/B4+). Easy: longer hold, fewer peeks. Brutal:
@@ -3953,6 +3999,27 @@ class Enemy{
     this.suppressUntil=0;                          // performance.now() ms — in SUPPRESS while now < this
     this.suppressBurstsLeft=0;
     this.slotRecalcT=0;                            // gate getBestPeekSlot calls (per-agent throttle)
+    this.magSize=this.tactic.mag||18;
+    this.magAmmo=this.magSize;
+    this.enemyReloadTimer=0;
+    this.enemyReloadDur=(this.tactic.reload||1.4)*(0.95+Math.random()*0.18);
+    this.aimReady=0;                                // 0..1 aim-settle before accurate fire
+    this.aimIntent=0;
+    this.repositionTarget=null;
+    this.repositionReason='';
+    this.repositionCooldown=1.4+Math.random()*1.2;
+    this.exposedTimer=0;
+    this.noLosTimer=0;
+    this.atCoverTimer=0;
+    this.openGroundTimer=0;
+    this.shotsFromPosition=0;
+    this._movementMode='idle';
+    this._lastTacticalBark=0;
+    this._lastShotAt=0;
+    this._lastRepositionAt=0;
+    this._jukeTimer=0;
+    this._jukeVec=null;
+    this._combatSeed=Math.random()*Math.PI*2;
     // Weapon aim & head look
     this.aimPitch=0;this.headLookY=0;this.patrolLookTimer=0;this.patrolLookAngle=0;
 
@@ -4860,6 +4927,7 @@ class Enemy{
 
   die(){
     this.dead=true;this.deathTimer=0;
+    if(this.coverSlot&&this.coverSlot.claimedBy===this)this.coverSlot.claimedBy=null;
     this.deathStartY=this.group.position.y;
     if(this.actions&&this.actions.Dead)this._meshyDriveClip('Dead',.10);
     // Voice bark — non-drone death grunt
@@ -4934,7 +5002,7 @@ class Enemy{
       // Forward-only alternating march: each leg lifts on its half of the cycle
       // and rests at zero on the other half. Knee bends on the swing leg. Arms
       // stay at bind (skin weights tear on any arm rotation).
-      const fast=this.state===CHASE||this.state===FLANK;
+      const fast=this.state===CHASE||this.state===FLANK||this.state===REPOSITION||this._movementMode==='juke';
       const speed=fast?7.5:5.0;
       const amp =fast?.70:.45;
       const t=(this._poseT*speed)%(Math.PI*2);
@@ -4959,7 +5027,7 @@ class Enemy{
       let pick='Idle';
       if(this.dead)pick='Dead';
       else if(isMoving){
-        const fast=this.state===CHASE||this.state===FLANK;
+        const fast=this.state===CHASE||this.state===FLANK||this.state===REPOSITION||this._movementMode==='juke';
         pick=fast?(this.actions.Running?'Running':'Walking'):(this.actions.Walking?'Walking':'Casual_Walk');
       }
       this._meshyDriveClip(pick);
@@ -4978,9 +5046,9 @@ class Enemy{
       }
     }else{this.group.scale.setScalar(1);}
 
-    const isAttacking=this.state===ATTACK||this.state===FLANK;
-    const isChasing=this.state===CHASE||this.state===ATTACK||this.state===FLANK;
-    const isRunning=isMoving&&isChasing&&this.speed>3.0;
+    const isAttacking=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
+    const isChasing=this.state===CHASE||this.state===ATTACK||this.state===FLANK||this.state===REPOSITION;
+    const isRunning=isMoving&&isChasing&&(this.speed>3.0||this._movementMode==='reposition'||this._movementMode==='juke'||this._movementMode==='flank');
 
     // Base limb targets (computed below)
     let lARX=0,rARX=0,lLRX=0,rLRX=0,bodyRZ=0,bodyRX=0,bodyRY=0;
@@ -4994,6 +5062,9 @@ class Enemy{
         scout:    {spd:1.18,armAmt:.92,legAmt:.78,bob:.030,leanRun:-.20},
         pistolero:{spd:1.05,armAmt:.85,legAmt:.70,bob:.024,leanRun:-.16},
         shielded: {spd:.82,armAmt:.50,legAmt:.45,bob:.018,leanRun:-.08},
+        riot:     {spd:.88,armAmt:.55,legAmt:.52,bob:.018,leanRun:-.11},
+        demolitions:{spd:.92,armAmt:.62,legAmt:.58,bob:.021,leanRun:-.12},
+        marksman: {spd:.90,armAmt:.58,legAmt:.54,bob:.019,leanRun:-.10},
         soldier:  {spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16},
         boss:     {spd:.96,armAmt:.65,legAmt:.62,bob:.020,leanRun:-.10}
       }[this.type]||{spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16};
@@ -5051,6 +5122,15 @@ class Enemy{
       }
       // Head subtle counter-bob — Phase R: stronger absorption pulse on strike.
       if(this.hMesh)this.hMesh.position.y=1.48-swA*.006-_strikeDip*0.5;
+      if(this._movementMode==='juke'){
+        const j=Math.sin(Math.max(0,Math.min(1,(this._jukeTimer||0)/.50))*Math.PI);
+        bodyRZ+=this.strafeDir*j*.22;
+        bodyRY-=this.strafeDir*j*.14;
+        lLRX+=j*.20;rLRX-=j*.20;
+      }else if(this._movementMode==='reposition'||this._movementMode==='flank'){
+        bodyRX-=.08;
+        lElbRX+=.14;rElbRX+=.14;
+      }
       // Phase R: trace the moving-state for the smooth stop transition below.
       this._wasMoving=true;
 
@@ -5098,6 +5178,14 @@ class Enemy{
         this.bMesh.position.y=.76-.06-coverCrouch;
         // Slight lean over weapon (right hand side)
         bodyRZ=-0.04;
+        const aimPose=this.aimReady||0;
+        bodyRX-=aimPose*.075;
+        lARX-=aimPose*.34;rARX-=aimPose*.34;
+        lElbRX+=aimPose*.22;rElbRX+=aimPose*.18;
+        if(this.weaponGrp){
+          this.weaponGrp.position.y+=(.98+aimPose*.025-this.weaponGrp.position.y)*Math.min(dt*7,1);
+          this.weaponGrp.rotation.y=Math.sin(Date.now()*.004+this._combatSeed)*(1-aimPose)*.025;
+        }
         // Phase 4: corner-peek lean overlay. Driven by peekAmt (0..1), with
         // direction = slot edge tangent in world space projected onto the
         // agent's right vector. When peeking, torso rolls along the edge,
@@ -5187,6 +5275,61 @@ class Enemy{
       this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*Math.min(dt*9,1);
     }
 
+    // Tactical overlays: reloads, vaults, reposition sprints, and suppression
+    // all get distinct body language so the player can read intent instantly.
+    if(this.enemyReloadTimer>0){
+      const rp=1-Math.max(0,this.enemyReloadTimer)/Math.max(.1,this.enemyReloadDur||1.2);
+      const e=Math.sin(Math.min(1,rp)*Math.PI);
+      bodyRX+=.16*e;bodyRZ+=.06*Math.sin(rp*Math.PI*2);
+      lARX-=.18*e;rARX+=.22*e;
+      lElbRX+=.72*e;rElbRX+=.36*e;
+      if(this.weaponGrp){
+        this.weaponGrp.position.y=.98-.13*e;
+        this.weaponGrp.position.z=-.04*e;
+        this.weaponGrp.rotation.z=Math.sin(rp*Math.PI*2)*.22;
+      }
+      if(this.hMesh)this.hMesh.rotation.x+=.12*e;
+    }
+    const vaultActive=this._enemyVault||((this._windowVaultUntil||0)>performance.now());
+    if(vaultActive){
+      const vt=this._enemyVault?Math.max(0,Math.min(1,this._enemyVault.t)):Math.max(0,1-((this._windowVaultUntil-performance.now())/650));
+      const e=Math.sin(vt*Math.PI);
+      bodyRX-=.20*e;
+      lARX-=.80*e;rARX-=.55*e;
+      lLRX+=.82*e;rLRX+=.62*e;
+      this._lKneeBend=(this._lKneeBend||.1)+.80*e;
+      this._rKneeBend=(this._rKneeBend||.1)+.72*e;
+      if(this.weaponGrp)this.weaponGrp.rotation.z+=.25*e;
+    }
+    if(this.weaponGrp&&this.enemyReloadTimer<=0&&!vaultActive){
+      this.weaponGrp.rotation.z+=(0-this.weaponGrp.rotation.z)*Math.min(dt*8,1);
+      this.weaponGrp.position.y+=(.98-this.weaponGrp.position.y)*Math.min(dt*5,1);
+    }
+    if(this._suppressedUntil&&performance.now()<this._suppressedUntil){
+      bodyRX+=.22;bodyRZ+=.10*Math.sign(this.strafeDir||1);
+      lARX+=.20;rARX+=.20;lElbRX+=.50;rElbRX+=.50;
+      if(this.hMesh)this.hMesh.position.y-=.06;
+    }
+    if(this._repositionAnimStart&&performance.now()-this._repositionAnimStart<520){
+      const rt=(performance.now()-this._repositionAnimStart)/520;
+      const e=Math.sin(Math.max(0,Math.min(1,rt))*Math.PI);
+      bodyRX-=.14*e;
+      bodyRZ+=(this.repositionReason==='flank'?this.strafeDir:.5)*.10*e;
+      lARX-=.30*e;rARX-=.22*e;
+    }
+    if(this._signalStart&&performance.now()-this._signalStart<650){
+      const st=(performance.now()-this._signalStart)/650;
+      const e=Math.sin(Math.max(0,Math.min(1,st))*Math.PI);
+      lARX-=1.05*e;lElbRX+=.25*e;bodyRY+=.18*e;
+      if(this.hMesh)this.hMesh.rotation.y+=.35*e*Math.sign(this.squadOffsetX||1);
+    }
+    if(this._orderReactStart&&performance.now()>this._orderReactStart&&performance.now()-this._orderReactStart<360){
+      const ot=(performance.now()-this._orderReactStart)/360;
+      const e=Math.sin(Math.max(0,Math.min(1,ot))*Math.PI);
+      this.hMesh.rotation.y+=Math.sign(this.squadOffsetX||1)*.28*e;
+      bodyRZ+=Math.sign(this.squadOffsetX||1)*.05*e;
+    }
+
     // Phase S: combat tells — startle (PATROL→ALERT) and aim-raise
     // (CHASE→ATTACK). Both apply additive on top of the gait targets, then
     // lerp settles them naturally.
@@ -5232,6 +5375,7 @@ class Enemy{
     if(this.lKneeGrp)this.lKneeGrp.rotation.x+=((this._lKneeBend||0.10)-this.lKneeGrp.rotation.x)*lsQ;
     if(this.rKneeGrp)this.rKneeGrp.rotation.x+=((this._rKneeBend||0.10)-this.rKneeGrp.rotation.x)*lsQ;
     // Body attitude: side sway (Z) + forward lean (X) + spine twist (Y)
+    this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*ls;
     this.bMesh.rotation.z+=(bodyRZ-this.bMesh.rotation.z)*ls;
     this.bMesh.rotation.y+=(bodyRY-this.bMesh.rotation.y)*ls;
 
@@ -5493,8 +5637,11 @@ class Enemy{
     const limbMul=(typeof _enemyMoveSpeedMul==='function')?_enemyMoveSpeedMul(this):1.0;
     const spd=this.speed*limbMul*dt/d;this._tryMove(dx*spd,dz*spd,walls);
     this.group.rotation.y=Math.atan2(dx,dz);
+    if(this._movementMode!=='vault'&&this._movementMode!=='juke')this._movementMode=this.state===REPOSITION?'reposition':this.state===FLANK?'flank':this.state===CHASE?'chase':'walk';
   }
   _pathToTarget(tgt,dt,walls){
+    if(this._tickEnemyVault(dt))return;
+    if(this._tryVaultToward(tgt,walls))return;
     const ng=typeof G!=='undefined'&&G.levelData&&G.levelData.navGrid;
     if(!ng){this._moveTo(tgt,dt,walls);return;}
     this.navRecalcT-=dt;
@@ -5529,6 +5676,238 @@ class Enemy{
     this._pathToTarget(this.patrolTarget,dt*.55,walls);
     this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
     this.hMesh.rotation.y=this.headLookY;
+  }
+
+  _enemyBark(kind,chance,minMs){
+    if(this.type==='drone'||typeof _showEnemyBark!=='function')return;
+    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
+    const now=performance.now();
+    if(now-(this._lastTacticalBark||0)<(minMs||3200))return;
+    if(Math.random()>((chance==null) ? .35 : chance)*(p.barkMul||1))return;
+    this._lastTacticalBark=now;
+    _showEnemyBark(this,kind);
+  }
+  _claimCoverSlot(slot){
+    if(this.coverSlot&&this.coverSlot!==slot&&this.coverSlot.claimedBy===this)this.coverSlot.claimedBy=null;
+    this.coverSlot=slot||null;
+    if(slot){
+      slot.claimedBy=this;
+      this.coverPoint={x:slot.x,z:slot.z};
+    }
+  }
+  _findCoverSlot(pp,walls,opts){
+    const lvl=(typeof G!=='undefined'&&G.levelData)||null;
+    const slots=lvl&&Array.isArray(lvl.coverSlots)?lvl.coverSlots:null;
+    if(!slots||!slots.length)return null;
+    const maxDist=(opts&&opts.maxDist)||12;
+    const maxD2=maxDist*maxDist;
+    const myZone=this.zoneId;
+    let best=null,bestScore=Infinity;
+    for(const s of slots){
+      if(s.claimedBy&&s.claimedBy!==this)continue;
+      if(myZone!=null&&typeof getZoneOf==='function'&&getZoneOf({z:s.z})!==myZone)continue;
+      const dx=s.x-this.group.position.x,dz=s.z-this.group.position.z;
+      const d2=dx*dx+dz*dz;
+      if(d2>maxD2)continue;
+      if(!_isPosClearForEnemy(s.x,s.z,walls,.36))continue;
+      const px=s.x+(s.peekDx||0),pz=s.z+(s.peekDz||0);
+      const peekSee=_losClear(px,pz,pp.x,pp.z,walls);
+      if(opts&&opts.requirePeek&&!peekSee)continue;
+      const risk=_coverSlotRisk(s,pp,walls);
+      const riskCap=(opts&&opts.riskCap)!=null?opts.riskCap:this.holdRiskCap;
+      if(risk>riskCap+.30&&!peekSee)continue;
+      const distToPlayer=Math.hypot(s.x-pp.x,s.z-pp.z);
+      const idealPenalty=Math.abs(distToPlayer-this.idealDist)*0.38;
+      const farBonus=(opts&&opts.preferFar)?-Math.min(4,distToPlayer*.18):0;
+      const samePenalty=s===this.coverSlot?2.5:0;
+      const score=Math.sqrt(d2)+risk*5.5+idealPenalty+samePenalty+farBonus-(peekSee?2.0:0);
+      if(score<bestScore){bestScore=score;best=s;}
+    }
+    return best;
+  }
+  _beginRepositionToSlot(slot,reason){
+    if(!slot)return false;
+    const now=performance.now();
+    if(now-(this._lastRepositionAt||0)<650)return false;
+    this._claimCoverSlot(slot);
+    this.repositionTarget=new THREE.Vector3(slot.x,0,slot.z);
+    this.repositionReason=reason||'cover';
+    this.atCover=false;
+    this.peekState='safe';this.peekAmtTarget=0;this.peekCooldown=.20+Math.random()*.35;
+    this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
+    this.state=REPOSITION;
+    this._movementMode='reposition';
+    this._repositionAnimStart=now;
+    this._lastRepositionAt=now;
+    this.shotsFromPosition=0;
+    this.repositionCooldown=(this.tactic.repositionEvery||4.5)*(this.personality.repositionMul||1)*(0.75+Math.random()*.50);
+    if(typeof G!=='undefined')G._aiRepositions=(G._aiRepositions||0)+1;
+    this._enemyBark(reason==='retreat'?'search':reason==='flank'?'flank':'reposition',.45,2600);
+    return true;
+  }
+  _startReload(){
+    if(this.enemyReloadTimer>0||this.dead)return true;
+    this.enemyReloadTimer=this.enemyReloadDur;
+    this.peekAmtTarget=0;
+    this._reloadAnimStart=performance.now();
+    this._combatAnim='reload';
+    if(typeof G!=='undefined')G._aiReloads=(G._aiReloads||0)+1;
+    this._enemyBark('reload',.58,2200);
+    return true;
+  }
+  _tickReload(dt){
+    if(this.enemyReloadTimer<=0)return false;
+    this.enemyReloadTimer-=dt;
+    this.aimReady=Math.max(0,this.aimReady-dt*1.8);
+    if(this.enemyReloadTimer<=0){
+      this.enemyReloadTimer=0;
+      this.magAmmo=this.magSize;
+      this._combatAnim='idle';
+      this._reloadSnapStart=performance.now();
+      return false;
+    }
+    return true;
+  }
+  _consumeRound(){
+    if(this.enemyReloadTimer>0)return false;
+    if(this.magAmmo<=0){this._startReload();return false;}
+    this.magAmmo--;
+    this._lastShotAt=performance.now();
+    this.shotsFromPosition++;
+    this.aimReady=Math.max(0,this.aimReady-(this.type==='heavy' ? .04 : .11));
+    if(this.magAmmo<=0)this._startReload();
+    return true;
+  }
+  _updateAimReadiness(dt,cs,horizDist){
+    const wants=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
+    let target=(wants&&cs&&!this.enemyReloadTimer)?1:0;
+    if(this.state===REPOSITION&&horizDist>this.attackRange*.75)target=.55;
+    this.aimIntent=target;
+    const base=this.tactic.aim||.35;
+    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
+    const speed=(target>this.aimReady?1/base:2.4)*(1/(p.aimMul||1));
+    this.aimReady+=(target-this.aimReady)*Math.min(dt*speed,1);
+  }
+  _maybeReposition(pp,walls,cs,horizDist,dt){
+    if(this.type==='drone'||this.state===REPOSITION||this.state===FLANK||this.dead)return false;
+    this.repositionCooldown-=dt;
+    if(cs)this.noLosTimer=0;else this.noLosTimer+=dt;
+    if(this.atCover)this.atCoverTimer+=dt;else this.atCoverTimer=0;
+    if(cs&&!this.atCover)this.openGroundTimer+=dt;else this.openGroundTimer=0;
+    if(this.repositionCooldown>0)return false;
+    const hpFrac=this.hp/Math.max(1,this.maxHp);
+    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
+    const t=this.tactic||ENEMY_TACTICS.soldier;
+    let reason=null;
+    const currentRisk=this.coverSlot?_coverSlotRisk(this.coverSlot,pp,walls):1;
+    if(hpFrac<.34&&p.courage<.82&&this.type!=='heavy'&&this.type!=='riot')reason='retreat';
+    else if(this.coverSlot&&currentRisk>this.holdRiskCap+.22)reason='exposed';
+    else if(this.coverSlot&&horizDist<(t.closeBreak||3.0))reason='flank';
+    else if(this.coverSlot&&t.relocateAfterShot&&this.shotsFromPosition>=1)reason='relocate';
+    else if(this.coverSlot&&this.shotsFromPosition>=Math.max(2,Math.round(4*(p.holdMul||1))))reason='relocate';
+    else if(!this.coverSlot&&this.openGroundTimer>0.75&&Math.random()<t.coverSeek*(p.holdMul||1))reason='cover';
+    else if(!cs&&this.lastKnownPos&&this.noLosTimer>1.35&&Math.random()<.65)reason='flank';
+    if(!reason)return false;
+    const slot=this._findCoverSlot(pp,walls,{
+      maxDist:reason==='retreat'?15:reason==='flank'?13:10,
+      preferFar:reason==='retreat'||horizDist<(t.closeBreak||3.0),
+      requirePeek:reason!=='retreat',
+      riskCap:reason==='retreat'?0.82:this.holdRiskCap+.12
+    });
+    if(slot)return this._beginRepositionToSlot(slot,reason);
+    if((reason==='flank'||reason==='cover')&&Math.random()<((t.flank||.2)*(p.flankMul||1))){
+      const dx=pp.x-this.group.position.x,dz=pp.z-this.group.position.z;
+      const d=Math.hypot(dx,dz)||1;
+      const nx=dx/d,nz=dz/d,side=Math.random()<.5?-1:1;
+      this.flankTarget=new THREE.Vector3(pp.x+(-nz*side)*(6+Math.random()*4),0,pp.z+(nx*side)*(6+Math.random()*4));
+      this.flankTimer=2.4+Math.random()*1.4;
+      this.state=FLANK;
+      this.repositionCooldown=(t.repositionEvery||4.5)*(p.repositionMul||1);
+      this._movementMode='flank';
+      this._enemyBark('flank',.55,2500);
+      if(typeof G!=='undefined')G._aiRepositions=(G._aiRepositions||0)+1;
+      return true;
+    }
+    this.repositionCooldown=1.2+Math.random();
+    return false;
+  }
+  _tryStartJuke(pp,horizDist){
+    const t=this.tactic||ENEMY_TACTICS.soldier;
+    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
+    if(this._jukeTimer>0||!t.juke)return false;
+    const chance=t.juke*(p.jitter||1)*(horizDist<10?1.2:.7);
+    if(Math.random()>chance)return false;
+    const dx=pp.x-this.group.position.x,dz=pp.z-this.group.position.z;
+    const d=Math.hypot(dx,dz)||1;
+    const side=Math.random()<.5?-1:1;
+    const perpX=-dz/d*side,perpZ=dx/d*side;
+    const forward=(this.type==='scout'||this.type==='pistolero') ? .45 : 0;
+    this._jukeVec={x:perpX+dx/d*forward,z:perpZ+dz/d*forward};
+    const jl=Math.hypot(this._jukeVec.x,this._jukeVec.z)||1;
+    this._jukeVec.x/=jl;this._jukeVec.z/=jl;
+    this._jukeTimer=.28+Math.random()*.22;
+    this._jukeAnimStart=performance.now();
+    this._movementMode='juke';
+    this._enemyBark('flank',.32,2600);
+    return true;
+  }
+  _tickJuke(dt,walls){
+    if(this._jukeTimer<=0||!this._jukeVec)return false;
+    this._jukeTimer-=dt;
+    const sp=this.speed*(this.type==='scout'?1.95:this.type==='pistolero'?1.75:1.45)*dt;
+    this._tryMove(this._jukeVec.x*sp,this._jukeVec.z*sp,walls);
+    if(this._jukeTimer<=0){this._jukeVec=null;this._movementMode='strafe';}
+    return true;
+  }
+  _tickEnemyVault(dt){
+    const v=this._enemyVault;
+    if(!v)return false;
+    v.t+=dt/v.dur;
+    const t=Math.max(0,Math.min(1,v.t));
+    const ease=t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    this.group.position.x=v.x0+(v.x1-v.x0)*ease;
+    this.group.position.z=v.z0+(v.z1-v.z0)*ease;
+    this.group.position.y=v.y0+Math.sin(t*Math.PI)*v.hop;
+    this.group.rotation.y=Math.atan2(v.x1-v.x0,v.z1-v.z0);
+    this._movementMode='vault';
+    if(t>=1){
+      this.group.position.y=v.yEnd;
+      this._enemyVault=null;
+      this._windowVaultStart=performance.now();
+      this._windowVaultUntil=performance.now()+260;
+    }
+    return true;
+  }
+  _tryVaultToward(tgt,walls){
+    if(this.type==='drone'||this._enemyVault||!G||!G.vaultables||!G.vaultables.length)return false;
+    const now=performance.now();
+    if(this._nextVaultTry&&now<this._nextVaultTry)return false;
+    this._nextVaultTry=now+450;
+    const px=this.group.position.x,pz=this.group.position.z;
+    const dx=tgt.x-px,dz=tgt.z-pz;
+    const d=Math.hypot(dx,dz);
+    if(d<1.1)return false;
+    const nx=dx/d,nz=dz/d;
+    for(const v of G.vaultables){
+      if((v.height||0)>1.35)continue;
+      const near=px>=v.x0-.85&&px<=v.x1+.85&&pz>=v.z0-.85&&pz<=v.z1+.85;
+      if(!near)continue;
+      const cx=(v.x0+v.x1)*.5,cz=(v.z0+v.z1)*.5;
+      const sideNow=(px-cx)*nx+(pz-cz)*nz;
+      const sideTgt=(tgt.x-cx)*nx+(tgt.z-cz)*nz;
+      if(sideNow*sideTgt>0)continue;
+      const span=Math.abs(nx)*(v.x1-v.x0)+Math.abs(nz)*(v.z1-v.z0);
+      const landX=px+nx*(span+1.05),landZ=pz+nz*(span+1.05);
+      if(!_isPosClearForEnemy(landX,landZ,walls,.36))continue;
+      const y0=this.group.position.y;
+      this._enemyVault={t:0,dur:this.type==='heavy' ? .72 : .54,x0:px,z0:pz,x1:landX,z1:landZ,y0,yEnd:y0,hop:.52};
+      this.peekAmtTarget=0;
+      this._vaultAnimStart=now;
+      if(typeof G!=='undefined')G._aiVaults=(G._aiVaults||0)+1;
+      this._enemyBark('vault',.38,3000);
+      return true;
+    }
+    return false;
   }
 
   update(dt,pp,walls){
@@ -5626,9 +6005,12 @@ class Enemy{
     }:null;
     const cs=this.canSee(pp,walls,_leanOff);
     let moving=false,shootResult=null;
+    if(this._movementMode!=='juke'&&this._movementMode!=='vault')this._movementMode='idle';
+    this._updateAimReadiness(dt,cs,horizDist);
+    if(this.state!==ATTACK&&this.enemyReloadTimer>0)this._tickReload(dt);
 
     // Weapon barrel pitch — smoothly aim toward player eye level
-    if(this.state===ATTACK||this.state===FLANK||this.state===CHASE){
+    if(this.state===ATTACK||this.state===FLANK||this.state===CHASE||this.state===REPOSITION||this.state===SUPPRESS){
       const hDiff=1.7-(this.group.position.y+1.12);
       const tPitch=-Math.atan2(hDiff,Math.max(horizDist,1));
       this.aimPitch+=(tPitch-this.aimPitch)*Math.min(dt*7,1);
@@ -5638,7 +6020,7 @@ class Enemy{
     this.weaponGrp.rotation.x=this.aimPitch;
 
     // Head tracks player when aware
-    if(this.state===CHASE||this.state===ATTACK||this.state===SEARCH||this.state===FLANK){
+    if(this.state===CHASE||this.state===ATTACK||this.state===SEARCH||this.state===FLANK||this.state===REPOSITION){
       const relAng=Math.atan2(pdx,pdz)-this.group.rotation.y;
       // Normalise angle to -PI..PI
       const na=((relAng+Math.PI*3)%(Math.PI*2))-Math.PI;
@@ -5769,6 +6151,7 @@ class Enemy{
           // Phase S: startle reaction — head whip + body recoil for 250ms
           this._startleStart=performance.now();
           this._startleDur=250;
+          this._enemyBark('alert',.70,1800);
           // Phase AF: brief sharp breath cue — high-pass noise burst.
           if(this.type!=='drone'){
             const c=getAC();
@@ -5805,6 +6188,7 @@ class Enemy{
           // beat that telegraphs the first shot.
           this._aimRaiseStart=performance.now();
           this._aimRaiseDur=300;
+          this._enemyBark('alert',.38,2600);
           break;
         }
         // Cover-aware chase: enemies hold ground at their assigned cover when
@@ -5865,6 +6249,31 @@ class Enemy{
         break;
       }
 
+      case REPOSITION:{
+        if(cs)this.lastKnownPos=pp.clone();
+        if(!this.repositionTarget){
+          this.state=cs?ATTACK:CHASE;
+          break;
+        }
+        const tx=this.repositionTarget.x-this.group.position.x;
+        const tz=this.repositionTarget.z-this.group.position.z;
+        const td=Math.hypot(tx,tz);
+        if(td>.58){
+          const mul=this.repositionReason==='retreat'?1.12:this.repositionReason==='flank'?1.22:1.0;
+          this._pathToTarget(this.repositionTarget,dt*mul,walls);moving=true;
+          this.group.rotation.y=cs?Math.atan2(pdx,pdz):Math.atan2(tx,tz);
+        }else{
+          this.atCover=!!this.coverSlot;
+          this.repositionTarget=null;
+          this.peekCooldown=.18+Math.random()*.30;
+          this._aimRaiseStart=performance.now();
+          this._aimRaiseDur=220+(this.tactic.aim||.35)*260;
+          this.state=cs?ATTACK:SEARCH;
+          if(!cs&&this.lastKnownPos)this.searchTimer=1.8+Math.random()*1.4;
+        }
+        break;
+      }
+
       case FLANK:{
         this.flankTimer-=dt;
         if(cs&&horizDist<=this.attackRange){this.state=ATTACK;this.flankTarget=null;break;}
@@ -5883,19 +6292,22 @@ class Enemy{
           if(cs)this.lastKnownPos=pp.clone();
           this.state=CHASE;break;
         }
+        if(this._maybeReposition(pp,walls,cs,horizDist,dt))break;
         // Change strafe behaviour periodically
         this.strafeChangeTimer-=dt;
         if(this.strafeChangeTimer<=0){
           this.strafeChangeTimer=1.3+Math.random()*1.8;
+          this._tryStartJuke(pp,horizDist);
           // Sometimes flank (harder difficulties more likely)
-          if(Math.random()<0.18+this.diff*.04){
+          const _flankChance=(0.18+this.diff*.04)*(this.personality.flankMul||1)*(this.tactic.flank||.35);
+          if(Math.random()<_flankChance){
             const ang=Math.atan2(pdx,pdz)+Math.PI*.5*this.strafeDir;
             const fd=7+Math.random()*4;
             this.flankTarget=new THREE.Vector3(
               this.group.position.x+Math.sin(ang)*fd,0,
               this.group.position.z+Math.cos(ang)*fd
             );
-            this.flankTimer=3.2;this.state=FLANK;break;
+            this.flankTimer=3.2;this.state=FLANK;this._movementMode='flank';this._enemyBark('flank',.45,2400);break;
           }
           if(Math.random()<.38)this.strafeDir*=-1;
         }
@@ -5945,20 +6357,26 @@ class Enemy{
           }
         } else {
           // Default circular strafe + maintain ideal distance
-          const invD=1/Math.max(horizDist,.01);
-          const perpX=-pdz*invD,perpZ=pdx*invD;
-          const radX=pdx*invD,radZ=pdz*invD;
-          const dErr=horizDist-this.idealDist;
-          const stM=this.speed*.85*this.strafeDir;
-          const rM=this.speed*.55*Math.sign(-dErr)*(Math.abs(dErr)>1.5?1:.4);
-          this._tryMove((perpX*stM+radX*rM)*dt,(perpZ*stM+radZ*rM)*dt,walls);
+          if(this._tickJuke(dt,walls)){
+            moving=true;
+          }else{
+            const invD=1/Math.max(horizDist,.01);
+            const perpX=-pdz*invD,perpZ=pdx*invD;
+            const radX=pdx*invD,radZ=pdz*invD;
+            const dErr=horizDist-this.idealDist;
+            const stM=this.speed*.85*this.strafeDir*(this.personality.jitter||1);
+            const rM=this.speed*.55*Math.sign(-dErr)*(Math.abs(dErr)>1.5?1:.4)*(this.tactic.advance||.5);
+            this._tryMove((perpX*stM+radX*rM)*dt,(perpZ*stM+radZ*rM)*dt,walls);
+            this._movementMode='strafe';
+          }
           moving=true;
         }
         this.group.rotation.y=Math.atan2(pdx,pdz);
+        const _enemyReloading=this._tickReload(dt);
         // ── DEMOLITIONS: throws grenade every 5-7s instead of bursting
         if(this.type==='demolitions'){
           this._grenadeTimer=(this._grenadeTimer||(3+Math.random()*2))-dt;
-          if(this._grenadeTimer<=0&&cs&&horizDist<14){
+          if(!_enemyReloading&&this._grenadeTimer<=0&&cs&&horizDist<14){
             this._grenadeTimer=5+Math.random()*2.5;
             // Spawn enemy grenade
             if(typeof spawnEnemyGrenade==='function'){
@@ -5974,6 +6392,8 @@ class Enemy{
         }
         // ── MARKSMAN: charges scoped shot, longer between bursts, much brighter visor flash
         if(this.type==='marksman'){
+          if(_enemyReloading)break;
+          if(this.magAmmo<=0){this._startReload();break;}
           // Bigger pause between shots, but visor charges up first
           this.shootTimer-=dt;this.burstCooldown-=dt;
           if(this.burstCooldown<=0&&cs){
@@ -5984,7 +6404,8 @@ class Enemy{
               this.visorM.emissive.setRGB(c*1.6,c*1.6,c*1.8);
             }
             if(this._chargeT>=1.2){
-              shootResult={shoot:true,dist:horizDist,accuracy:.012,src:this};
+              if(!this._consumeRound())break;
+              shootResult={shoot:true,dist:horizDist,accuracy:.012,src:this,aimReady:this.aimReady};
               this.shootRecoilTimer=.32;
               this._chargeT=0;
               this.burstCooldown=2.5+Math.random()*.8;
@@ -5994,14 +6415,18 @@ class Enemy{
         }
         // ── DRONE: very rapid weak shots, no burst gating
         if(this.type==='drone'){
+          if(_enemyReloading)break;
+          if(this.magAmmo<=0){this._startReload();break;}
           this.shootTimer-=dt;
           if(this.shootTimer<=0&&cs&&horizDist<10){
             this.shootTimer=.20+Math.random()*.10;
             this.shootRecoilTimer=.10;
-            shootResult={shoot:true,dist:horizDist,accuracy:.10,src:this};
+            if(!this._consumeRound())break;
+            shootResult={shoot:true,dist:horizDist,accuracy:.10,src:this,aimReady:this.aimReady};
           }
           break;
         }
+        if(_enemyReloading)break;
         // Suppression check — recently shot at, don't shoot back
         if(this._suppressedUntil&&performance.now()<this._suppressedUntil){
           this._poseTarget='takingCover';
@@ -6019,14 +6444,20 @@ class Enemy{
         // Phase 3: SUPPRESS overrides — fire even without LOS, with reduced
         // accuracy, while suppressBurstsLeft > 0.
         const _isSuppressing=this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0;
+        if(this.magAmmo<=0){this._startReload();break;}
         this.shootTimer-=dt;this.burstCooldown-=dt;
-        if(this.burstCooldown<=0&&this.shootTimer<=0&&(cs||_isSuppressing)){
+        const _aimGate=_isSuppressing||this.aimReady>0.58||this.type==='pistolero'||this.type==='scout';
+        if(this.burstCooldown<=0&&this.shootTimer<=0&&(cs||_isSuppressing)&&_aimGate){
           if(this.burstMax > this.burstCount){
+            if(!this._consumeRound())break;
             this.burstCount++;
             this.shootTimer=.09+Math.random()*.08;
             this.shootRecoilTimer=.18;
-            const accDeg=_isSuppressing?(.20-this.diff*.01):.065-this.diff*.007;
-            shootResult={shoot:true,dist:horizDist,accuracy:accDeg,src:this};
+            const limbAcc=(typeof _enemyAccuracyMul==='function')?_enemyAccuracyMul(this):1.0;
+            const personaNoise=(this.personality.jitter||1)*0.010;
+            const aimBonus=(1-this.aimReady)*0.060;
+            const accDeg=(_isSuppressing?(.20-this.diff*.01):.065-this.diff*.007)+personaNoise+aimBonus+(1-limbAcc)*.10;
+            shootResult={shoot:true,dist:horizDist,accuracy:Math.max(.006,accDeg),src:this,aimReady:this.aimReady};
           }else{
             this.burstCount=0;
             this.burstCooldown=1.1+Math.random()*.9;
@@ -6059,6 +6490,7 @@ class Enemy{
 
   remove(){
     this.muzzleLight=null;
+    if(this.coverSlot&&this.coverSlot.claimedBy===this)this.coverSlot.claimedBy=null;
     this.scene.remove(this.group);
     const _mats=new Set();
     this.group.traverse(obj=>{
@@ -6383,7 +6815,13 @@ class Squad{
       const radius=this.state==='suppress'?2.6:1.8;
       m.squadOffsetX=Math.cos(ang)*radius;
       m.squadOffsetZ=Math.sin(ang)*radius;
+      if(m!==this.leader)m._orderReactStart=performance.now()+i*80;
     });
+    this.leader._signalStart=performance.now();
+    this.leader._signalKind=this.state;
+    if(this.state==='flank')this.leader._enemyBark('flank',.62,2300);
+    else if(this.state==='suppress')this.leader._enemyBark('suppress',.58,2300);
+    else this.leader._enemyBark('advance',.40,2600);
   }
 }
 class EnemyManager{
@@ -6600,6 +7038,8 @@ class EnemyManager{
       // Activate the pair
       supp.suppressUntil=nowMs+2500;
       supp.suppressBurstsLeft=Math.max(2,supp.burstMax);
+      supp._signalStart=nowMs;
+      supp._enemyBark('suppress',.65,2200);
       // Partner flanks to the opposite side of the player
       const px=pp.x-supp.group.position.x,pz=pp.z-supp.group.position.z;
       const pl=Math.max(0.001,Math.sqrt(px*px+pz*pz));
@@ -6613,6 +7053,8 @@ class EnemyManager{
       partner.flankTimer=3.4;
       partner.state=FLANK;
       partner._flankSpeedBoostUntil=nowMs+2500;
+      partner._movementMode='flank';
+      partner._enemyBark('flank',.52,2200);
       pairedZones.add(supp.zoneId);
       if(typeof G!=='undefined'){G._aiPairsActive=(G._aiPairsActive||0)+1;}
     }
@@ -8563,7 +9005,7 @@ const H={
 const EYE=1.7,PR=0.35;
 const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],campaignLevel:null,currentBeat:null,mastery:null,runModifiers:null,
   // Phase 6 — AI/lean telemetry counters (read by __game.debug.snapshot)
-  _aiPeekCount:0,_aiPeekShotsFired:0,_aiAllShotsFired:0,_aiPairsActive:0,
+  _aiPeekCount:0,_aiPeekShotsFired:0,_aiAllShotsFired:0,_aiPairsActive:0,_aiRepositions:0,_aiVaults:0,_aiReloads:0,
   _playerLeanShots:0,_playerTotalShots:0};
 function _defaultAttachments(){
   return {scope:null,mag:null,muzzle:null,foregrip:null};
@@ -13554,7 +13996,33 @@ const BARK_DICT={
     heavy:['BELT FEED!','REPACKING!','OUT OF AMMO!','LOADING!'],
     sniper:['BOLT CYCLE','REARMING','NEXT ROUND','RELOADING'],
     scout:['EMPTY!','RELOAD!','OUT!','MAG SWAP!'],
-    demolitions:['REARMING!','OUT OF FRAGS!']
+    pistolero:['ONE SECOND','MORE LEAD','KEEP DANCING'],
+    demolitions:['REARMING!','OUT OF FRAGS!'],
+    marksman:['CYCLING','RESETTING SIGHT','NEXT MARK']
+  },
+  suppress:{
+    soldier:['PIN HIM!','KEEP HIS HEAD DOWN!','COVERING FIRE!'],
+    heavy:['LAYING IT DOWN!','NO LANE FOR HIM!','BELT ON TARGET!'],
+    lieutenant:['CUT OFF HIS EXIT!','MAKE HIM SMALL!','HOLD THAT LINE!']
+  },
+  advance:{
+    soldier:['PUSH UP!','MOVE WITH ME!','TAKE SPACE!'],
+    riot:['SHIELD FORWARD!','BREACH STEP!','CLOSE DISTANCE!'],
+    scout:['I\'M GOING IN!','FAST LANE!','ON HIM!'],
+    pistolero:['CLOSER!','LET\'S MAKE IT PERSONAL!','I WANT THE ANGLE!']
+  },
+  reposition:{
+    soldier:['NEW ANGLE!','SHIFTING COVER!','I NEED A LINE!'],
+    heavy:['BRACING LEFT!','NEW LANE!','SETTING THE GUN!'],
+    sniper:['RELOCATING','BAD ANGLE','MOVING NEST'],
+    marksman:['CHANGING SIGHTLINE','NEW PERCH','LOST THE SHOT'],
+    demolitions:['BETTER ARC!','SHIFTING THROW!','ANGLE THE FRAG!']
+  },
+  vault:{
+    soldier:['GOING OVER!','CROSSING!','OVER THE TOP!'],
+    scout:['UP AND OVER!','TOO SLOW!','VAULTING!'],
+    pistolero:['WATCH THIS!','OVER!','COMING THROUGH!'],
+    riot:['BREACH OVER!','CROSSING HARD!','OVER THE BARRIER!']
   },
   search:{
     soldier:['WHERE IS HE?','LOST VISUAL!','SPLIT UP!','CHECK CORNERS!','HE\'S GONE!','HE\'S GHOSTED!'],
@@ -14691,11 +15159,18 @@ const ENEMY_BARKS={
   flank:['MOVING LEFT','GET ON HIS FLANK','BREACH RIGHT','CIRCLE AROUND','I\'LL GO WIDE'],
   reload:['RELOADING!','MAG DRY!','COVER ME!','CHANGING MAGS','OUT!'],
   leader_down:['LIEUTENANT DOWN!','BOSS IS DOWN!','REGROUP!','WE LOST CONTROL','PUSH UP NOW'],
-  search:['WHERE\'D HE GO?','LOST VISUAL','SPLIT UP','CHECK CORNERS','HE WAS RIGHT THERE']
+  search:['WHERE\'D HE GO?','LOST VISUAL','SPLIT UP','CHECK CORNERS','HE WAS RIGHT THERE'],
+  suppress:['PIN HIM!','KEEP HIS HEAD DOWN','COVERING FIRE','HOLD THAT ANGLE'],
+  advance:['PUSH UP','MOVE WITH ME','CLOSE THE GAP','TAKE SPACE'],
+  reposition:['NEW ANGLE','SHIFTING COVER','I NEED A BETTER LINE','MOVING POSITION'],
+  vault:['GOING OVER','VAULTING','OVER THE TOP','CROSSING'],
+  frustrated:['DAMN IT','HE MOVED','LOST THE SHOT','FIND THE ANGLE']
 };
 function _showEnemyBark(enemy,kind){
   if(!enemy||enemy.dead)return;
-  const lines=ENEMY_BARKS[kind]||[];
+  const typed=(typeof BARK_DICT!=='undefined'&&BARK_DICT[kind]&&BARK_DICT[kind][enemy.type])
+    ||(typeof TYPE_BARKS!=='undefined'&&TYPE_BARKS[enemy.type]&&TYPE_BARKS[enemy.type][kind]);
+  const lines=typed||ENEMY_BARKS[kind]||[];
   if(!lines.length)return;
   const line=lines[Math.floor(Math.random()*lines.length)];
   // Project to screen
@@ -18904,13 +19379,25 @@ renderer.setAnimationLoop(()=>{
             soldier:{base:.65,decay:.042},
             heavy:  {base:.56,decay:.036},
             sniper: {base:.87,decay:.015},
-            scout:  {base:.76,decay:.068}
+            scout:  {base:.76,decay:.068},
+            pistolero:{base:.70,decay:.058},
+            shielded:{base:.58,decay:.052},
+            riot:{base:.60,decay:.050},
+            demolitions:{base:.62,decay:.046},
+            drone:{base:.66,decay:.072},
+            marksman:{base:.82,decay:.020},
+            lieutenant:{base:.76,decay:.030},
+            boss:{base:.80,decay:.026}
           };
           const ta=typeAcc[s.src&&s.src.type]||typeAcc.soldier;
           const diffBonus=(s.src?s.src.diff:1)*.030;
+          const aimMul=s.aimReady==null?1.0:(.72+s.aimReady*.36);
+          const spreadPenalty=Math.max(.58,Math.min(1.10,1.06-(s.accuracy||.08)*1.9));
+          const persona=(s.src&&s.src.personality)||null;
+          const nerveMul=persona?Math.max(.78,Math.min(1.08,1.04-(persona.jitter||1)*.045+(persona.courage||.7)*.045)):1.0;
           // Running target is harder to hit
           const movePen=P.running?0.68:1.0;
-          const hitP=Math.max(.04,Math.min(.92,(ta.base-s.dist*ta.decay+diffBonus)*movePen));
+          const hitP=Math.max(.04,Math.min(.92,(ta.base-s.dist*ta.decay+diffBonus)*movePen*aimMul*spreadPenalty*nerveMul));
           if(hitP>Math.random()){
             const baseDmg=s.src?s.src.enemyDmg:12;
             takeDamage(baseDmg*(0.72+Math.random()*.50));
@@ -19359,6 +19846,9 @@ window.__game={
           peekShotsFired:G._aiPeekShotsFired|0,
           peekRatio:Number(_safeDiv(G._aiPeekShotsFired,G._aiAllShotsFired).toFixed(3)),
           pairsActive:G._aiPairsActive|0,
+          repositions:G._aiRepositions|0,
+          vaults:G._aiVaults|0,
+          reloads:G._aiReloads|0,
           playerLeanShots:G._playerLeanShots|0,
           playerTotalShots:G._playerTotalShots|0,
           playerLeanShotsRatio:Number(_safeDiv(G._playerLeanShots,G._playerTotalShots).toFixed(3)),
