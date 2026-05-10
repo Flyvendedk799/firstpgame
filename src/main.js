@@ -75,8 +75,8 @@ function _meshyToast(msg,color){
   setTimeout(()=>{d.style.transition='opacity .6s';d.style.opacity='0';setTimeout(()=>d.remove(),700);},5000);
 }
 // ─── desert_eagle.glb load DISABLED ────────────────────────────────────────
-// Reverting to the procedural box-art Deagle (DE_MESHES — 35 pieces, same
-// build style as the M4: deBody, deSlide, deSer1..3, deBarrel, deHammer,
+// Reverting to the procedural box-art Deagle (DE_MESHES — slim HK USP-T blockout, same
+// build style as the M4: deBody, deSlide, deSer1..2, deBarrel, deHammer,
 // deTrig, deGrip, deMag, etc.). The GLB asset never felt at-home with the
 // rest of the procedural geometry, and the bundled "Take 001" animation
 // timing didn't match the FPS cadence. Keeping the file at
@@ -6145,109 +6145,75 @@ const gSling    = _m4(.008,.008,.014,m4MetalM, .020,-.014, .175);
 const m4PadM    = new THREE.MeshPhongMaterial({color:0x12120e,shininess:8,specular:0x080806});
 const gButtPad  = _m4(.040,.078,.012,m4PadM,    0, .010, .220);
 const M4_MESHES=[gLower,gBody,gRail,gCharge,gHand,gHandTop,gHandBot,gFsight,gBarrel,gMuzzle1,gMuzzle2,gMagwell,gMag1,gMag2,gGrip,gTrigGd,gTrig,gBuffer,gStock,gCheek,gButt,gEject,gFwdAsst,gFwdAsstP,gBrassDef,gChLatch,gFsWingL,gFsWingR,gFsPost,gFhSlot1,gFhSlot2,gRailT1,gRailT2,gRailT3,gHvL1,gHvL2,gHvR1,gHvR2,gSelector,gMagRel,gMagCurve,gGripBT,gSling,gButtPad];
-// ── HK USP Tactical with screw-on suppressor — polymer-framed pistol with
-//   threaded barrel and 6"-class can. Iconic features: matte polymer frame,
-//   squared steel slide with vertical rear serrations, picatinny accessory
-//   rail under the dust cover, tall front+rear sights for sight-over-can,
-//   exposed DA/SA hammer, frame-mounted decocker (left rear), flared magwell,
-//   long cylindrical suppressor at the muzzle.
-//   Forward = -Z. Total length ~0.34m (rear hammer +.10 → suppressor face
-//   -.24). Animated pieces (deSlide, deSer1-3, deRsight, deHammer) keep their
-//   Z positions because the slide-cycle code in the firing tick depends on
-//   them — variable names stay `de*` so DE_MESHES export and animation
-//   references don't need to change.
+// ── HK USP Tactical + can — compact pistol silhouette (short slide + K-length
+//   can): long slides / fat cans read as PDW in first-person view.
+//   Forward = -Z. Animated Z: deSlide, deSer1-2, deRsight, deHammer.
 const deFrameM =new THREE.MeshPhongMaterial({color:0x1a1a1e,shininess:18,specular:0x101012}); // matte polymer
-const deSlideM =new THREE.MeshPhongMaterial({color:0x22222a,shininess:140,specular:0x484858}); // steel slide
-const deBarrelM=new THREE.MeshPhongMaterial({color:0x14141a,shininess:100,specular:0x383848}); // accent metal (controls, pins)
-const deGripM  =new THREE.MeshPhongMaterial({color:0x0a0a0e,shininess:14,specular:0x141420}); // grip rubber
-const deSupprM =new THREE.MeshPhongMaterial({color:0x16161a,shininess:24,specular:0x202028}); // suppressor cerakote
+const deSlideM =new THREE.MeshPhongMaterial({color:0x23232c,shininess:120,specular:0x3a3a48}); // steel slide — slightly subdued
+const deBarrelM=new THREE.MeshPhongMaterial({color:0x15151c,shininess:90,specular:0x323240}); // controls / accents
+const deGripM  =new THREE.MeshPhongMaterial({color:0x0c0c10,shininess:12,specular:0x12121a}); // grip rubber
+const deSupprM =new THREE.MeshPhongMaterial({color:0x18181e,shininess:38,specular:0x282830}); // smooth can — little cleaner read
 function _de(w,h,d,mat,x,y,z){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.visible=false;gunGrp.add(m);return m;}
-// FRAME — squared polymer lower
-const deBody     =_de(.046,.060,.18, deFrameM, 0,-.020,-.010);
+// FRAME — narrower + shorter vs old blockout so it hangs like a handgun
+const deBody     =_de(.042,.056,.146,deFrameM, 0,-.020,-.008);
 // Backstrap (USP grip backstrap extends a hair past frame)
-const deBodyBack =_de(.040,.022,.018,deFrameM, 0, .002, .080);
+const deBodyBack =_de(.036,.020,.017,deFrameM, 0, .002, .072);
 // Magwell flare (slight lip at top of mag opening)
-const deMagFlare =_de(.052,.005,.052,deFrameM, 0,-.094, .032);
-// SLIDE — flat-sided steel slide. Z stays at -.010 (animation contract).
-const deSlide    =_de(.048,.034,.18, deSlideM, 0, .028,-.010);
+const deMagFlare =_de(.046,.005,.049,deFrameM, 0,-.089, .031);
+// SLIDE — compact length. Z stays at -.008 (animation contract).
+const deSlide    =_de(.042,.032,.146, deSlideM, 0, .026,-.008);
 // Top of slide breech rib (slight raised flat where the firing pin lives)
-const deBreech   =_de(.024,.005,.16, deBarrelM,0, .047,-.010);
-// Rear-of-slide serrations — vertical USP-style cuts. Z stays for animation.
-const deSer1     =_de(.048,.034,.005,deFrameM, 0, .028, .060);
-const deSer2     =_de(.048,.034,.005,deFrameM, 0, .028, .070);
-const deSer3     =_de(.048,.034,.005,deFrameM, 0, .028, .080);
-// Forward serrations (USP-T / USP9SD style cocking aid)
-const deSerF1    =_de(.048,.034,.005,deFrameM, 0, .028,-.062);
-const deSerF2    =_de(.048,.034,.005,deFrameM, 0, .028,-.072);
+const deBreech   =_de(.021,.004,.134,deBarrelM,0, .046,-.008);
+// Rear slide serrations — two wider bands (inside shortened slide footprint)
+const deSer1     =_de(.042,.032,.007,deSlideM, 0, .026, .054);
+const deSer2     =_de(.042,.032,.007,deSlideM, 0, .026, .061);
 // Ejection port — small darker recess on the right side of slide
-const deEject    =_de(.005,.014,.026,deBarrelM, .024, .032,-.018);
-// REAR SIGHT — taller squared notch (sight-over-suppressor spec). Z=.060 stays.
-const deRsight   =_de(.030,.014,.010,deSlideM, 0, .052, .060);
-const deRsiteL   =_de(.006,.020,.010,deSlideM,  .010, .060, .060);
-const deRsiteR   =_de(.006,.020,.010,deSlideM, -.010, .060, .060);
-// FRONT SIGHT — taller post for suppressor sight-over
-const deFsight   =_de(.010,.018,.012,deSlideM, 0, .055,-.080);
-const deFsightP  =_de(.004,.024,.005,deSlideM, 0, .062,-.080);
-// HAMMER — DA/SA exposed spur. Z=.088 stays for animation.
-const deHammer   =_de(.010,.020,.014,deBarrelM,0, .052, .088);
+const deEject    =_de(.005,.013,.024,deBarrelM, .021, .030,-.016);
+// REAR SIGHT — notch; Z aligns with rack animation baseline
+const deRsight   =_de(.027,.013,.009,deSlideM, 0, .049, .058);
+const deRsiteL   =_de(.005,.019,.009,deSlideM,  .009, .058, .058);
+const deRsiteR   =_de(.005,.019,.009,deSlideM, -.009, .058, .058);
+// Front sight — low enough that a short can still clears; not rifle-height
+const deFsight   =_de(.009,.015,.011,deSlideM, 0, .052,-.074);
+const deFsightP  =_de(.004,.019,.004,deSlideM, 0, .059,-.074);
+// HAMMER — DA/SA exposed spur. Z stays for animation.
+const deHammer   =_de(.009,.018,.013,deBarrelM,0, .050, .082);
 // Beavertail tang — protects shooting hand from hammer slap
-const deBeaver   =_de(.026,.012,.024,deFrameM, 0, .018, .078);
+const deBeaver   =_de(.024,.011,.022,deFrameM, 0, .017, .070);
 // FRAME-MOUNTED CONTROLS (USP signature is a unified left-side control cluster)
 // Decocker / safety lever (rear of frame, just below slide)
-const deDecocker =_de(.014,.010,.022,deBarrelM,-.026, .015, .052);
+const deDecocker =_de(.012,.009,.020,deBarrelM,-.023, .014, .049);
 // Slide release lever
-const deSlideRel =_de(.022,.010,.030,deBarrelM,-.026, .020,-.018);
+const deSlideRel =_de(.020,.009,.027,deBarrelM,-.023, .018,-.016);
 // Mag release button (right side, behind trigger guard)
-const deMagRel   =_de(.006,.010,.008,deBarrelM, .024,-.030,-.020);
+const deMagRel   =_de(.006,.009,.008,deBarrelM, .021,-.028,-.018);
 // TRIGGER GUARD — squared with hooked front (USP-style)
-const deTG       =_de(.046,.008,.046,deFrameM, 0,-.054,-.005);
-const deTGFront  =_de(.008,.038,.008,deFrameM, 0,-.040,-.026);
+const deTG       =_de(.042,.008,.043,deFrameM, 0,-.052,-.004);
+const deTGFront  =_de(.007,.035,.008,deFrameM, 0,-.038,-.024);
 // Trigger blade
-const deTrig     =_de(.006,.022,.010,deBarrelM,0,-.034, .010);
-// PICATINNY ACCESSORY RAIL UNDER DUST COVER — USP Tactical signature
-const deRailFwd  =_de(.034,.010,.060,deFrameM, 0, .002,-.060);
-const deRailG1   =_de(.026,.005,.005,deBarrelM,0, .008,-.045);
-const deRailG2   =_de(.026,.005,.005,deBarrelM,0, .008,-.060);
-const deRailG3   =_de(.026,.005,.005,deBarrelM,0, .008,-.075);
-// GRIP — vertical, polymer with stippled side panels
-const deGrip     =_de(.046,.082,.052,deGripM,  0,-.062, .032);
-const deGripPnL  =_de(.005,.066,.044,deBarrelM, .022,-.062, .034);
-const deGripPnR  =_de(.005,.066,.044,deBarrelM,-.022,-.062, .034);
-// Front-strap grip stippling accent
-const deGripStip =_de(.038,.064,.005,deBarrelM,0,-.062, .060);
+const deTrig     =_de(.006,.020,.009,deBarrelM,0,-.032, .009);
+// PICATINNY ACCESSORY RAIL UNDER DUST COVER — stub (full rail reads SMG-heavy)
+const deRailFwd  =_de(.030,.009,.038,deFrameM, 0, .002,-.048);
+// GRIP — shorter front-back + height so the mass sits under the slide
+const deGrip     =_de(.042,.067,.049,deGripM,  0,-.058, .029);
 // MAGAZINE
-const deMag      =_de(.046,.014,.054,deBarrelM,0,-.108, .032);
-const deMagLip   =_de(.052,.005,.058,deSlideM, 0,-.114, .032);
-const deMagPlate =_de(.054,.012,.060,deBarrelM,0,-.122, .032);
-// Pin accents (visible trigger pin + hammer pin on right side)
-const deTrigPin  =_de(.005,.005,.005,deSlideM,  .025,-.034, .010);
-const deHammPin  =_de(.005,.005,.005,deSlideM,  .025, .015, .075);
-// Lanyard ring loop at base of grip
-const deLanyard  =_de(.010,.010,.010,deBarrelM,0,-.110, .060);
-// ── SUPPRESSOR — long cylindrical can on threaded barrel ────────────────────
-// Thread mount / barrel-suppressor interface (slightly fatter collar)
-const deThread   =_de(.024,.024,.012,deBarrelM,0, .028,-.106);
-// Main suppressor body — fatter than barrel, runs forward to muzzle face
-const deSuppr    =_de(.030,.030,.130,deSupprM, 0, .028,-.178);
-// End collars (back where it screws on, front muzzle face)
-const deSupprEndB=_de(.034,.034,.008,deSupprM, 0, .028,-.116);
-const deSupprEndF=_de(.034,.034,.008,deSupprM, 0, .028,-.240);
-// Cooling/manufacturing ribs visible along suppressor body
-const deSupprRib1=_de(.032,.032,.003,deBarrelM,0, .028,-.150);
-const deSupprRib2=_de(.032,.032,.003,deBarrelM,0, .028,-.175);
-const deSupprRib3=_de(.032,.032,.003,deBarrelM,0, .028,-.200);
-const deSupprRib4=_de(.032,.032,.003,deBarrelM,0, .028,-.225);
-// Side serial / SD-marking patch (small darker rectangle for visual texture)
-const deSupprMark=_de(.005,.010,.022,deBarrelM, .017, .028,-.180);
+const deMag      =_de(.042,.013,.049,deBarrelM,0,-.098, .029);
+const deMagLip   =_de(.046,.005,.054,deSlideM, 0,-.103, .029);
+const deMagPlate =_de(.048,.011,.057,deBarrelM,0,-.110, .029);
+// ── SUPPRESSOR — skinny short can (primary cue vs SMG integral suppressor)
+const deThread   =_de(.020,.020,.007,deBarrelM,0, .026,-.088);
+const deSuppr    =_de(.022,.022,.056,deSupprM, 0, .026,-.122);
+const deSupprEndB=_de(.026,.026,.006,deSupprM, 0, .026,-.095);
+const deSupprEndF=_de(.026,.026,.006,deSupprM, 0, .026,-.149);
 // Vestigial old-Deagle aliases that the rest of the file still expects to
 // exist as renderable objects in DE_MESHES (the animation tick references
 // some by name, others are just listed here for visibility toggling).
 const deTopBlk=deBreech,deTopRib1=deBreech,deTopRib2=deBreech;
 const deBarrel=deSuppr,deBarrelTip=deSupprEndF;
-const deBarrelV1=deSupprRib1,deBarrelV2=deSupprRib2,deBarrelV3=deSupprRib3;
+const deBarrelV1=deSuppr,deBarrelV2=deSuppr,deBarrelV3=deSuppr;
 const deRearCap=deBreech,deGasCyl=deSuppr,deSafety=deDecocker;
-const deRailG4=deRailG3,deHammerCr=deHammer;
-const DE_MESHES=[deBody,deBodyBack,deMagFlare,deSlide,deBreech,deSer1,deSer2,deSer3,deSerF1,deSerF2,deEject,deRsight,deRsiteL,deRsiteR,deFsight,deFsightP,deHammer,deBeaver,deDecocker,deSlideRel,deMagRel,deTG,deTGFront,deTrig,deRailFwd,deRailG1,deRailG2,deRailG3,deGrip,deGripPnL,deGripPnR,deGripStip,deMag,deMagLip,deMagPlate,deTrigPin,deHammPin,deLanyard,deThread,deSuppr,deSupprEndB,deSupprEndF,deSupprRib1,deSupprRib2,deSupprRib3,deSupprRib4,deSupprMark];
+const deRailG4=deRailFwd,deHammerCr=deHammer;
+const DE_MESHES=[deBody,deBodyBack,deMagFlare,deSlide,deBreech,deSer1,deSer2,deEject,deRsight,deRsiteL,deRsiteR,deFsight,deFsightP,deHammer,deBeaver,deDecocker,deSlideRel,deMagRel,deTG,deTGFront,deTrig,deRailFwd,deGrip,deMag,deMagLip,deMagPlate,deThread,deSuppr,deSupprEndB,deSupprEndF];
 // ── Rigged GLB Deagle: attached at runtime when the asset arrives. Replaces
 // the procedural box-art Deagle visually (procedural pieces are hidden); the
 // GLB rig stays in gunGrp so it follows ADS, sway, recoil, swap motion.
@@ -6720,9 +6686,11 @@ function _drawArmBandCanvas(){
   g.fillText('SYS:OK · WEAPON: '+W.name,12,108);
   _armTex.needsUpdate=true;
 }
-// ── RELOAD HOLO COLUMN — anchored to the arm-band emitter pad ─────────────
-// Smaller, dimmer, and parented to armBandGrp so it visually emerges from the
-// device on the left forearm. A thin pulsing beam connects emitter → holo.
+// ── RELOAD HOLO COLUMN — wrist-anchored but stabilized + eye-facing ─────────
+// Spawn point matches the old armband emitter offset. World position is
+// smoothed so reload arm motion doesn't buffet the readout; each frame we
+// billboard toward the camera (+ small cockpit tilt) instead of lying flat
+// on the forearm.
 const _reloadCanvas=document.createElement('canvas');_reloadCanvas.width=256;_reloadCanvas.height=384;
 const _reloadTex=new THREE.CanvasTexture(_reloadCanvas);_reloadTex.minFilter=THREE.LinearFilter;_reloadTex.magFilter=THREE.LinearFilter;
 // Use NORMAL alpha blending instead of additive — additive on a bright bg makes
@@ -6732,12 +6700,18 @@ const reloadHolo=new THREE.Mesh(new THREE.PlaneGeometry(.065,.098),reloadHoloM);
 const reloadGlowM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x40c8ff,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
 const reloadGlow=new THREE.Mesh(new THREE.PlaneGeometry(.135,.20),reloadGlowM);reloadGlow.position.z=-.001;reloadGlow.renderOrder=994;
 const reloadHoloGrp=new THREE.Group();reloadHoloGrp.add(reloadGlow,reloadHolo);
-// Anchor: just above the emitter pad on the band, panel base ~.06 above pad
-reloadHoloGrp.position.set(_bandX,_bandY+.110,_bandZ);
-reloadHoloGrp.rotation.set(-Math.PI/2+.18,0,0); // face up + slight forward tilt (toward camera)
+// Same mount as the original holo: above the emitter pad (armBandGrp local)
+const _reloadHoloAnchorLocal=new THREE.Vector3(_bandX,_bandY+.110,_bandZ);
+const _reloadHoloTgtW=new THREE.Vector3();
+const _reloadHoloSmW=new THREE.Vector3();
 reloadHoloGrp.scale.setScalar(.001);
-armBandGrp.add(reloadHoloGrp);
-// Connector beam from emitter pad to the holo column base
+scene.add(reloadHoloGrp);
+_reloadHoloTgtW.copy(_reloadHoloAnchorLocal);armBandGrp.updateMatrixWorld(true);armBandGrp.localToWorld(_reloadHoloTgtW);
+_reloadHoloSmW.copy(_reloadHoloTgtW);
+reloadHoloGrp.position.copy(_reloadHoloSmW);
+reloadHoloGrp.up.copy(camera.up);reloadHoloGrp.lookAt(camera.position);
+reloadHoloGrp.rotateX(0.10);reloadHoloGrp.rotateY(-0.06);reloadHoloGrp.rotateZ(0.012);
+// Emitter pad → hologram light column (pad still on arm; readout floats in view)
 const reloadBeamM=new THREE.MeshBasicMaterial({color:0x80e0ff,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
 const reloadBeam=new THREE.Mesh(new THREE.PlaneGeometry(.014,.058),reloadBeamM);
 // Beam is a vertical strip in armband-local space rising from the emitter pad
@@ -6751,7 +6725,7 @@ reloadBeam2.position.set(_bandX,_bandY+.0495,_bandZ);
 reloadBeam2.rotation.set(-Math.PI/2+.18,0,0);
 armBandGrp.add(reloadBeam2);
 let reloadHoloDeployed=0,reloadHoloTarget=0;
-let _reloadStartAmmo=0;
+let _reloadStartAmmo=0,_reloadHoloNeedsSnap=false;
 function _drawReloadHolo(curr,mag,progress){
   const c=_reloadCanvas,g=c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
@@ -6968,7 +6942,7 @@ function updateKnives(dt){
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
 const WEAPONS=[
   {name:'M4A1',  slot:'[1/7]',mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[2/7]',mag:12,res:48,fireRate:.30,dmg:55,hsDmg:200,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.25,ejectX:.030,ejectY:.044,ejectZ:.00,auto:false,suppressed:true},
+  {name:'USP-T',slot:'[2/7]',mag:12,res:48,fireRate:.30,dmg:55,hsDmg:200,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
   {name:'THROWING KNIFE',slot:'[3/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false},
   {name:'TAC-12 SHOTGUN',slot:'[4/7]',mag:6,res:24,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:8},
   {name:'MP9 SUPPRESSED',slot:'[5/7]',mag:32,res:96,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true},
@@ -8673,7 +8647,7 @@ function shoot(){
   // Multi-pellet (shotgun) or single shot
   const numShots=W.pellets||1;
   const muzzleZ=W.muzzleZ||(P.weaponIdx===0?-.49:-.19);
-  const muzzleLocal=new THREE.Vector3(0,P.weaponIdx===0?.030:P.weaponIdx===3?.034:P.weaponIdx===4?.010:.052,muzzleZ);
+  const muzzleLocal=new THREE.Vector3(0,P.weaponIdx===0?.030:P.weaponIdx===1?.026:P.weaponIdx===3?.034:P.weaponIdx===4?.010:.052,muzzleZ);
   const muzzleWorld=muzzleLocal.clone();gunGrp.localToWorld(muzzleWorld);
   let firstHitPt=null;
   P.shotsFired++;
@@ -9018,6 +8992,7 @@ function startReload(){
   _reloadStartAmmo=P.ammo;
   _reloadMagDropped=false;
   reloadHoloTarget=1;
+  _reloadHoloNeedsSnap=true;
   sfxReload();$e('reload-bar').style.display='flex';$e('reload-fill').style.width='0%';
   // Trigger AI counter-attack window
   if(typeof _triggerAiCounterAttack==='function')_triggerAiCounterAttack();
@@ -9075,7 +9050,7 @@ function switchWeapon(idx){
   }
   // Move muzzle flash to current weapon's muzzle (gunGrp-local space)
   if(idx===0)      _setMuzzlePos(0,.030,-.49);   // M4 A2 flash hider
-  else if(idx===1) _setMuzzlePos(0,.052,-.19);   // Deagle barrel face
+  else if(idx===1) _setMuzzlePos(0,.026,-.15);   // USP-T compact can muzzle
   else if(idx===3) _setMuzzlePos(0,.034,-.52);   // Shotgun barrel
   else if(idx===4) _setMuzzlePos(0,.010,-.40);   // SMG suppressor tip (dimmer)
   else if(idx===5) _setMuzzlePos(0,.030,-.51);   // DMR muzzle
@@ -16037,13 +16012,12 @@ function updateHands(dt){
       // the weapon still feels alive on shot.
     } else {
       const off=slideOff*.014;
-      deSlide.position.z   = -.010 + off;
-      deSer1.position.z    =  .060 + off;
-      deSer2.position.z    =  .070 + off;
-      deSer3.position.z    =  .080 + off;
-      deRsight.position.z  =  .060 + off;
+      deSlide.position.z   = -.008 + off;
+      deSer1.position.z    =  .054 + off;
+      deSer2.position.z    =  .061 + off;
+      deRsight.position.z  =  .058 + off;
       // Hammer: falls forward at start of cycle, re-cocks on return
-      deHammer.position.z  =  .088 - slideOff*.012;
+      deHammer.position.z  =  .082 - slideOff*.012;
       deHammer.rotation.x  = -slideOff*.55;
     }
   }
@@ -16890,17 +16864,30 @@ renderer.setAnimationLoop(()=>{
       shopGrp.rotation.z=.04+Math.sin(now*1.2)*.013*shopDeployed;
       shopPanelM.opacity=Math.min(1,shopDeployed*.97);
       shopGlowM.opacity=(.30+.10*Math.sin(now*4.0))*shopDeployed;
-      // ── Reload holo deploy (anchored to arm-band emitter pad)
+      // ── Reload holo: wrist anchor + billboard; snap + fast follow on emergence
       reloadHoloDeployed+=(reloadHoloTarget-reloadHoloDeployed)*Math.min(dt*12,1);
       let _scl3=Math.max(.001,reloadHoloDeployed);
       if(reloadHoloTarget===1&&reloadHoloDeployed<.95)_scl3*=(1+(.96-reloadHoloDeployed)*.22);
       reloadHoloGrp.scale.setScalar(_scl3);
-      reloadHoloGrp.position.y=_bandY+.110+Math.sin(now*2.2)*.0028*reloadHoloDeployed;
-      // Lower opacities — readable, no bloom-out
-      reloadHoloM.opacity=Math.min(.92,reloadHoloDeployed*.85);
-      reloadGlowM.opacity=(.18+.06*Math.sin(now*5.5))*reloadHoloDeployed;
+      // World matrices lag one phase unless we flatten here — stale localToWorld
+      // pinned the hologram incorrectly while the wrist moved (fixed by end pose).
+      camera.updateMatrixWorld(true);
+      _reloadHoloTgtW.copy(_reloadHoloAnchorLocal);armBandGrp.localToWorld(_reloadHoloTgtW);
+      if(_reloadHoloNeedsSnap){_reloadHoloSmW.copy(_reloadHoloTgtW);_reloadHoloNeedsSnap=false;}
+      const _rDpl=reloadHoloDeployed;
+      let _rSpd=_rDpl<0.14?72:_rDpl<0.5?42:21+13*_rDpl;
+      if(reloadHoloTarget<1&&_rDpl<0.035)_rSpd=Math.max(_rSpd,52);
+      _reloadHoloSmW.lerp(_reloadHoloTgtW,1-Math.exp(-_rSpd*dt));
+      reloadHoloGrp.position.copy(_reloadHoloSmW);
+      reloadHoloGrp.up.copy(camera.up);reloadHoloGrp.lookAt(camera.position);
+      reloadHoloGrp.rotateX(0.10);reloadHoloGrp.rotateY(-0.06);reloadHoloGrp.rotateZ(0.012);
+      const _reloadFade=THREE.MathUtils.clamp(reloadHoloDeployed/.19,0,1);
+      const _reloadVis=_reloadFade*_reloadFade*(3-2*_reloadFade);
+      // Lower opacities — fade in quicker than deploy scale so UI reads early
+      reloadHoloM.opacity=Math.min(.92,_reloadVis*.92);
+      reloadGlowM.opacity=(.18+.06*Math.sin(now*5.5))*_reloadVis;
       // Connector beams pulse with deploy + reload progress
-      const _beamT=reloadHoloDeployed;
+      const _beamT=_reloadVis;
       reloadBeamM.opacity=(.55+.20*Math.sin(now*8))*_beamT;
       reloadBeam.scale.y=Math.max(.001,_beamT);
       reloadBeam2M.opacity=(.85+.10*Math.sin(now*14))*_beamT;
