@@ -6096,6 +6096,10 @@ function buildScopeMesh(att){
   glass.rotation.x=GLASS_TILT;
   glass.layers.set(1);glass.renderOrder=1080;
   m4ScopeGrp.add(glass);
+  const bezelM=new THREE.MeshBasicMaterial({color:0x05070a,transparent:true,opacity:.92,depthWrite:false,depthTest:false});
+  const bezel=new THREE.Mesh(new THREE.RingGeometry(Math.max(.002,glassW*.47),glassW*.56,32),bezelM);
+  bezel.position.set(0,.078,-.0579);bezel.rotation.x=GLASS_TILT;bezel.rotation.y=Math.PI;bezel.layers.set(1);bezel.renderOrder=1102;
+  m4ScopeGrp.add(bezel);
   // PIP "look-through" plane — magnified scene rendered onto the glass
   const scopeViewM=new THREE.MeshBasicMaterial({map:rtScope.texture,transparent:true,opacity:0,depthWrite:false,depthTest:false});
   scopeViewM_active=scopeViewM;
@@ -6106,18 +6110,31 @@ function buildScopeMesh(att){
   m4ScopeGrp.add(scopeView);
   // Reticle dot — additive plane sitting just behind the glass (toward player)
   m4ReticleM=new THREE.MeshBasicMaterial({color:att.dotColor,transparent:true,opacity:.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
-  const dotSize=.0085+(att.tier-1)*.0010;
+  const dotSize=(.0085+(att.tier-1)*.0010)*(att.dotRadiusMul||1);
   gReticle=new THREE.Mesh(new THREE.PlaneGeometry(dotSize,dotSize),m4ReticleM);
   gReticle.position.set(0,.078,-.0568);
   gReticle.rotation.x=GLASS_TILT;gReticle.rotation.y=Math.PI;
   gReticle.layers.set(1);gReticle.renderOrder=1112;
   m4ScopeGrp.add(gReticle);
   m4ReticleHaloM=new THREE.MeshBasicMaterial({color:att.haloColor,transparent:true,opacity:.50,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
-  gReticleHalo=new THREE.Mesh(new THREE.RingGeometry(.004,.010+(att.tier-1)*.0010,16),m4ReticleHaloM);
+  const haloOuter=(.010+(att.tier-1)*.0010)*(att.haloRadiusMul||1);
+  gReticleHalo=new THREE.Mesh(new THREE.RingGeometry(.004,haloOuter,16),m4ReticleHaloM);
   gReticleHalo.position.set(0,.078,-.0570);
   gReticleHalo.rotation.x=GLASS_TILT;gReticleHalo.rotation.y=Math.PI;
   gReticleHalo.layers.set(1);gReticleHalo.renderOrder=1111;
   m4ScopeGrp.add(gReticleHalo);
+  if(att.reticleShape==='ring'){
+    gReticle.visible=false;
+  }else if(att.reticleShape==='dotRing'){
+    gReticle.visible=true;gReticleHalo.visible=true;
+  }else if(att.reticleShape==='chevron'){
+    gReticle.visible=false;
+    const chevPts=[new THREE.Vector2(-dotSize*.7,dotSize*.3),new THREE.Vector2(0,-dotSize*.5),new THREE.Vector2(dotSize*.7,dotSize*.3),new THREE.Vector2(dotSize*.35,dotSize*.3),new THREE.Vector2(0,-dotSize*.15),new THREE.Vector2(-dotSize*.35,dotSize*.3)];
+    const chevGeom=new THREE.ShapeGeometry(new THREE.Shape(chevPts));
+    gReticle=new THREE.Mesh(chevGeom,m4ReticleM);
+    gReticle.position.set(0,.078,-.0568);gReticle.rotation.x=GLASS_TILT;gReticle.rotation.y=Math.PI;gReticle.layers.set(1);gReticle.renderOrder=1112;
+    m4ScopeGrp.add(gReticle);
+  }
   // Tech accents (always present for reflex feel)
   // Side battery cap on the right
   _add(.010,.010,.014, bodyM, tierW/2+.005,.080,-.052);
@@ -6155,6 +6172,8 @@ function buildScopeMesh(att){
 }
 function refreshAttachmentVisuals(){
   const att=P.attachments&&P.attachments.scope;
+  // Policy: scope stat multipliers apply to all weapons, but the rendered
+  // optic model + PIP lens are intentionally M4-only for readability.
   buildScopeMesh(P.weaponIdx===0?att:null);
 }
 // Ejection port cover (small rectangle on right side of upper)
@@ -7011,10 +7030,10 @@ function _padWeaponState(){
 //   spreadMul/adsSpreadMul < 1 = tighter; adsSpeedMul > 1 = faster ADS lerp
 const ATTACHMENT_DEFS={
   scope:[
-    {tier:1,type:'scope',name:'IRON RDS', desc:'Open-top red dot',  spreadMul:.92,adsSpreadMul:.85,adsSpeedMul:1.05,dotColor:0xff2820,haloColor:0xff5050,bodyColor:0x252530,lensColor:0x102020,glowEm:0x081208},
-    {tier:2,type:'scope',name:'COMP RDS', desc:'Compact red dot',   spreadMul:.85,adsSpreadMul:.74,adsSpeedMul:1.18,dotColor:0xff3838,haloColor:0xff6868,bodyColor:0x1a1a1f,lensColor:0x142020,glowEm:0x0a1410},
-    {tier:3,type:'scope',name:'HOLO RDS', desc:'Wide holographic',  spreadMul:.78,adsSpreadMul:.62,adsSpeedMul:1.28,dotColor:0x40ff80,haloColor:0x80ffa0,bodyColor:0x12141a,lensColor:0x103020,glowEm:0x10381c},
-    {tier:4,type:'scope',name:'PRISM RDS',desc:'Prism reticle',     spreadMul:.65,adsSpreadMul:.48,adsSpeedMul:1.42,dotColor:0x40c8ff,haloColor:0x80e0ff,bodyColor:0x0e0e16,lensColor:0x102030,glowEm:0x183848}
+    {tier:1,type:'scope',name:'IRON RDS', desc:'Open-top red dot',  spreadMul:.92,adsSpreadMul:.85,adsSpeedMul:1.05,pipFov:14,adsScaleMul:.70,dotRadiusMul:1.00,haloRadiusMul:1.00,pipOpacityMax:.90,reticleShape:'dot',dotColor:0xff2820,haloColor:0xff5050,bodyColor:0x252530,lensColor:0x102020,glowEm:0x081208,vignetteColor:'rgba(255,64,64,.08)'},
+    {tier:2,type:'scope',name:'COMP RDS', desc:'Compact red dot',   spreadMul:.85,adsSpreadMul:.74,adsSpeedMul:1.18,pipFov:12,adsScaleMul:.80,dotRadiusMul:1.08,haloRadiusMul:1.10,pipOpacityMax:.93,reticleShape:'ring',dotColor:0xff3838,haloColor:0xff6868,bodyColor:0x1a1a1f,lensColor:0x142020,glowEm:0x0a1410,vignetteColor:'rgba(255,82,82,.09)'},
+    {tier:3,type:'scope',name:'HOLO RDS', desc:'Wide holographic',  spreadMul:.78,adsSpreadMul:.62,adsSpeedMul:1.28,pipFov:10,adsScaleMul:.90,dotRadiusMul:1.20,haloRadiusMul:1.22,pipOpacityMax:.95,reticleShape:'dotRing',dotColor:0x40ff80,haloColor:0x80ffa0,bodyColor:0x12141a,lensColor:0x103020,glowEm:0x10381c,vignetteColor:'rgba(80,255,160,.10)'},
+    {tier:4,type:'scope',name:'PRISM RDS',desc:'Prism reticle',     spreadMul:.65,adsSpreadMul:.48,adsSpeedMul:1.42,pipFov:8,adsScaleMul:1.00,dotRadiusMul:1.35,haloRadiusMul:1.30,pipOpacityMax:.97,reticleShape:'chevron',dotColor:0x40c8ff,haloColor:0x80e0ff,bodyColor:0x0e0e16,lensColor:0x102030,glowEm:0x183848,vignetteColor:'rgba(96,200,255,.14)'}
   ],
   mag:[
     {tier:1,type:'mag',name:'STD MAG',     desc:'Standard capacity',           magMul:1.00,reloadMul:1.00,dmgMul:1.00},
@@ -7038,7 +7057,12 @@ const ATTACHMENT_DEFS={
 const ATTACH_TIER_COL=['#9aa0aa','#5fcb52','#3aa6ff','#c46bff']; // tier 1..4 swatches
 function attachmentScore(a){
   if(!a)return 0;
-  return Math.round(((1-a.spreadMul)+(1-a.adsSpreadMul)+(a.adsSpeedMul-1))*100);
+  const m=(k,d=1)=>Number.isFinite(a[k])?a[k]:d;
+  if(a.type==='scope')return Math.round(((1-m('spreadMul'))+(1-m('adsSpreadMul'))+(m('adsSpeedMul')-1))*100);
+  if(a.type==='mag')return Math.round(((m('magMul')-1)*55)+((1-m('reloadMul'))*65)+((m('dmgMul')-1)*95));
+  if(a.type==='muzzle')return Math.round(((1-m('recoilMul'))*80)+((1-m('spreadMul'))*70)+(a.suppressed?12:0));
+  if(a.type==='foregrip')return Math.round(((1-m('recoilMul'))*85)+((1-m('spreadMul'))*70)+((m('adsSpeedMul')-1)*55));
+  return Math.round(((1-m('spreadMul'))+(1-m('adsSpreadMul'))+(m('adsSpeedMul')-1))*100);
 }
 function randomAttachment(type,minTier,maxTier){
   const list=ATTACHMENT_DEFS[type];if(!list||!list.length)return null;
@@ -7784,7 +7808,7 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const SETTINGS=(()=>{let s={sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,gore:'med',aimAssist:false,pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,aiSkipFramesModulo:3,raycastSpatialIndex:true,maxParticlesBlood:120,maxParticlesSmoke:80,cheapMaterials:false,reducedBloomish:false};try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}return s;})();
+const SETTINGS=(()=>{let s={sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,aiSkipFramesModulo:3,raycastSpatialIndex:true,maxParticlesBlood:120,maxParticlesSmoke:80,cheapMaterials:false,reducedBloomish:false};try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}return s;})();
 function _goreMul(){return ({low:.30,med:1.0,high:1.5}[SETTINGS.gore])||1.0;}
 function saveSettings(){try{localStorage.setItem('clearance_settings',JSON.stringify(SETTINGS));}catch(_){}}
 function applyQuality(){
@@ -7800,7 +7824,7 @@ function applyQuality(){
   G._useComposer=q!=='low'||stren>0;
   // Scope PIP resolution
   if(typeof rtScope!=='undefined'){
-    const sr={low:512,medium:768,high:1024,ultra:1536}[q];
+    const sr=SETTINGS.scopePipResolution||{low:512,medium:768,high:1024,ultra:1536}[q];
     rtScope.setSize(sr,sr);
   }
 }
@@ -15927,6 +15951,10 @@ function _toggleSetting(id,key){
 _toggleSetting('set-invy','invY');
 _toggleSetting('set-radar','radar');
 _toggleSetting('set-dmgnum','dmgNum');
+_toggleSetting('set-scopepip','scopePipEnabled');
+function _refreshPipResButtons(){document.querySelectorAll('.pipres-btn').forEach(b=>b.classList.toggle('active',String(SETTINGS.scopePipResolution||0)===b.dataset.pipres));}
+document.querySelectorAll('.pipres-btn').forEach(b=>b.addEventListener('click',()=>{SETTINGS.scopePipResolution=parseInt(b.dataset.pipres,10)||0;saveSettings();applyQuality();_refreshPipResButtons();}));
+_refreshPipResButtons();
 // Quality buttons
 function _refreshQualityButtons(){
   document.querySelectorAll('.quality-btn').forEach(b=>{b.classList.toggle('active',b.dataset.q===SETTINGS.quality);});
@@ -16198,8 +16226,8 @@ function updateHands(dt){
   // (0,.078,-.05) regardless of scale, so the reticle stays on the camera
   // optical axis and bullets land on the dot.
   if(m4ScopeGrp&&m4ScopeGrp.visible){
-    const _t=(P.attachments&&P.attachments.scope)?P.attachments.scope.tier:1;
-    const _s=1+P.ads*(0.70+(_t-1)*0.10);
+    const _att=(P.attachments&&P.attachments.scope)?P.attachments.scope:null;
+    const _s=1+P.ads*((_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70);
     m4ScopeGrp.scale.setScalar(_s);
     m4ScopeGrp.position.set(0,.078*(1-_s),-.05*(1-_s));
   }
@@ -17095,24 +17123,26 @@ renderer.setAnimationLoop(()=>{
       // ── PIP scope render — only when scope equipped + ADS engaged
       const _hasScope=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
       if(_hasScope&&P.ads>.05){
+        const _scopeAtt=P.attachments.scope;
+        const _pipMax=Number.isFinite(_scopeAtt.pipOpacityMax)?_scopeAtt.pipOpacityMax:.97;
+        const _pipAlpha=Math.min(_pipMax,Math.max(0,(P.ads-.06)/.76));
+        const _vig=$e('scope-vignette');
+        if(_vig)_vig.style.setProperty('--scope-tint',_scopeAtt.vignetteColor||'rgba(80,180,255,.12)');
         scopeCamera.position.copy(camera.position);
         scopeCamera.quaternion.copy(camera.quaternion);
-        // Higher-tier scopes magnify more. Tight FOVs are intentional — the
-        // lens (after the ADS scale-up) covers a larger angular slice of the
-        // viewport than the scope FOV, producing genuine zoom-IN through the
-        // optic. Tier 1 ~1.4×, Tier 4 ~2.6× apparent magnification.
-        const _tier=P.attachments.scope.tier;
-        scopeCamera.fov=14-_tier*2;
+        scopeCamera.fov=Number.isFinite(_scopeAtt.pipFov)?_scopeAtt.pipFov:14;
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
-        renderer.setRenderTarget(rtScope);
-        renderer.clear();
-        renderer.render(scene,scopeCamera);
-        renderer.setRenderTarget(null);
-        if(scopeViewM_active)scopeViewM_active.opacity=Math.min(.97,P.ads*1.05);
-        $e('scope-vignette').style.opacity=String(Math.max(0,P.ads*P.ads-.18)*1.6);
+        if(SETTINGS.scopePipEnabled){
+          renderer.setRenderTarget(rtScope);
+          renderer.clear();
+          renderer.render(scene,scopeCamera);
+          renderer.setRenderTarget(null);
+        }
+        if(scopeViewM_active)scopeViewM_active.opacity=SETTINGS.scopePipEnabled?_pipAlpha:0;
+        if(_vig)_vig.style.opacity=String(Math.max(0,P.ads*P.ads-.18)*1.6);
       } else {
         if(scopeViewM_active)scopeViewM_active.opacity=0;
-        $e('scope-vignette').style.opacity='0';
+        const _vig=$e('scope-vignette');if(_vig)_vig.style.opacity='0';
       }
       if(_composer&&G._useComposer!==false)_composer.render();
       else renderer.render(scene,camera);
