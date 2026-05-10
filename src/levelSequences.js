@@ -47,6 +47,8 @@ export function applySequenceLayout(ctx) {
     }
   }
 
+  addSequenceIdentityLayer(ctx, def);
+
   // Per-building extra accent lights tuned to the theme.
   if (def.lights) for (const L of def.lights) {
     const pl = new THREE.PointLight(L.col || def.accent, L.int || 1.4, L.r || 11, 1.6);
@@ -68,6 +70,17 @@ const CELL_REGIONS = {
   BW: { x0:-18, x1:-8.0,  z0:-25.5, z1:-10.0, midX:-13,   midZ:-17.5 },
   BE: { x0:  8.0, x1:18,  z0:-25.5, z1:-10.0, midX: 13,   midZ:-17.5 },
   BC: { x0:-8.0, x1: 8.0, z0:-25.5, z1: -7.5, midX:  0,   midZ:-17 },
+};
+
+const SEQUENCE_IDENTITY = {
+  1: { routeX:-11.5, heroX:-12, heroZ:19, bossCol:0xff9d40, railZ:7.2 },
+  2: { routeX: 11.5, heroX:  0, heroZ:19, bossCol:0xd4b06a, railZ:5.6 },
+  3: { routeX:-10.8, heroX:  0, heroZ:18, bossCol:0xff40c8, railZ:-1.0 },
+  4: { routeX: 10.8, heroX: 13, heroZ: 2, bossCol:0xffd060, railZ:-4.8 },
+  5: { routeX:-12.0, heroX: -4, heroZ: 0, bossCol:0x40ff80, railZ:-5.4 },
+  6: { routeX: 12.0, heroX:  0, heroZ:17, bossCol:0xff5040, railZ:0.0 },
+  7: { routeX:-11.2, heroX: 13, heroZ:18, bossCol:0xa0c8ff, railZ:-2.5 },
+  8: { routeX: 11.2, heroX:  0, heroZ:-16, bossCol:0x40e0ff, railZ:-8.0 },
 };
 
 // ── PARTITION SKELETON ─────────────────────────────────────────────────────
@@ -190,6 +203,46 @@ function addSequencePlacard(ctx) {
   stripe.position.set(region.midX, WT + 0.046, region.midZ);
   stripe.userData.noBlock = true;
   scene.add(stripe); ob.push(stripe);
+}
+
+function addSequenceIdentityLayer(ctx, def) {
+  const { THREE, scene, ob, dims, bn } = ctx;
+  const { WT, RH } = dims;
+  const id = SEQUENCE_IDENTITY[bn] || SEQUENCE_IDENTITY[1];
+  const accent = id.bossCol || def.accent || 0xffd060;
+  const floorM = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.26, depthWrite: false });
+  const route = new THREE.Mesh(new THREE.PlaneGeometry(0.56, 34), floorM);
+  route.rotation.x = -Math.PI / 2;
+  route.position.set(id.routeX, WT + 0.018, 1.5);
+  route.userData.noBlock = true;
+  scene.add(route); ob.push(route);
+
+  const sightM = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.34 });
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.045, 24), sightM);
+  sight.position.set(-id.routeX * 0.52, WT + 0.05, -3.5);
+  sight.rotation.y = 0.13 * Math.sign(id.routeX || 1);
+  sight.userData.noBlock = true;
+  scene.add(sight); ob.push(sight);
+
+  const railM = new THREE.MeshLambertMaterial({ color: 0x11151c, emissive: accent, emissiveIntensity: 0.25 });
+  for (const x of [-4.8, 4.8]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(8.0, 0.08, 0.16), railM);
+    rail.position.set(x, WT + RH - 0.70, id.railZ);
+    rail.userData.noBlock = true;
+    scene.add(rail); ob.push(rail);
+  }
+
+  const beaconM = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.48 });
+  const beacon = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.06, 0.22), beaconM);
+  beacon.position.set(0, WT + 0.07, -8.15);
+  beacon.userData.noBlock = true;
+  scene.add(beacon); ob.push(beacon);
+
+  const heroM = new THREE.MeshLambertMaterial({ color: 0x0f1218, emissive: accent, emissiveIntensity: 0.55 });
+  const hero = new THREE.Mesh(new THREE.BoxGeometry(0.58, 2.2, 0.58), heroM);
+  hero.position.set(id.heroX, WT + 1.1, id.heroZ);
+  hero.userData.noBlock = true;
+  scene.add(hero); ob.push(hero);
 }
 
 // ── ELEMENT BUILDERS ───────────────────────────────────────────────────────
@@ -1775,30 +1828,69 @@ const SEQUENCE_DEFS = {
 };
 
 
+const ENCOUNTER_BEATS = {
+  read: { label: 'READ', intent: 'Let the player parse route, cover, and first threat.' },
+  brawl: { label: 'BRAWL', intent: 'Fast crossfire with flank pressure.' },
+  hold: { label: 'HOLD', intent: 'Territory pressure and delayed reinforcements.' },
+  snipe: { label: 'SNIPE', intent: 'Long lane control and precision tells.' },
+  stealth_or_loud: { label: 'QUIET/LOUD', intent: 'Suppressed entry can stay calm, loud entry escalates.' },
+  boss: { label: 'BOSS', intent: 'Back-zone lieutenant or final target threshold.' },
+};
+
 const DEFAULT_ZONE_ROLES = [
-  { tag: 'read', verb: 'push', reinforce: 'scout' },
-  { tag: 'brawl', verb: 'flank', reinforce: 'riot' },
-  { tag: 'boss', verb: 'clear', reinforce: 'heavy' },
+  { tag: 'read', verb: 'push', reinforce: 'scout', telegraph: 'door-light' },
+  { tag: 'brawl', verb: 'flank', reinforce: 'riot', telegraph: 'rumble' },
+  { tag: 'boss', verb: 'clear', reinforce: 'heavy', telegraph: 'target-banner' },
 ];
 
 const BUILDING_ZONE_ROLES = {
   1: [
-    { tag: 'read', verb: 'push', reinforce: 'scout' },
-    { tag: 'brawl', verb: 'flank', reinforce: 'demolitions' },
-    { tag: 'boss', verb: 'clear', reinforce: 'heavy' },
+    { tag: 'read', verb: 'breach', reinforce: 'scout', telegraph: 'forklift strobes' },
+    { tag: 'brawl', verb: 'silence', reinforce: 'demolitions', telegraph: 'alarm relay' },
+    { tag: 'boss', verb: 'finish', reinforce: 'heavy', telegraph: 'loading cage' },
   ],
   2: [
-    { tag: 'read', verb: 'hold', reinforce: 'marksman' },
-    { tag: 'hold', verb: 'hold', reinforce: 'riot' },
-    { tag: 'boss', verb: 'defend', reinforce: 'heavy' },
+    { tag: 'read', verb: 'restrain', reinforce: 'pistolero', telegraph: 'hostage line' },
+    { tag: 'hold', verb: 'protect', reinforce: 'riot', telegraph: 'lobby breach' },
+    { tag: 'boss', verb: 'extract', reinforce: 'heavy', telegraph: 'concierge gate' },
   ],
   3: [
-    { tag: 'read', verb: 'push', reinforce: 'scout' },
-    { tag: 'brawl', verb: 'flank', reinforce: 'demolitions' },
-    { tag: 'boss', verb: 'clear', reinforce: 'riot' },
+    { tag: 'read', verb: 'enter', reinforce: 'scout', telegraph: 'dance-floor pulse' },
+    { tag: 'brawl', verb: 'collapse', reinforce: 'demolitions', telegraph: 'VIP doors' },
+    { tag: 'boss', verb: 'corner', reinforce: 'riot', telegraph: 'mirror lounge' },
+  ],
+  4: [
+    { tag: 'snipe', verb: 'ascend', reinforce: 'marksman', telegraph: 'glass glint' },
+    { tag: 'brawl', verb: 'cross', reinforce: 'heavy', telegraph: 'skyline rail' },
+    { tag: 'boss', verb: 'execute', reinforce: 'marksman', telegraph: 'suite arch' },
+  ],
+  5: [
+    { tag: 'stealth_or_loud', verb: 'triage', reinforce: 'drone', telegraph: 'blackout flicker' },
+    { tag: 'hold', verb: 'restore', reinforce: 'riot', telegraph: 'ICU doors' },
+    { tag: 'boss', verb: 'expose', reinforce: 'marksman', telegraph: 'surgical pit' },
+  ],
+  6: [
+    { tag: 'read', verb: 'enter', reinforce: 'scout', telegraph: 'platform signs' },
+    { tag: 'hold', verb: 'survive', reinforce: 'demolitions', telegraph: 'train rumble' },
+    { tag: 'boss', verb: 'route', reinforce: 'riot', telegraph: 'switch chamber' },
+  ],
+  7: [
+    { tag: 'stealth_or_loud', verb: 'board', reinforce: 'marksman', telegraph: 'deck lights' },
+    { tag: 'brawl', verb: 'repel', reinforce: 'demolitions', telegraph: 'crew hatch' },
+    { tag: 'boss', verb: 'claim', reinforce: 'heavy', telegraph: 'bridge suite' },
+  ],
+  8: [
+    { tag: 'snipe', verb: 'pierce', reinforce: 'marksman', telegraph: 'cold aisle beams' },
+    { tag: 'brawl', verb: 'lockdown', reinforce: 'drone', telegraph: 'battery bay' },
+    { tag: 'boss', verb: 'end', reinforce: 'riot', telegraph: 'core protocol' },
   ],
 };
 
 export function getSequenceGameplayProfile(bn){
-  return { zoneRoles: BUILDING_ZONE_ROLES[bn] || DEFAULT_ZONE_ROLES };
+  const zoneRoles = BUILDING_ZONE_ROLES[bn] || DEFAULT_ZONE_ROLES;
+  return {
+    zoneRoles,
+    beats: zoneRoles.map(r => ENCOUNTER_BEATS[r.tag] || ENCOUNTER_BEATS.read),
+    signature: zoneRoles.map(r => r.telegraph).join(' / '),
+  };
 }

@@ -14,7 +14,7 @@ self-check before reporting done.
 The game has more systems than depth right now: 8 weapons, ~17 perks
 across 2 tiers, 4 operators, 16 attachments, 12+ enemy types, focus mode,
 combo chain, take-downs, lieutenants, bosses, daily challenges,
-achievement list, endless mode, skill tree, story-mode hooks. Most of
+achievement list, endless mode, and skill tree. Most of
 these need *less*, not *more*. The plan below trims, sharpens, and pushes
 effort into the moment-to-moment shooting loop where it matters.
 
@@ -27,7 +27,6 @@ The repo:
 - Working dir: `/Users/tobiasmastek/Desktop/firstpgame`
 - Single 17 190-line gameplay file: `src/main.js`
 - Level / sequence data: `src/levelSequences.js`
-- Story-mode data: `src/story/{levels.js, levelFactory.js, sifuDepthPack.js}`
 - Shell HUD markup: `index.html`
 - Build: `npm run build` (Vite). Dev: `npm run dev` (port 5173).
 - Smoke / playtest harness: `scripts/gameplay-test.mjs` (Playwright,

@@ -57,43 +57,15 @@ Same caveat for `attachDeagleGlbModel()`.
 - **Modularize** — split `src/main.js` (currently 16,800 lines) into `building.js`, `enemies.js`, `weapons.js`, etc. Vite hot-reloads modules independently.
 - **Steam shell** — Electron + `steamworks.js` per `THREE_UPGRADE_PLAN.md` §11.
 
-## Story mode level package
+## Campaign Runtime
 
-`src/story/levels.js` now contains a 12-level story-mode production blueprint with authored districts, building identities, pacing tone, objective framing, traversal features, critical-path room chains, optional spaces, and boss arenas.
+The shipped campaign is the 8-building runtime in `src/main.js`, with spatial identity and encounter metadata in `src/levelSequences.js`.
 
-This file is data-first so gameplay systems can consume it incrementally:
-- Route graph generation
-- Encounter scripting
-- Unlock/shortcut persistence
-- Narrative sequencing
-
-### Story level runtime builder
-
-In addition to metadata, `src/story/levelFactory.js` now creates actual runtime 3D level groups for all 12 story levels:
-- Separate critical-path rooms per level
-- Hallway connectors between rooms
-- Per-room props and lighting
-- Built-in pulsing light animation hooks
-- Spawn-point metadata and objective payloads for gameplay systems
-
-Key exports:
-- `createStoryLevelRuntime(THREE, levelOrder)`
-- `tickStoryLevelAnimations(levelGroup, elapsedSeconds)`
-- `getStoryLevelCatalog()`
-
-### Sifu-depth design package
-
-`src/story/sifuDepthPack.js` expands each of the 12 story levels into a systems-ready depth model:
-- Route layers (`public`, `operational`, `control`, `sanctum`, loopbacks)
-- Room cards (narrative + tactical identity + interactions)
-- Encounter scripts with 5-phase pacing (`read`, `engage`, `spike`, `breath`, `choice`)
-- Reactive world-state rules (`alarm`, `power_shift`, `intel_control`)
-- Replay mastery goals, unlocks, and scoring weights
-- Environmental story beats + cinematic moment cues
-
-Validation helpers:
-- `validateStoryDepthPack()`
-- `scripts/story-depth-check.mjs`
+The old standalone 12-level story prototype was removed so deploy, level select, range, endless, and tests all point at the same production campaign path. Keep future level work focused on:
+- `CAMPAIGN_LEVELS` in `src/main.js`
+- `BUILDING_INFO` compatibility data in `src/main.js`
+- `SEQUENCE_DEFS` and `getSequenceGameplayProfile()` in `src/levelSequences.js`
+- Playwright checks in `scripts/smoke-test.mjs` and `scripts/campaign-regression.mjs`
 
 ## Performance controls and capture
 

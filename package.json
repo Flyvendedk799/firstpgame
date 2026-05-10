@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "validate:deploy-story": "node scripts/validate-deploy-story.mjs"
+    "test:campaign": "node scripts/campaign-regression.mjs"
   },
   "dependencies": {
     "three": "0.170.0"

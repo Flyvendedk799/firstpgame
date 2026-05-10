@@ -14,9 +14,6 @@ import { EffectComposer }    from 'three/addons/postprocessing/EffectComposer.js
 import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass }   from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
-import { createStoryLevelRuntime, tickStoryLevelAnimations } from './story/levelFactory.js';
-import { STORY_LEVELS } from './story/levels.js';
-import { getStoryDepthLevel } from './story/sifuDepthPack.js';
 import { applySequenceLayout, getSequenceGameplayProfile } from './levelSequences.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
@@ -5225,6 +5222,8 @@ class EnemyManager{
     if(bn>=8)basePool.push('drone');        // More drones at server farm
     if(bn>=8)basePool.push('marksman');     // More marksman at server farm
     if(bn>=8)basePool.push('riot');         // More riot at server farm
+    const campaign=typeof getCampaignLevel==='function'?getCampaignLevel(bn):null;
+    if(campaign&&Array.isArray(campaign.enemyBias))basePool.push(...campaign.enemyBias);
     // Phase out scout in late buildings — replace with stronger types
     if(bn>=7){
       const idx=basePool.indexOf('scout');
@@ -7011,12 +7010,12 @@ function updateKnives(dt){
 }
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
 const WEAPONS=[
-  {name:'M4A1',  slot:'[1/7]',mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[2/7]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
-  {name:'THROWING KNIFE',slot:'[3/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
-  {name:'TAC-12 SHOTGUN',slot:'[4/7]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
-  {name:'MP9 SUPPRESSED',slot:'[5/7]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
-  {name:'MK14 DMR',  slot:'[6/7]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
+  {name:'M4A1',  slot:'[1/8]',mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
+  {name:'USP-T',slot:'[2/8]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
+  {name:'THROWING KNIFE',slot:'[3/8]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
+  {name:'TAC-12 SHOTGUN',slot:'[4/8]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
+  {name:'MP9 SUPPRESSED',slot:'[5/8]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
+  {name:'MK14 DMR',  slot:'[6/8]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
   {name:'P226 SUPP', slot:'[7/8]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
   {name:'AWM SNIPER',slot:'[8/8]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
 ];
@@ -7083,14 +7082,14 @@ const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,
   sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,
   slideCarryTimer:0,
   // Attachment slots (one per type). null = empty.
-  attachments:{scope:null,mag:null,muzzle:null},
+  attachments:{scope:null,mag:null,muzzle:null,foregrip:null},
   // Pickup interaction state
   nearPickup:null,
   // Economy
   money:0,healPacks:0,grenades:0,
   // Per-weapon ammo state — preserved across swaps so swapping isn't a free reload.
-  weaponAmmo:[30,7,999,6,32,10,12],
-  weaponRes:[90,35,99,24,96,40,48],focus:1.0,focusActive:false,timeScale:1.0,score:0,kills:0,headshots:0,shotsFired:0,shotsHit:0,execs:0,combo:null,maxHp:100,smokes:1,flashes:1};
+  weaponAmmo:[30,12,999,6,32,10,12,5],
+  weaponRes:[90,36,99,18,64,40,36,15],focus:1.0,focusActive:false,timeScale:1.0,score:0,kills:0,headshots:0,shotsFired:0,shotsHit:0,execs:0,combo:null,maxHp:100,smokes:1,flashes:1};
 // Hand animation state
 const H={
   idlePhase:0,
@@ -7108,7 +7107,39 @@ const H={
   reticlePhase:0
 };
 const EYE=1.7,PR=0.35;
-const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],storyTestMode:false,_storyAmbient:null,_storyFogBk:null};
+const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],campaignLevel:null,currentBeat:null,mastery:null,runModifiers:null};
+function _defaultAttachments(){
+  return {scope:null,mag:null,muzzle:null,foregrip:null};
+}
+function _normalizeAttachments(att){
+  return Object.assign(_defaultAttachments(),att||{});
+}
+function _weaponAmmoDefaults(){
+  return WEAPONS.map((w,i)=>i===2?999:w.mag);
+}
+function _weaponReserveDefaults(extraPrimary=0,extraSidearm=0,fillAll=false){
+  return WEAPONS.map((w,i)=>{
+    if(i===2)return 99;
+    if(fillAll)return 999;
+    const extra=i===0?extraPrimary:((i===1||i===6)?extraSidearm:0);
+    return (w.res||0)+extra;
+  });
+}
+function resetWeaponAmmoState(extraPrimary=0,extraSidearm=0,fillAll=false){
+  P.weaponAmmo=_weaponAmmoDefaults();
+  P.weaponRes=_weaponReserveDefaults(extraPrimary,extraSidearm,fillAll);
+  const W=WEAPONS[P.weaponIdx]||WEAPONS[0];
+  P.ammo=P.weaponAmmo[P.weaponIdx]??W.mag;
+  P.ammoRes=P.weaponRes[P.weaponIdx]??W.res;
+  _padWeaponState();
+}
+function normalizePlayerRuntime(){
+  P.attachments=_normalizeAttachments(P.attachments);
+  if(!Array.isArray(P.weaponAmmo)||P.weaponAmmo.length<WEAPONS.length)P.weaponAmmo=_weaponAmmoDefaults().map((v,i)=>P.weaponAmmo?.[i]??v);
+  if(!Array.isArray(P.weaponRes)||P.weaponRes.length<WEAPONS.length)P.weaponRes=_weaponReserveDefaults().map((v,i)=>P.weaponRes?.[i]??v);
+  _padWeaponState();
+  P.smokes=P.smokes||0;P.flashes=P.flashes||0;P.healPacks=P.healPacks||0;P.grenades=P.grenades||0;
+}
 // ── INPUT ─────────────────────────────────────────────────────────────────────
 const K={};const M={dx:0,dy:0,lmbHeld:false,rmbDown:false,mmbDown:false};let locked=false;let gameFocused=false;
 let _quickThrowCD=0;
@@ -7258,12 +7289,18 @@ function tryQuickThrow(){
 }
 let _lastMX=null,_lastMY=null;
 let _plLastExit=0;
+function _requestPointerLockSafe(){
+  try{
+    const p=canvas.requestPointerLock();
+    if(p&&typeof p.catch==='function')p.catch(()=>{});
+  }catch(_){}
+}
 function tryLock(){
   // Browser blocks pointer lock for ~100–200ms after user exits; guard against that
   if(performance.now()-_plLastExit>350){
-    try{canvas.requestPointerLock();}catch(_){}
+    _requestPointerLockSafe();
   } else {
-    setTimeout(()=>{try{canvas.requestPointerLock();}catch(_){}},400);
+    setTimeout(()=>_requestPointerLockSafe(),400);
   }
 }
 document.addEventListener('pointerlockchange',()=>{
@@ -7358,7 +7395,7 @@ document.addEventListener('keydown',e=>{K[e.code]=true;gameFocused=true;if(!G.st
 document.addEventListener('keyup',e=>{delete K[e.code];if(e.code==='KeyC')P.crouching=false;});
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
 const $e=id=>document.getElementById(id);
-function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}if(G.storyTestMode){$e('wave-num').textContent='STORY ROUTE';$e('building-num').textContent='STORY GEO';}else{$e('wave-num').textContent='ROOMS '+(G.zoneClears?G.zoneClears.filter(c=>c).length:0)+' / 3';$e('building-num').textContent='Building '+G.building;}if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
+function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}const level=G.campaignLevel||getCampaignLevel(G.building);const beat=G.currentBeat&&G.currentBeat.meta;const roomCount=G.zoneClears?G.zoneClears.filter(c=>c).length:0;$e('wave-num').textContent=(beat?beat.label+' · ':'')+'ROOMS '+roomCount+' / 3';$e('building-num').textContent='B'+G.building+' · '+(level?level.callsign:'BUILDING');if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
 function showHM(kind='body'){const hm=$e('hitmark');if(!hm)return;hm.style.opacity='1';hm.className='hm hm-'+kind;G.hitMarkTimer=(kind==='head')?.22:.14;}
 function killFeed(hs,opts){
   const el=document.createElement('div');
@@ -7408,8 +7445,10 @@ function sfxMoney(){const c=getAC();[[0,860,.06],[.06,1320,.05]].forEach(([t,f,d
 function sfxBuy(){const c=getAC();[[0,520,.05],[.05,420,.04],[.10,640,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='square';o.frequency.value=f;g.gain.setValueAtTime(.08,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
 function sfxHeal(){const c=getAC();[[0,440,.10],[.04,560,.08],[.10,720,.06]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
 function useHealPack(){
-  if(P.dead||P.healPacks<=0||P.hp>=100)return;
-  P.healPacks--;P.hp=100;sfxHeal();
+  const cap=P.maxHp||100;
+  if(P.dead||P.healPacks<=0||P.hp>=cap)return;
+  P.healPacks--;P.hp=cap;sfxHeal();
+  if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
   // Quick green flash on the dmg-flash element repurposed
   const f=$e('dmg-flash');f.style.background='rgba(80,220,120,.30)';f.style.opacity='.9';
   setTimeout(()=>{f.style.opacity='0';setTimeout(()=>{f.style.background='rgba(255,0,0,.25)';},220);},120);
@@ -7439,7 +7478,7 @@ function buyAttachment(slot,tier){
   if(P.money<cost)return false;
   const list=ATTACHMENT_DEFS[slot];if(!list||!list.length)return false;
   const def=list.find(a=>a.tier===tier);if(!def)return false;
-  P.money-=cost;P.attachments=P.attachments||{scope:null,mag:null,muzzle:null};
+  P.money-=cost;P.attachments=_normalizeAttachments(P.attachments);
   P.attachments[slot]=Object.assign({},def);
   applyPerks();
   sfxBuy();hudUpdate();
@@ -7832,18 +7871,14 @@ function openMenu(){G.menuOpen=true;$e('pause-menu').classList.remove('pause-hid
 function closeMenu(){G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';if(G.started&&!P.dead)tryLock();}
 function quitToMain(){
   closeMenu();
-  G.storyTestMode=false;STORY_MODE.enabled=false;if(STORY_MODE.objectiveEl)STORY_MODE.objectiveEl.style.display='none';
-  unloadStoryLevel();
-  if(G._storyAmbient){scene.remove(G._storyAmbient);G._storyAmbient=null;}
   if(G.levelData){G.levelData.cleanup();G.levelData=null;}
   if(G.enemyMgr){G.enemyMgr.clear();}
   clearPickups();
   G.started=false;P.dead=false;gameFocused=false;
   $e('overlay').querySelector('h1').textContent='CLEARANCE';
-  $e('overlay').querySelector('h2').textContent='Fight through waves. Clear the building. Advance.';
-  $e('start-btn').textContent='Click to Start';
+  $e('overlay').querySelector('h2').textContent='Operator · Mission Brief';
+  $e('start-btn').textContent='▶ DEPLOY';
   $e('overlay').classList.remove('hidden');
-  if(scene.fog&&G._storyFogBk!=null&&typeof G._storyFogBk==='number'){scene.fog.density=G._storyFogBk;G._storyFogBk=null;}
 }
 function announce(txt,sub,dur){$e('wa-text').textContent=txt;$e('wa-sub').textContent=sub||'';$e('wave-announce').style.opacity='1';setTimeout(()=>$e('wave-announce').style.opacity='0',dur||2600);}
 // ── FX / TRAILS ──────────────────────────────────────────────────────────────
@@ -9051,7 +9086,8 @@ function tickFocus(dt){
     if(P.focus<=0){P.focusActive=false;document.body.classList.remove('focus-on');}
     P.timeScale+=(.30-P.timeScale)*Math.min(dt*8,1);
   } else {
-    P.focus=Math.min(1,P.focus+dt*.18); // ~5.5s to refill
+    const regenMul=(P._focusRegen||1.0)*(hasPerk('autoFocus')?1.25:1.0);
+    P.focus=Math.min(1,P.focus+dt*.18*regenMul); // ~5.5s to refill before perks
     P.timeScale+=(1.0-P.timeScale)*Math.min(dt*6,1);
   }
   // Update focus HUD
@@ -9960,8 +9996,8 @@ const PERK_SYNERGIES=[
   {perks:['extraHp','silentSteps'],name:'Ghost Operator',desc:'Tankier + silent — patient hunter'},
   {perks:['fastSprint','dodgeRoll'],name:'Phantom',desc:'Fast sprint + dodge = uncatchable'},
   {perks:['focusCharge','autoFocus'],name:'Iron Mind',desc:'Focus refills constantly via kills + regen'},
-  {perks:['execMaster','comboKeep'],name:'Reaper',desc:'Heal on takedown + ignore combo break'},
-  {perks:['autoAmmo','biggerMag'],name:'Quartermaster',desc:'Always ammo + bigger mag = no scarcity'},
+  {perks:['execMaster','focusCharge'],name:'Reaper',desc:'Executions and kills feed the meter'},
+  {perks:['biggerMag','wallbang'],name:'Quartermaster',desc:'More rounds and better cover pressure'},
   {perks:['doubleJump','phantom'],name:'Wall Dancer',desc:'Air combat + invulnerable dash'},
   {perks:['killer_inst','hsBoost'],name:'Marksman',desc:'See weak point + headshot bonus'}
 ];
@@ -10123,7 +10159,7 @@ function _formatStatsForDisplay(stats){
   const lines=[];
   lines.push(`Operator: ${stats.runMeta.operator.toUpperCase()}`);
   lines.push(`Difficulty: ${stats.runMeta.difficulty.toUpperCase()}`);
-  lines.push(`Buildings: ${stats.runMeta.buildingsCleared}/8`);
+  lines.push(`Buildings: ${stats.runMeta.buildingsCleared}/${campaignLength()}`);
   lines.push(`Time: ${Math.floor(stats.runMeta.timeSec/60)}:${String(Math.floor(stats.runMeta.timeSec%60)).padStart(2,'0')}`);
   lines.push('---');
   lines.push(`Kills: ${stats.combat.kills}`);
@@ -11557,12 +11593,8 @@ const PERK_LORE={
   silentSteps:'Sound discipline. Every footfall is a controlled placement.',
   focusCharge:'Adrenal training. Each kill resets your edge.',
   execMaster:'Close-range elimination work. The kind they teach if they trust you.',
-  comboKeep:'Bullet hits register. Pain doesn\'t. Combat is muscle memory now.',
-  autoAmmo:'Scrounger\'s instinct. Every body has something useful.',
   doubleJump:'Air-control training. Most operators never master this.',
   autoFocus:'Meditative breathing. The edge regenerates faster.',
-  shellLoad:'Manual shell-by-shell loading. Slower per shell, faster recovery.',
-  thrownBack:'A favor with the supply chief. Throwables are returned.',
   phantom:'Ghost step. After a roll, you\'re briefly untouchable.',
   killer_inst:'Years of reading enemy posture. Their weak point glows for you.'
 };
@@ -11570,8 +11602,8 @@ const PERK_LORE={
 const PERK_UNLOCK_LEVELS={
   fastReload:1,biggerMag:2,hsBoost:2,wallbang:3,
   extraHp:1,fastSprint:1,dodgeRoll:2,silentSteps:3,
-  focusCharge:2,execMaster:3,comboKeep:3,autoAmmo:2,
-  doubleJump:4,autoFocus:4,shellLoad:5,thrownBack:5,
+  focusCharge:2,execMaster:3,
+  doubleJump:4,autoFocus:4,
   phantom:6,killer_inst:5
 };
 // ── PER-OPERATOR DETAILED PROFILE
@@ -12035,12 +12067,8 @@ const PERK_EFFECTS={
   silentSteps:{applied:'propagateGunfire skipped'},
   focusCharge:{applied:'comboKill +.15 focus'},
   execMaster:{applied:'updateTakedown +250 + heal'},
-  comboKeep:{applied:'comboBreak ignores damage'},
-  autoAmmo:{applied:'shoot() 100% ammo drop'},
   doubleJump:{applied:'doJump allows mid-air'},
   autoFocus:{applied:'tickFocus regen × 1.35'},
-  shellLoad:{applied:'startReload chamber-by-chamber'},
-  thrownBack:{applied:'knife/grenade refund on kill'},
   phantom:{applied:'updateDodge i-frames + speed'},
   killer_inst:{applied:'tickTargetedEnemyHp highlight'}
 };
@@ -13020,8 +13048,8 @@ function showLevelSelect(){
   const ls=$e('level-select');if(!ls)return;
   const grid=$e('ls-grid');grid.innerHTML='';
   const completedBuildings=PROGRESS._maxBuildingCleared||0;
-  for(let bn=1;bn<=8;bn++){
-    const info=BUILDING_INFO[bn-1];
+  for(let bn=1;bn<=campaignLength();bn++){
+    const info=getCampaignLevel(bn);
     const tile=document.createElement('button');
     tile.className='ls-tile';
     tile.dataset.bn=bn;
@@ -13034,7 +13062,7 @@ function showLevelSelect(){
       <div class="ls-name">${info.name}</div>
       <div class="ls-time">${info.time}</div>
       <div class="ls-target">→ ${info.target||'?'}</div>
-      <div class="ls-status">${locked?'🔒 LOCKED':completed?'✓ CLEARED':'◯ AVAILABLE'}</div>
+      <div class="ls-status">${locked?'LOCKED':completed?'CLEARED':'AVAILABLE'} · ${info.mastery&&PROGRESS.mastery&&PROGRESS.mastery[info.mastery.id]?'MASTERY':''}</div>
     `;
     if(!locked){
       tile.addEventListener('click',()=>{
@@ -13056,90 +13084,9 @@ function hideLevelSelect(){
 function startSingleBuildingRun(bn){
   // One-building practice run — starts at the chosen building
   G.building=bn;P.money=300;P.healPacks=2;P.grenades=2;P.smokes=1;P.flashes=1;
-  P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};G.started=true;gameFocused=true;
+  P.attachments=_defaultAttachments();G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyOperator();
   tryLock();musicInit();showBriefingCard(bn,2000);startBuilding();
-}
-function storyPlaytestApplyColliders(levelGroup){
-  if(!levelGroup)return;
-  if(scene.fog&&G._storyFogBk==null&&typeof scene.fog.density==='number'){G._storyFogBk=scene.fog.density;scene.fog.density*=0.42;}
-  levelGroup.updateMatrixWorld(true);
-  const wl=[],solids=[];
-  const bbTmp=new THREE.Box3();
-  levelGroup.traverse(obj=>{
-    if(!obj.isMesh||!obj.geometry)return;
-    if(!obj.geometry.boundingBox)obj.geometry.computeBoundingBox();
-    bbTmp.copy(obj.geometry.boundingBox);
-    bbTmp.applyMatrix4(obj.matrixWorld);
-    const mn=bbTmp.min,mx=bbTmp.max;
-    const ax=mx.x-mn.x,ay=mx.y-mn.y,az=mx.z-mn.z,xzArea=ax*az;
-    if(ay<1.35&&xzArea>42)return;
-    if(Math.min(ax,az)<0.08)return;
-    wl.push({x0:mn.x,x1:mx.x,z0:mn.z,z1:mx.z});
-    solids.push(obj);
-  });
-  const noExit={x0:9e9,x1:9e9+1,z0:9e9,z1:9e9+1};
-  G.levelData={
-    _storyPlaytest:true,walls:wl,solids,vaultables:[],exitZone:noExit,spawns:[],zoneSpawns:[[],[],[]],
-    spawnDoors:[],alertDoorways:[],ceilingLights:[],dustList:null,zoneDoors:null,
-    unlockExit(){},openZoneDoor(){},tickZoneDoors(){},tickSpawnDoors(){},tickDynProps(){},
-    navGrid:null,
-    cleanup(){
-      if(G._storyAmbient){scene.remove(G._storyAmbient);G._storyAmbient=null;}
-      if(scene.fog&&G._storyFogBk!=null&&typeof G._storyFogBk==='number'){scene.fog.density=G._storyFogBk;G._storyFogBk=null;}
-      unloadStoryLevel();STORY_MODE.levelGroup=null;G.levelData=null;
-    }
-  };
-  if(!G._storyAmbient){
-    const g=new THREE.Group();g.name='story_ambient_fill';
-    g.add(new THREE.AmbientLight(0x8090a0,.52),new THREE.HemisphereLight(0xa8c8f0,0x1a1820,.42));
-    scene.add(g);G._storyAmbient=g;
-  }
-  G.vaultables=[];
-  G.exitUnlocked=false;
-  const rt=levelGroup.userData.storyRuntime;
-  const pt=rt&&rt.spawnPoints&&rt.spawnPoints[0];
-  if(pt){
-    P.pos.set(pt.position.x,pt.position.y||WT+.9,pt.position.z);
-    P.yaw=-Math.PI/2;
-    P.pitch=P.lean=P.leanTarget=P.ads=P.adsTarget=0;
-    P.grounded=true;P.jumpH=P.vy=0;
-    P.hp=Math.max(P.hp,100);P.dead=false;
-  }
-}
-// Walk the story authored block at origin — no procedural clearance building
-function startStoryTestFromMenu(){
-  if(G.started&&!G.storyTestMode){
-    attachToast('Quit your current run to use story test.',2800);return;
-  }
-  RANGE.active=false;ENDLESS.active=false;
-  G.storyTestMode=true;
-  G.building=1;
-  G.wave=1;G.wavesTotal=1;
-  G.difficulty='normal';G.endlessMode=false;
-  P.money=300;P.healPacks=2;P.grenades=2;P.smokes=1;P.flashes=1;
-  P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};
-  G.started=true;gameFocused=true;
-  $e('overlay').classList.add('hidden');hideEndScreen();
-  _resetRunStats();applyUnlocks();applyOperator();
-  tryLock();musicInit();
-  clearPickups();
-  if(G.levelData&&!G.levelData._storyPlaytest){G.levelData.cleanup();G.levelData=null;}
-  unloadStoryLevel();
-  G.enemyMgr=G.enemyMgr||new EnemyManager(scene);G.enemyMgr.clear();
-  G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[];
-  G.zoneClears=[false,false,false];G.advancePending=false;G.exitUnlocked=false;
-  $e('exit-prompt').style.opacity='0';
-  P.weaponIdx=0;if(typeof M4_MESHES!=='undefined'){M4_MESHES.forEach(m=>{m.visible=true;});DE_MESHES.forEach(m=>{m.visible=false;});}
-  refreshAttachmentVisuals();
-  const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;P.hp=100;P.ammo=W0.mag;
-  P.weaponAmmo=[W0.mag,WEAPONS[1].mag,999];
-  P.weaponRes=[W0.res+18,WEAPONS[1].res+8,99];
-  $e('weapon-name').textContent=W0.name;$e('weapon-num').textContent=W0.slot;
-  hudUpdate();
-  STORY_MODE.enabled=true;
-  loadStoryLevel(STORY_MODE.levelOrder||1,true);
-  attachToast('<div style="color:#ffd060;letter-spacing:.24em;font-weight:800">STORY WALKTHROUGH</div><div style="font-size:11px;opacity:.78;margin-top:4px;line-height:1.45">Cyan halls = doors to the next room (+X).<br>F7 or Alt+T — leave story &nbsp;·&nbsp; [ ] — chapters &nbsp;·&nbsp; ESC — pause menu</div>',4800);
 }
 // Track max building cleared
 function recordBuildingClear(bn){
@@ -13193,9 +13140,9 @@ function startEndlessMode(){
   ENDLESS.bestWave=PROGRESS._endlessBest||0;
   // Use building 4 (penthouse) as endless arena
   G.building=4;P.money=300;P.healPacks=2;P.grenades=1;P.smokes=0;P.flashes=0;
-  P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};
+  P.attachments=_defaultAttachments();
   G.started=true;gameFocused=true;
-  $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyPerks();
+  $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();normalizePlayerRuntime();applyPerks();
   G.difficulty='hard';G.endlessMode=true;
   tryLock();musicInit();
   if(G.levelData)G.levelData.cleanup();
@@ -13208,6 +13155,8 @@ function startEndlessMode(){
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
+  P.weaponIdx=0;resetWeaponAmmoState(G.building*18,G.building*8,false);
+  M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);DMR_MESHES.forEach(m=>m.visible=false);SPP_MESHES.forEach(m=>m.visible=false);SNI_MESHES.forEach(m=>m.visible=false);
   hudUpdate();
   // Open all doors so player has full mobility
   if(G.levelData.zoneDoors)G.levelData.zoneDoors.forEach((d,i)=>{
@@ -14204,10 +14153,10 @@ function tickCompass(){
   // x-coord on strip: heading*2 + 360 (offset for negative range)
   const x=(heading+180)*2;
   strip.style.transform=`translateX(${(170-x).toFixed(1)}px)`;
-  // Waypoint distance to next door / exit (story walkthrough uses halls, no zone doors — hide)
+  // Waypoint distance to next door / exit.
   const wp=$e('waypoint-arrow');
   if(wp){
-    if(G.storyTestMode||!G.levelData){wp.style.opacity='0';}else{
+    if(!G.levelData){wp.style.opacity='0';}else{
     let target=null,label='';
     if(G.exitUnlocked){
       const hd=(G.levelData.zoneBounds&&G.levelData.zoneBounds.halfDepth)||22;
@@ -14266,7 +14215,6 @@ function sfxVault(){const c=getAC();[[0,300,.12],[.08,200,.09],[.18,260,.07]].fo
 // start. Per-frame zone-clear detection fires the ROOM CLEAR beat. Building
 // exit unlocks when every zone is clear.
 function checkZoneClears(){
-  if(G.storyTestMode)return;
   if(!G.enemyMgr||!G.zoneClears||G.exitUnlocked)return;
   for(let z=0;z<3;z++){
     if(G.zoneClears[z])continue;
@@ -14280,6 +14228,12 @@ function checkZoneClears(){
     if(G.levelData&&G.levelData.unlockExit)G.levelData.unlockExit();
     $e('exit-prompt').style.opacity='1';
     awardBuildingMoney();
+    if(G.mastery&&!G.mastery.failed&&G.campaignLevel){
+      persistMasteryClear(G.campaignLevel);
+      const bonus=300+G.building*40;
+      P.money+=bonus;moneyPopup(bonus,'MASTERY');
+      attachToast(`<div style="color:#5fcb52;letter-spacing:.28em">✓ ${G.campaignLevel.mastery.label}</div><div style="font-size:11px;margin-top:4px">${G.campaignLevel.mastery.reward}</div>`,3200);
+    }
     sfxWaveClear();
     announce('BUILDING CLEAR','Exit unlocked — move forward',3500);
   }
@@ -14298,6 +14252,9 @@ function onZoneCleared(zoneId){
     else if(zoneId===2)G.levelState.hazardPrimed=true;
   }
   if(typeof setpieceOnZoneCleared==='function')setpieceOnZoneCleared(zoneId);
+  G.currentBeat=campaignBeatForZone(Math.min(2,zoneId+1));
+  if(G.currentBeat&&G.currentBeat.meta)attachToast(`<div style="color:#ffd060;letter-spacing:.24em">${G.currentBeat.meta.label}</div><div style="font-size:11px;margin-top:4px">${G.currentBeat.meta.announce}</div>`,2100);
+  hudUpdate();
 }
 // Adjacent-zone alert propagation — gunfire wakes the next room.
 // Silent Step perk + suppressed weapon: skip propagation entirely.
@@ -14333,11 +14290,12 @@ function playerZone(){
   return 2;
 }
 function populateBuilding(){
-  if(G.storyTestMode)return;
   // Total enemy count escalating with building number, back-loaded so the
   // final approach is the hardest fight. Difficulty multiplier:
   const diffMul={normal:1.0,hard:1.25,lethal:1.45}[G.difficulty||'normal']||1.0;
-  const totalRaw=Math.max(9,6+G.building*4);
+  const campaign=G.campaignLevel||getCampaignLevel(G.building);
+  const pressureBonus=(campaign&&campaign.enemyBias?campaign.enemyBias.length:0);
+  const totalRaw=Math.max(9,6+G.building*4+Math.min(3,pressureBonus));
   const total=Math.round(totalRaw*diffMul);
   const back=Math.ceil(total/3)+1;
   const middle=Math.ceil(total/3);
@@ -14345,7 +14303,7 @@ function populateBuilding(){
   G.enemyMgr.clear();
   const zs=(G.levelData&&G.levelData.zoneSpawns)||[[],[],[]];
   // Final building = boss fight; other buildings get a mini-boss (Lieutenant)
-  if(G.building===8){
+  if(G.building===campaignLength()){
     G.enemyMgr.spawnByZone([front,middle,2],zs,G.building,G.levelData.walls,G.levelData.spawnDoors);
     const bossPos=new THREE.Vector3(0,WT,-18);
     const boss=new Enemy(scene,bossPos,5,'boss');
@@ -14353,7 +14311,7 @@ function populateBuilding(){
     boss.bossPhase=1;boss.maxHp=1300;boss.hp=1300;
     G.enemyMgr._list.push(boss);
     G.boss=boss;
-    $e('boss-name').textContent='IL PATRIARCA';
+    $e('boss-name').textContent=(campaign&&campaign.target?campaign.target.toUpperCase():'IL PATRIARCA');
     $e('boss-bar').classList.add('show');
     $e('boss-fill').style.width='100%';
     $e('boss-phase').textContent='PHASE 1 / 3';
@@ -14387,7 +14345,7 @@ function populateBuilding(){
     lt.group.add(badge);
     G.enemyMgr._list.push(lt);
     G.boss=lt;
-    const lname=BUILDING_INFO[G.building-1]?BUILDING_INFO[G.building-1].target:'LIEUTENANT';
+    const lname=campaign&&campaign.target?campaign.target.toUpperCase():(BUILDING_INFO[G.building-1]?BUILDING_INFO[G.building-1].target:'LIEUTENANT');
     $e('boss-name').textContent=lname;
     $e('boss-bar').classList.add('show');
     $e('boss-fill').style.width='100%';
@@ -14398,11 +14356,14 @@ function populateBuilding(){
     $e('boss-bar').classList.remove('show');
   }
   G.zoneClears=[false,false,false];
+  G.currentBeat=campaignBeatForZone(0);
   G.exitUnlocked=false;
   hudUpdate();
 }
 // ── BUILDING PROGRESSION ──────────────────────────────────────────────────────
 function startBuilding(){
+  const campaignLevel=syncCampaignRuntime();
+  normalizePlayerRuntime();
   applyPerks();
   comboInit();
   P.execs=0;
@@ -14440,18 +14401,29 @@ function startBuilding(){
   console.time('buildLevel');
   G.levelData=buildLevel(scene,G.building);
   console.timeEnd('buildLevel');
-  G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
+  G.levelState={alarm:false,powerDown:false,hazardPrimed:false,signature:campaignLevel.signaturePressure,masteryFailed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
   P.weaponIdx=0;M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);throwGrp.visible=false;TK.active=false;lGrp.visible=true;_setMuzzlePos(0,.030,-.49);
   refreshAttachmentVisuals();
   const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
-  P.hp=100;P.ammo=W0.mag;P.ammoRes=W0.res+G.building*18;P.dead=false;P.reloading=false;
+  const resumeState=G._resumeState||null;G._resumeState=null;
+  P.hp=P.maxHp||100;P.dead=false;P.reloading=false;
   // Reset per-weapon ammo state so each building starts with full mags
-  P.weaponAmmo=[WEAPONS[0].mag,WEAPONS[1].mag,999];
-  P.weaponRes =[WEAPONS[0].res+G.building*18,WEAPONS[1].res+G.building*8,99];
-  $e('weapon-name').textContent=W0.name;$e('weapon-num').textContent=W0.slot;
+  resetWeaponAmmoState(G.building*18,G.building*8,false);
+  if(resumeState){
+    if(Number.isFinite(resumeState.hp))P.hp=Math.max(1,Math.min(P.maxHp||100,resumeState.hp));
+    if(Array.isArray(resumeState.weaponAmmo))P.weaponAmmo=resumeState.weaponAmmo.slice(0,WEAPONS.length);
+    if(Array.isArray(resumeState.weaponRes))P.weaponRes=resumeState.weaponRes.slice(0,WEAPONS.length);
+    normalizePlayerRuntime();
+    const resumeWeaponIdx=Math.max(0,Math.min(WEAPONS.length-1,resumeState.weaponIdx||0));
+    P.ammo=P.weaponAmmo[P.weaponIdx]??WEAPONS[P.weaponIdx].mag;
+    P.ammoRes=P.weaponRes[P.weaponIdx]??WEAPONS[P.weaponIdx].res;
+    if(resumeWeaponIdx!==P.weaponIdx)switchWeapon(resumeWeaponIdx);
+  }
+  const WNow=WEAPONS[P.weaponIdx]||W0;
+  $e('weapon-name').textContent=WNow.name;$e('weapon-num').textContent=WNow.slot;
     P.vy=0;P.jumpH=0;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;
     MELEE.out=false;MELEE.swinging=false;MELEE.cooldown=0;MELEE.returnTimer=0;knifGrp.visible=false;gunGrp.visible=true;
   hudUpdate();
@@ -14482,6 +14454,7 @@ const PROGRESS=(()=>{
     perks:{},perkPoints:0,
     achievements:{},
     daily:{seed:0,done:false},
+    mastery:{},
     runSave:null
   };
   try{const raw=localStorage.getItem('clearance_progress');if(raw){
@@ -14492,6 +14465,7 @@ const PROGRESS=(()=>{
     s.perks=s.perks||{};
     s.achievements=s.achievements||{};
     s.daily=s.daily||{seed:0,done:false};
+    s.mastery=s.mastery||{};
   }}catch(_){}
   return s;
 })();
@@ -14499,9 +14473,15 @@ function saveProgressFile(){try{localStorage.setItem('clearance_progress',JSON.s
 // ── SKILL TREE: 12 perks, each costs perkPoints. Earn 1 point per LVL up.
 const PERK_DEFS=[
   {id:'wallbang',    cat:'Combat',  name:'Penetrator',      desc:'Bullets pierce thin cover (sandbags, doors)', cost:2,icon:'⫷'},
+  {id:'hsBoost',     cat:'Combat',  name:'Headhunter',      desc:'Headshots hit harder and pay extra credits',   cost:2,icon:'◎'},
+  {id:'biggerMag',   cat:'Combat',  name:'Deep Mag',        desc:'+50% magazine capacity on all firearms',       cost:2,icon:'▤'},
+  {id:'fastReload',  cat:'Combat',  name:'Quick Hands',     desc:'Reloads complete 30% faster',                  cost:2,icon:'↻'},
   {id:'dodgeRoll',   cat:'Movement',name:'Combat Roll',     desc:'Double-tap movement to dodge with i-frames',  cost:2,icon:'◐'},
+  {id:'fastSprint',  cat:'Movement',name:'Linebreaker',     desc:'Sprint 15% faster while not aiming',           cost:2,icon:'»'},
   {id:'silentSteps', cat:'Movement',name:'Silent Step',     desc:'Movement no longer alerts adjacent rooms',     cost:2,icon:'⌒'},
   {id:'focusCharge', cat:'Tactical',name:'Adrenal',         desc:'Kills restore extra focus meter',               cost:2,icon:'◆'},
+  {id:'autoFocus',   cat:'Tactical',name:'Flow State',      desc:'Focus refills faster between kills',            cost:3,icon:'◈'},
+  {id:'extraHp',     cat:'Tactical',name:'Hard Target',     desc:'+25 max HP at building start',                  cost:2,icon:'▣'},
   {id:'execMaster',  cat:'Tactical',name:'Executioner',     desc:'Take-downs grant +250 credits + brief HP heal',cost:2,icon:'✚'}
 ];
 PERK_DEFS.push(...PERK_DEFS_T2);
@@ -14565,13 +14545,16 @@ function dailyChallenge(){
 // ── PER-RUN SAVE STATE (resume) ──────────────────────────────────────
 function saveRunState(){
   if(!G.started||P.dead)return;
+  normalizePlayerRuntime();
   PROGRESS.runSave={
     building:G.building,money:P.money,hp:P.hp,
-    healPacks:P.healPacks,grenades:P.grenades,
+    healPacks:P.healPacks,grenades:P.grenades,smokes:P.smokes,flashes:P.flashes,
+    weaponIdx:P.weaponIdx,weaponAmmo:P.weaponAmmo.slice(0,WEAPONS.length),weaponRes:P.weaponRes.slice(0,WEAPONS.length),
     attachments:P.attachments?{
       scope:P.attachments.scope?{...P.attachments.scope}:null,
       mag:P.attachments.mag?{...P.attachments.mag}:null,
-      muzzle:P.attachments.muzzle?{...P.attachments.muzzle}:null
+      muzzle:P.attachments.muzzle?{...P.attachments.muzzle}:null,
+      foregrip:P.attachments.foregrip?{...P.attachments.foregrip}:null
     }:null,
     difficulty:G.difficulty||'normal',
     kills:P.kills,headshots:P.headshots,shotsFired:P.shotsFired,shotsHit:P.shotsHit,
@@ -14583,15 +14566,20 @@ function clearRunState(){PROGRESS.runSave=null;saveProgressFile();}
 function resumeRunState(){
   const r=PROGRESS.runSave;if(!r)return false;
   G.building=r.building;P.money=r.money;
-  P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;
-  P.attachments=r.attachments||{scope:null,mag:null,muzzle:null};
+  P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
+  P.attachments=_normalizeAttachments(r.attachments);
+  P.weaponIdx=Math.max(0,Math.min(WEAPONS.length-1,r.weaponIdx||0));
+  if(Array.isArray(r.weaponAmmo))P.weaponAmmo=r.weaponAmmo.slice(0,WEAPONS.length);
+  if(Array.isArray(r.weaponRes))P.weaponRes=r.weaponRes.slice(0,WEAPONS.length);
+  normalizePlayerRuntime();
+  G._resumeState={hp:r.hp,weaponIdx:P.weaponIdx,weaponAmmo:P.weaponAmmo.slice(),weaponRes:P.weaponRes.slice()};
   G.difficulty=r.difficulty||'normal';
   P.kills=r.kills||0;P.headshots=r.headshots||0;
   P.shotsFired=r.shotsFired||0;P.shotsHit=r.shotsHit||0;
   P.runStart=r.runStart||performance.now();
   G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');hideEndScreen();
-  applyUnlocks();applyPerks();
+  applyUnlocks();
   tryLock();musicInit();showBriefingCard(G.building,1800);startBuilding();
   return true;
 }
@@ -14864,6 +14852,7 @@ function setpieceTick(dt){
     SETPIECE.timer-=dt;
     if(SETPIECE.timer<=0&&!SETPIECE.triggered){
       SETPIECE.triggered=true;
+      if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
       attachToast('<div style="color:#ff5048;letter-spacing:.30em">! REINFORCEMENTS</div>',2200);
       // Spawn extra wave
       const sd=G.levelData&&G.levelData.spawnDoors||[];
@@ -14910,6 +14899,7 @@ function setpieceCheckHostageHit(target){
   // Called from any damage path that could hit a hostage
   if(SETPIECE.active&&SETPIECE.kind==='hostage'&&target&&target.userData&&target.userData.isHostage){
     SETPIECE.progress+=1;
+    if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
     attachToast('<div style="color:#ff5048;letter-spacing:.30em">! HOSTAGE HIT</div>',1500);
   }
 }
@@ -15151,7 +15141,7 @@ function showStoryBeat(idx,cb){
 // ── DOSSIER UI ─────────────────────────────────────────────────────
 let _dossierCallback=null;
 function showDossierFor(bn,cb){
-  const info=BUILDING_INFO[Math.min(bn-1,BUILDING_INFO.length-1)];
+  const info=getCampaignLevel(bn)||BUILDING_INFO[Math.min(bn-1,BUILDING_INFO.length-1)];
   if(!info||!info.target){if(cb)cb();return;}
   $e('dc-target').textContent=info.target;
   $e('dc-role').textContent=info.role||'TARGET';
@@ -15159,7 +15149,8 @@ function showDossierFor(bn,cb){
   $e('dc-time').textContent=info.time;
   $e('dc-location').textContent=info.name;
   const ul=$e('dc-intel');ul.innerHTML='';
-  (info.intel||[]).forEach(t=>{const li=document.createElement('li');li.textContent=t;ul.appendChild(li);});
+  const intel=[info.missionVerb,info.signaturePressure,info.mastery?('Mastery: '+info.mastery.label):null,...(info.intel||[])].filter(Boolean);
+  intel.forEach(t=>{const li=document.createElement('li');li.textContent=t;ul.appendChild(li);});
   // Threat color
   const tcol={'LOW':'#5fcb52','MED':'#ffd060','HIGH':'#ff8040','CRITICAL':'#ff5048','EXTREME':'#ff2840'}[info.threat]||'#ffd060';
   $e('dc-threat').style.color=tcol;
@@ -15244,15 +15235,16 @@ function hideAchievements(){
 function showEndingCinematic(){
   PROGRESS._finalKill=true;saveProgressFile();
   // Story epilogue first
-  showStoryBeat(8,()=>{_actuallyShowEndingCinematic();});
+  showStoryBeat(campaignLength(),()=>{_actuallyShowEndingCinematic();});
 }
 function _actuallyShowEndingCinematic(){
   const acc=P.shotsFired>0?Math.round(P.shotsHit/P.shotsFired*100):0;
   const elapsed=P.runStart?Math.max(0,(performance.now()-P.runStart)/1000):0;
   const min=Math.floor(elapsed/60),sec=Math.floor(elapsed%60);
   const time=min+':'+(sec<10?'0':'')+sec;
+  const total=campaignLength();
   $e('ending-stats').innerHTML=
-    '<div class="es-lbl">Buildings cleared</div><div class="es-val">8 / 8</div>'+
+    '<div class="es-lbl">Buildings cleared</div><div class="es-val">'+total+' / '+total+'</div>'+
     '<div class="es-lbl">Total kills</div><div class="es-val">'+P.kills+'</div>'+
     '<div class="es-lbl">Headshots</div><div class="es-val">'+P.headshots+'</div>'+
     '<div class="es-lbl">Accuracy</div><div class="es-val">'+acc+'%</div>'+
@@ -15329,7 +15321,7 @@ function showDefeatScreen(){
     '<div class="es-lbl">Kills</div><div class="es-val">'+P.kills+'</div>'+
     '<div class="es-lbl">Headshots</div><div class="es-val">'+P.headshots+' ('+hsRate+'%)</div>'+
     '<div class="es-lbl">Accuracy</div><div class="es-val">'+acc+'%</div>'+
-    '<div class="es-lbl">Building Reached</div><div class="es-val">'+G.building+' / 4</div>';
+    '<div class="es-lbl">Building Reached</div><div class="es-val">'+G.building+' / '+campaignLength()+'</div>';
   $e('es-grade').textContent='—';
   $e('es-grade').style.color='#666';
   es.classList.add('show');
@@ -15349,8 +15341,8 @@ function advanceBuilding(){
   // Save run progress on each advance (resumable later)
   saveRunState();
   // Beyond the final building → end-of-run
-  if(G.building>BUILDING_INFO.length){
-    showBriefingCard(G.building,1400);
+  if(G.building>campaignLength()){
+    showBriefingCard(campaignLength(),1400);
     setTimeout(()=>showVictoryScreen(),1400);
     return;
   }
@@ -15443,6 +15435,7 @@ function takeDamage(amt){
   comboBreak('damage');
   // I-frames during execution chain — bullets pass through the player
   if(_execActive&&performance.now()<_execIFrameUntil)return;
+  if(G.mastery&&amt>0){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
   P.hp-=amt;P.dmgFlash=.2;$e('dmg-flash').style.opacity='.9';sfxDamage();
   PP.shakeX=(Math.random()-.5)*.88;PP.shakeY=(Math.random()-.5)*.60;
   // Camera flinch — quick roll + slight pitch up, decays via exp
@@ -15502,6 +15495,62 @@ const BUILDING_INFO=[
   {name:'AZURE YACHT',      time:'0901 HRS', sub:'SHIP UNDERWAY · NO WITNESSES', threat:'CRITICAL',target:'LUCIA VASARI',role:'CONSIGLIERA',  intel:['Daughter of the Patriarch','Holds family ledger','Crew is loyal personal guard']},
   {name:'SERVER FARM Δ',    time:'1014 HRS', sub:'PRIMARY OBJECTIVE — END IT',   threat:'EXTREME',target:'IL PATRIARCA',role:'SYNDICATE HEAD',intel:['Final target — the man at the top','Hardened operation room','3-phase security protocol']}
 ];
+const ENCOUNTER_BEATS={
+  read:{label:'READ',pace:'scan',announce:'Identify lanes and pick the first angle.'},
+  brawl:{label:'BRAWL',pace:'burst',announce:'Break the crossfire before it folds inward.'},
+  hold:{label:'HOLD',pace:'pressure',announce:'Hold ground while flank doors wake up.'},
+  snipe:{label:'SNIPE',pace:'precision',announce:'Close the long lane under marksman pressure.'},
+  stealth_or_loud:{label:'QUIET/LOUD',pace:'choice',announce:'Stay suppressed or commit to the breach.'},
+  boss:{label:'BOSS',pace:'finale',announce:'Clear the guard line and finish the target.'}
+};
+const CAMPAIGN_LEVELS=[
+  {building:1,id:'B01_LOADING_DOCK',name:'Loading Dock',callsign:'DOCK 7',target:'Eugene Prado',role:'Cartel Enforcer',threat:'LOW',time:'0312 HRS',missionVerb:'Breach the harbor intake and stop the alarm chain.',signaturePressure:'Containment alarm',setpiece:'alarm',mastery:{id:'dock_no_alarm',label:'No Alarm Clear',desc:'Clear the middle zone before reinforcements trigger.',reward:'Service catwalk route marked on replay.'},shortcut:'Service Catwalk',reward:'Harbor ledger fragment',beats:['read','brawl','boss'],enemyBias:['soldier','scout','heavy'],visual:{accent:'#ff9d40',landmark:'Forklift crown and relay beacon'},intel:['Runs the harbor smuggling lane','Alarm doors wake adjacent rooms','Catwalk silhouettes point toward the relay cage']},
+  {building:2,id:'B02_CONTINENTAL_LOBBY',name:'Continental Lobby',callsign:'CONTINENTAL',target:'Irina Kovac',role:'Bagman / Fixer',threat:'MED',time:'0345 HRS',missionVerb:'Protect civilians while extracting the route key.',signaturePressure:'Hostage protocol',setpiece:'hostage',mastery:{id:'lobby_civilians_safe',label:'Civilians Safe',desc:'Clear the hostage beat without friendly fire.',reward:'Concierge service bypass unlocked.'},shortcut:'Concierge Bypass',reward:'Decryption key',beats:['read','hold','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#d4b06a',landmark:'Marble portico and hostage-lit atrium'},intel:['Hostages turn the middle zone into a restraint test','Formal columns hide side pushes','The target carries route credentials']},
+  {building:3,id:'B03_NIGHTCLUB',name:'Nightclub',callsign:'CLUB OBSIDIAN',target:'Xavier Roux',role:'Information Broker',threat:'MED',time:'0421 HRS',missionVerb:'Push through the floor before the VIP rooms collapse on you.',signaturePressure:'Club ambush',setpiece:'ambush',mastery:{id:'club_vip_fastline',label:'VIP Fastline',desc:'Clear the dance-floor ambush without breaking combo.',reward:'VIP stair split highlighted on replay.'},shortcut:'VIP Stair Split',reward:'Broker drive',beats:['read','brawl','boss'],enemyBias:['scout','riot','demolitions'],visual:{accent:'#ff40c8',landmark:'Neon dance bowl and mirror lounge'},intel:['Security floods from both sides once the floor wakes','The DJ booth frames the best first read','VIP route rewards momentum']},
+  {building:4,id:'B04_PENTHOUSE',name:'Penthouse',callsign:'VASARI SUITE',target:'Tommaso Vasari',role:'Underboss',threat:'HIGH',time:'0500 HRS',missionVerb:'Win a precision ascent through glass and gold.',signaturePressure:'Precision hunt',setpiece:'sniper',mastery:{id:'penthouse_precision',label:'Precision Hunt',desc:'Land the required headshot streak before missing.',reward:'Maintenance rail route marked on replay.'},shortcut:'Facade Rail',reward:'Family ledger page',beats:['snipe','brawl','boss'],enemyBias:['marksman','heavy','soldier'],visual:{accent:'#ffd060',landmark:'Glass crown, skyline rail, and suite arch'},intel:['Long sightlines punish careless sprinting','The underboss guards the first-act turning point','Sniper tells should be readable before impact']},
+  {building:5,id:'B05_STERLING_MEDICAL',name:'Sterling Medical',callsign:'STERLING MED',target:'Dr. Marcus Huynh',role:'Asset Launderer',threat:'HIGH',time:'0612 HRS',missionVerb:'Cross the blackout ward and expose the surgery records.',signaturePressure:'Blackout ward',setpiece:'dark',mastery:{id:'medical_blackout_clean',label:'Blackout Clean',desc:'Clear the power-cut beat with low damage.',reward:'ICU service gate remains marked.'},shortcut:'ICU Service Gate',reward:'Surgery record cache',beats:['stealth_or_loud','hold','boss'],enemyBias:['riot','drone','marksman'],visual:{accent:'#40ff80',landmark:'Triage curtains and surgical-light pit'},intel:['Darkness changes both route reading and enemy pressure','Medical glass should telegraph silhouettes','Low damage earns the cleanest route']},
+  {building:6,id:'B06_SUBWAY_LINE_7',name:'Subway Line 7',callsign:'LINE 7',target:'Pyotr Demidov',role:'Weapons Runner',threat:'HIGH',time:'0743 HRS',missionVerb:'Hold the platform until the rail window opens.',signaturePressure:'Platform hold',setpiece:'survival',mastery:{id:'subway_platform_hold',label:'Platform Held',desc:'Survive the platform timer without using a heal.',reward:'Trackside bypass marked on replay.'},shortcut:'Trackside Bypass',reward:'Weapons manifest',beats:['read','hold','boss'],enemyBias:['demolitions','riot','drone'],visual:{accent:'#ff5040',landmark:'Live rail trench and switch chamber'},intel:['The route is narrow, loud, and flank-prone','Power panels cue danger states','Explosives force movement out of comfort cover']},
+  {building:7,id:'B07_AZURE_YACHT',name:'Azure Yacht',callsign:'AZURE YACHT',target:'Lucia Vasari',role:'Consigliera',threat:'CRITICAL',time:'0901 HRS',missionVerb:'Repel boarding pressure across a narrow luxury deck.',signaturePressure:'Deck boarded',setpiece:'ambush',mastery:{id:'yacht_no_heal',label:'No-Heal Boarding',desc:'Clear the deck ambush without using a heal pack.',reward:'Crew hatch bypass marked on replay.'},shortcut:'Crew Hatch',reward:'Family ledger',beats:['stealth_or_loud','brawl','boss'],enemyBias:['marksman','demolitions','heavy'],visual:{accent:'#a0c8ff',landmark:'Teak salon, crew hatch, and bridge suite'},intel:['Narrow geometry rewards decisive pushes','Boarding waves arrive from below-deck doors','Lucia is the final family shield before command']},
+  {building:8,id:'B08_SERVER_FARM',name:'Server Farm Delta',callsign:'SERVER FARM D',target:'Il Patriarca',role:'Syndicate Head',threat:'EXTREME',time:'1014 HRS',missionVerb:'Break the command protocol and end the family.',signaturePressure:'Final lockdown',setpiece:'alarm',mastery:{id:'server_lockdown_solved',label:'Lockdown Broken',desc:'Clear the final alarm before phase-three berserk.',reward:'Final grade mastery bonus.'},shortcut:'Core Vault Fastline',reward:'Campaign complete',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','riot','heavy'],visual:{accent:'#40e0ff',landmark:'Cold aisles, battery bay, and core vault'},intel:['Final level stacks every prior pressure type','Boss phases should feel authored, not just tougher','Lockdown completion is the campaign payoff']}
+];
+function getCampaignLevel(bn=G.building){
+  const n=Math.max(1,Math.min(CAMPAIGN_LEVELS.length,Number(bn)||1));
+  return CAMPAIGN_LEVELS.find(l=>l.building===n)||CAMPAIGN_LEVELS[0];
+}
+function campaignLength(){
+  return CAMPAIGN_LEVELS.length;
+}
+function syncCampaignRuntime(){
+  const level=getCampaignLevel(G.building);
+  G.campaignLevel=level;
+  G.currentBeat={zone:0,id:level.beats[0],meta:ENCOUNTER_BEATS[level.beats[0]]};
+  G.mastery={
+    levelId:level.id,
+    objective:level.mastery,
+    failed:false,
+    zoneTimes:[0,0,0],
+    startTime:performance.now()
+  };
+  G.runModifiers={enemyBias:level.enemyBias||[],signaturePressure:level.signaturePressure};
+  return level;
+}
+function campaignBeatForZone(zoneId){
+  const level=G.campaignLevel||getCampaignLevel(G.building);
+  const id=(level.beats&&level.beats[zoneId])||['read','brawl','boss'][zoneId]||'read';
+  return {zone:zoneId,id,meta:ENCOUNTER_BEATS[id]||ENCOUNTER_BEATS.read};
+}
+function persistMasteryClear(level){
+  if(!level||!level.mastery)return;
+  PROGRESS.mastery=PROGRESS.mastery||{};
+  const entry=PROGRESS.mastery[level.mastery.id]||{};
+  entry.completed=true;
+  entry.levelId=level.id;
+  entry.completedAt=Date.now();
+  entry.label=level.mastery.label;
+  PROGRESS.mastery[level.mastery.id]=entry;
+  PROGRESS._masteryCount=Object.values(PROGRESS.mastery).filter(x=>x&&x.completed).length;
+  saveProgressFile();
+}
 function _briefSilhouette(bn){
   // Per-building stylized silhouette as SVG. Returns inner SVG markup.
   const palette=({
@@ -15626,11 +15675,11 @@ function _briefSilhouette(bn){
   return bg+stars+main+windows+signage;
 }
 function showBriefingCard(bn,durMs){
-  const info=BUILDING_INFO[Math.min((bn|0)-1,7)]||{name:'OBJECTIVE',time:'0500 HRS',sub:'PROCEED'};
-  $e('brief-tag').textContent='BUILDING '+bn;
+  const info=getCampaignLevel(bn)||BUILDING_INFO[Math.min((bn|0)-1,7)]||{name:'OBJECTIVE',time:'0500 HRS',sub:'PROCEED'};
+  $e('brief-tag').textContent='B'+bn+' · '+(info.callsign||'CLEARANCE');
   $e('brief-name').textContent=info.name;
   $e('brief-time').textContent=info.time;
-  $e('brief-sub').textContent=info.sub;
+  $e('brief-sub').textContent=info.missionVerb||info.sub;
   // Per-building silhouette
   const svg=$e('brief-svg');
   if(svg)svg.innerHTML=_briefSilhouette(bn);
@@ -15675,7 +15724,7 @@ function startRange(){
   RANGE.timer=RANGE.duration;
   // Set up minimal scene: build a special level with target dummies
   G.building=1;P.money=0;P.healPacks=0;P.grenades=0;P.smokes=0;P.flashes=0;
-  P.attachments={scope:null,mag:null,muzzle:null};
+  P.attachments=_defaultAttachments();
   G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');
   _resetRunStats();applyUnlocks();applyPerks();
@@ -15700,9 +15749,8 @@ function startRange(){
   if(typeof SPP_MESHES!=='undefined')SPP_MESHES.forEach(m=>m.visible=false);
   if(typeof SNI_MESHES!=='undefined')SNI_MESHES.forEach(m=>m.visible=false);
   throwGrp.visible=false;TK.active=false;lGrp.visible=true;
-  P.hp=100;P.ammo=30;P.ammoRes=999;P.dead=false;P.reloading=false;
-  P.weaponAmmo=[30,7,999,6,32,10,12,5];
-  P.weaponRes=[999,999,999,999,999,999,999,999];
+  P.hp=P.maxHp||100;P.dead=false;P.reloading=false;
+  resetWeaponAmmoState(0,0,true);
   // Spawn 8 target dummies at varied positions
   RANGE.targets=[];
   const positions=[
@@ -15781,7 +15829,7 @@ function startGame(){
     _tutorialTip('Headshots = instant kill. <span style="color:#ffd060">Move &amp; chain.</span>',24000);
   }
   G.building=1;P.money=0;P.healPacks=0;P.grenades=0;P.smokes=1;P.flashes=1;
-  P.attachments={scope:null,mag:null,muzzle:null,foregrip:null};G.started=true;gameFocused=true;
+  P.attachments=_defaultAttachments();G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyOperator();
   // Show prologue story beat then briefing
   showStoryBeat(0,()=>{
@@ -15789,7 +15837,7 @@ function startGame(){
     if(typeof startOnboard==='function')startOnboard();
   });
 }
-function restartGame(){$e('overlay').classList.add('hidden');hideEndScreen();$e('dmg-flash').style.opacity='0';G.building=1;P.money=0;P.healPacks=0;P.grenades=0;P.attachments={scope:null,mag:null,muzzle:null};DEATHCAM.active=false;G.started=true;gameFocused=true;_resetRunStats();applyUnlocks();tryLock();musicInit();showBriefingCard(1,2200);startBuilding();}
+function restartGame(){$e('overlay').classList.add('hidden');hideEndScreen();$e('dmg-flash').style.opacity='0';G.building=1;P.money=0;P.healPacks=0;P.grenades=0;P.smokes=1;P.flashes=1;P.attachments=_defaultAttachments();DEATHCAM.active=false;G.started=true;gameFocused=true;_resetRunStats();applyUnlocks();tryLock();musicInit();showBriefingCard(1,2200);startBuilding();}
 // Update menu stats display from PROGRESS
 function updateMenuStats(){
   const ms=$e('menu-stats');
@@ -15855,7 +15903,6 @@ $e('menu-stats-btn').addEventListener('click',showStatsPanel);
 $e('stats-back').addEventListener('click',hideStatsPanel);
 $e('menu-tutorial-btn').addEventListener('click',()=>{startRange&&startRange();});
 $e('menu-endless-btn').addEventListener('click',()=>{startEndlessMode&&startEndlessMode();});
-$e('menu-story-test-btn').addEventListener('click',()=>{startStoryTestFromMenu();});
 $e('menu-levelsel-btn').addEventListener('click',()=>showLevelSelect());
 $e('ls-back').addEventListener('click',()=>hideLevelSelect());
 $e('menu-skills-btn').addEventListener('click',showSkillTree);
@@ -16823,7 +16870,7 @@ renderer.setAnimationLoop(()=>{
     if(G.boss.dead){
       $e('boss-bar').classList.remove('show');
       const wasBoss=G.boss;G.boss=null;
-      if(G.building>=8){
+      if(G.building>=campaignLength()){
         // FINAL boss — ending cinematic
         triggerKillCamSlowMo(.20,3.0);
         setTimeout(()=>showEndingCinematic(),2400);
@@ -16835,7 +16882,7 @@ renderer.setAnimationLoop(()=>{
       const ratio=Math.max(0,G.boss.hp/G.boss.maxHp);
       $e('boss-fill').style.width=(ratio*100).toFixed(1)+'%';
       // Boss phase transitions for the final boss only
-      if(G.boss.isBoss&&G.building>=8){
+      if(G.boss.isBoss&&G.building>=campaignLength()){
         let phase=ratio>.66?1:ratio>.33?2:3;
         if(G.boss.bossPhase!==phase){
           G.boss.bossPhase=phase;
@@ -17051,7 +17098,7 @@ renderer.setAnimationLoop(()=>{
     }
   }
   // Exit zone
-  if(G.exitUnlocked&&G.levelData&&!G.storyTestMode){
+  if(G.exitUnlocked&&G.levelData){
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
@@ -17117,9 +17164,6 @@ renderer.setAnimationLoop(()=>{
     PP.shakeX*=Math.max(0,1-dt*PP.shakeDecay);
     PP.shakeY*=Math.max(0,1-dt*PP.shakeDecay);
       hudUpdate();
-      if(STORY_MODE.enabled&&STORY_MODE.levelGroup){
-        tickStoryLevelAnimations(STORY_MODE.levelGroup,now);
-      }
       // ── PIP scope render — only when scope equipped + ADS engaged
       const _hasScope=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
       if(_hasScope&&P.ads>.05){
@@ -17148,86 +17192,22 @@ renderer.setAnimationLoop(()=>{
       else renderer.render(scene,camera);
 });
 
-// ── Story Campaign Runtime (12 levels) ───────────────────────────────────────
-const STORY_MODE={
-  enabled:false,
-  levelOrder:1,
-  levelGroup:null,
-  objectiveEl:null,
-  lastObjective:''
-};
-function ensureStoryHUD(){
-  if(STORY_MODE.objectiveEl) return STORY_MODE.objectiveEl;
-  const el=document.createElement('div');
-  el.id='story-mode-objective';
-  el.style.cssText='position:fixed;left:16px;top:72px;max-width:480px;padding:10px 12px;border:1px solid rgba(160,220,255,.6);background:rgba(4,10,20,.78);color:#d6efff;font:12px/1.4 monospace;z-index:12000;border-radius:6px;white-space:pre-line;pointer-events:none;display:none';
-  document.body.appendChild(el);
-  STORY_MODE.objectiveEl=el;
-  return el;
-}
-function unloadStoryLevel(){
-  if(STORY_MODE.levelGroup){
-    scene.remove(STORY_MODE.levelGroup);
-    STORY_MODE.levelGroup=null;
-  }
-}
-function loadStoryLevel(order,opt){
-  const playtest=typeof opt==='boolean'?opt:G.storyTestMode;
-  if(G.storyTestMode)G.levelData=null;
-  unloadStoryLevel();
-  STORY_MODE.levelOrder=Math.max(1,Math.min(STORY_LEVELS.length,order|0));
-  const group=createStoryLevelRuntime(THREE,STORY_MODE.levelOrder);
-  if(!group) return;
-  STORY_MODE.levelGroup=group;
-  if(playtest)group.position.set(0,0,0);
-  else group.position.set(0,0,-90);
-  scene.add(group);
-  const meta=group.userData.levelMeta;
-  const depth=getStoryDepthLevel(meta.id);
-  const el=ensureStoryHUD();
-  const layer=depth?`Layers: ${Object.keys(depth.routeLayers).join(', ')}`:'';
-  STORY_MODE.lastObjective=`STORY ${meta.order}/12 · ${meta.title}\n${meta.objective}\nBoss Arena: ${meta.bossArena}\n${layer}`;
-  if(playtest&&G.storyTestMode){
-    STORY_MODE.lastObjective+='\n\n▸ Follow the cyan-lit halls — they link each grey “room” volume along +X.\n▸ Exit: F7 or Alt+T (closes story & returns here) · or ESC → pause → quit.\n▸ Chapters: [ and ]';
-  }
-  el.textContent=STORY_MODE.lastObjective;
-  el.style.display='block';
-  if(playtest)storyPlaytestApplyColliders(group);
-}
-function setStoryMode(enabled){
-  STORY_MODE.enabled=!!enabled;
-  const el=ensureStoryHUD();
-  if(STORY_MODE.enabled){
-    loadStoryLevel(STORY_MODE.levelOrder||1);
-    el.style.display='block';
-  } else {
-    if(G.storyTestMode){
-      if(G.levelData)G.levelData.cleanup();
-      else unloadStoryLevel();
-      G.storyTestMode=false;
-      G.levelData=null;
-      el.style.display='none';
-      quitToMain();
-      return;
-    }
-    unloadStoryLevel();
-    el.style.display='none';
-  }
-}
-window.addEventListener('keydown',e=>{
-  const toggleStory=e.code==='F6'||e.code==='F7'||(e.altKey&&e.code==='KeyT');
-  if(toggleStory){
-    if(e.altKey&&e.code==='KeyT')e.preventDefault();
-    setStoryMode(!STORY_MODE.enabled);
-    return;
-  }
-  if(!STORY_MODE.enabled)return;
-  if(e.code==='BracketRight'){loadStoryLevel(STORY_MODE.levelOrder+1);}
-  if(e.code==='BracketLeft'){loadStoryLevel(STORY_MODE.levelOrder-1);}
-});
 window.__game={
   debug:{
-    snapshot:()=>({hp:P.hp,ammo:P.ammo,building:G.building,wave:G.wave,alive:G.enemyMgr?G.enemyMgr.aliveCount:0,pos:[P.pos.x.toFixed(1),P.pos.z.toFixed(1)]}),
+    snapshot:()=>({
+      hp:P.hp,
+      ammo:P.ammo,
+      ammoSlots:Array.isArray(P.weaponAmmo)?P.weaponAmmo.length:0,
+      reserveSlots:Array.isArray(P.weaponRes)?P.weaponRes.length:0,
+      building:G.building,
+      campaign:G.campaignLevel?{id:G.campaignLevel.id,name:G.campaignLevel.name,target:G.campaignLevel.target}:null,
+      beat:G.currentBeat?{zone:G.currentBeat.zone,id:G.currentBeat.id,label:G.currentBeat.meta&&G.currentBeat.meta.label}:null,
+      mastery:G.mastery?{id:G.mastery.objective&&G.mastery.objective.id,failed:!!G.mastery.failed}:null,
+      wave:G.wave,
+      alive:G.enemyMgr?G.enemyMgr.aliveCount:0,
+      pos:[P.pos.x.toFixed(1),P.pos.z.toFixed(1)],
+      perf:window.__PERF&&window.__PERF.snapshot?window.__PERF.snapshot():null
+    }),
     // Expose internals for headless tests (NOT for production):
     scene: () => scene,
     camera: () => camera,
@@ -17239,10 +17219,6 @@ window.__game={
     deagleGlb_loaded: () => !!DEAGLE_GLB,
     soldier_loaded: () => !!SOLDIER_GLTF,
     switchWeapon: (i) => switchWeapon(i),
-    storyMode: () => STORY_MODE,
-    storyEnable: () => setStoryMode(true),
-    storyDisable: () => setStoryMode(false),
-    storyLoad: (order) => loadStoryLevel(order),
     buildLevel: (bn) => buildLevel(scene, bn),
   }
 };

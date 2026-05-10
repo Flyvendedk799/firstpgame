@@ -187,12 +187,12 @@ Survey arrays like `G.trails`, shells, decals:
 
 ---
 
-## 14. Story mode and teardown paths parity
+## 14. Mode teardown paths parity
 
 Ensure optimizations apply uniformly:
 
-1. **Story teardown** frees same classes of GPU resources as deploy (`cleanup`, `unloadStoryLevel`).
-2. **Conditional logic** (`G.storyTestMode`) avoids extra branching in hot RAF inner loop — hoist mode checks outward where possible once per frame.
+1. **Range/endless/level-select teardown** frees the same classes of GPU resources as deploy (`cleanup`, pickup cleanup, enemy cleanup).
+2. Keep mode checks outside tight inner loops where possible; deploy remains the only authored campaign-map runtime.
 
 ---
 
