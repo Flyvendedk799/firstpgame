@@ -6993,13 +6993,13 @@ function updateKnives(dt){
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
 const WEAPONS=[
   {name:'M4A1',  slot:'[1/7]',mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[2/7]',mag:12,res:48,fireRate:.30,dmg:55,hsDmg:200,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
-  {name:'THROWING KNIFE',slot:'[3/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false},
-  {name:'TAC-12 SHOTGUN',slot:'[4/7]',mag:6,res:24,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:8},
-  {name:'MP9 SUPPRESSED',slot:'[5/7]',mag:32,res:96,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true},
+  {name:'USP-T',slot:'[2/7]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
+  {name:'THROWING KNIFE',slot:'[3/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
+  {name:'TAC-12 SHOTGUN',slot:'[4/7]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
+  {name:'MP9 SUPPRESSED',slot:'[5/7]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
   {name:'MK14 DMR',  slot:'[6/7]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
-  {name:'P226 SUPP', slot:'[7/8]',mag:12,res:48, fireRate:.22,dmg:55,hsDmg:240,reloadTime:1.4,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
-  {name:'AWM SNIPER',slot:'[8/8]',mag:5, res:20, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true}
+  {name:'P226 SUPP', slot:'[7/8]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
+  {name:'AWM SNIPER',slot:'[8/8]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
 ];
 // Reflect mag/res for new sniper in P arrays (initial state)
 function _padWeaponState(){
@@ -7335,7 +7335,7 @@ document.addEventListener('keyup',e=>{delete K[e.code];if(e.code==='KeyC')P.crou
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
 const $e=id=>document.getElementById(id);
 function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}if(G.storyTestMode){$e('wave-num').textContent='STORY ROUTE';$e('building-num').textContent='STORY GEO';}else{$e('wave-num').textContent='ROOMS '+(G.zoneClears?G.zoneClears.filter(c=>c).length:0)+' / 3';$e('building-num').textContent='Building '+G.building;}if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;}
-function showHM(hs){$e('hitmark').style.opacity='1';$e('hitmark').classList.toggle('hs',hs);G.hitMarkTimer=hs?.22:.14;}
+function showHM(kind='body'){const hm=$e('hitmark');if(!hm)return;hm.style.opacity='1';hm.className='hm hm-'+kind;G.hitMarkTimer=(kind==='head')?.22:.14;}
 function killFeed(hs,opts){
   const el=document.createElement('div');
   el.className='kf-entry'+(hs?' hs':'');
@@ -8818,7 +8818,7 @@ function shoot(){
           }
         }
         // Scrounger perk: 100% ammo drop chance
-        const ammoDropChance=hasPerk('autoAmmo')?1.0:.30;
+        const ammoDropChance=.50;
         if(Math.random()<ammoDropChance)spawnAmmoPickup(enemy.group.position.clone());
         // Last-enemy-of-zone slowmo cinematic
         if(G.enemyMgr){
@@ -12835,14 +12835,11 @@ function buildingScoreMul(){
 }
 // ── EXTENDED SKILL TREE — 6 more perks (Tier-2)
 const PERK_DEFS_T2=[
-  {id:'doubleJump', cat:'Movement',name:'Air Dancer',     desc:'Double jump · airborne control',          cost:3,icon:'↑'},
-  {id:'autoFocus',  cat:'Tactical',name:'Auto-Focus',     desc:'Focus regenerates 35% faster',            cost:3,icon:'◇'},
-  {id:'shellLoad',  cat:'Combat',  name:'Shell-By-Shell', desc:'Shotgun reloads chamber-by-chamber',      cost:3,icon:'≡'},
-  {id:'thrownBack', cat:'Combat',  name:'Throw Back',     desc:'Knife/grenade returns +1 charge per kill',cost:3,icon:'↺'},
-  {id:'phantom',    cat:'Movement',name:'Phantom Step',   desc:'Sprint after dodge for 2s · ignore bullets',cost:4,icon:'»'},
-  {id:'killer_inst',cat:'Tactical',name:'Killer Instinct',desc:'Highlight targeted enemy weak point',     cost:3,icon:'◉'}
+  {id:'doubleJump', cat:'Movement',name:'Air Dancer', desc:'Double jump · airborne control', cost:3,icon:'↑'},
+  {id:'phantom', cat:'Movement',name:'Phantom Step', desc:'Sprint after dodge for 2s · ignore bullets · +25 max HP', cost:4,icon:'»'},
+  {id:'killer_inst',cat:'Tactical',name:'Killer Instinct',desc:'Highlight targeted enemy weak point', cost:3,icon:'◉'}
 ];
-setTimeout(()=>{try{PERK_DEFS_T2.forEach(p=>PERK_DEFS.push(p));}catch(_){}},0);
+
 // ── DEFAULT PERK STATE: lieutenant variants store unique combat behavior
 const LIEU_BEHAVIOR={
   2:{move:'pace',     style:'pistol-pair',  meta:{fireRate:.45,burst:3}},
@@ -14477,22 +14474,13 @@ const PROGRESS=(()=>{
 function saveProgressFile(){try{localStorage.setItem('clearance_progress',JSON.stringify(PROGRESS));}catch(_){}}
 // ── SKILL TREE: 12 perks, each costs perkPoints. Earn 1 point per LVL up.
 const PERK_DEFS=[
-  // Combat
-  {id:'fastReload',  cat:'Combat',  name:'Quick Hands',     desc:'Reload 30% faster',                           cost:1,icon:'⚡'},
-  {id:'biggerMag',   cat:'Combat',  name:'Extended Mag',    desc:'+50% magazine size on all weapons',           cost:2,icon:'▩'},
-  {id:'hsBoost',     cat:'Combat',  name:'Headhunter',      desc:'+25% headshot damage; +50% headshot credits', cost:2,icon:'◎'},
   {id:'wallbang',    cat:'Combat',  name:'Penetrator',      desc:'Bullets pierce thin cover (sandbags, doors)', cost:2,icon:'⫷'},
-  // Movement
-  {id:'extraHp',     cat:'Movement',name:'Bulletproof',     desc:'+25 maximum HP',                              cost:1,icon:'♥'},
-  {id:'fastSprint',  cat:'Movement',name:'Light Feet',      desc:'+15% sprint speed',                           cost:1,icon:'➤'},
   {id:'dodgeRoll',   cat:'Movement',name:'Combat Roll',     desc:'Double-tap movement to dodge with i-frames',  cost:2,icon:'◐'},
   {id:'silentSteps', cat:'Movement',name:'Silent Step',     desc:'Movement no longer alerts adjacent rooms',     cost:2,icon:'⌒'},
-  // Tactical
-  {id:'focusCharge', cat:'Tactical',name:'Adrenal',         desc:'Kills restore 15% focus meter',               cost:2,icon:'◆'},
-  {id:'execMaster',  cat:'Tactical',name:'Executioner',     desc:'Take-downs grant +250 credits + brief HP heal',cost:2,icon:'✚'},
-  {id:'comboKeep',   cat:'Tactical',name:'Iron Will',       desc:'Damage taken does not break combo chain',     cost:2,icon:'⛨'},
-  {id:'autoAmmo',    cat:'Tactical',name:'Scrounger',       desc:'Killed enemies always drop ammo (was 30%)',   cost:2,icon:'⚙'}
+  {id:'focusCharge', cat:'Tactical',name:'Adrenal',         desc:'Kills restore extra focus meter',               cost:2,icon:'◆'},
+  {id:'execMaster',  cat:'Tactical',name:'Executioner',     desc:'Take-downs grant +250 credits + brief HP heal',cost:2,icon:'✚'}
 ];
+PERK_DEFS.push(...PERK_DEFS_T2);
 function hasPerk(id){return !!(PROGRESS.perks&&PROGRESS.perks[id]);}
 function buyPerk(id){
   const def=PERK_DEFS.find(p=>p.id===id);if(!def||hasPerk(id))return false;
@@ -14694,13 +14682,13 @@ function comboKill(isHead){
     el.querySelector('.cm-mult').textContent=P.combo.multiplier.toFixed(2)+'×';
   }
   // Adrenal perk: kills regen focus
-  if(hasPerk('focusCharge')){P.focus=Math.min(1,(P.focus||0)+.15);}
+  if(hasPerk('focusCharge')){P.focus=Math.min(1,(P.focus||0)+.20);} if(P.combo.count>=10){P.focus=Math.min(1,(P.focus||0)+.10);}
   // Headhunter perk: extra credits on headshot
   if(isHead&&hasPerk('hsBoost')){P.money+=Math.round(20*P.combo.multiplier);}
 }
 function comboBreak(reason){
   if(!P.combo||P.combo.count===0)return;
-  if(reason==='damage'&&hasPerk('comboKeep'))return;
+  
   P.combo.count=0;P.combo.multiplier=1.0;P.combo.timer=0;
   const el=$e('combo-hud');if(el)el.classList.remove('show');
 }
