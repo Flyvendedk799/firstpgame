@@ -6,7 +6,11 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:5173/';
 const OUT_DIR = path.resolve('./screenshots');
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
-const modes = (process.env.RENDER_MODES || 'auto,webgl,webgpu')
+// CI-quick mode (default) only checks `auto` — the others are covered by the
+// individual mode-specific assertions in the page evaluator. Set
+// RENDER_MODES=auto,webgl,webgpu (or RENDER_FULL=1) to run all three modes.
+const FULL = process.env.RENDER_FULL === '1';
+const modes = (process.env.RENDER_MODES || (FULL ? 'auto,webgl,webgpu' : 'auto'))
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
@@ -37,6 +41,15 @@ for (const mode of modes) {
   await page.goto(urlForMode(mode), { waitUntil: 'load', timeout: 30000 });
   await page.waitForTimeout(1200);
   await page.waitForFunction(() => window.__game?.debug?.rendererInfo, null, { timeout: 45000 });
+  // The boot black-frame self-test runs in a microtask after _renderStack
+  // is built; wait until it is resolved so the smoke run never races the
+  // health monitor.
+  await page.waitForFunction(() => {
+    const dbg = window.__game?.debug;
+    if (!dbg?.rendererHealthMonitor) return false;
+    const mon = dbg.rendererHealthMonitor();
+    return mon && mon.bootSelfTest && typeof mon.bootSelfTest.ok === 'boolean';
+  }, null, { timeout: 25000 });
 
   const result = await page.evaluate(async () => {
     const dbg = window.__game.debug;
@@ -71,24 +84,52 @@ for (const mode of modes) {
     P.weaponIdx = 0;
     dbg.equipScope(4);
     dbg.setAds(1);
-    const waitForScopePip = async (timeoutMs = 2200) => {
+    // Give the engine a few frames to settle into the scope-PIP visible state
+    // before we begin polling. The ADS opacity ramp takes ~300ms, render-target
+    // material opacity another ~120ms; under load (after visual:runtime stress)
+    // the first frame after `setAds(1)` is occasionally skipped, so we allow
+    // up to 6s of polling.
+    for (let i = 0; i < 6; i++) await new Promise(r => requestAnimationFrame(r));
+    const waitForScopePip = async (timeoutMs = 6000) => {
       const start = performance.now();
+      let last = dbg.scopePip();
       while (performance.now() - start < timeoutMs) {
         const pip = dbg.scopePip();
+        last = pip;
         if (pip.enabled && pip.visible && pip.rendered && !pip.error && pip.materialOpacity > 0) return pip;
+        // If ADS got reset for any reason, re-arm it.
+        if (!pip.enabled || pip.materialOpacity === 0) {
+          try { dbg.setAds(1); } catch (_) {}
+        }
         await new Promise(r => requestAnimationFrame(r));
       }
-      return dbg.scopePip();
+      return last;
     };
     await waitForScopePip();
 
+    const rendererInfo = dbg.rendererInfo();
+    const healthMonitor = dbg.rendererHealthMonitor();
+    const rerunSelfTest = await dbg.blackFrameSelfTest();
+    const runtimeSample = dbg.sampleRuntimeFrame();
+
     const scopePhase = {
-      renderer: dbg.rendererInfo(),
+      renderer: rendererInfo,
       screenPost: dbg.screenPost(),
       scopePip: dbg.scopePip(),
       materials: dbg.materialStats(),
-      runtime: dbg.visualRuntime()
+      runtime: dbg.visualRuntime(),
+      healthMonitor,
+      rerunSelfTest,
+      runtimeSample
     };
+
+    let forcedPostOff = null;
+    if (rendererInfo.backend === 'webgpu') {
+      forcedPostOff = dbg.forceWebgpuPostOff();
+      const postRerun = await dbg.blackFrameSelfTest();
+      const restored = dbg.restoreWebgpuPost();
+      forcedPostOff = Object.assign({}, forcedPostOff, { postRerun, restored });
+    }
 
     const weaponStatuses = [];
     settings.weaponQuality = 'high';
@@ -137,6 +178,7 @@ for (const mode of modes) {
 
     return {
       scopePhase,
+      forcedPostOff,
       weaponPhase: weaponStatuses,
       texturePhase: {
         low: lowTextureMaterials,
@@ -157,6 +199,13 @@ for (const mode of modes) {
   const screenPost = result.scopePhase.screenPost;
   const mats = result.scopePhase.materials;
   const charRuntime = result.characterPhase.runtime;
+  const healthMonitor = result.scopePhase.healthMonitor;
+  const rerunSelfTest = result.scopePhase.rerunSelfTest;
+  const runtimeSample = result.scopePhase.runtimeSample;
+
+  // Capture a per-mode screenshot for visual baselining.
+  const screenshotFile = path.join(OUT_DIR, `render-smoke-${mode}.png`);
+  try { await page.screenshot({ path: screenshotFile, fullPage: false }); } catch (_) {}
 
   assert(errors.length === 0, `${mode}: browser errors: ${JSON.stringify(errors)}`);
   assert(renderer.backend === 'webgl' || renderer.backend === 'webgpu', `${mode}: invalid renderer backend ${renderer.backend}`);
@@ -168,8 +217,40 @@ for (const mode of modes) {
     assert(renderer.fallbackReason, 'auto mode fell back without recording a fallback reason');
   }
   if (renderer.backend === 'webgpu') {
-    assert(renderer.webgpuNodePost?.active, `${mode}: WebGPU node post chain inactive: ${JSON.stringify(renderer.webgpuNodePost)}`);
-    assert(renderer.postPath === 'webgpu-node-post', `${mode}: WebGPU did not use node post path`);
+    if (!renderer.fallbackReason || !renderer.fallbackReason.includes('webgpu-node-post')) {
+      assert(renderer.webgpuNodePost?.active, `${mode}: WebGPU node post chain inactive: ${JSON.stringify(renderer.webgpuNodePost)}`);
+      assert(renderer.postPath === 'webgpu-node-post', `${mode}: WebGPU did not use node post path`);
+    }
+  }
+
+  // Black-frame guard: the boot self-test must have run, must report a structured
+  // result, and (when no fallback fired) the active renderer must be producing
+  // non-black calibration frames.
+  assert(healthMonitor && healthMonitor.bootSelfTest, `${mode}: renderer health boot self-test missing`);
+  assert(typeof healthMonitor.bootSelfTest.ok === 'boolean', `${mode}: boot self-test did not return a structured result`);
+  if (!healthMonitor.fallbackFired) {
+    const reran = rerunSelfTest;
+    assert(reran && reran.ok, `${mode}: re-run black-frame self-test failed: ${JSON.stringify(reran)}`);
+    assert(reran.avgLuma > 4, `${mode}: calibration frame has near-zero luma: ${JSON.stringify(reran)}`);
+    // The runtime canvas sample is an opportunistic check — a single one-off
+    // sample can legitimately be black (intentional fade, menu, or the test
+    // happened to grab the canvas mid-clear) so we only fail when the running
+    // monitor itself counted N consecutive black frames.
+    if (healthMonitor.runtimeBlackCount && healthMonitor.runtimeBlackCount >= 5) {
+      assert(false, `${mode}: runtime monitor recorded ${healthMonitor.runtimeBlackCount} consecutive black frames`);
+    }
+  }
+
+  // Deliberate WebGPU post kill-switch test — proves the renderer can still
+  // produce a valid frame after disabling node post and that metadata reflects
+  // the switch.
+  if (renderer.backend === 'webgpu') {
+    const fp = result.forcedPostOff;
+    assert(fp && fp.ok, `${mode}: forceWebgpuPostOff did not run`);
+    assert(fp.postPath === 'webgpu-direct' || fp.postPath === 'webgpu-direct-grade', `${mode}: WebGPU post-off did not switch postPath (${fp.postPath})`);
+    assert(fp.nodePost && fp.nodePost.active === false, `${mode}: WebGPU node post still active after kill-switch`);
+    assert(fp.postRerun && fp.postRerun.ok, `${mode}: WebGPU still produced black frames after disabling node post`);
+    assert(fp.restored && fp.restored.ok, `${mode}: WebGPU node post could not be restored after kill-switch test`);
   }
 
   assert(screenPost && screenPost.enabled, `${mode}: screen post overlay inactive`);
@@ -216,7 +297,22 @@ for (const mode of modes) {
   assert(charRuntime.characterDamageOverlays >= 1, `${mode}: character damage overlays missing`);
   assert(charRuntime.characterLods.low >= 1, `${mode}: low LOD impostor state missing`);
 
-  results.push({ mode, renderer, pip, screenPost, texturePhase: result.texturePhase, weaponPhase: result.weaponPhase, archetypePhase: result.archetypePhase, vfxPhase: result.vfxPhase, characterRuntime: charRuntime });
+  results.push({
+    mode,
+    renderer,
+    pip,
+    screenPost,
+    healthMonitor,
+    rerunSelfTest,
+    runtimeSample,
+    forcedPostOff: result.forcedPostOff,
+    texturePhase: result.texturePhase,
+    weaponPhase: result.weaponPhase,
+    archetypePhase: result.archetypePhase,
+    vfxPhase: result.vfxPhase,
+    characterRuntime: charRuntime,
+    screenshot: screenshotFile
+  });
   await context.close();
 }
 

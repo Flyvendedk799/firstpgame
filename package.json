@@ -8,20 +8,25 @@
     "build": "vite build",
     "preview": "vite preview",
     "capture:baseline": "node scripts/aa-baseline-pack.mjs",
-    "test:acceptance": "npm run build && npm run test:campaign && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render",
+    "test:acceptance": "npm run build && npm run test:campaign && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render && npm run test:assets:budget && npm run test:visual:regression",
+    "test:acceptance:full": "VISUAL_FULL=1 RENDER_FULL=1 npm run test:acceptance",
     "test:render": "node scripts/render-smoke.mjs",
     "test:visual:runtime": "node scripts/visual-runtime-acceptance.mjs",
+    "test:visual:regression": "node scripts/visual-regression.mjs",
+    "test:assets:budget": "node scripts/asset-budget.mjs",
     "test:campaign": "node scripts/campaign-regression.mjs",
     "test:ai": "node scripts/ai-tactical-probe.mjs",
     "test:perf": "node scripts/perf-snapshot.mjs",
     "test:perf:stress": "node scripts/perf-stress.mjs",
-    "test:visual": "node scripts/visual-regression.mjs"
+    "test:visual": "node scripts/visual-regression.mjs",
+    "gen:textures": "node scripts/gen-procedural-materials.mjs"
   },
   "dependencies": {
     "three": "0.170.0"
   },
   "devDependencies": {
     "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
     "vite": "^5.4.0"
   }
 }

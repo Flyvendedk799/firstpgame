@@ -22,21 +22,26 @@ npm run preview    # serve dist/
 ## Acceptance checks
 
 ```
-npm run test:campaign
-npm run test:ai
-npm run test:perf
-npm run test:perf:stress
-npm run test:visual:runtime
-npm run test:render
-npm run test:acceptance
-npm run capture:baseline
+npm run test:campaign            # campaign regression
+npm run test:ai                  # tactical AI probe
+npm run test:perf                # perf snapshot
+npm run test:perf:stress         # perf stress matrix
+npm run test:visual:runtime      # 12 buildings × 9 post states
+npm run test:render              # auto/webgl/webgpu smoke + post + scope PIP
+npm run test:assets:budget       # asset manifest validation + budget enforcement
+npm run test:visual:regression   # baseline regression + missing-asset detection
+npm run test:acceptance          # CI-quick: ~4.5 min (5 buildings × 5 post states, auto only)
+npm run test:acceptance:full     # Release-grade: full 12 × 9 matrix + all renderer modes
+npm run capture:baseline         # capture screenshots/aa-baseline-pack/
 ```
 
-`test:render` expects the Vite dev server on `http://127.0.0.1:5173` unless `BASE_URL` is set. It checks `auto`, `webgl`, and `webgpu` modes; screen post; scope PIP; texture-quality material tiers; all eight weapon slots; required enemy archetypes; player proxy/viewmodel metadata; character damage overlays; and low-LOD impostors.
+`test:render` expects the preview server on `http://127.0.0.1:4173` unless `BASE_URL` is set. It checks `auto`, `webgl`, and `webgpu` modes; screen post; scope PIP; texture-quality material tiers; all eight weapon slots; required enemy archetypes; player proxy/viewmodel metadata; character damage overlays; low-LOD impostors; and the renderer health monitor / black-frame self-test guards.
 
-`test:visual:runtime` also expects the dev server. It walks all 12 building profiles across normal, ADS, focus, low HP, kill beat, death, menu, alarm, and blackout post states, then checks renderer metadata, PBR maps, screen post, shadows, and canvas nonblank pixel variation.
+`test:visual:runtime` also expects the server. It walks all 12 building profiles across normal, ADS, focus, low HP, kill beat, death, menu, alarm, and blackout post states, then checks renderer metadata, PBR maps, screen post, shadows, and canvas nonblank pixel variation.
 
-`test:visual` captures all building baselines and expects a preview server on `http://127.0.0.1:4173` unless `BASE_URL` is set.
+`test:assets:budget` validates `ALL_MANIFESTS` (characters, viewmodels, weapons, attachments, environments, materials, decals, VFX, animations) and asserts `ASSET_BUDGETS` are not exceeded in a worst-case stress scene (building 8, max enemies, scope PIP, VFX stress).
+
+`test:visual:regression` captures per-building / per-state thresholds with structured assertions for blank frames, missing textures, invisible enemies, invisible weapons, broken scope PIP, extreme overexposure, and black-screen fallback metadata.
 
 `capture:baseline` creates a full AA acceptance pack under `screenshots/aa-baseline-pack/`: every building, the major gameplay post states, all weapon slots, scope PIP, renderer/material/perf metadata, and a Playwright session video.
 
@@ -55,13 +60,17 @@ Firstp-r170/
 
 ## Renderer and AA visual path
 
-The r170 port now has an extracted renderer subsystem with a WebGPU-first high-end path and WebGL compatibility fallback.
+The r170 port now has an extracted renderer subsystem with a WebGPU high-end path and a hardened WebGL fallback.
 
 - `rendererMode`: `auto`, `webgpu`, or `webgl`; default is `auto`.
 - URL overrides: `?renderer=webgpu` and `?renderer=webgl`.
-- `auto` prefers WebGPU when browser initialization succeeds, then falls back to WebGL with a recorded fallback reason.
+- `auto` is conservative: first-ever loads use WebGL. WebGPU is attempted only after a recorded successful WebGPU run, or when explicitly requested via URL / settings.
+- Renderer health is persisted in `localStorage` (`aa_renderer_health`) and a session fallback flag in `sessionStorage` (`aa_force_webgl_fallback`) prevents reload-loops when a backend produces black frames.
+- The boot black-frame self-test renders a calibration scene to an off-screen target and reads it back; if the active renderer produces near-zero luma, the WebGPU node-post chain is disabled and the test re-runs. If the renderer still fails, the page reloads with `?renderer=webgl`.
+- A runtime canvas-luma sampler runs every ~12 frames and flips to WebGL after five consecutive black canvas samples.
 - WebGL uses the composer stack: render pass, GTAO, bloom, color grade, SMAA, and output pass.
-- WebGPU uses a guarded node-post chain (`viewportTexture`, highlight bloom, film, FXAA, render output) plus the screen-space post overlay path, with direct rendering fallback if node post cannot initialize.
+- WebGPU uses a node-post chain (`viewportTexture`, highlight bloom, film, FXAA, render output) plus the screen-space post overlay path, with direct rendering fallback if node post cannot initialize.
+- WebGPURenderer's silent WebGL2 fallback (when `navigator.gpu` advertises support but no adapter is granted) is detected and rejected so the renderer takes the proper WebGL path instead of mis-asserting WebGPU code paths.
 - Scope PIP is routed through backend-neutral render-target calls and is covered by smoke tests in both backends.
 
 Visual systems added in this branch include:
@@ -136,11 +145,19 @@ The old standalone 12-level story prototype was removed so deploy, level select,
 
 The in-page debug surface is under `window.__game.debug`:
 
-- `rendererInfo()` reports backend, requested mode, WebGPU support, post path, render scale, and fallback reason.
+- `rendererInfo()` reports backend, requested mode, WebGPU support, post path, render scale, fallback reason, and the renderer plan/health snapshot.
+- `rendererHealth()` and `rendererHealthMonitor()` expose persisted backend health, session fallback state, boot self-test result, post-disabled self-test result, runtime sample history, and fallback-fired status.
+- `blackFrameSelfTest()` and `sampleRuntimeFrame()` re-run the boot calibration and grab a runtime canvas sample on demand.
+- `forceWebgpuPostOff()` / `restoreWebgpuPost()` exercise the WebGPU node-post kill-switch.
+- `resetRendererHealth()` / `clearRendererSessionFallback()` clear the persisted health record + session fallback so the next load may re-attempt WebGPU.
 - `visualProfile()`, `postProfile()`, and `postContext()` expose active authored visual state.
+- `lightingProfile()`, `environmentKit()`, `playerProxyProfile()` expose per-building authored data.
+- `assetManifests()`, `assetManifest('characters')`, `assetPreflight()`, `assetRegistryStatus()`, `assetBudgets()`, `loadAsset(kind,id)`, and `disposeAsset(kind,id)` expose the asset manifest module from Section 11.
+- `enemyStateMachine()`, `viewmodelStateMachine()`, `weaponSocketSpec()`, `vfxProfiles()` expose Sections 4/6/9 data tables.
 - `materialLibrary()` and `materialStats()` expose PBR family, quality, and texture-map coverage.
 - `weaponVisualStatus()` reports the active weapon viewmodel, AA detail parts, PBR/AA materials, and scope visibility.
 - `characterVisualStatus()` reports live archetypes, human shells, hitbox ownership, weak-point markers, LOD, weapon silhouettes, player proxy, and viewmodel profile.
 - `scopePip()` reports scope render-target status, material opacity, and backend render-target metadata.
 - `vfxStress()` spawns procedural impacts, smoke, dust, flashes, decals, and shell casings, then returns budgeted runtime stats.
+- `rendererBudget()` reports drawCalls/triangles/geometries/textures vs `ASSET_BUDGETS.scene`.
 - `captureScreenshot()` and `capturePerf()` are available for manual visual QA.

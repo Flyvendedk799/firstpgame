@@ -863,3 +863,29 @@ The final structure should work like this:
    - Manual QA confirms readability, hitbox trust, animation quality, and visual consistency.
 
 When all of those pieces pass together, the upgrade is complete: real assets replace the procedural placeholders, the renderer is stable on real browsers, gameplay remains authoritative, and the game reaches the intended AA visual target without relying on fragile one-off fixes.
+
+## Implementation Status (engine pass complete)
+
+The non-asset engine work described above is now wired in code; the only outstanding work is the production of authored GLBs, animations, textures, atlases, and lighting probes that the engine is ready to load.
+
+What is done in this branch:
+
+- **Section 1 — Renderer hardening.** `src/rendering.js` adds a renderer health record in `localStorage`, a session fallback flag in `sessionStorage`, a conservative `auto` plan, off-canvas `blackFrameSelfTest`, a runtime canvas-luma sampler, a WebGPU node-post kill switch, detection of WebGPURenderer's silent WebGL2 fallback, and a defensive `init()` timeout. `src/main.js` runs the boot self-test in a microtask, samples the canvas every ~12 frames, and reloads to `?renderer=webgl` after consecutive black frames. `scripts/render-smoke.mjs` covers `auto`, `webgl`, and `webgpu`, the post kill-switch, and runtime sample assertions.
+- **Sections 2/3/5/6 — Character/animation/viewmodel/socket data.** `src/visualProfiles.js` carries the expanded character art bible (weapon types, armor zones, weak points, damage overlay policies), shared humanoid + hand skeletons, LOD spec, player proxy profile, enemy state machine, viewmodel state machine, and per-weapon socket spec. Debug API exposes each of these under `window.__game.debug`.
+- **Section 7 — Modular environment kits.** `ENVIRONMENT_KITS` in `visualProfiles.js` declares per-building module categories, prop densities, collision policies, and budgets. Reachable as `dbg.environmentKit(building)`.
+- **Section 8 — Extended PBR materials + decals.** `src/materialLibrary.js` includes blood, bullet holes, scorch, glass crack, warning paint, signage, marble, brass, chrome, leather, and grime presets with proper transparent/decal flags. `MATERIAL_MANIFEST` and `DECAL_MANIFEST` in `src/assetManifest.js` mirror the production set.
+- **Section 9 — VFX profiles.** `VFX_PROFILES` in `visualProfiles.js` carries weapon, surface, enemy, building, and HUD families with budgeted lifetimes and quality tiers. Reachable as `dbg.vfxProfile(category, key)`.
+- **Section 10 — Per-building lighting.** `LIGHTING_PROFILES` carries ambient, hemisphere, key/fill/rim, locals, emissive, fog, shadow budgets, reflection, and atmosphere per building. Reachable as `dbg.lightingProfile(building)`.
+- **Section 11 — Asset manifest module.** `src/assetManifest.js` exports `ALL_MANIFESTS` (characters, viewmodels, weapons, attachments, environments, materials, decals, VFX, animations) with stable IDs, required-bone validation, and an asset registry (`createAssetRegistry`) that loads GLBs/textures on demand and tracks cache + dispose. Debug surface: `dbg.assetManifests()`, `dbg.assetManifest(kind)`, `dbg.assetPreflight()`, `dbg.assetRegistryStatus()`, `dbg.loadAsset(kind, id)`, `dbg.disposeAsset(kind, id)`, `dbg.disposeAllAssets()`.
+- **Section 12 — Asset/perf budgets.** `ASSET_BUDGETS` (`src/assetManifest.js`) defines per-category limits and scene-wide caps. `scripts/asset-budget.mjs` validates the manifest and asserts the stress scene fits all caps. `dbg.assetBudgets()` and `dbg.rendererBudget()` surface the comparison at runtime.
+- **Section 13 — Visual regression thresholds + QA matrix.** `scripts/visual-regression.mjs` walks all 12 buildings × 9 post states and enforces blank-frame, color-variation, overexposure, missing-texture, invisible-enemy, invisible-weapon, broken-scope-PIP, and fallback-metadata thresholds. Wired into `npm run test:acceptance`.
+
+What remains:
+
+- Production GLB authoring for every character, viewmodel, weapon, attachment, environment kit, and VFX prop.
+- Real animation clips (the manifest declares the clip IDs; the engine plays whatever the loaded GLB provides and falls back to procedural sway/state otherwise).
+- Production PBR texture sets, normal maps, roughness/metalness, AO, emissive, decals and atlases at the categories declared in `MATERIAL_MANIFEST` and `DECAL_MANIFEST`.
+- Final lighting bake / probe authoring per building. The data table is in place; only the authored cube/IBL probes are missing.
+- Authored VFX atlases and meshes for each entry in `VFX_MANIFEST`.
+
+Until the authored assets land, the engine remains in fully procedural fallback mode — every system in the manifest reports `fallback` in `dbg.assetPreflight()`, the runtime tests pass, and the acceptance budgets stay green. When an artist drops a new GLB at the path declared in the manifest (or wires it through `dbg.loadAsset`), the registry takes over and the procedural fallback is bypassed for that ID without further code changes.

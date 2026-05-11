@@ -1,24 +1,52 @@
+// All PBR presets reference their authored map slots by name (e.g. 'concreteAlbedo').
+// When a key is present in the `textures` dict passed to createPbrMaterialLibrary,
+// the authored map is used; when it is absent, the get() function falls back to
+// the procedural generator. This lets us drop a new texture set into
+// public/assets/materials/<name>/ and wire it via a single line in main.js
+// without touching the renderer.
+function authoredMaps(name, extras = {}) {
+  return {
+    map: `${name}Albedo`,
+    normalMap: `${name}Normal`,
+    roughnessMap: `${name}Roughness`,
+    metalnessMap: `${name}Metalness`,
+    aoMap: `${name}Ao`,
+    ...extras
+  };
+}
 const MATERIAL_PRESETS = {
-  concrete: { color: 0x8a8a86, roughness: 0.88, metalness: 0.02, normalScale: 0.55 },
-  tile: { color: 0xd8ddd8, roughness: 0.46, metalness: 0.00, normalScale: 0.38 },
-  metal: { color: 0x70757c, roughness: 0.36, metalness: 0.78, normalScale: 0.32 },
-  paintedMetal: { color: 0x30343a, roughness: 0.62, metalness: 0.42, normalScale: 0.40 },
+  concrete: {
+    color: 0xffffff, roughness: 1.0, metalness: 1.0, normalScale: 0.75,
+    ...authoredMaps('concrete')
+  },
+  tile: { color: 0xd8ddd8, roughness: 0.46, metalness: 0.00, normalScale: 0.38, ...authoredMaps('tile') },
+  metal: { color: 0x70757c, roughness: 0.36, metalness: 0.78, normalScale: 0.32, ...authoredMaps('metal') },
+  paintedMetal: { color: 0x30343a, roughness: 0.62, metalness: 0.42, normalScale: 0.40, ...authoredMaps('paintedMetal') },
   glass: { color: 0xaec8d8, roughness: 0.08, metalness: 0.02, transparent: true, opacity: 0.38, envMapIntensity: 1.45 },
-  wood: { color: 0x62401e, roughness: 0.58, metalness: 0.03, normalScale: 0.45 },
-  rubber: { color: 0x08090b, roughness: 0.92, metalness: 0.00, normalScale: 0.30 },
-  fabric: { color: 0x24272c, roughness: 0.94, metalness: 0.00, normalScale: 0.65 },
-  plastic: { color: 0x1a1d22, roughness: 0.74, metalness: 0.02, normalScale: 0.28 },
+  wood: { color: 0x62401e, roughness: 0.58, metalness: 0.03, normalScale: 0.45, ...authoredMaps('wood') },
+  rubber: { color: 0x08090b, roughness: 0.92, metalness: 0.00, normalScale: 0.30, ...authoredMaps('rubber') },
+  fabric: { color: 0x24272c, roughness: 0.94, metalness: 0.00, normalScale: 0.65, ...authoredMaps('fabric') },
+  plastic: { color: 0x1a1d22, roughness: 0.74, metalness: 0.02, normalScale: 0.28, ...authoredMaps('plastic') },
   skin: { color: 0xc8926b, roughness: 0.68, metalness: 0.00, normalScale: 0.22 },
   hair: { color: 0x18120a, roughness: 0.50, metalness: 0.00, normalScale: 0.20 },
-  armor: { color: 0x1c2028, roughness: 0.56, metalness: 0.36, normalScale: 0.45 },
-  marble: { color: 0xd8d0bd, roughness: 0.30, metalness: 0.00, envMapIntensity: 0.95, normalScale: 0.22 },
-  brass: { color: 0xc49a46, roughness: 0.28, metalness: 0.74, envMapIntensity: 1.20, normalScale: 0.18 },
-  chrome: { color: 0xa8b0b8, roughness: 0.18, metalness: 0.88, envMapIntensity: 1.30, normalScale: 0.16 },
-  leather: { color: 0x3a2216, roughness: 0.70, metalness: 0.02, normalScale: 0.42 },
+  armor: { color: 0x1c2028, roughness: 0.56, metalness: 0.36, normalScale: 0.45, ...authoredMaps('armor') },
+  marble: { color: 0xd8d0bd, roughness: 0.30, metalness: 0.00, envMapIntensity: 0.95, normalScale: 0.22, ...authoredMaps('marble') },
+  brass: { color: 0xc49a46, roughness: 0.28, metalness: 0.74, envMapIntensity: 1.20, normalScale: 0.18, ...authoredMaps('brass') },
+  chrome: { color: 0xa8b0b8, roughness: 0.18, metalness: 0.88, envMapIntensity: 1.30, normalScale: 0.16, ...authoredMaps('chrome') },
+  leather: { color: 0x3a2216, roughness: 0.70, metalness: 0.02, normalScale: 0.42, ...authoredMaps('leather') },
   wetSurface: { color: 0x101820, roughness: 0.12, metalness: 0.02, transparent: true, opacity: 0.46, envMapIntensity: 1.40 },
   grime: { color: 0x080808, roughness: 0.96, metalness: 0.00, transparent: true, opacity: 0.40 },
   decal: { color: 0x080608, roughness: 0.90, metalness: 0.00, transparent: true, opacity: 0.72 },
-  emissivePanel: { color: 0xffffff, roughness: 0.35, metalness: 0.05, emissive: 0xffffff, emissiveIntensity: 0.55 }
+  emissivePanel: { color: 0xffffff, roughness: 0.35, metalness: 0.05, emissive: 0xffffff, emissiveIntensity: 0.55 },
+  // Damage / decal categories (Section 8 expansion). They are flagged as
+  // decals so depthWrite stays off and they don't fight z with the surface
+  // they paint onto.
+  blood: { color: 0x6c0a08, roughness: 0.62, metalness: 0.00, transparent: true, opacity: 0.86, depthWrite: false, alphaTest: 0.06 },
+  bulletHole: { color: 0x0a0a0a, roughness: 0.85, metalness: 0.10, transparent: true, opacity: 0.95, depthWrite: false, alphaTest: 0.06 },
+  scorchMark: { color: 0x141008, roughness: 0.95, metalness: 0.00, transparent: true, opacity: 0.78, depthWrite: false, alphaTest: 0.04 },
+  glassCrack: { color: 0xe0e8f0, roughness: 0.15, metalness: 0.02, transparent: true, opacity: 0.65, depthWrite: false, alphaTest: 0.03 },
+  warningPaint: { color: 0xffb020, roughness: 0.68, metalness: 0.02, emissive: 0x442800, emissiveIntensity: 0.18, normalScale: 0.30 },
+  signage: { color: 0xf4f0e8, roughness: 0.52, metalness: 0.02, emissive: 0x100c08, emissiveIntensity: 0.05, normalScale: 0.20 }
 };
 
 const QUALITY = {
@@ -31,7 +59,7 @@ const QUALITY = {
 export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () => ({})) {
   const profiles = MATERIAL_PRESETS;
   const generatedMaps = new Map();
-  const noProceduralMaps = new Set(['glass', 'grime', 'decal', 'wetSurface', 'emissivePanel']);
+  const noProceduralMaps = new Set(['glass', 'grime', 'decal', 'wetSurface', 'emissivePanel', 'blood', 'bulletHole', 'scorchMark', 'glassCrack']);
   function hash(x, y, seed) {
     const n = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453;
     return n - Math.floor(n);
@@ -102,6 +130,7 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     const normalMap = pickMap(overrides.normalMap ?? base.normalMap ?? (q.maps ? generatedMap(name, 'normal') : null), q);
     const roughnessMap = pickMap(overrides.roughnessMap ?? base.roughnessMap ?? (q.maps ? generatedMap(name, 'roughness') : null), q);
     const metalnessMap = pickMap(overrides.metalnessMap ?? base.metalnessMap ?? (q.maps ? generatedMap(name, 'metalness') : null), q);
+    const aoMap = pickMap(overrides.aoMap ?? base.aoMap, q);
     const emissive = overrides.emissive ?? base.emissive ?? 0x000000;
     const emissiveIntensity = (overrides.emissiveIntensity ?? base.emissiveIntensity ?? 1) * q.emissiveIntensity;
     const mat = new THREE.MeshStandardMaterial({
@@ -110,6 +139,8 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
       normalMap,
       roughnessMap,
       metalnessMap,
+      aoMap,
+      aoMapIntensity: overrides.aoMapIntensity ?? base.aoMapIntensity ?? 1.0,
       roughness: overrides.roughness ?? base.roughness ?? 0.72,
       metalness: overrides.metalness ?? base.metalness ?? 0,
       emissive,
@@ -117,10 +148,10 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
       transparent: overrides.transparent ?? base.transparent ?? false,
       opacity: overrides.opacity ?? base.opacity ?? 1,
       side: overrides.side ?? base.side ?? THREE.FrontSide,
-      depthWrite: overrides.depthWrite ?? base.depthWrite,
-      depthTest: overrides.depthTest ?? base.depthTest,
+      depthWrite: overrides.depthWrite ?? base.depthWrite ?? true,
+      depthTest: overrides.depthTest ?? base.depthTest ?? true,
       alphaTest: overrides.alphaTest ?? base.alphaTest ?? 0,
-      blending: overrides.blending ?? base.blending,
+      blending: overrides.blending ?? base.blending ?? THREE.NormalBlending,
       envMapIntensity: (overrides.envMapIntensity ?? base.envMapIntensity ?? 0.7) * q.envMapIntensity
     });
     if (mat.normalScale) {
@@ -130,12 +161,28 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     mat.userData.aaMaterial = name;
     mat.userData.aaMaterialQuality = q;
     mat.userData.aaMaterialQualityName = qualityName;
+    mat.userData.aaAuthoredMaps = !!(map && typeof (base.map) === 'string') ||
+                                  !!(normalMap && typeof (base.normalMap) === 'string') ||
+                                  !!(roughnessMap && typeof (base.roughnessMap) === 'string') ||
+                                  !!(metalnessMap && typeof (base.metalnessMap) === 'string') ||
+                                  !!(aoMap && typeof (base.aoMap) === 'string');
     return mat;
+  }
+  function disposeGeneratedMaps() {
+    let count = 0;
+    for (const tex of generatedMaps.values()) {
+      try { if (tex && typeof tex.dispose === 'function') tex.dispose(); count++; } catch (_) {}
+    }
+    generatedMaps.clear();
+    return count;
   }
   return {
     get,
     profile: (name) => profiles[name] || profiles.concrete,
     names: () => Object.keys(profiles),
-    generatedMapCount: () => generatedMaps.size
+    generatedMapCount: () => generatedMaps.size,
+    disposeGeneratedMaps,
+    categories: () => Object.keys(profiles).slice()
   };
 }
+

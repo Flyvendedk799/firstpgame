@@ -1,3 +1,24 @@
+// AA visual rendering subsystem.
+//
+// Responsibilities:
+//   - createBaseRenderer: select WebGPU or WebGL based on requested mode,
+//     health record, and session fallback flag.
+//   - createRenderSubsystem: build a backend-neutral pipeline with a WebGL
+//     composer (RenderPass, GTAO, UnrealBloom, color grade, SMAA, OutputPass)
+//     or a WebGPU node-post chain (highlight bloom + film + FXAA).
+//   - blackFrameSelfTest: render a calibration scene and read pixels back,
+//     detecting renderers that initialise but never produce visible output.
+//   - Renderer health helpers (localStorage) and session fallback (sessionStorage)
+//     so a black-screen failure on one load steers the next load to WebGL
+//     until the issue is resolved.
+//
+// All work here is backend-neutral. Scope PIP rendering, level draw,
+// and screenshots all route through this subsystem so WebGL/WebGPU/fallback
+// produce comparable output.
+
+const RENDERER_HEALTH_KEY = 'aa_renderer_health';
+const SESSION_FALLBACK_KEY = 'aa_force_webgl_fallback';
+
 function makeColorGradeShader(THREE) {
   return {
     uniforms: {
@@ -80,28 +101,263 @@ function makeColorGradeShader(THREE) {
   };
 }
 
+// ── Renderer health & session fallback storage ──────────────────────────────
+
+export function readRendererHealth() {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(RENDERER_HEALTH_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+export function writeRendererHealth(patch = {}) {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const current = readRendererHealth();
+    const next = Object.assign({}, current, patch, { updatedAt: new Date().toISOString() });
+    localStorage.setItem(RENDERER_HEALTH_KEY, JSON.stringify(next));
+    return next;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function resetRendererHealth() {
+  if (typeof localStorage !== 'undefined') {
+    try { localStorage.removeItem(RENDERER_HEALTH_KEY); } catch (_) {}
+  }
+  if (typeof sessionStorage !== 'undefined') {
+    try { sessionStorage.removeItem(SESSION_FALLBACK_KEY); } catch (_) {}
+  }
+  return readRendererHealth();
+}
+
+export function readSessionFallback() {
+  if (typeof sessionStorage === 'undefined') return '';
+  try { return sessionStorage.getItem(SESSION_FALLBACK_KEY) || ''; } catch (_) { return ''; }
+}
+
+export function setSessionFallback(reason) {
+  if (typeof sessionStorage === 'undefined') return;
+  try { sessionStorage.setItem(SESSION_FALLBACK_KEY, String(reason || 'webgpu-black-frame')); } catch (_) {}
+}
+
+export function clearSessionFallback() {
+  if (typeof sessionStorage === 'undefined') return;
+  try { sessionStorage.removeItem(SESSION_FALLBACK_KEY); } catch (_) {}
+}
+
+// ── Requested-mode resolution ───────────────────────────────────────────────
+
 export function getRequestedRendererMode(settings) {
+  if (typeof location === 'undefined') return settings?.rendererMode || 'auto';
   const qp = new URLSearchParams(location.search);
   const fromUrl = qp.get('renderer');
   if (fromUrl === 'webgpu' || fromUrl === 'webgl') return fromUrl;
   return settings?.rendererMode || 'auto';
 }
 
+// Resolve the requested mode into a concrete backend attempt plan.
+// URL overrides everything (explicit testing path). Session fallback flags
+// (from a previous load that black-screened) and stored health steer the
+// auto path away from WebGPU until the user (or a manual reset) clears it.
+//
+// `auto` is conservative: it only prefers WebGPU after the renderer health
+// record proves WebGPU previously rendered non-black frames. First-ever
+// loads use WebGL so the user never sees an empty viewport on a browser
+// where WebGPU initialises but cannot produce visible output.
+export function resolveRendererPlan(settings) {
+  const requested = getRequestedRendererMode(settings);
+  const health = readRendererHealth();
+  const sessionFallback = readSessionFallback();
+  const plan = {
+    requested,
+    source: 'auto-default',
+    resolved: 'webgl',
+    reason: '',
+    allowWebGPU: false,
+    health,
+    sessionFallback
+  };
+  if (requested === 'webgl') {
+    plan.resolved = 'webgl';
+    plan.source = 'explicit-webgl';
+    plan.reason = 'explicit-webgl';
+    return plan;
+  }
+  if (requested === 'webgpu') {
+    plan.resolved = 'webgpu';
+    plan.source = 'explicit-webgpu';
+    plan.reason = 'explicit-webgpu';
+    plan.allowWebGPU = true;
+    return plan;
+  }
+  // auto
+  if (sessionFallback) {
+    plan.resolved = 'webgl';
+    plan.source = 'session-fallback';
+    plan.reason = `session-fallback:${sessionFallback}`;
+    return plan;
+  }
+  if (health && health.failedBackend === 'webgpu' && health.fallbackReason) {
+    plan.resolved = 'webgl';
+    plan.source = 'health-record';
+    plan.reason = `auto-prior-webgpu-failure:${health.fallbackReason}`;
+    return plan;
+  }
+  if (health && health.lastSuccessfulBackend === 'webgpu' && !health.fallbackReason) {
+    plan.resolved = 'webgpu';
+    plan.source = 'auto-health-prior-webgpu-success';
+    plan.reason = 'auto-health-prior-webgpu-success';
+    plan.allowWebGPU = true;
+    return plan;
+  }
+  // First-ever auto load (or auto load with no successful WebGPU run yet):
+  // start on WebGL and probe WebGPU off-canvas. The probe records health
+  // so the next load can prefer WebGPU when it actually works.
+  plan.resolved = 'webgl';
+  plan.source = 'auto-conservative-first-load';
+  plan.reason = 'auto-conservative-first-load';
+  plan.allowWebGPU = false;
+  return plan;
+}
+
+// ── Black-frame self-test ───────────────────────────────────────────────────
+// Renders a deterministic calibration scene to an off-screen render target
+// and reads the pixels back. If the renderer initialises but produces a
+// near-zero-luma frame, the result.ok flag is false. This is the primary
+// guard against silent black-screen failures on real browsers.
+export async function blackFrameSelfTest(THREE, renderer, options = {}) {
+  const w = options.width || 96;
+  const h = options.height || 64;
+  const sampleLumaThreshold = options.lumaThreshold ?? 12;
+  const lumaRangeThreshold = options.lumaRangeThreshold ?? 12;
+  const nonBlackRatioThreshold = options.nonBlackRatioThreshold ?? 0.10;
+  const bucketThreshold = options.bucketThreshold ?? 3;
+
+  if (!renderer || typeof renderer.render !== 'function') {
+    return { ok: false, reason: 'renderer-missing', avgLuma: 0, lumaRange: 0, nonBlackRatio: 0, colorBuckets: 0 };
+  }
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xff8844);
+  const cam = new THREE.PerspectiveCamera(60, w / h, 0.1, 10);
+  cam.position.set(0, 0.4, 2.4);
+  cam.lookAt(0, 0, 0);
+  const ambient = new THREE.AmbientLight(0xffffff, 0.9);
+  scene.add(ambient);
+  const key = new THREE.DirectionalLight(0xffffff, 0.6);
+  key.position.set(2, 3, 2);
+  scene.add(key);
+
+  const cubeGeom = new THREE.BoxGeometry(1, 1, 1);
+  const cubeMat = new THREE.MeshBasicMaterial({ color: 0x44ddff });
+  const cube = new THREE.Mesh(cubeGeom, cubeMat);
+  cube.rotation.set(0.4, 0.6, 0.0);
+  scene.add(cube);
+  const accentGeom = new THREE.SphereGeometry(0.42, 16, 12);
+  const accentMat = new THREE.MeshStandardMaterial({ color: 0x40ff80, roughness: 0.35, metalness: 0.05 });
+  const accent = new THREE.Mesh(accentGeom, accentMat);
+  accent.position.set(0.85, -0.2, 0.4);
+  scene.add(accent);
+
+  const target = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: true,
+    stencilBuffer: false,
+    type: THREE.UnsignedByteType,
+    format: THREE.RGBAFormat
+  });
+  target.texture.colorSpace = THREE.SRGBColorSpace || THREE.LinearSRGBColorSpace || 'srgb';
+
+  const result = { ok: false, avgLuma: 0, lumaRange: 0, nonBlackRatio: 0, colorBuckets: 0, sampleWidth: w, sampleHeight: h };
+  const prevTarget = renderer.getRenderTarget ? renderer.getRenderTarget() : null;
+
+  try {
+    if (typeof renderer.setRenderTarget === 'function') renderer.setRenderTarget(target);
+    if (typeof renderer.clear === 'function') renderer.clear(true, true, true);
+    renderer.render(scene, cam);
+    if (typeof renderer.setRenderTarget === 'function') renderer.setRenderTarget(prevTarget || null);
+
+    const buf = new Uint8Array(w * h * 4);
+    let readOk = false;
+    if (typeof renderer.readRenderTargetPixelsAsync === 'function') {
+      await renderer.readRenderTargetPixelsAsync(target, 0, 0, w, h, buf);
+      readOk = true;
+    } else if (typeof renderer.readRenderTargetPixels === 'function') {
+      renderer.readRenderTargetPixels(target, 0, 0, w, h, buf);
+      readOk = true;
+    } else {
+      result.reason = 'readback-unavailable';
+    }
+    if (readOk) {
+      let sum = 0, min = 255, max = 0, nonBlack = 0;
+      const buckets = new Set();
+      for (let i = 0; i < buf.length; i += 4) {
+        const r = buf[i] | 0, g = buf[i + 1] | 0, b = buf[i + 2] | 0;
+        const l = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722);
+        sum += l;
+        if (l < min) min = l;
+        if (l > max) max = l;
+        if (l > 6) nonBlack++;
+        buckets.add(((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5));
+      }
+      const total = w * h;
+      const avg = sum / total;
+      const lumaRange = max - min;
+      const ratio = nonBlack / total;
+      result.avgLuma = Number(avg.toFixed(2));
+      result.lumaRange = lumaRange;
+      result.nonBlackRatio = Number(ratio.toFixed(3));
+      result.colorBuckets = buckets.size;
+      result.ok = avg > sampleLumaThreshold && lumaRange > lumaRangeThreshold && ratio > nonBlackRatioThreshold && buckets.size >= bucketThreshold;
+      if (!result.ok) {
+        result.reason = `low-luma:${avg.toFixed(1)} range:${lumaRange} buckets:${buckets.size}`;
+      }
+    }
+  } catch (err) {
+    result.ok = false;
+    result.error = String(err && err.message || err);
+    result.reason = result.reason || `selftest-error:${result.error}`;
+  } finally {
+    try { target.dispose(); } catch (_) {}
+    try { cubeGeom.dispose(); } catch (_) {}
+    try { cubeMat.dispose(); } catch (_) {}
+    try { accentGeom.dispose(); } catch (_) {}
+    try { accentMat.dispose(); } catch (_) {}
+    scene.traverse((o) => {
+      if (o.isLight && typeof o.dispose === 'function') o.dispose();
+    });
+  }
+  return result;
+}
+
+// ── Base renderer ───────────────────────────────────────────────────────────
+
 export async function createBaseRenderer({ THREE, canvas, settings }) {
   const requestedMode = getRequestedRendererMode(settings);
+  const plan = resolveRendererPlan(settings);
   const webgpuSupported = typeof navigator !== 'undefined' && !!navigator.gpu;
-  const preferWebGPU = requestedMode === 'webgpu' || requestedMode === 'auto';
   const info = {
     requestedMode,
+    plan,
     backend: 'webgl',
     webgpuSupported,
     webgpuActive: false,
-    fallbackReason: ''
+    fallbackReason: plan.reason && plan.resolved === 'webgl' && plan.source !== 'explicit-webgl' ? plan.reason : '',
+    fallbackPhase: '',
+    health: plan.health,
+    sessionFallback: plan.sessionFallback
   };
 
-  if (preferWebGPU) {
+  if (plan.allowWebGPU) {
     if (!webgpuSupported) {
       info.fallbackReason = 'navigator.gpu unavailable';
+      info.fallbackPhase = 'webgpu-init';
     } else {
       try {
         const webgpu = await import('three/webgpu');
@@ -110,7 +366,25 @@ export async function createBaseRenderer({ THREE, canvas, settings }) {
           antialias: true,
           powerPreference: 'high-performance'
         });
-        if (typeof renderer.init === 'function') await renderer.init();
+        if (typeof renderer.init === 'function') {
+          // Defensive timeout — three.js' WebGPURenderer.init() may stall
+          // on a missing GPU adapter in some headless environments.
+          await Promise.race([
+            renderer.init(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('webgpu-init-timeout-8s')), 8000))
+          ]);
+        }
+        // Detect the silent WebGL2 fallback inside WebGPURenderer (it sets
+        // `backend.isWebGLBackend = true`). We treat that as a WebGPU failure
+        // and let the WebGL renderer take over — otherwise our render pipeline
+        // would assert WebGPU code paths (TSL nodes etc.) on a WebGL backend.
+        if (renderer.backend && renderer.backend.isWebGLBackend) {
+          info.fallbackReason = 'webgpu-silent-webgl-fallback';
+          info.fallbackPhase = 'webgpu-init';
+          try { renderer.dispose && renderer.dispose(); } catch (_) {}
+          try { writeRendererHealth({ failedBackend: 'webgpu', fallbackReason: info.fallbackReason, lastSuccessfulBackend: 'webgl' }); } catch (_) {}
+          throw new Error(info.fallbackReason);
+        }
         try {
           const [tsl, filmMod, fxaaMod] = await Promise.all([
             import('three/tsl'),
@@ -132,14 +406,21 @@ export async function createBaseRenderer({ THREE, canvas, settings }) {
         return { renderer, info };
       } catch (err) {
         info.fallbackReason = String(err && err.message || err);
+        info.fallbackPhase = 'webgpu-init';
+        try { writeRendererHealth({ failedBackend: 'webgpu', fallbackReason: info.fallbackReason, lastSuccessfulBackend: 'webgl' }); } catch (_) {}
         console.warn('[render] WebGPU startup failed; falling back to WebGL:', err);
       }
     }
   }
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  if (!plan.allowWebGPU && plan.resolved === 'webgl' && plan.source === 'auto-default') {
+    // No prior history; mark provisional health to seed normal behaviour.
+  }
   return { renderer, info };
 }
+
+// ── Render subsystem (composer / node post / direct) ────────────────────────
 
 export function createRenderSubsystem({
   THREE,
@@ -164,12 +445,21 @@ export function createRenderSubsystem({
     webgpuSupported: baseRendererInfo?.webgpuSupported ?? (typeof navigator !== 'undefined' && !!navigator.gpu),
     webgpuActive: !!baseRendererInfo?.webgpuActive,
     fallbackReason: baseRendererInfo?.fallbackReason || '',
-    postPath: baseRendererInfo?.backend === 'webgpu' ? 'webgpu-direct' : 'webgl-composer'
+    fallbackPhase: baseRendererInfo?.fallbackPhase || '',
+    postPath: baseRendererInfo?.backend === 'webgpu' ? 'webgpu-direct' : 'webgl-composer',
+    health: baseRendererInfo?.health || {},
+    sessionFallback: baseRendererInfo?.sessionFallback || '',
+    plan: baseRendererInfo?.plan || null,
+    blackFrame: { boot: null, postDisabled: null, runtime: [], lastCheckedAt: 0 },
+    runtimeBlackFrameCount: 0,
+    runtimeFramesObserved: 0,
+    webgpuPostDisabled: false
   };
 
   let composer = null;
   const passes = { render: null, gtao: null, bloom: null, grade: null, smaa: null, output: null };
   let webgpuPost = null;
+  let webgpuPostKillSwitch = false;
   const baseToneMappingExposure = Number.isFinite(renderer.toneMappingExposure) ? renderer.toneMappingExposure : 1;
 
   if (metadata.backend !== 'webgpu' && typeof EffectComposer === 'function' && typeof RenderPass === 'function') {
@@ -222,47 +512,82 @@ export function createRenderSubsystem({
     metadata.postPath = 'direct-webgl';
   }
   if (metadata.backend === 'webgpu') {
-    const mods = baseRendererInfo?.webgpuPostModules;
-    if (mods?.PostProcessing && mods?.tsl?.viewportTexture && mods?.tsl?.uniform) {
-      try {
-        const source = mods.tsl.viewportTexture();
-        const bloomStrength = mods.tsl.uniform(0.28);
-        const bloomSoftness = mods.tsl.uniform(0.08);
-        const bloomThreshold = mods.tsl.uniform(0.90);
-        const grain = mods.tsl.uniform(0.035);
-        let outputNode = source;
-        if (mods.tsl.luminance && mods.tsl.smoothstep && mods.tsl.float) {
-          const bloomMask = mods.tsl.smoothstep(
-            bloomThreshold,
-            bloomThreshold.add(bloomSoftness),
-            mods.tsl.luminance(source.rgb)
-          );
-          outputNode = outputNode.add(source.mul(bloomMask).mul(bloomStrength));
-        }
-        if (typeof mods.film === 'function') outputNode = mods.film(outputNode, grain);
-        if (typeof mods.fxaa === 'function') outputNode = mods.fxaa(outputNode);
-        webgpuPost = {
-          processing: new mods.PostProcessing(renderer, outputNode),
-          bloomStrength,
-          bloomSoftness,
-          bloomThreshold,
-          grain,
-          nodeChain: [
-            'viewportTexture',
-            mods.tsl.luminance && mods.tsl.smoothstep ? 'highlight-bloom' : null,
-            typeof mods.film === 'function' ? 'film' : null,
-            typeof mods.fxaa === 'function' ? 'fxaa' : null,
-            'renderOutput'
-          ].filter(Boolean)
-        };
-        metadata.postPath = 'webgpu-node-post';
-        metadata.webgpuNodePost = { active: true, chain: webgpuPost.nodeChain };
-      } catch (err) {
-        metadata.webgpuNodePost = { active: false, error: String(err && err.message || err) };
-      }
-    } else {
-      metadata.webgpuNodePost = { active: false, error: baseRendererInfo?.webgpuPostError || 'node post modules unavailable' };
+    buildWebGpuPost();
+  }
+
+  function buildWebGpuPost() {
+    if (webgpuPostKillSwitch) {
+      webgpuPost = null;
+      metadata.postPath = 'webgpu-direct';
+      metadata.webgpuNodePost = { active: false, error: metadata.webgpuNodePost?.error || 'killSwitch' };
+      return;
     }
+    const mods = baseRendererInfo?.webgpuPostModules;
+    if (!mods?.PostProcessing || !mods?.tsl?.viewportTexture || !mods?.tsl?.uniform) {
+      metadata.webgpuNodePost = { active: false, error: baseRendererInfo?.webgpuPostError || 'node post modules unavailable' };
+      return;
+    }
+    try {
+      const source = mods.tsl.viewportTexture();
+      const bloomStrength = mods.tsl.uniform(0.28);
+      const bloomSoftness = mods.tsl.uniform(0.08);
+      const bloomThreshold = mods.tsl.uniform(0.90);
+      const grain = mods.tsl.uniform(0.035);
+      let outputNode = source;
+      if (mods.tsl.luminance && mods.tsl.smoothstep && mods.tsl.float) {
+        const bloomMask = mods.tsl.smoothstep(
+          bloomThreshold,
+          bloomThreshold.add(bloomSoftness),
+          mods.tsl.luminance(source.rgb)
+        );
+        outputNode = outputNode.add(source.mul(bloomMask).mul(bloomStrength));
+      }
+      if (typeof mods.film === 'function') outputNode = mods.film(outputNode, grain);
+      if (typeof mods.fxaa === 'function') outputNode = mods.fxaa(outputNode);
+      webgpuPost = {
+        processing: new mods.PostProcessing(renderer, outputNode),
+        bloomStrength,
+        bloomSoftness,
+        bloomThreshold,
+        grain,
+        nodeChain: [
+          'viewportTexture',
+          mods.tsl.luminance && mods.tsl.smoothstep ? 'highlight-bloom' : null,
+          typeof mods.film === 'function' ? 'film' : null,
+          typeof mods.fxaa === 'function' ? 'fxaa' : null,
+          'renderOutput'
+        ].filter(Boolean)
+      };
+      metadata.postPath = 'webgpu-node-post';
+      metadata.webgpuNodePost = { active: true, chain: webgpuPost.nodeChain };
+    } catch (err) {
+      webgpuPost = null;
+      metadata.postPath = 'webgpu-direct';
+      metadata.webgpuNodePost = { active: false, error: String(err && err.message || err) };
+    }
+  }
+
+  function disableWebgpuPost(reason = 'manual') {
+    if (metadata.backend !== 'webgpu') return false;
+    webgpuPostKillSwitch = true;
+    if (webgpuPost && webgpuPost.processing && typeof webgpuPost.processing.dispose === 'function') {
+      try { webgpuPost.processing.dispose(); } catch (_) {}
+    }
+    webgpuPost = null;
+    metadata.webgpuPostDisabled = true;
+    metadata.webgpuPostDisabledReason = String(reason || 'manual');
+    metadata.postPath = 'webgpu-direct';
+    metadata.webgpuNodePost = { active: false, error: `disabled:${reason}` };
+    return true;
+  }
+
+  function enableWebgpuPost() {
+    if (metadata.backend !== 'webgpu') return false;
+    webgpuPostKillSwitch = false;
+    metadata.webgpuPostDisabled = false;
+    delete metadata.webgpuPostDisabledReason;
+    buildWebGpuPost();
+    return !!webgpuPost;
   }
 
   function resize(width, height) {
@@ -401,6 +726,28 @@ export function createRenderSubsystem({
     }
   }
 
+  // Runtime canvas-luma observer: each tick increments the counter so the
+  // health monitor in main.js can sample after N frames and decide whether
+  // the active backend is actually painting anything visible.
+  function recordRuntimeFrame(stats) {
+    metadata.runtimeFramesObserved++;
+    if (stats && stats.observedAt) metadata.blackFrame.lastCheckedAt = stats.observedAt;
+    if (stats && stats.isBlack) {
+      metadata.runtimeBlackFrameCount++;
+      metadata.blackFrame.runtime.push(Object.assign({}, stats, { frame: metadata.runtimeFramesObserved }));
+      if (metadata.blackFrame.runtime.length > 6) metadata.blackFrame.runtime.shift();
+    } else if (stats) {
+      metadata.runtimeBlackFrameCount = 0;
+    }
+    return metadata.runtimeBlackFrameCount;
+  }
+
+  function setBlackFrameReport(slot, report) {
+    if (!metadata.blackFrame) metadata.blackFrame = { boot: null, postDisabled: null, runtime: [], lastCheckedAt: 0 };
+    metadata.blackFrame[slot] = report;
+    return report;
+  }
+
   configure(settings, { visualProfile });
 
   return {
@@ -414,6 +761,63 @@ export function createRenderSubsystem({
     configure,
     render,
     renderDirect,
-    renderToTarget
+    renderToTarget,
+    disableWebgpuPost,
+    enableWebgpuPost,
+    recordRuntimeFrame,
+    setBlackFrameReport,
+    get webgpuPostActive() { return !!webgpuPost; }
   };
+}
+
+// ── Runtime canvas sampler ──────────────────────────────────────────────────
+// Used by the boot self-test and the runtime monitor to sample the visible
+// canvas (not just an off-screen RT) so we catch presentation/composition
+// failures where the rendered RT contents never make it to screen.
+export function sampleCanvasLuma(canvas, options = {}) {
+  if (!canvas) return null;
+  const w = options.sampleWidth || 64;
+  const h = options.sampleHeight || 36;
+  const doc = typeof document !== 'undefined' ? document : null;
+  if (!doc) return null;
+  let tmp;
+  try {
+    tmp = doc.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    const ctx = tmp.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(canvas, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    let sum = 0, min = 255, max = 0, nonBlack = 0;
+    const buckets = new Set();
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const l = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722);
+      sum += l;
+      if (l < min) min = l;
+      if (l > max) max = l;
+      if (l > 6) nonBlack++;
+      buckets.add(((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5));
+    }
+    const total = w * h;
+    return {
+      avgLuma: Number((sum / total).toFixed(2)),
+      lumaMin: min,
+      lumaMax: max,
+      lumaRange: max - min,
+      nonBlackRatio: Number((nonBlack / total).toFixed(3)),
+      colorBuckets: buckets.size,
+      sampleWidth: w,
+      sampleHeight: h,
+      observedAt: typeof performance !== 'undefined' ? performance.now() : 0
+    };
+  } catch (err) {
+    return { error: String(err && err.message || err), observedAt: typeof performance !== 'undefined' ? performance.now() : 0 };
+  } finally {
+    if (tmp) {
+      tmp.width = 1;
+      tmp.height = 1;
+    }
+  }
 }

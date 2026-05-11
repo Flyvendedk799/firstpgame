@@ -18,9 +18,69 @@ import { GTAOPass }          from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass }          from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass }        from 'three/addons/postprocessing/OutputPass.js';
 import { applySequenceLayout, getSequenceGameplayProfile } from './levelSequences.js';
-import { createBaseRenderer, createRenderSubsystem } from './rendering.js';
+import {
+  createBaseRenderer,
+  createRenderSubsystem,
+  blackFrameSelfTest,
+  sampleCanvasLuma,
+  readRendererHealth,
+  writeRendererHealth,
+  resetRendererHealth,
+  setSessionFallback,
+  clearSessionFallback,
+  resolveRendererPlan
+} from './rendering.js';
 import { createPbrMaterialLibrary } from './materialLibrary.js';
-import { CHARACTER_ART_BIBLE, VISUAL_TARGETS, getCharacterProfile, getViewmodelProfile, getVisualProfile } from './visualProfiles.js';
+import {
+  CHARACTER_ART_BIBLE,
+  VISUAL_TARGETS,
+  LIGHTING_PROFILES,
+  ENVIRONMENT_KITS,
+  PLAYER_VIEWMODEL_PROFILE,
+  PLAYER_PROXY_PROFILE,
+  ENEMY_STATE_MACHINE,
+  VIEWMODEL_STATE_MACHINE,
+  WEAPON_SOCKETS_SPEC,
+  VFX_PROFILES,
+  TEXTURE_CATEGORIES,
+  DECAL_LAYERS,
+  getCharacterProfile,
+  getViewmodelProfile,
+  getVisualProfile,
+  getLightingProfile,
+  getEnvironmentKit,
+  getPlayerProxyProfile,
+  getVfxProfile,
+  getEnemyStateMachine,
+  getViewmodelStateMachine,
+  getWeaponSocketSpec
+} from './visualProfiles.js';
+import {
+  ALL_MANIFESTS,
+  ASSET_BUDGETS,
+  CHARACTER_MANIFEST,
+  WEAPON_MANIFEST,
+  ATTACHMENT_MANIFEST,
+  ENVIRONMENT_MANIFEST,
+  MATERIAL_MANIFEST,
+  DECAL_MANIFEST,
+  VFX_MANIFEST,
+  ANIMATION_MANIFEST,
+  VIEWMODEL_MANIFEST,
+  SHARED_HUMANOID_SKELETON,
+  SHARED_HAND_SKELETON,
+  CHARACTER_LODS,
+  ANIMATION_CLIPS,
+  WEAPON_SOCKETS,
+  ENVIRONMENT_MODULE_CATEGORIES,
+  PBR_TEXTURE_CATEGORIES,
+  DECAL_CATEGORIES,
+  VFX_FAMILIES,
+  createAssetRegistry,
+  manifestSummary,
+  validateAllManifests,
+  listManifests
+} from './assetManifest.js';
 // Phase G: small audio module — first piece of main.js modularization.
 import { getAC, sfxHit as _sfxHit, sfxReload as _sfxReload, sfxDamage as _sfxDamage, sfxWaveClear as _sfxWaveClear } from './audio.js';
 // Phase AC: cover-graph helpers — pure functions extracted out of main.js
@@ -546,46 +606,6 @@ const _blackMarbleTex=(()=>{
   const t=new THREE.CanvasTexture(c);
   t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
   t.repeat.set(3,4);
-  return t;
-})();
-// ── Concrete with cracks — generic dock floor
-const _concreteTex=(()=>{
-  const c=document.createElement('canvas');c.width=512;c.height=512;
-  const g=c.getContext('2d');
-  g.fillStyle='#787a7e';g.fillRect(0,0,512,512);
-  // Heavy grain
-  for(let i=0;i<8000;i++){
-    g.fillStyle=`rgba(${Math.random()<.5?0:255},${Math.random()<.5?0:255},${Math.random()<.5?0:255},${.02+Math.random()*.10})`;
-    g.fillRect(Math.random()*512,Math.random()*512,1,1);
-  }
-  // Slab joints
-  g.strokeStyle='rgba(0,0,0,.70)';g.lineWidth=4;
-  g.beginPath();g.moveTo(0,170);g.lineTo(512,170);g.stroke();
-  g.beginPath();g.moveTo(0,340);g.lineTo(512,340);g.stroke();
-  g.beginPath();g.moveTo(170,0);g.lineTo(170,512);g.stroke();
-  g.beginPath();g.moveTo(340,0);g.lineTo(340,512);g.stroke();
-  // Cracks
-  for(let cr=0;cr<6;cr++){
-    g.strokeStyle=`rgba(0,0,0,${.45+Math.random()*.35})`;g.lineWidth=.6+Math.random();
-    g.beginPath();
-    let px=Math.random()*512,py=Math.random()*512;
-    g.moveTo(px,py);
-    for(let s=0;s<12;s++){px+=(Math.random()-.5)*30;py+=(Math.random()-.5)*30;g.lineTo(px,py);}
-    g.stroke();
-  }
-  // Oil stains
-  for(let i=0;i<8;i++){
-    const x=Math.random()*512,y=Math.random()*512,r=24+Math.random()*60;
-    const grad=g.createRadialGradient(x,y,0,x,y,r);
-    grad.addColorStop(0,'rgba(0,0,0,.55)');grad.addColorStop(.6,'rgba(0,0,0,.20)');grad.addColorStop(1,'rgba(0,0,0,0)');
-    g.fillStyle=grad;g.fillRect(x-r,y-r,r*2,r*2);
-  }
-  // Painted hazard line yellow stripe
-  g.fillStyle='rgba(220,180,30,.78)';g.fillRect(0,80,512,12);
-  for(let i=0;i<512;i+=18){g.fillStyle='rgba(0,0,0,.65)';g.fillRect(i,80,8,12);}
-  const t=new THREE.CanvasTexture(c);
-  t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
-  t.repeat.set(8,12);
   return t;
 })();
 // ── Bullet hole decal texture — used for persistent wall decals
@@ -1197,8 +1217,80 @@ const _padTex=(()=>{
   t.repeat.set(3,5);
   return t;
 })();
+// ── Authored AA texture loader ────────────────────────────────────────────
+// Each authored texture set lives under public/assets/materials/<name>/, with
+// files named <name>-albedo.png (or .jpg), <name>-normal.jpg, <name>-roughness.jpg,
+// <name>-metalness.jpg, and <name>-ao.jpg (jpg or png). Add a material to
+// AA_AUTHORED_MATERIALS below and drop the files into the matching folder;
+// no other code changes required. Missing files (or whole sets) fall back to
+// the procedural path in materialLibrary.js — partial drops are safe.
+const _AA_TEX_LOADER=new THREE.TextureLoader();
+function _aaLoadTex(path,{isColor=false,repeat=3,channel=0}={}){
+  const t=_AA_TEX_LOADER.load(path,undefined,undefined,err=>console.warn('[aa-texture] failed to load',path,err));
+  t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
+  t.repeat.set(repeat,repeat);
+  t.anisotropy=8;
+  t.colorSpace=isColor?THREE.SRGBColorSpace:THREE.NoColorSpace;
+  if(channel!==undefined)t.channel=channel;
+  return t;
+}
+// Procedural-but-on-disk PNGs from `npm run gen:textures` (scripts/gen-procedural-materials.mjs).
+const AA_AUTHORED_MATERIALS={
+  concrete:{repeat:3,ext:'png'},
+  paintedMetal:{repeat:2,ext:'png'},
+  metal:{repeat:2,ext:'png'},
+  tile:{repeat:5,ext:'png'},
+  wood:{repeat:4,ext:'png'},
+  rubber:{repeat:4,ext:'png'},
+  fabric:{repeat:3,ext:'png'},
+  plastic:{repeat:3,ext:'png'},
+  armor:{repeat:2,ext:'png'},
+  marble:{repeat:2,ext:'png'},
+  brass:{repeat:2,ext:'png'},
+  chrome:{repeat:2,ext:'png'},
+  leather:{repeat:3,ext:'png'}
+};
+const _aaAuthoredTextures={};
+const _AA_MAP_TYPES=[
+  {suffix:'albedo',slot:'Albedo',isColor:true},
+  {suffix:'normal',slot:'Normal',isColor:false},
+  {suffix:'roughness',slot:'Roughness',isColor:false},
+  {suffix:'metalness',slot:'Metalness',isColor:false},
+  {suffix:'ao',slot:'Ao',isColor:false}
+];
+for(const [name,opt] of Object.entries(AA_AUTHORED_MATERIALS)){
+  const repeat=opt.repeat||3;
+  const ext=opt.ext||'jpg';
+  for(const m of _AA_MAP_TYPES){
+    const key=name+m.slot; // e.g. concreteAlbedo, paintedMetalNormal
+    _aaAuthoredTextures[key]=_aaLoadTex(
+      `/assets/materials/${name}/${name}-${m.suffix}.${ext}`,
+      {isColor:m.isColor,repeat}
+    );
+  }
+}
+/** Clone authored concrete PBR maps with floor-specific tiling (isolates repeats from crates/walls). */
+function _cloneConcreteFloorMaps(repeatX, repeatZ){
+  const o={};
+  const pairs=[
+    ['map','concreteAlbedo'],
+    ['normalMap','concreteNormal'],
+    ['roughnessMap','concreteRoughness'],
+    ['metalnessMap','concreteMetalness'],
+    ['aoMap','concreteAo']
+  ];
+  for(const [slot,key]of pairs){
+    const src=_aaAuthoredTextures[key];
+    if(!src||!src.isTexture)continue;
+    const cl=src.clone();
+    cl.wrapS=cl.wrapT=THREE.RepeatWrapping;
+    cl.repeat.set(repeatX,repeatZ);
+    cl.needsUpdate=true;
+    o[slot]=cl;
+  }
+  return o;
+}
 const AA_MATERIALS=createPbrMaterialLibrary(THREE,{
-  concrete:_concreteTex,
   corrugated:_corrugatedTex,
   marble:_marbleTex,
   blackMarble:_blackMarbleTex,
@@ -1214,7 +1306,8 @@ const AA_MATERIALS=createPbrMaterialLibrary(THREE,{
   carpet:_carpetTex,
   dance:_danceTex,
   decal:_bulletHoleTex,
-  blood:_bloodPoolTex
+  blood:_bloodPoolTex,
+  ..._aaAuthoredTextures
 },()=>{try{return SETTINGS||_BOOT_SETTINGS;}catch(_){return _BOOT_SETTINGS;}});
 function _aaMat(name,overrides){return AA_MATERIALS.get(name,overrides);}
 function buildLevel(scene,bn){
@@ -1366,7 +1459,7 @@ function buildLevel(scene,bn){
   // ── Per-building texture & material profile ──────────────────────────────
   const _texProfile=[
     // 1: LOADING DOCK — concrete floor + corrugated metal walls + brushed metal pillars
-    {floorTex:_concreteTex,floorRepeat:[6,8],wallTex:_corrugatedTex,wallRepeat:[4,2],
+    {floorTex:null,floorRepeat:[6,8],wallTex:_corrugatedTex,wallRepeat:[4,2],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:18,wallShine:35,pillarShine:80,ceilCol:0x080810},
     // 2: CONTINENTAL — hardwood floor + marble walls + marble pillars
     {floorTex:_woodTex,floorRepeat:[3,5],wallTex:_marbleTex,wallRepeat:[2,1],
@@ -1381,7 +1474,7 @@ function buildLevel(scene,bn){
     {floorTex:_hospitalTileTex,floorRepeat:[5,7],wallTex:_hospitalTileTex,wallRepeat:[3,2],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:8,wallShine:5,pillarShine:18,ceilCol:0x1a1e22},
     // 6: SUBWAY — concrete floor + concrete walls + steel pillars
-    {floorTex:_concreteTex,floorRepeat:[5,8],wallTex:_subwayConcreteTex,wallRepeat:[4,2],
+    {floorTex:null,floorRepeat:[5,8],wallTex:_subwayConcreteTex,wallRepeat:[4,2],
      pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:8,wallShine:12,pillarShine:120,ceilCol:0x0a0e14},
     // 7: YACHT — teak floor + cream tufted leather walls + chrome pillars
     {floorTex:_teakTex,floorRepeat:[3,7],wallTex:_yachtWallTex,wallRepeat:[3,2],
@@ -1390,7 +1483,7 @@ function buildLevel(scene,bn){
     {floorTex:_serverGrateTex,floorRepeat:[5,8],wallTex:_serverWallTex,wallRepeat:[2,1],
      pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:60,wallShine:30,pillarShine:180,ceilCol:0x040810},
     // 9: BORDER CROSSING — sun-baked concrete floor + sandstone walls + steel-clad pillars
-    {floorTex:_concreteTex,floorRepeat:[6,9],wallTex:_subwayConcreteTex,wallRepeat:[3,2],
+    {floorTex:null,floorRepeat:[6,9],wallTex:_subwayConcreteTex,wallRepeat:[3,2],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:10,wallShine:12,pillarShine:90,ceilCol:0x100a06},
     // 10: CATHEDRAL — polished marble floor + marble walls + carved pillars + velvet vaulted ceiling
     {floorTex:_blackMarbleTex,floorRepeat:[3,5],wallTex:_marbleTex,wallRepeat:[2,1],
@@ -1409,8 +1502,18 @@ function buildLevel(scene,bn){
   const floorRough=THREE.MathUtils.clamp(1-(_texProfile.floorShine||30)/260,.18,.92);
   const wallRough=THREE.MathUtils.clamp(1-(_texProfile.wallShine||30)/260,.22,.94);
   const pillarRough=THREE.MathUtils.clamp(1-(_texProfile.pillarShine||80)/320,.12,.78);
-  const fM=_aaMat(floorKind,{color:pc[0],map:_texProfile.floorTex,roughness:floorRough,metalness:(bn===8||bn===11)?0.38:undefined});
-  if(_texProfile.floorTex)_texProfile.floorTex.repeat.set(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]);
+  const floorMatOpts={
+    color:pc[0],
+    roughness:floorRough,
+    metalness:(bn===8||bn===11)?0.38:undefined
+  };
+  if(floorKind==='concrete'){
+    Object.assign(floorMatOpts,_cloneConcreteFloorMaps(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]));
+  }else if(_texProfile.floorTex){
+    floorMatOpts.map=_texProfile.floorTex;
+    _texProfile.floorTex.repeat.set(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]);
+  }
+  const fM=_aaMat(floorKind,floorMatOpts);
   const wM=_aaMat(wallKind,{color:pc[1],map:_texProfile.wallTex,roughness:wallRough,metalness:(bn===1||bn===8||bn===11)?0.35:undefined});
   if(_texProfile.wallTex)_texProfile.wallTex.repeat.set(_texProfile.wallRepeat[0],_texProfile.wallRepeat[1]);
   const pM=_aaMat(pillarKind,{color:pc[2],map:_texProfile.pillarTex,roughness:pillarRough,metalness:pillarKind==='marble'?0:.82});
@@ -1632,13 +1735,16 @@ function buildLevel(scene,bn){
   }
   // ── PER-BUILDING DRAMATIC LIGHTING PROFILE ───────────────────────────────
   const lightProfile=[
-    // 1: DOCK — overcast cool ambient, warm hazard amber on key, hard back rim
-    {ambCol:0x3a4a5e,ambInt:1.6,hemiSky:0x6a8aa8,hemiGround:0x282018,hemiInt:0.65,
-     keyCol:0xffaa50,keyInt:0.45,keyPos:[8,9,12],rimCol:0x6088c0,rimInt:0.65,rimPos:[-8,6,-12],
-     zoneA:{col:0xffb060,int:3.0,pool:0xffaa50},
-     zoneB:{col:0xffe0c0,int:2.6,pool:0xffd0a0},
-     zoneC:{col:0x80a0c8,int:2.2,pool:0x90b0d0},
-     fog:0x0c0e14,fogD:.022},
+    // 1: DOCK — overcast cool ambient, warm hazard amber on key, hard back rim.
+    // Ambient + hemisphere bumped so the room is legible without the warm
+    // zone-lights dominating; fog density softened (was 0.022) so the back
+    // wall reads from across the room.
+    {ambCol:0x4a5a70,ambInt:2.1,hemiSky:0x7a9ab8,hemiGround:0x302418,hemiInt:0.95,
+     keyCol:0xffaa50,keyInt:0.65,keyPos:[8,9,12],rimCol:0x6088c0,rimInt:0.85,rimPos:[-8,6,-12],
+     zoneA:{col:0xffb060,int:2.4,pool:0xffaa50},
+     zoneB:{col:0xffe0c0,int:2.0,pool:0xffd0a0},
+     zoneC:{col:0x80a0c8,int:1.8,pool:0x90b0d0},
+     fog:0x131722,fogD:.016},
     // 2: CONTINENTAL — warm gold ambient, soft fill, royal accent
     {ambCol:0x6a4830,ambInt:2.0,hemiSky:0xc8a060,hemiGround:0x301810,hemiInt:0.85,
      keyCol:0xffe0a0,keyInt:0.85,keyPos:[10,12,14],rimCol:0xc88040,rimInt:0.55,rimPos:[-9,8,-14],
@@ -1785,10 +1891,27 @@ function buildLevel(scene,bn){
       const bulbM=new THREE.MeshBasicMaterial({color:prof.col});
       const bulb=new THREE.Mesh(new THREE.CircleGeometry(.18,12),bulbM);bulb.position.set(0,RH+WT-.18,z);bulb.rotation.x=-Math.PI/2;scene.add(bulb);ob.push(bulb);
     }
-    // ── Faked volumetric god-ray cone — additive plane below the ceiling light
-    const rayM=new THREE.MeshBasicMaterial({color:prof.col,transparent:true,opacity:.055,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
-    const ray=new THREE.Mesh(new THREE.ConeGeometry(1.55,RH-.5,28,1,true),rayM);
-    ray.position.set(0,WT+(RH-.5)/2+.18,z);ray.userData.noBlock=true;scene.add(ray);ob.push(ray);
+    // ── Faked volumetric god-ray cone — subtle inner cone glow below the lamp.
+    // Use BackSide + low opacity so we only see the inside of the cone from
+    // beneath the lamp (a soft glow) rather than a hard white wedge cutting
+    // across the room. Also fade the cone with vertex colors so the base is
+    // transparent on the floor.
+    const _rayGeo=new THREE.ConeGeometry(1.35,RH-.7,20,1,true);
+    {
+      const pos=_rayGeo.attributes.position;
+      const colors=new Float32Array(pos.count*3);
+      for(let i=0;i<pos.count;i++){
+        // top vertex y ≈ +(RH-.7)/2, bottom vertex y ≈ -(RH-.7)/2
+        const y=pos.getY(i);
+        const t=(y+(RH-.7)/2)/(RH-.7); // 0 at base, 1 at apex
+        const a=Math.pow(t,1.4); // fade out toward base
+        colors[i*3]=a;colors[i*3+1]=a;colors[i*3+2]=a;
+      }
+      _rayGeo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+    }
+    const rayM=new THREE.MeshBasicMaterial({color:prof.col,vertexColors:true,transparent:true,opacity:.022,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.BackSide,fog:true});
+    const ray=new THREE.Mesh(_rayGeo,rayM);
+    ray.position.set(0,WT+(RH-.7)/2+.30,z);ray.userData.noBlock=true;ray.renderOrder=2;scene.add(ray);ob.push(ray);
   }
   // Per-building accent lights — extra side flair
   if(bn===3){
@@ -8257,10 +8380,138 @@ _renderStack=createRenderSubsystem({
   baseRendererInfo:_rendererBoot.info
 });
 _configureRenderStack();
+// ── ASSET REGISTRY ───────────────────────────────────────────────────────────
+// The registry exposes ALL_MANIFESTS to runtime callers and tracks which
+// IDs are authored vs procedural fallback. It is the bridge layer for
+// Section 11 of AA_VISUAL_COMPLETION_REMAINING: when authored GLBs/textures
+// arrive, callers ask the registry for `character.scout` and either get a
+// loaded GLB or the existing procedural archetype's spawn helper.
+const _ASSET_TEX_LOADER=new THREE.TextureLoader();
+const _ASSET_GLTF_LOADER=new GLTFLoader();
+const _ASSET_REGISTRY=createAssetRegistry({
+  THREE,
+  gltfLoader:_ASSET_GLTF_LOADER,
+  textureLoader:_ASSET_TEX_LOADER,
+  getSettings:()=>{try{return SETTINGS||_BOOT_SETTINGS;}catch(_){return _BOOT_SETTINGS;}}
+});
+const _ASSET_PREFLIGHT=_ASSET_REGISTRY.preflight();
+// ── Renderer health monitor ──────────────────────────────────────────────────
+// Guards against the WebGPU black-screen failure mode: WebGPU initialises but
+// produces near-zero-luma output (no visible pixels). The boot self-test
+// renders a calibration scene to an off-screen target via the active renderer
+// and reads the pixels back. If WebGPU passes the self-test we record health
+// and keep going. If WebGPU fails we first try disabling the node post chain;
+// if WebGPU still fails we persist a session fallback flag and reload with
+// `?renderer=webgl` so the user sees a working frame instead of a black screen.
+const _RENDERER_HEALTH_STATE={
+  bootSelfTest:null,
+  postDisableSelfTest:null,
+  runtimeSamples:[],
+  runtimeBlackCount:0,
+  runtimeChecks:0,
+  fallbackFired:false,
+  resolvedAt:null,
+  plan:_rendererBoot.info.plan||resolveRendererPlan(_BOOT_SETTINGS)
+};
+async function _runBootBlackFrameTest(){
+  let report=null;
+  try{report=await blackFrameSelfTest(THREE,renderer);}
+  catch(err){report={ok:false,error:String(err&&err.message||err),avgLuma:0,lumaRange:0,nonBlackRatio:0,colorBuckets:0};}
+  _RENDERER_HEALTH_STATE.bootSelfTest=report;
+  if(_renderStack&&_renderStack.setBlackFrameReport)_renderStack.setBlackFrameReport('boot',report);
+  return report;
+}
+async function _onBackendFailure(reason,detail){
+  if(_RENDERER_HEALTH_STATE.fallbackFired)return;
+  _RENDERER_HEALTH_STATE.fallbackFired=true;
+  const backend=_rendererBoot.info.backend;
+  try{writeRendererHealth({failedBackend:backend,fallbackReason:reason,lastSuccessfulBackend:'webgl',detail:detail||null});}catch(_){}
+  try{setSessionFallback(reason);}catch(_){}
+  // Reload to a forced WebGL URL only when the failure is webgpu-related and
+  // the current URL did not already explicitly request webgl. The session
+  // flag prevents an infinite reload loop because auto will see it and
+  // stay on webgl until the tab is closed and reopened.
+  try{
+    const url=new URL(location.href);
+    const explicit=url.searchParams.get('renderer');
+    if(backend==='webgpu'&&explicit!=='webgl'){
+      url.searchParams.set('renderer','webgl');
+      console.warn('[render] WebGPU produced black frames — falling back to WebGL. Reason:',reason);
+      location.replace(url.toString());
+      return;
+    }
+  }catch(_){}
+  // WebGL black or already on webgl: surface the diagnostic but stay running.
+  if(_renderStack&&_renderStack.metadata){
+    _renderStack.metadata.fallbackReason=reason;
+    _renderStack.metadata.fallbackPhase=_renderStack.metadata.fallbackPhase||'runtime';
+  }
+}
+async function _resolveRendererHealth(){
+  const boot=await _runBootBlackFrameTest();
+  const backend=_rendererBoot.info.backend;
+  if(boot.ok){
+    _RENDERER_HEALTH_STATE.resolvedAt='boot-ok';
+    try{writeRendererHealth({lastSuccessfulBackend:backend,fallbackReason:'',failedBackend:''});}catch(_){}
+    try{if(backend==='webgl')clearSessionFallback();}catch(_){}
+    return;
+  }
+  if(backend==='webgpu'){
+    if(_renderStack&&_renderStack.disableWebgpuPost){
+      _renderStack.disableWebgpuPost('webgpu-node-post-black-frame');
+    }
+    const second=await blackFrameSelfTest(THREE,renderer);
+    _RENDERER_HEALTH_STATE.postDisableSelfTest=second;
+    if(_renderStack&&_renderStack.setBlackFrameReport)_renderStack.setBlackFrameReport('postDisabled',second);
+    if(second.ok){
+      _RENDERER_HEALTH_STATE.resolvedAt='boot-post-disabled';
+      if(_renderStack&&_renderStack.metadata){
+        _renderStack.metadata.fallbackReason='webgpu-node-post-black-frame';
+        _renderStack.metadata.fallbackPhase='webgpu-node-post';
+      }
+      try{writeRendererHealth({lastSuccessfulBackend:'webgpu',fallbackReason:'webgpu-node-post-black-frame',failedBackend:'',postDisabled:true});}catch(_){}
+      return;
+    }
+    await _onBackendFailure('webgpu-black-frame',{boot,postDisabled:second});
+    return;
+  }
+  await _onBackendFailure(backend==='webgl'?'webgl-black-frame':'unknown-black-frame',{boot});
+}
+// Run the boot self-test on the next tick so the JS module finishes
+// initialising and React-style sync state stabilises before we render.
+queueMicrotask(()=>{_resolveRendererHealth().catch(err=>console.warn('[render] health monitor error',err));});
+
 function _renderFrameDirect(cam=camera){_renderStack?_renderStack.renderDirect(cam):renderer.render(scene,cam);}
 function _renderFramePost(){
   if(_renderStack&&_renderStack.composer&&G._useComposer!==false)_renderStack.render(performance.now()*.001);
   else _renderFrameDirect(camera);
+}
+// Runtime canvas-luma sampler. The boot self-test catches WebGPU init
+// failures but a separate failure mode is "renders fine to RT but the
+// canvas presentation is black" — sample the actual canvas every ~12 frames
+// and flag five consecutive near-black samples as a runtime regression.
+function _sampleRuntimeFrame(){
+  if(!renderer||!renderer.domElement)return null;
+  // Skip while menu/loading screens are intentionally dark
+  if(typeof G!=='undefined'&&(G.menuOpen||(G.intro&&G.intro.active)))return null;
+  if(typeof P!=='undefined'&&P.dead)return null;
+  const sample=sampleCanvasLuma(renderer.domElement);
+  if(!sample)return null;
+  const isBlack=Number.isFinite(sample.avgLuma)&&sample.avgLuma<4&&sample.lumaRange<8&&sample.nonBlackRatio<0.05;
+  sample.isBlack=!!isBlack;
+  if(_renderStack&&typeof _renderStack.recordRuntimeFrame==='function')_renderStack.recordRuntimeFrame(sample);
+  _RENDERER_HEALTH_STATE.runtimeChecks++;
+  _RENDERER_HEALTH_STATE.runtimeSamples.push(sample);
+  if(_RENDERER_HEALTH_STATE.runtimeSamples.length>8)_RENDERER_HEALTH_STATE.runtimeSamples.shift();
+  if(isBlack){
+    _RENDERER_HEALTH_STATE.runtimeBlackCount++;
+    if(_RENDERER_HEALTH_STATE.runtimeBlackCount>=5&&!_RENDERER_HEALTH_STATE.fallbackFired){
+      _onBackendFailure('webgpu-present-black-frame',{sample}).catch(()=>{});
+    }
+  }else{
+    _RENDERER_HEALTH_STATE.runtimeBlackCount=0;
+  }
+  return sample;
 }
 const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0};
 function _renderScopeTarget(target,cam){
@@ -10362,8 +10613,8 @@ const SETTINGS=(()=>{
     shadowQuality:'medium',atmosphereQuality:'high',textureQuality:'high',
     characterQuality:'high',weaponQuality:'high',renderScale:'auto',
     vfxQuality:'high',particleQuality:'high',decalQuality:'high',
-    colorGrade:true,filmGrain:true,chromaticAberration:true,sharpen:true,
-    smaa:true,pbrMaterials:true,vignette:true,gradeIntensity:1,
+    colorGrade:true,filmGrain:false,chromaticAberration:true,sharpen:true,
+    smaa:true,pbrMaterials:true,vignette:false,gradeIntensity:1,
     // Phase 6 — tactical AI + lean toggles
     aiTacticalEnabled:true,
     aiPeekDebugRender:false,
@@ -10390,11 +10641,11 @@ const SETTINGS=(()=>{
   if(s.decalQuality==null)s.decalQuality='high';
   if(s.colorGrade==null)s.colorGrade=true;
   if(s.gradeIntensity==null)s.gradeIntensity=1;
-  if(s.filmGrain==null)s.filmGrain=true;
+  if(s.filmGrain==null)s.filmGrain=false;
   if(s.chromaticAberration==null)s.chromaticAberration=true;
   if(s.sharpen==null)s.sharpen=true;
   if(s.smaa==null)s.smaa=true;
-  if(s.vignette==null)s.vignette=true;
+  if(s.vignette==null)s.vignette=false;
   return s;
 })();
 function _goreMul(){return ({low:.30,med:1.0,high:1.5}[SETTINGS.gore])||1.0;}
@@ -10541,7 +10792,7 @@ function _applyScreenPostProfile(ctx){
   }
   const warm=grade.warm??0.08;
   const cool=grade.cool??0.12;
-  const vignette=SETTINGS.vignette===false?0:(grade.vignette??0.42);
+  const vignetteStrength=SETTINGS.vignette===false?0:(grade.vignette??0.42);
   const contrast=grade.contrast??1.10;
   const exposure=grade.exposure??1.08;
   const saturation=grade.saturation??0.98;
@@ -10550,9 +10801,11 @@ function _applyScreenPostProfile(ctx){
   const coolCol=_rgbaFromHex(0x5eb8ff,0.10+cool*0.30);
   const warmCol=_rgbaFromHex(0xffb060,0.08+warm*0.28);
   const accentCol=_rgbaFromHex(accent,0.08+Math.max(warm,cool)*0.20);
-  const shade=THREE.MathUtils.clamp(0.18+vignette*0.58+(contrast-1)*0.16,0.08,0.62);
+  const vignOff=SETTINGS.vignette===false;
+  const shadeBase=vignOff?0.03:0.18;
+  const shade=THREE.MathUtils.clamp(shadeBase+vignetteStrength*0.58+(contrast-1)*0.14,vignOff?0.015:0.08,vignOff?0.14:0.62);
   const lift=THREE.MathUtils.clamp(0.18+(exposure-1)*0.24+Math.abs(saturation-1)*0.10,0.08,0.42);
-  cg.style.opacity=String(THREE.MathUtils.clamp(lift+vignette*.20,0.06,0.72));
+  cg.style.opacity=String(THREE.MathUtils.clamp(lift+(vignOff?0:vignetteStrength*.20),vignOff?0.04:0.06,vignOff?0.22:0.72));
   cg.style.mixBlendMode='overlay';
   cg.style.background=[
     `radial-gradient(ellipse at 50% 50%, transparent 28%, rgba(0,0,0,${shade.toFixed(3)}) 86%, rgba(0,0,0,${(shade*1.35).toFixed(3)}) 100%)`,
@@ -19698,6 +19951,27 @@ function _visualRuntimeStats(){
   }
   if(G.levelData&&Array.isArray(G.levelData.shadowCasters))stats.shadowCasters=G.levelData.shadowCasters.filter(l=>l&&l.castShadow).length;
   if(G.levelData&&G.levelData.visualStats)stats.visualStats=Object.assign({},G.levelData.visualStats);
+  // Budget-relative stats (Section 12) — each tier is the configured cap so
+  // perf tests can report headroom vs. exhaustion.
+  const vfxQ=SETTINGS.vfxQuality||'high';
+  const decalQ=SETTINGS.decalQuality||SETTINGS.vfxQuality||'high';
+  stats.budgets={
+    particles:ASSET_BUDGETS.vfx.activeParticles[vfxQ]||ASSET_BUDGETS.vfx.activeParticles.high,
+    decals:ASSET_BUDGETS.vfx.activeDecals[decalQ]||ASSET_BUDGETS.vfx.activeDecals.high,
+    drawCalls:ASSET_BUDGETS.scene.drawCalls,
+    triangles:ASSET_BUDGETS.scene.triangles,
+    geometries:ASSET_BUDGETS.scene.geometries,
+    textures:ASSET_BUDGETS.scene.textures,
+    shadowCasters:ASSET_BUDGETS.environment.shadowCasters
+  };
+  const ri=renderer.info||{render:{},memory:{}};
+  stats.scene={
+    drawCalls:ri.render?.calls|0,
+    triangles:ri.render?.triangles|0,
+    geometries:ri.memory?.geometries|0,
+    textures:ri.memory?.textures|0
+  };
+  stats.assetRegistry=_ASSET_REGISTRY?_ASSET_REGISTRY.status():null;
   return stats;
 }
 function _debugSpawnVfxStress(count=120){
@@ -19753,6 +20027,8 @@ function _collectMaterialStats(root){
     if(mat.metalnessMap)stats.maps.metalness++;
     if(mat.emissiveMap)stats.maps.emissive++;
     if(mat.alphaMap)stats.maps.alpha++;
+    if(mat.aoMap){stats.maps.ao=(stats.maps.ao||0)+1;}
+    if(mat.userData&&mat.userData.aaAuthoredMaps){stats.authored=(stats.authored||0)+1;}
     if(mat.normalScale&&Number.isFinite(mat.normalScale.x)){
       stats.normalScaleSamples++;
       stats.normalScaleSum+=mat.normalScale.x;
@@ -19904,6 +20180,24 @@ function _rendererMetadataSnapshot(){
   const src=_renderStack?_renderStack.metadata:{backend:'webgl',postEnabled:false};
   const out=Object.assign({},src);
   if(src&&src.grade)out.grade=Object.assign({},src.grade);
+  if(src&&src.blackFrame)out.blackFrame={
+    boot:src.blackFrame.boot,
+    postDisabled:src.blackFrame.postDisabled,
+    runtime:Array.isArray(src.blackFrame.runtime)?src.blackFrame.runtime.slice(-3):[],
+    lastCheckedAt:src.blackFrame.lastCheckedAt||0
+  };
+  if(src&&src.plan)out.plan=src.plan;
+  out.health=readRendererHealth();
+  out.runtimeFramesObserved=src?.runtimeFramesObserved||0;
+  out.runtimeBlackFrameCount=src?.runtimeBlackFrameCount||0;
+  out.healthMonitor={
+    bootSelfTest:_RENDERER_HEALTH_STATE.bootSelfTest,
+    postDisableSelfTest:_RENDERER_HEALTH_STATE.postDisableSelfTest,
+    runtimeChecks:_RENDERER_HEALTH_STATE.runtimeChecks,
+    runtimeBlackCount:_RENDERER_HEALTH_STATE.runtimeBlackCount,
+    fallbackFired:_RENDERER_HEALTH_STATE.fallbackFired,
+    resolvedAt:_RENDERER_HEALTH_STATE.resolvedAt
+  };
   out.pixelRatio=renderer.getPixelRatio?renderer.getPixelRatio():1;
   out.renderScale=SETTINGS.renderScale||'auto';
   return out;
@@ -20906,10 +21200,12 @@ renderer.setAnimationLoop(()=>{
     if(G.levelData.ceilingLights){
       for(const L of G.levelData.ceilingLights){
         if(L.userData.flicker){
-          L.userData.flickerPhase+=dt*8;
-          // Stuttering noise — most frames near base, occasional dropouts
+          L.userData.flickerPhase+=dt*4.5;
+          // Subtle hum — gentle sine drift, occasional small dimming. The
+          // legacy version dropped to 25 % every ~2 s which read as the
+          // light "snapping off" each second; players reported flicker.
           const r=Math.random();
-          const f=r<.04?(.25+Math.random()*.45):(.92+Math.sin(L.userData.flickerPhase)*.08);
+          const f=r<.008?(.66+Math.random()*.18):(.96+Math.sin(L.userData.flickerPhase)*.04);
           L.intensity=L.userData.baseIntensity*f;
         }
       }
@@ -21144,6 +21440,13 @@ renderer.setAnimationLoop(()=>{
         _scopePipStatus.rendered=false;
       }
       _renderFramePost();
+      // Sample the canvas every ~12 frames after boot to catch runtime
+      // black-frame regressions (e.g. WebGPU swapchain dropping output).
+      G._frameSampleAt=(G._frameSampleAt||0)+1;
+      if(G._frameSampleAt>=12&&_RENDERER_HEALTH_STATE.bootSelfTest&&!_RENDERER_HEALTH_STATE.fallbackFired){
+        G._frameSampleAt=0;
+        try{_sampleRuntimeFrame();}catch(_){}
+      }
 });
 
 window.__game={
@@ -21187,6 +21490,93 @@ window.__game={
     coverSlots:()=>(G.levelData&&G.levelData.coverSlots)||[],
     settings:()=>SETTINGS,
     rendererInfo:()=>_rendererMetadataSnapshot(),
+    rendererHealth:()=>readRendererHealth(),
+    rendererHealthMonitor:()=>({
+      bootSelfTest:_RENDERER_HEALTH_STATE.bootSelfTest,
+      postDisableSelfTest:_RENDERER_HEALTH_STATE.postDisableSelfTest,
+      runtimeChecks:_RENDERER_HEALTH_STATE.runtimeChecks,
+      runtimeBlackCount:_RENDERER_HEALTH_STATE.runtimeBlackCount,
+      fallbackFired:_RENDERER_HEALTH_STATE.fallbackFired,
+      resolvedAt:_RENDERER_HEALTH_STATE.resolvedAt,
+      plan:_RENDERER_HEALTH_STATE.plan,
+      runtimeSamples:_RENDERER_HEALTH_STATE.runtimeSamples.slice(-4)
+    }),
+    blackFrameSelfTest:async()=>await blackFrameSelfTest(THREE,renderer),
+    sampleRuntimeFrame:()=>_sampleRuntimeFrame(),
+    forceWebgpuPostOff:()=>{
+      if(!_renderStack||_renderStack.metadata.backend!=='webgpu')return {ok:false,reason:'not-webgpu'};
+      const wasOn=_renderStack.webgpuPostActive;
+      _renderStack.disableWebgpuPost('forced-test');
+      _configureRenderStack();
+      return {ok:true,wasOn,postPath:_renderStack.metadata.postPath,nodePost:_renderStack.metadata.webgpuNodePost};
+    },
+    restoreWebgpuPost:()=>{
+      if(!_renderStack||_renderStack.metadata.backend!=='webgpu')return {ok:false,reason:'not-webgpu'};
+      const ok=_renderStack.enableWebgpuPost();
+      _configureRenderStack();
+      return {ok,postPath:_renderStack.metadata.postPath,nodePost:_renderStack.metadata.webgpuNodePost};
+    },
+    resetRendererHealth:()=>resetRendererHealth(),
+    clearRendererSessionFallback:()=>{clearSessionFallback();return readRendererHealth();},
+    // ── Asset manifest / registry helpers ────────────────────────────────────
+    assetManifests:()=>({
+      counts:listManifests(),
+      summary:manifestSummary(),
+      validation:validateAllManifests()
+    }),
+    assetManifest:(kind)=>{
+      const map={
+        characters:CHARACTER_MANIFEST,
+        viewmodels:VIEWMODEL_MANIFEST,
+        weapons:WEAPON_MANIFEST,
+        attachments:ATTACHMENT_MANIFEST,
+        environments:ENVIRONMENT_MANIFEST,
+        materials:MATERIAL_MANIFEST,
+        decals:DECAL_MANIFEST,
+        vfx:VFX_MANIFEST,
+        animations:ANIMATION_MANIFEST
+      };
+      return kind?(map[kind]||null):map;
+    },
+    assetPreflight:()=>_ASSET_REGISTRY.preflight(),
+    assetRegistryStatus:()=>_ASSET_REGISTRY.status(),
+    loadAsset:(id)=>_ASSET_REGISTRY.load(id),
+    disposeAsset:(id)=>_ASSET_REGISTRY.dispose(id),
+    disposeAllAssets:()=>{_ASSET_REGISTRY.disposeAll();return _ASSET_REGISTRY.status();},
+    assetBudgets:()=>ASSET_BUDGETS,
+    sharedHumanoidSkeleton:()=>SHARED_HUMANOID_SKELETON.slice(),
+    sharedHandSkeleton:()=>SHARED_HAND_SKELETON.slice(),
+    characterLodSpec:()=>CHARACTER_LODS.map(l=>Object.assign({},l)),
+    animationClipSpec:()=>({enemy:ANIMATION_CLIPS.enemy.slice(),viewmodel:ANIMATION_CLIPS.viewmodel.slice()}),
+    weaponSocketSpec:()=>WEAPON_SOCKETS.slice(),
+    environmentModuleSpec:()=>ENVIRONMENT_MODULE_CATEGORIES.slice(),
+    pbrTextureSpec:()=>PBR_TEXTURE_CATEGORIES.slice(),
+    decalSpec:()=>DECAL_CATEGORIES.slice(),
+    vfxFamilySpec:()=>VFX_FAMILIES.slice(),
+    rendererBudget:()=>{
+      const ri=renderer.info||{render:{},memory:{}};
+      return {
+        drawCalls:ri.render?.calls|0,
+        triangles:ri.render?.triangles|0,
+        geometries:ri.memory?.geometries|0,
+        textures:ri.memory?.textures|0,
+        budgets:ASSET_BUDGETS.scene
+      };
+    },
+    // ── Authored visual data tables ─────────────────────────────────────────
+    visualTargets:()=>VISUAL_TARGETS,
+    lightingProfile:(bn)=>getLightingProfile(Number(bn)||(G&&G.building)||1),
+    lightingProfiles:()=>LIGHTING_PROFILES,
+    environmentKit:(bn)=>getEnvironmentKit(Number(bn)||(G&&G.building)||1),
+    environmentKits:()=>ENVIRONMENT_KITS,
+    playerProxyProfile:()=>PLAYER_PROXY_PROFILE,
+    enemyStateMachine:()=>ENEMY_STATE_MACHINE,
+    viewmodelStateMachine:()=>VIEWMODEL_STATE_MACHINE,
+    weaponSocketSpec:(type)=>type?(WEAPON_SOCKETS_SPEC[type]||null):WEAPON_SOCKETS_SPEC,
+    vfxProfiles:()=>VFX_PROFILES,
+    vfxProfile:(cat,key)=>getVfxProfile(cat,key),
+    textureCategories:()=>TEXTURE_CATEGORIES.slice(),
+    decalLayers:()=>DECAL_LAYERS.slice(),
     visualProfile:()=>_activeVisualProfile(),
     postProfile:()=>_renderStack?_renderStack.metadata.postProfile||'normal':'direct',
     postContext:()=>_computePostContext(P.hp/(P.maxHp||100)),
@@ -21200,6 +21590,10 @@ window.__game={
     visualRuntime:()=>_visualRuntimeStats(),
     materialLibrary:()=>({names:AA_MATERIALS.names(),textureQuality:SETTINGS.textureQuality||'high',generatedMapCount:AA_MATERIALS.generatedMapCount?AA_MATERIALS.generatedMapCount():0}),
     materialStats:()=>({scene:_collectMaterialStats(scene),characters:_characterMaterialStats(),viewmodel:_collectMaterialStats(gunGrp),knife:_collectMaterialStats(knifGrp)}),
+    renderer:()=>renderer,
+    scene:()=>scene,
+    camera:()=>camera,
+    setToneMappingExposure:(v)=>{if(renderer&&typeof v==='number')renderer.toneMappingExposure=v;return renderer?.toneMappingExposure;},
     screenPost:()=>G._screenPost||null,
     scopePip:()=>Object.assign({},_scopePipStatus,{target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
     vfxStress:(count)=>_debugSpawnVfxStress(count),
