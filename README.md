@@ -19,6 +19,27 @@ npm run build      # outputs dist/
 npm run preview    # serve dist/
 ```
 
+## Acceptance checks
+
+```
+npm run test:campaign
+npm run test:ai
+npm run test:perf
+npm run test:perf:stress
+npm run test:visual:runtime
+npm run test:render
+npm run test:acceptance
+npm run capture:baseline
+```
+
+`test:render` expects the Vite dev server on `http://127.0.0.1:5173` unless `BASE_URL` is set. It checks `auto`, `webgl`, and `webgpu` modes; screen post; scope PIP; texture-quality material tiers; all eight weapon slots; required enemy archetypes; player proxy/viewmodel metadata; character damage overlays; and low-LOD impostors.
+
+`test:visual:runtime` also expects the dev server. It walks all 12 building profiles across normal, ADS, focus, low HP, kill beat, death, menu, alarm, and blackout post states, then checks renderer metadata, PBR maps, screen post, shadows, and canvas nonblank pixel variation.
+
+`test:visual` captures all building baselines and expects a preview server on `http://127.0.0.1:4173` unless `BASE_URL` is set.
+
+`capture:baseline` creates a full AA acceptance pack under `screenshots/aa-baseline-pack/`: every building, the major gameplay post states, all weapon slots, scope PIP, renderer/material/perf metadata, and a Playwright session video.
+
 ## Layout
 
 ```
@@ -32,16 +53,26 @@ Firstp-r170/
 
 `public/assets/` is a symlink to `Firstp/assets/`. Files there are served at the root: `/assets/soldier-char.glb` etc. Edit GLBs in either location — both see the same files.
 
-## What's different from r128
+## Renderer and AA visual path
 
-The legacy 16k-line body is still in one file (`src/main.js`) and is unchanged except for four mechanical fixes:
+The r170 port now has an extracted renderer subsystem with a WebGPU-first high-end path and WebGL compatibility fallback.
 
-1. **Imports at top** instead of 11 r128 `<script src=...>` tags. Addons (`GLTFLoader`, `SkeletonUtils`, `EffectComposer`, `RenderPass`, `UnrealBloomPass`, `ShaderPass`) are imported as named exports and re-attached to a mutable `THREE` clone so legacy `THREE.GLTFLoader` references still work.
-2. **Light-intensity boost** — every `Ambient/Hemisphere/Directional/Point/Spot/RectAreaLight` constructor is wrapped to multiply `.intensity *= Math.PI`. r155+ flipped to physically-correct lighting; legacy intensities are ~π× too dim without this.
-3. **`renderer.outputColorSpace = SRGBColorSpace`** — replaces the deprecated `outputEncoding`.
-4. **`material.skinning = true` removed** at 4 sites — auto-detected in r155+, and setting it now throws.
+- `rendererMode`: `auto`, `webgpu`, or `webgl`; default is `auto`.
+- URL overrides: `?renderer=webgpu` and `?renderer=webgl`.
+- `auto` prefers WebGPU when browser initialization succeeds, then falls back to WebGL with a recorded fallback reason.
+- WebGL uses the composer stack: render pass, GTAO, bloom, color grade, SMAA, and output pass.
+- WebGPU uses a guarded node-post chain (`viewportTexture`, highlight bloom, film, FXAA, render output) plus the screen-space post overlay path, with direct rendering fallback if node post cannot initialize.
+- Scope PIP is routed through backend-neutral render-target calls and is covered by smoke tests in both backends.
 
-That's it — no PMREM, no OutputPass, no envMapIntensity touching. The original Phong/Lambert wall materials look identical to r128 since they aren't routed through `scene.environment`.
+Visual systems added in this branch include:
+
+- Per-building visual profiles, post profiles, atmosphere/fog/grade controls, and screen post overlays.
+- PBR material library with quality-scaled generated normal, roughness, and metalness maps.
+- Modular AA environment dressing, trim/decal density, authored shadow/fog/light profiles, and visual runtime metadata.
+- Human-like enemy archetype rigs with readable silhouettes, LODs, damage overlays, weak-point markers, and hitbox metadata.
+- Upgraded first-person hands/viewmodel, player proxy body, weapon surface detail pass, and scope PIP diagnostics.
+
+Legacy compatibility shims remain in place for imports, output color space, physically-correct light intensity, and r170 material/skinning behavior.
 
 ## When the rig misbehaves
 
@@ -73,6 +104,18 @@ The old standalone 12-level story prototype was removed so deploy, level select,
 - Perf HUD reports EMA fps/frame time, p99-ish frame spike, and `renderer.info` counters.
 - `window.__PERF.snapshot()` returns a JSON-safe baseline sample for regressions.
 - Additional settings persisted in `clearance_settings` include:
+  - `rendererMode`
+  - `postEnabled`
+  - `aoQuality` / `bloomQuality`
+  - `colorGrade` / `gradeIntensity`
+  - `filmGrain` / `sharpen` / `chromaticAberration` / `vignette` / `smaa`
+  - `shadowQuality`
+  - `atmosphereQuality`
+  - `textureQuality`
+  - `characterQuality`
+  - `weaponQuality`
+  - `renderScale`
+  - `scopePipEnabled` / `scopePipResolution`
   - `pixelRatioCap`
   - `maxPointLightsEffective`
   - `aiSkipFramesModulo`
@@ -88,3 +131,16 @@ The old standalone 12-level story prototype was removed so deploy, level select,
 3. Record a 10–20 second Chrome Performance trace while moving + combat.
 4. In DevTools console run `window.__PERF.snapshot()` and save output JSON.
 5. Attach one screenshot/GIF of the camera pose + HUD values with the trace.
+
+## Debug visual API
+
+The in-page debug surface is under `window.__game.debug`:
+
+- `rendererInfo()` reports backend, requested mode, WebGPU support, post path, render scale, and fallback reason.
+- `visualProfile()`, `postProfile()`, and `postContext()` expose active authored visual state.
+- `materialLibrary()` and `materialStats()` expose PBR family, quality, and texture-map coverage.
+- `weaponVisualStatus()` reports the active weapon viewmodel, AA detail parts, PBR/AA materials, and scope visibility.
+- `characterVisualStatus()` reports live archetypes, human shells, hitbox ownership, weak-point markers, LOD, weapon silhouettes, player proxy, and viewmodel profile.
+- `scopePip()` reports scope render-target status, material opacity, and backend render-target metadata.
+- `vfxStress()` spawns procedural impacts, smoke, dust, flashes, decals, and shell casings, then returns budgeted runtime stats.
+- `captureScreenshot()` and `capturePerf()` are available for manual visual QA.
