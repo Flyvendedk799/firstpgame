@@ -129,6 +129,7 @@ body{background:#000;overflow:hidden;font-family:'Rajdhani',sans-serif;color:#ff
 /* ── PAUSE MENU ────────────────────────────────────────────────────────── */
 #pause-menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.62);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);z-index:60;opacity:1;transition:opacity .22s;font-family:'Rajdhani',sans-serif}
 #pause-menu.pause-hidden{opacity:0;pointer-events:none}
+#pause-menu:not(.pause-hidden){pointer-events:auto}
 #pause-panel{width:min(440px,86vw);max-height:min(86vh,760px);overflow-y:auto;background:linear-gradient(180deg,rgba(14,16,22,.95),rgba(8,10,14,.95));border:1px solid rgba(255,200,80,.30);box-shadow:0 0 60px rgba(255,170,40,.10),inset 0 0 30px rgba(0,0,0,.4);padding:32px 30px;text-align:center;position:relative}
 #pause-panel::before,#pause-panel::after{content:'';position:absolute;width:18px;height:18px;border:1px solid rgba(255,200,80,.55)}
 #pause-panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
@@ -148,6 +149,16 @@ body{background:#000;overflow:hidden;font-family:'Rajdhani',sans-serif;color:#ff
 .quality-btn{flex:1;background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.30);color:rgba(255,255,255,.55);font-family:'Rajdhani',sans-serif;font-weight:700;font-size:11px;letter-spacing:.16em;padding:6px 4px;cursor:pointer;text-transform:uppercase;transition:background .12s,border-color .12s,color .12s}
 .quality-btn:hover{border-color:#ffd060}
 .quality-btn.active{background:#ffd060;color:#1a1206;border-color:#ffd060}
+.pause-match-row{width:100%;margin-bottom:18px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;text-align:left;background:rgba(8,12,22,.55);border:1px solid rgba(255,200,96,.22);border-radius:4px;box-sizing:border-box}
+.pause-match-row>.pause-label{flex:unset;margin-bottom:2px;color:rgba(255,220,140,.92)}
+.pause-match-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%}
+.pause-match-controls select{flex:1;min-width:0;max-width:100%;padding:8px 10px;background:#141820;color:#eaf0ff;border:1px solid rgba(255,255,255,.18);border-radius:3px;font-family:inherit;font-size:13px}
+.pause-match-controls input[type=number]{width:76px;padding:8px;background:#141820;color:#eaf0ff;border:1px solid rgba(255,255,255,.18);border-radius:3px;font-family:inherit;font-size:13px;font-variant-numeric:tabular-nums}
+.pause-match-controls #set-sens-match-apply{flex:0 0 auto;min-width:88px;padding:8px 12px;margin-left:auto;font-size:11px}
+.pause-match-hint{font-size:10px;line-height:1.5;color:rgba(255,255,255,.48);margin:0}
+.pause-match-hint a{text-decoration:none}
+.pause-match-hint a:hover{text-decoration:underline}
+.pause-match-status{font-size:10px;line-height:1.45;color:#9dd88a;margin:0;min-height:1.4em}
 /* ── FOCUS MODE ─────────────────────────────────────────────────────────── */
 #focus-bar{position:absolute;top:50%;right:36px;transform:translateY(-50%);width:6px;height:120px;background:rgba(40,80,140,.20);border:1px solid rgba(64,200,255,.32);border-radius:3px;overflow:hidden;display:flex;flex-direction:column-reverse;z-index:9}
 #focus-bar.active{box-shadow:0 0 16px #40c8ff;border-color:#40c8ff}
@@ -448,7 +459,18 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
       <button class="pause-btn pause-quit" id="pause-quit">QUIT TO MAIN MENU</button>
     </div>
     <div id="pause-settings" style="display:none">
-      <div class="pause-row"><label class="pause-label">SENSITIVITY</label><input id="set-sens" type="range" min="0.4" max="3" step="0.05"><span id="set-sens-val" class="pause-val">1.00</span></div>
+      <div class="pause-row"><label class="pause-label">SENSITIVITY</label><input id="set-sens" type="range" min="0.2" max="6" step="0.01"><span id="set-sens-val" class="pause-val">1.00</span></div>
+      <div class="pause-match-row">
+        <label class="pause-label" style="flex:unset">MATCH FROM GAME</label>
+        <div class="pause-match-controls">
+          <select id="set-sens-ref-game" aria-label="Reference game"></select>
+          <input id="set-sens-ref-value" type="number" inputmode="decimal" step="any" min="0.001" placeholder="Sens" aria-label="Sensitivity in reference game" title="In-game sensitivity in the reference title"/>
+          <input id="set-sens-ref-dpi" type="number" step="50" min="200" max="16000" value="800" aria-label="Mouse DPI" title="Mouse DPI — same number you use with external converters"/>
+          <button type="button" class="quality-btn" id="set-sens-match-apply">APPLY</button>
+        </div>
+        <p class="pause-match-hint">Same cm/360 idea as <a href="https://gamingsmart.com/mouse-sensitivity-converter/" target="_blank" rel="noopener noreferrer">GamingSmart</a> (per-game pages, e.g. <a href="https://gamingsmart.com/mouse-sensitivity-converter/marvel-rivals/" target="_blank" rel="noopener noreferrer">Marvel Rivals</a>). Rivals divisor is calibrated to GamingSmart’s live output (~1.257× vs CS). <span style="opacity:.62">Maintainers: <kbd>npm run test:sens:crosscheck</kbd> scrapes GamingSmart cm/360 for CS2 · Val · MR and fails if drift &gt; 0.05 cm.</span> COD / OW / Apex / FINALS stay ~approx.</p>
+        <p class="pause-match-status" id="set-sens-match-status"></p>
+      </div>
       <div class="pause-row"><label class="pause-label">FOV</label><input id="set-fov" type="range" min="60" max="110" step="1"><span id="set-fov-val" class="pause-val">75</span></div>
       <div class="pause-row"><label class="pause-label">QUALITY</label>
         <div style="flex:1;display:flex;gap:6px"><button class="quality-btn" data-q="low">LOW</button><button class="quality-btn" data-q="medium">MED</button><button class="quality-btn" data-q="high">HIGH</button><button class="quality-btn" data-q="ultra">ULTRA</button></div>

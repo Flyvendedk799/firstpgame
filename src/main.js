@@ -31,7 +31,13 @@ import {
   clearSessionFallback,
   resolveRendererPlan
 } from './rendering.js';
-import { createPbrMaterialLibrary } from './materialLibrary.js';
+import {
+  LOOK_RAD_PER_PIXEL_PER_SENS_UNIT as _MOUSE_LOOK_KP,
+  DEFAULT_MOUSE_DPI as _DEFAULT_MOUSE_DPI,
+  GAME_SENS_PRESETS,
+  matchingClearanceSens
+} from './mouseSensGames.js';
+import { createPbrMaterialLibrary, finalizePbrSurfaceTexture } from './materialLibrary.js';
 import {
   CHARACTER_ART_BIBLE,
   VISUAL_TARGETS,
@@ -1305,13 +1311,23 @@ const _padTex=(()=>{
 // the procedural path in materialLibrary.js — partial drops are safe.
 const _AA_TEX_LOADER=new THREE.TextureLoader();
 function _aaLoadTex(path,{isColor=false,repeat=3,channel=0}={}){
-  const t=_AA_TEX_LOADER.load(path,undefined,undefined,err=>console.warn('[aa-texture] failed to load',path,err));
-  t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
+  const t=_AA_TEX_LOADER.load(path,(tex)=>{
+    tex.wrapS=THREE.RepeatWrapping;
+    tex.wrapT=THREE.RepeatWrapping;
+    tex.repeat.set(repeat,repeat);
+    if(channel!==undefined)tex.channel=channel;
+    finalizePbrSurfaceTexture(THREE,tex,isColor);
+    try{
+      if(typeof renderer!=='undefined'&&renderer&&renderer.capabilities){
+        const mx=renderer.capabilities.getMaxAnisotropy();
+        tex.anisotropy=Math.min(mx,Math.max(tex.anisotropy||0,12));
+        tex.needsUpdate=true;
+      }
+    }catch(_){}
+  },undefined,err=>console.warn('[aa-texture] failed to load',path,err));
+  t.wrapS=THREE.RepeatWrapping;
+  t.wrapT=THREE.RepeatWrapping;
   t.repeat.set(repeat,repeat);
-  t.anisotropy=12;
-  t.minFilter=THREE.LinearMipmapLinearFilter||THREE.LinearFilter;
-  t.magFilter=THREE.LinearFilter;
-  t.colorSpace=isColor?THREE.SRGBColorSpace:THREE.NoColorSpace;
   if(channel!==undefined)t.channel=channel;
   return t;
 }
@@ -1365,9 +1381,19 @@ function _cloneConcreteFloorMaps(repeatX, repeatZ){
     const cl=src.clone();
     cl.wrapS=cl.wrapT=THREE.RepeatWrapping;
     cl.repeat.set(repeatX,repeatZ);
+    finalizePbrSurfaceTexture(THREE,cl,slot==='map');
     o[slot]=cl;
   }
   return o;
+}
+function _refreshAAPbrAnisotropy(){
+  if(typeof renderer==='undefined'||!renderer||!renderer.capabilities)return;
+  const mx=Math.min(renderer.capabilities.getMaxAnisotropy(),16);
+  for(const tex of Object.values(_aaAuthoredTextures)){
+    if(!tex||!tex.isTexture)continue;
+    tex.anisotropy=mx;
+    tex.needsUpdate=true;
+  }
 }
 const AA_MATERIALS=createPbrMaterialLibrary(THREE,{
   corrugated:_corrugatedTex,
@@ -8856,7 +8882,7 @@ try{
   scene.environmentIntensity=.86;
   pmrem.dispose();
 }catch(err){console.warn('[render] RoomEnvironment disabled:',err);}
-const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.05,120);
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.08,120);
 camera.rotation.order='YXZ';camera.layers.enable(1);scene.add(camera);
 const viewmodelFill=new THREE.PointLight(0xe4ecff,0.68,4.4,1.65);
 viewmodelFill.position.set(0.25,-0.12,0.45);
@@ -10313,7 +10339,7 @@ function _drawReloadHolo(curr,mag,progress){
 // Main camera renders both. Scope camera renders ONLY layer 0 so the magnified
 // view through the optic doesn't show the gun itself.
 const rtScope=new THREE.WebGLRenderTarget(768,768,{minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
-const scopeCamera=new THREE.PerspectiveCamera(28,1,.05,120);
+const scopeCamera=new THREE.PerspectiveCamera(28,1,.08,120);
 scopeCamera.layers.set(0);
 let scopeViewM_active=null;
 let _scopePipStressDown=0;
@@ -10922,6 +10948,15 @@ function tryLock(){
     setTimeout(()=>_requestPointerLockSafe(),400);
   }
 }
+// Fullscreen DOM overlays: never steal pointer-lock or blanket preventDefault — otherwise
+// sliders, selects and pause SETTINGS don’t respond; Esc fights the browser lock exit.
+const POINTER_DOM_UI_SELECTOR='#pause-menu,#overlay,#loadout-viewer,#level-select,#full-map,#skill-tree,#achievements-panel,#dossier-card,#story-card,#ending-overlay,#radial';
+function _evtTargetIsPointerDomUi(el){
+  return !!(el&&typeof el.closest==='function'&&el.closest(POINTER_DOM_UI_SELECTOR));
+}
+function _gameShouldCapturePointerLock(){
+  return !!(G.started&&!P.dead&&!G.menuOpen&&!G.invOpen&&!G.shopOpen);
+}
 document.addEventListener('pointerlockchange',()=>{
   locked=!!document.pointerLockElement;
   if(locked)gameFocused=true;
@@ -10948,13 +10983,14 @@ document.addEventListener('mousemove',e=>{
 canvas.addEventListener('mouseleave',()=>{_lastMX=null;_lastMY=null;});
 canvas.addEventListener('mouseenter',e=>{_lastMX=e.clientX;_lastMY=e.clientY;});
 document.addEventListener('mousedown',e=>{
-  e.preventDefault();
-  if(!locked){tryLock();}
   gameFocused=true;
   _lastMX=e.clientX;_lastMY=e.clientY;
   if(e.button===0)M.lmbHeld=true;
   if(e.button===1){M.mmbDown=true;tryQuickThrow();}
   if(e.button===2)M.rmbDown=true;
+  if(_evtTargetIsPointerDomUi(e.target))return;
+  if(_gameShouldCapturePointerLock())e.preventDefault();
+  if(!locked&&_gameShouldCapturePointerLock())tryLock();
 });
 document.addEventListener('mouseup',e=>{
   if(e.button===0)M.lmbHeld=false;
@@ -10962,8 +10998,35 @@ document.addEventListener('mouseup',e=>{
   if(e.button===2)M.rmbDown=false;
   _lastMX=null;_lastMY=null;
 });
-document.addEventListener('contextmenu',e=>e.preventDefault());
-document.addEventListener('keydown',e=>{K[e.code]=true;gameFocused=true;if(!G.started)return;
+document.addEventListener('contextmenu',e=>{
+  if(_evtTargetIsPointerDomUi(e.target))return;
+  e.preventDefault();
+});
+document.addEventListener('keydown',e=>{
+  K[e.code]=true;gameFocused=true;
+  if(e.code==='Escape'){
+    e.preventDefault();
+    const sp=document.getElementById('stats-panel');
+    if(sp&&sp.style.display==='block'){hideStatsPanel();return;}
+    if(G.invOpen){closeInventory();return;}
+    if(G.shopOpen){closeShop();return;}
+    const dc=document.getElementById('dossier-card');
+    if(dc&&dc.classList.contains('show')){hideDossier();return;}
+    const fm=document.getElementById('full-map');
+    if(fm&&fm.classList.contains('show')){hideFullMap();return;}
+    const ls=document.getElementById('level-select');
+    if(ls&&ls.classList.contains('show')){hideLevelSelect();return;}
+    const lv=document.getElementById('loadout-viewer');
+    if(lv&&lv.classList.contains('show')){hideLoadoutViewer();return;}
+    const st=document.getElementById('skill-tree');
+    if(st&&!st.classList.contains('st-hidden')){hideSkillTree();return;}
+    const ap=document.getElementById('achievements-panel');
+    if(ap&&!ap.classList.contains('ap-hidden')){hideAchievements();return;}
+    if(G.menuOpen)closeMenu(true);
+    else if(G.started&&!P.dead)openMenu();
+    return;
+  }
+  if(!G.started)return;
   const W=WEAPONS[P.weaponIdx];
   if(e.code==='KeyR'&&!P.reloading&&W.mag>P.ammo&&P.ammoRes>0&&!P.dead)startReload();
   if(e.code==='KeyR'&&P.dead)restartGame();
@@ -11004,12 +11067,6 @@ document.addEventListener('keydown',e=>{K[e.code]=true;gameFocused=true;if(!G.st
     }
   }
   if(e.code==='Tab'&&!P.dead){e.preventDefault();if(G.shopOpen)closeShop();toggleInventory();}
-  if(e.code==='Escape'){
-    if(G.invOpen)closeInventory();
-    else if(G.shopOpen)closeShop();
-    else if(G.menuOpen)closeMenu();
-    else if(G.started&&!P.dead)openMenu();
-  }
 });
 document.addEventListener('keyup',e=>{delete K[e.code];if(e.code==='KeyC')P.crouching=false;});
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
@@ -11482,7 +11539,7 @@ const SETTINGS=(()=>{
   // doesn't override them (the keys are missing) so old saves are forward-
   // compatible.
   let s={
-    sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,
+    sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,mouseDpi:800,lastSensRefGame:'valorant',invY:false,radar:true,dmgNum:true,
     scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
     pixelRatioCap:1.18,maxPointLightsEffective:24,perfHud:false,
     aiSkipFramesModulo:3,raycastSpatialIndex:true,
@@ -11546,6 +11603,10 @@ const SETTINGS=(()=>{
   if(s.smaa==null)s.smaa=true;
   if(s.vignette==null)s.vignette=false;
   if(s.visualPatchSettingsVersion==null)s.visualPatchSettingsVersion=VISUAL_PATCH_SETTINGS_VERSION;
+  if(s.mouseDpi==null||!Number.isFinite(Number(s.mouseDpi)))s.mouseDpi=_DEFAULT_MOUSE_DPI;
+  else s.mouseDpi=Math.round(THREE.MathUtils.clamp(Number(s.mouseDpi),200,16000));
+  if(typeof s.lastSensRefGame!=='string'||!s.lastSensRefGame)s.lastSensRefGame='valorant';
+  if(!GAME_SENS_PRESETS.some(x=>x.id===s.lastSensRefGame))s.lastSensRefGame='valorant';
   return s;
 })();
 _SETTINGS_FOR_RENDER=SETTINGS;
@@ -11575,6 +11636,7 @@ function _applyShadowQuality(){
   }
 }
 function applyQuality(){
+  _refreshAAPbrAnisotropy();
   const q=SETTINGS.quality||'high';
   const rs=SETTINGS.renderScale||'auto';
   if(rs!=='auto')_perfPixelScale=1;
@@ -11734,9 +11796,12 @@ function _updatePostProfile(hpRatio=1){
   return ctx;
 }
 function openMenu(){G.menuOpen=true;$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}}
-function closeMenu(){G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';if(G.started&&!P.dead)tryLock();}
+function closeMenu(relockPointer=true){
+  G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';
+  if(relockPointer&&G.started&&!P.dead)tryLock();
+}
 function quitToMain(){
-  closeMenu();
+  closeMenu(false);
   if(G.levelData){G.levelData.cleanup();G.levelData=null;}
   if(G.enemyMgr){G.enemyMgr.clear();}
   clearPickups();
@@ -16195,6 +16260,7 @@ function _drawBuildingMap(canvas,bn){
 }
 function showFullMap(){
   const m=$e('full-map');if(!m)return;
+  if(locked)try{document.exitPointerLock();}catch(_){}
   m.classList.add('show');
   // Tick map
   function _t(){
@@ -16207,6 +16273,7 @@ function showFullMap(){
 }
 function hideFullMap(){
   const m=$e('full-map');if(m)m.classList.remove('show');
+  if(G.started&&!P.dead&&!G.menuOpen)tryLock();
 }
 // ── EXTENDED SFX LIBRARY — bullet ricochet, near-miss whip, distant impact, casing clatter
 function sfxRicochet(){
@@ -17154,6 +17221,7 @@ function _showEnemyBark(enemy,kind){
 // ── LOADOUT VIEWER — pause-menu panel showing current weapon + attachments
 function showLoadoutViewer(){
   const lv=$e('loadout-viewer');if(!lv)return;
+  if(locked)try{document.exitPointerLock();}catch(_){}
   const w=WEAPONS[P.weaponIdx];
   const ammoNow=P.ammo,ammoMax=w.mag,res=P.ammoRes;
   // Stats display
@@ -17184,7 +17252,7 @@ function showLoadoutViewer(){
   `;
   lv.classList.add('show');
 }
-function hideLoadoutViewer(){const lv=$e('loadout-viewer');if(lv)lv.classList.remove('show');}
+function hideLoadoutViewer(){const lv=$e('loadout-viewer');if(lv)lv.classList.remove('show');if(G.started&&!P.dead&&!G.menuOpen)tryLock();}
 // ── LEVEL SELECT GRID — replay any cleared building
 function showLevelSelect(){
   const ls=$e('level-select');if(!ls)return;
@@ -20386,20 +20454,24 @@ $e('ap-close').addEventListener('click',hideAchievements);
 // Ending handlers
 $e('ending-back').addEventListener('click',hideEndingCinematic);
 // Pause menu wiring
-$e('pause-resume').addEventListener('click',closeMenu);
+$e('pause-resume').addEventListener('click',()=>closeMenu(true));
 $e('pause-settings-btn').addEventListener('click',()=>{$e('pause-buttons').style.display='none';$e('pause-settings').style.display='block';});
-$e('pause-loadout-btn').addEventListener('click',()=>{closeMenu();showLoadoutViewer();});
+$e('pause-loadout-btn').addEventListener('click',()=>{closeMenu(false);showLoadoutViewer();});
 $e('lv-back').addEventListener('click',hideLoadoutViewer);
 $e('fm-back').addEventListener('click',hideFullMap);
-$e('pause-skills-btn').addEventListener('click',()=>{closeMenu();showSkillTree();});
-$e('pause-ach-btn').addEventListener('click',()=>{closeMenu();showAchievements();});
+$e('pause-skills-btn').addEventListener('click',()=>{closeMenu(false);showSkillTree();});
+$e('pause-ach-btn').addEventListener('click',()=>{closeMenu(false);showAchievements();});
 $e('pause-quit').addEventListener('click',quitToMain);
 $e('set-back').addEventListener('click',()=>{$e('pause-buttons').style.display='flex';$e('pause-settings').style.display='none';});
-$e('set-sens').value=SETTINGS.sens;
+$e('set-sens').min='0.2';
+$e('set-sens').max='6';
+$e('set-sens').step='0.01';
+$e('set-sens').value=String(THREE.MathUtils.clamp(Number(SETTINGS.sens)||1,parseFloat($e('set-sens').min),parseFloat($e('set-sens').max)));
+SETTINGS.sens=parseFloat($e('set-sens').value);
 $e('set-fov').value=SETTINGS.fov;
-$e('set-sens-val').textContent=Number(SETTINGS.sens).toFixed(2);
+$e('set-sens-val').textContent=Number(SETTINGS.sens).toFixed(3);
 $e('set-fov-val').textContent=String(SETTINGS.fov);
-$e('set-sens').addEventListener('input',e=>{SETTINGS.sens=parseFloat(e.target.value);$e('set-sens-val').textContent=SETTINGS.sens.toFixed(2);saveSettings();});
+$e('set-sens').addEventListener('input',e=>{SETTINGS.sens=parseFloat(e.target.value);$e('set-sens-val').textContent=SETTINGS.sens.toFixed(3);saveSettings();});
 $e('set-fov').addEventListener('input',e=>{SETTINGS.fov=parseInt(e.target.value);$e('set-fov-val').textContent=SETTINGS.fov;saveSettings();});
 // New settings
 $e('set-adsens').value=SETTINGS.adsens;
@@ -20408,6 +20480,54 @@ $e('set-adsens').addEventListener('input',e=>{SETTINGS.adsens=parseFloat(e.targe
 $e('set-vol').value=SETTINGS.vol;
 $e('set-vol-val').textContent=Number(SETTINGS.vol).toFixed(2);
 $e('set-vol').addEventListener('input',e=>{SETTINGS.vol=parseFloat(e.target.value);$e('set-vol-val').textContent=SETTINGS.vol.toFixed(2);saveSettings();});
+(function _wireSensMatchFromGame(){
+  const sel=$e('set-sens-ref-game'),inp=$e('set-sens-ref-value'),dpiIn=$e('set-sens-ref-dpi'),btn=$e('set-sens-match-apply'),st=$e('set-sens-match-status');
+  if(!sel||!inp||!dpiIn||!btn)return;
+  for(const g of GAME_SENS_PRESETS){
+    const o=document.createElement('option');
+    o.value=g.id;
+    o.textContent=g.approximate?`${g.label} (~approx.)`:g.label;
+    sel.appendChild(o);
+  }
+  if(GAME_SENS_PRESETS.some(x=>x.id===SETTINGS.lastSensRefGame))sel.value=SETTINGS.lastSensRefGame;
+  else{SETTINGS.lastSensRefGame=GAME_SENS_PRESETS[0].id;sel.value=SETTINGS.lastSensRefGame;}
+  dpiIn.value=String(Math.round(THREE.MathUtils.clamp(Number(SETTINGS.mouseDpi)||_DEFAULT_MOUSE_DPI,200,16000)));
+  SETTINGS.mouseDpi=parseInt(dpiIn.value,10)||_DEFAULT_MOUSE_DPI;
+  dpiIn.addEventListener('change',()=>{
+    let d=parseInt(dpiIn.value,10);
+    if(!Number.isFinite(d))d=_DEFAULT_MOUSE_DPI;
+    d=THREE.MathUtils.clamp(Math.round(d),200,16000);
+    SETTINGS.mouseDpi=d;dpiIn.value=String(d);saveSettings();if(st)st.textContent='';
+  });
+  btn.addEventListener('click',()=>{
+    SETTINGS.lastSensRefGame=sel.value;
+    const dpi=THREE.MathUtils.clamp(parseInt(dpiIn.value,10)||SETTINGS.mouseDpi,200,16000);
+    SETTINGS.mouseDpi=dpi;dpiIn.value=String(dpi);
+    const refSens=parseFloat(String(inp.value).replace(',','.'));
+    if(!Number.isFinite(refSens)||refSens<=0){
+      if(st)st.textContent='Enter the sensitivity value from the other game.';
+      return;
+    }
+    const next=matchingClearanceSens(sel.value,refSens,dpi);
+    if(next==null||!Number.isFinite(next)){
+      if(st)st.textContent='Could not convert — try another game pick or check the value.';
+      return;
+    }
+    const minS=parseFloat($e('set-sens').min),maxS=parseFloat($e('set-sens').max);
+    const nv=THREE.MathUtils.clamp(next,minS,maxS);
+    const clamped=Math.abs(nv-next)>1e-6;
+    SETTINGS.sens=nv;$e('set-sens').value=String(nv);
+    $e('set-sens-val').textContent=nv.toFixed(3);
+    const cm360=(2*Math.PI*2.54)/(_MOUSE_LOOK_KP*nv*dpi);
+    const cmRounded=Number.isFinite(cm360)&&cm360>0?Math.round(cm360):null;
+    saveSettings();
+    if(st){
+      st.textContent=clamped
+        ?(`≈ ${nv.toFixed(3)} in-game (${cmRounded!=null?`~${cmRounded} cm/360`:'cm/360 n/a'}, capped — nudge DPI or slider).`)
+        :(`≈ ${nv.toFixed(3)} in-game${cmRounded!=null?`, ~${cmRounded} cm/360 at ${dpi} DPI`:` at ${dpi} DPI`}.`);
+    }
+  });
+})();
 function _toggleSetting(id,key){
   const b=$e(id);if(!b)return;
   function refresh(){b.textContent=SETTINGS[key]?'ON':'OFF';b.classList.toggle('active',!!SETTINGS[key]);}
@@ -21508,7 +21628,7 @@ renderer.setAnimationLoop(()=>{
   if(G.menuOpen){_renderFrameDirect(camera);return;} // pause world while menu open
   const walls=G.levelData?G.levelData.walls:[];
   // Mouse look (sensitivity scaled by user settings)
-  const _ms=.0018*SETTINGS.sens;
+  const _ms=_MOUSE_LOOK_KP*SETTINGS.sens;
   // ADS sensitivity multiplier — slow look while ADS for precision
   const adsMs=P.ads>.4?(SETTINGS.adsens||1.0):1.0;
   const yMul=SETTINGS.invY?-1:1;

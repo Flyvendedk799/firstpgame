@@ -19,7 +19,8 @@
     "test:perf": "node scripts/perf-snapshot.mjs",
     "test:perf:stress": "node scripts/perf-stress.mjs",
     "test:visual": "node scripts/visual-regression.mjs",
-    "gen:textures": "node scripts/gen-procedural-materials.mjs"
+    "gen:textures": "node scripts/gen-procedural-materials.mjs",
+    "test:sens:crosscheck": "node scripts/sens-gamingsmart-crosscheck.mjs"
   },
   "dependencies": {
     "three": "0.170.0"

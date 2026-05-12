@@ -65,6 +65,7 @@ function makeColorGradeShader(THREE) {
 
       void main() {
         vec2 px = 1.0 / max(resolution, vec2(1.0));
+        vec2 pxW = px * 1.42;
         vec2 dir = vUv - 0.5;
         vec2 ca = dir * aberration;
 
@@ -74,10 +75,10 @@ function makeColorGradeShader(THREE) {
         col.b = texture2D(tDiffuse, vUv - ca).b;
 
         vec3 blur = (
-          texture2D(tDiffuse, vUv + vec2(px.x, 0.0)).rgb +
-          texture2D(tDiffuse, vUv - vec2(px.x, 0.0)).rgb +
-          texture2D(tDiffuse, vUv + vec2(0.0, px.y)).rgb +
-          texture2D(tDiffuse, vUv - vec2(0.0, px.y)).rgb
+          texture2D(tDiffuse, vUv + vec2(pxW.x, 0.0)).rgb +
+          texture2D(tDiffuse, vUv - vec2(pxW.x, 0.0)).rgb +
+          texture2D(tDiffuse, vUv + vec2(0.0, pxW.y)).rgb +
+          texture2D(tDiffuse, vUv - vec2(0.0, pxW.y)).rgb
         ) * 0.25;
         col = mix(col, col + (col - blur), sharpen);
 
@@ -93,7 +94,10 @@ function makeColorGradeShader(THREE) {
         float d = distance(vUv, vec2(0.5));
         col *= 1.0 - smoothstep(0.30, 0.82, d) * vignette;
 
-        float n = hash(floor(vUv * resolution) + vec2(17.0, 91.0)) - 0.5;
+        // Film grain ~2× coarser than 1×1 pixels so it reads as grain, not CRT crawl
+        // when the camera / player moves quickly across textured surfaces.
+        vec2 filmCell = floor(vUv * resolution * 0.30);
+        float n = hash(filmCell + vec2(17.0, 91.0)) - 0.5;
         col += n * grain;
 
         gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(1.0)), 1.0);
@@ -619,7 +623,7 @@ export function createRenderSubsystem({
     if (passes.gtao) {
       passes.gtao.enabled = postEnabled && aoQuality !== 'off' && q !== 'medium-low';
       // High quality uses a tighter blend — closer to "medium‑high" than ultra-ish.
-      passes.gtao.blendIntensity = ({ low: 0, medium: 0.24, high: 0.30, ultra: 0.56 }[aoQuality] ?? 0.30) * aoMul;
+      passes.gtao.blendIntensity = ({ low: 0, medium: 0.22, high: 0.26, ultra: 0.52 }[aoQuality] ?? 0.26) * aoMul;
       // Full GTAO sample cost is meant for ultra; otherwise cap internal quality.
       let effAo = aoQuality;
       if (effAo === 'ultra' && q !== 'ultra') effAo = 'high';
@@ -643,9 +647,9 @@ export function createRenderSubsystem({
             thickness: 0.685,
             scale: 0.735,
             samples: 6,
-            lumaPhi: 7.4,
+            lumaPhi: 8.1,
             depthPhi: 1.94,
-            normalPhi: 2.85,
+            normalPhi: 2.95,
             pdRadius: 7,
             pdSamples: 8
           },
@@ -679,9 +683,9 @@ export function createRenderSubsystem({
           thickness: 0.685,
           scale: 0.735,
           samples: 6,
-          lumaPhi: 7.4,
-          depthPhi: 1.94,
-          normalPhi: 2.85,
+          lumaPhi: 8.55,
+          depthPhi: 2.02,
+          normalPhi: 3.12,
           pdRadius: 7,
           pdSamples: 8
         });
@@ -722,8 +726,8 @@ export function createRenderSubsystem({
       passes.grade.uniforms.cool.value = THREE.MathUtils.clamp(grade.cool ?? 0.08, -0.04, 0.28);
       passes.grade.uniforms.vignette.value = nextSettings.vignette === false ? 0 : THREE.MathUtils.clamp(grade.vignette ?? 0.22, 0, 0.36);
       passes.grade.uniforms.grain.value = nextSettings.filmGrain === false ? 0 : THREE.MathUtils.clamp(grade.grain ?? 0.0, 0, 0.012);
-      passes.grade.uniforms.aberration.value = nextSettings.chromaticAberration === false ? 0 : THREE.MathUtils.clamp(grade.aberration ?? ({ medium: 0.00018, high: 0.00030, ultra: 0.00042 }[q] ?? 0.00024), 0, 0.0007);
-      passes.grade.uniforms.sharpen.value = nextSettings.sharpen === false ? 0 : THREE.MathUtils.clamp(grade.sharpen ?? ({ medium: 0.035, high: 0.055, ultra: 0.075 }[q] ?? 0.05), 0, 0.10);
+      passes.grade.uniforms.aberration.value = nextSettings.chromaticAberration === false ? 0 : THREE.MathUtils.clamp(grade.aberration ?? ({ medium: 0.00014, high: 0.00022, ultra: 0.00038 }[q] ?? 0.00020), 0, 0.0007);
+      passes.grade.uniforms.sharpen.value = nextSettings.sharpen === false ? 0 : THREE.MathUtils.clamp(grade.sharpen ?? ({ medium: 0.024, high: 0.034, ultra: 0.050 }[q] ?? 0.032), 0, 0.10);
     }
     if (passes.smaa) passes.smaa.enabled = postEnabled && nextSettings.smaa !== false;
     if (passes.output) passes.output.enabled = true;

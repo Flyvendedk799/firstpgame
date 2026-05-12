@@ -4,6 +4,20 @@
 // the procedural generator. This lets us drop a new texture set into
 // public/assets/materials/<name>/ and wire it via a single line in main.js
 // without touching the renderer.
+// Public helper: consistent filtering for all PBR maps (authored PNG, procedural canvas,
+// or runtime clones). Prevents grazing-angle / motion “shimmer” from nearest-level mip
+// hopping and undersampled anisotropy.
+export function finalizePbrSurfaceTexture(THREE, tex, isColor = false) {
+  if (!tex || !tex.isTexture) return tex;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.anisotropy = Math.max(tex.anisotropy || 0, 12);
+  if ('colorSpace' in tex) tex.colorSpace = isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function authoredMaps(name, extras = {}) {
   return {
     map: `${name}Albedo`,
@@ -16,7 +30,7 @@ function authoredMaps(name, extras = {}) {
 }
 const MATERIAL_PRESETS = {
   concrete: {
-    color: 0xffffff, roughness: 0.88, metalness: 0.02, normalScale: 0.46,
+    color: 0xffffff, roughness: 0.895, metalness: 0.02, normalScale: 0.42,
     ...authoredMaps('concrete')
   },
   tile: { color: 0xd8ddd8, roughness: 0.46, metalness: 0.00, normalScale: 0.38, ...authoredMaps('tile') },
@@ -107,6 +121,10 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(type === 'normal' ? 3 : 2, type === 'normal' ? 3 : 2);
     tex.colorSpace = THREE.NoColorSpace;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 8;
     tex.userData = { aaGeneratedMap: type, aaMaterial: name };
     generatedMaps.set(key, tex);
     return tex;
@@ -124,10 +142,7 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     if (!tex || !tex.isTexture) return tex || null;
     tex.wrapS = tex.wrapS || THREE.RepeatWrapping;
     tex.wrapT = tex.wrapT || THREE.RepeatWrapping;
-    tex.anisotropy = Math.max(tex.anisotropy || 0, 8);
-    if ('colorSpace' in tex) tex.colorSpace = isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    if ('minFilter' in tex) tex.minFilter = THREE.LinearMipmapLinearFilter || THREE.LinearFilter;
-    if ('magFilter' in tex) tex.magFilter = THREE.LinearFilter;
+    finalizePbrSurfaceTexture(THREE, tex, isColor);
     return tex;
   }
   function get(name, overrides = {}) {
