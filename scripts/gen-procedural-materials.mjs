@@ -112,13 +112,13 @@ const presets = {
   // Industrial cast slab — optimised for dock/subway/outdoor floors
   concrete: S => ({
     seed: S,
-    r: [0.454, 0.462, 0.474],
-    aoStrength: 0.74,
+    r: [0.56, 0.57, 0.565],
+    aoStrength: 0.50,
     height: (u, v) => {
-      const joint = gridLines(u, v, 4, 0.022);
-      const pit = fbm(u, v, 16, S) * 0.11;
-      const wear = scratchField(u * 0.9, v * 1.6, S + 55) * 0.26;
-      return (1 - joint) * 0.34 + pit + wear;
+      const joint = gridLines(u, v, 3, 0.012);
+      const pit = fbm(u, v, 10, S) * 0.07;
+      const wear = scratchField(u * 0.9, v * 1.6, S + 55) * 0.10;
+      return (1 - joint) * 0.18 + pit + wear;
     },
     rough: (u, v, _h, sc) =>
       clamp(
@@ -126,8 +126,7 @@ const presets = {
         0.62,
         0.96
       ),
-    metal: (u, v) =>
-      clamp(0.035 + scratchField(u, v, S + 4) * 0.05 + fbm(u, v, 11, S) * 0.035, 0, 0.12),
+    metal: () => 0,
     scratch: S + 777
   }),
   paintedMetal: S => ({
@@ -460,25 +459,6 @@ function generateMaterial(id) {
     let rr = clamp(Math.round(255 * p.r[0] * mod), 0, 255);
     let gg = clamp(Math.round(255 * p.r[1] * mod), 0, 255);
     let bb = clamp(Math.round(255 * p.r[2] * mod), 0, 255);
-    if (id === 'concrete') {
-      const stripe =
-        smoothstep(0.212, 0.264, v) * smoothstep(0.332, 0.282, v);
-      if (stripe > 1e-4) {
-        const sr = 212;
-        const sg = 170;
-        const sb = 44;
-        const t = stripe * 0.88;
-        rr = clamp(Math.round(rr * (1 - t) + sr * t), 0, 255);
-        gg = clamp(Math.round(gg * (1 - t) + sg * t), 0, 255);
-        bb = clamp(Math.round(bb * (1 - t) + sb * t), 0, 255);
-      }
-      const hatch = stripe * scratchField(u * 280, v * 12, p.seed + 333);
-      if (hatch > 0.82) {
-        rr = clamp(rr - 62, 0, 255);
-        gg = clamp(gg - 52, 0, 255);
-        bb = clamp(bb - 8, 0, 255);
-      }
-    }
     return { r: rr, g: gg, b: bb, a: 255 };
   });
 

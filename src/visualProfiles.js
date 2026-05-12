@@ -793,8 +793,44 @@ export const DECAL_LAYERS = [
   { id: 'scorch', maxActive: 16, persistenceMs: Infinity }
 ];
 
+const VISUAL_GRADE_LIMITS = {
+  exposure: [0.96, 1.14],
+  contrast: [0.96, 1.16],
+  saturation: [0.84, 1.08],
+  warm: [-0.04, 0.26],
+  cool: [-0.04, 0.26],
+  vignette: [0, 0.32],
+  grain: [0, 0.008],
+  aberration: [0, 0.00045],
+  sharpen: [0, 0.075]
+};
+
+function clampGradeValue(key, value) {
+  const limits = VISUAL_GRADE_LIMITS[key];
+  if (!limits || !Number.isFinite(value)) return value;
+  return Math.min(limits[1], Math.max(limits[0], value));
+}
+
+function polishVisualProfile(profile) {
+  if (!profile) return profile;
+  const grade = { ...(profile.grade || {}) };
+  for (const key of Object.keys(VISUAL_GRADE_LIMITS)) {
+    if (grade[key] != null) grade[key] = clampGradeValue(key, grade[key]);
+  }
+  grade.grain = Math.min(grade.grain ?? 0, VISUAL_GRADE_LIMITS.grain[1]);
+  grade.aberration = Math.min(grade.aberration ?? 0.00025, VISUAL_GRADE_LIMITS.aberration[1]);
+  grade.sharpen = Math.min(grade.sharpen ?? 0.05, VISUAL_GRADE_LIMITS.sharpen[1]);
+  grade.bloomThreshold = Math.max(grade.bloomThreshold ?? 0.92, 0.90);
+  return {
+    ...profile,
+    grade,
+    atmosphere: profile.atmosphere ? { ...profile.atmosphere } : profile.atmosphere
+  };
+}
+
 export function getVisualProfile(building) {
-  return VISUAL_TARGETS[building] || VISUAL_TARGETS[((building - 1) % 8) + 1] || VISUAL_TARGETS[1];
+  const profile = VISUAL_TARGETS[building] || VISUAL_TARGETS[((building - 1) % 8) + 1] || VISUAL_TARGETS[1];
+  return polishVisualProfile(profile);
 }
 
 export function getLightingProfile(building) {

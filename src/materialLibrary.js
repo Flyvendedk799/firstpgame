@@ -16,7 +16,7 @@ function authoredMaps(name, extras = {}) {
 }
 const MATERIAL_PRESETS = {
   concrete: {
-    color: 0xffffff, roughness: 1.0, metalness: 1.0, normalScale: 0.75,
+    color: 0xffffff, roughness: 0.88, metalness: 0.02, normalScale: 0.46,
     ...authoredMaps('concrete')
   },
   tile: { color: 0xd8ddd8, roughness: 0.46, metalness: 0.00, normalScale: 0.38, ...authoredMaps('tile') },
@@ -34,7 +34,7 @@ const MATERIAL_PRESETS = {
   brass: { color: 0xc49a46, roughness: 0.28, metalness: 0.74, envMapIntensity: 1.20, normalScale: 0.18, ...authoredMaps('brass') },
   chrome: { color: 0xa8b0b8, roughness: 0.18, metalness: 0.88, envMapIntensity: 1.30, normalScale: 0.16, ...authoredMaps('chrome') },
   leather: { color: 0x3a2216, roughness: 0.70, metalness: 0.02, normalScale: 0.42, ...authoredMaps('leather') },
-  wetSurface: { color: 0x101820, roughness: 0.12, metalness: 0.02, transparent: true, opacity: 0.46, envMapIntensity: 1.40 },
+  wetSurface: { color: 0x101820, roughness: 0.18, metalness: 0.01, transparent: true, opacity: 0.34, envMapIntensity: 1.10 },
   grime: { color: 0x080808, roughness: 0.96, metalness: 0.00, transparent: true, opacity: 0.40 },
   decal: { color: 0x080608, roughness: 0.90, metalness: 0.00, transparent: true, opacity: 0.72 },
   emissivePanel: { color: 0xffffff, roughness: 0.35, metalness: 0.05, emissive: 0xffffff, emissiveIntensity: 0.55 },
@@ -53,7 +53,7 @@ const QUALITY = {
   low: { maps: false, normalScale: 0.35, envMapIntensity: 0.35, emissiveIntensity: 0.70 },
   medium: { maps: true, normalScale: 0.65, envMapIntensity: 0.65, emissiveIntensity: 0.85 },
   high: { maps: true, normalScale: 1.0, envMapIntensity: 1.0, emissiveIntensity: 1.0 },
-  ultra: { maps: true, normalScale: 1.18, envMapIntensity: 1.18, emissiveIntensity: 1.10 }
+  ultra: { maps: true, normalScale: 1.08, envMapIntensity: 1.10, emissiveIntensity: 1.04 }
 };
 
 export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () => ({})) {
@@ -120,17 +120,27 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     if (typeof map === 'string') return textures[map] || null;
     return map || null;
   }
+  function prepareMap(tex, isColor = false) {
+    if (!tex || !tex.isTexture) return tex || null;
+    tex.wrapS = tex.wrapS || THREE.RepeatWrapping;
+    tex.wrapT = tex.wrapT || THREE.RepeatWrapping;
+    tex.anisotropy = Math.max(tex.anisotropy || 0, 8);
+    if ('colorSpace' in tex) tex.colorSpace = isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    if ('minFilter' in tex) tex.minFilter = THREE.LinearMipmapLinearFilter || THREE.LinearFilter;
+    if ('magFilter' in tex) tex.magFilter = THREE.LinearFilter;
+    return tex;
+  }
   function get(name, overrides = {}) {
     const base = profiles[name] || profiles.concrete;
     const settings = getSettings() || {};
     const requestedQuality = settings.textureQuality || settings.quality || 'high';
     const qualityName = QUALITY[requestedQuality] ? requestedQuality : 'high';
     const q = QUALITY[qualityName] || QUALITY.high;
-    const map = pickMap(overrides.map ?? base.map, q);
-    const normalMap = pickMap(overrides.normalMap ?? base.normalMap ?? (q.maps ? generatedMap(name, 'normal') : null), q);
-    const roughnessMap = pickMap(overrides.roughnessMap ?? base.roughnessMap ?? (q.maps ? generatedMap(name, 'roughness') : null), q);
-    const metalnessMap = pickMap(overrides.metalnessMap ?? base.metalnessMap ?? (q.maps ? generatedMap(name, 'metalness') : null), q);
-    const aoMap = pickMap(overrides.aoMap ?? base.aoMap, q);
+    const map = prepareMap(pickMap(overrides.map ?? base.map, q), true);
+    const normalMap = prepareMap(pickMap(overrides.normalMap ?? base.normalMap ?? (q.maps ? generatedMap(name, 'normal') : null), q));
+    const roughnessMap = prepareMap(pickMap(overrides.roughnessMap ?? base.roughnessMap ?? (q.maps ? generatedMap(name, 'roughness') : null), q));
+    const metalnessMap = prepareMap(pickMap(overrides.metalnessMap ?? base.metalnessMap ?? (q.maps ? generatedMap(name, 'metalness') : null), q));
+    const aoMap = prepareMap(pickMap(overrides.aoMap ?? base.aoMap, q));
     const emissive = overrides.emissive ?? base.emissive ?? 0x000000;
     const emissiveIntensity = (overrides.emissiveIntensity ?? base.emissiveIntensity ?? 1) * q.emissiveIntensity;
     const mat = new THREE.MeshStandardMaterial({
@@ -185,4 +195,3 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
     categories: () => Object.keys(profiles).slice()
   };
 }
-

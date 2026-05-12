@@ -49,7 +49,7 @@ body{background:#000;overflow:hidden;font-family:'Rajdhani',sans-serif;color:#ff
 #overlay h1{font-size:72px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;line-height:1}
 #overlay h2{font-size:18px;font-weight:500;letter-spacing:.2em;color:rgba(255,255,255,.5)}
 #menu-bg-fx{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.menu-scanline{position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,200,80,.04) 0px,rgba(255,200,80,.04) 1px,transparent 1px,transparent 4px);pointer-events:none}
+.menu-scanline{position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,220,150,.035),transparent 34%,rgba(80,150,220,.025));pointer-events:none}
 .menu-glow{position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none}
 .menu-glow-1{width:600px;height:600px;background:radial-gradient(circle,rgba(255,180,40,.25) 0%,rgba(255,180,40,0) 70%);top:8%;left:-15%;animation:glowPulse 6s ease-in-out infinite}
 .menu-glow-2{width:500px;height:500px;background:radial-gradient(circle,rgba(40,140,255,.20) 0%,rgba(40,140,255,0) 70%);bottom:-5%;right:-10%;animation:glowPulse 8s ease-in-out infinite reverse}
@@ -88,10 +88,9 @@ body{background:#000;overflow:hidden;font-family:'Rajdhani',sans-serif;color:#ff
 #reload-fill{height:100%;background:#fff;width:0%;border-radius:2px;transition:width .04s linear}
 #lean-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}
 #scope-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:6;--scope-tint:rgba(80,180,255,.12);background:radial-gradient(ellipse at 50% 50%, transparent 22%, var(--scope-tint) 58%, rgba(0,0,0,.55) 70%, rgba(0,0,0,.78) 100%);transition:opacity .10s ease}
-/* Cinematic color grade — subtle teal lift in shadows, warm cast in lower screen */
-#color-grade{position:fixed;inset:0;pointer-events:none;z-index:4;mix-blend-mode:overlay;opacity:.28;background:linear-gradient(180deg,rgba(20,55,95,.22) 0%,rgba(0,0,0,0) 38%,rgba(0,0,0,0) 60%,rgba(120,55,25,.16) 100%)}
-#post-grain{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;mix-blend-mode:overlay;background-image:radial-gradient(circle at 18% 22%,rgba(255,255,255,.34) 0 1px,transparent 1.5px),radial-gradient(circle at 72% 64%,rgba(0,0,0,.32) 0 1px,transparent 1.6px),linear-gradient(115deg,rgba(255,255,255,.10),rgba(0,0,0,.12));background-size:97px 83px,131px 109px,173px 157px;animation:postGrainShift .72s steps(2,end) infinite}
-@keyframes postGrainShift{0%{transform:translate3d(0,0,0)}50%{transform:translate3d(-2%,1%,0)}100%{transform:translate3d(1%,-2%,0)}}
+/* Cinematic color grade — soft light wash only; no scanline/noise animation. */
+#color-grade{position:fixed;inset:0;pointer-events:none;z-index:4;mix-blend-mode:soft-light;opacity:.12;background:linear-gradient(180deg,rgba(20,55,95,.12) 0%,rgba(0,0,0,0) 40%,rgba(0,0,0,0) 62%,rgba(120,55,25,.08) 100%)}
+#post-grain{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;mix-blend-mode:soft-light;background-image:radial-gradient(circle at 18% 22%,rgba(255,255,255,.14) 0 1px,transparent 1.5px),radial-gradient(circle at 72% 64%,rgba(0,0,0,.12) 0 1px,transparent 1.6px);background-size:149px 131px,191px 173px}
 /* Kill micro-beat — quick bright flash on every confirmed kill */
 #kill-beat{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:8;background:rgba(255,255,255,.7);mix-blend-mode:overlay;transition:opacity .08s ease-out}
 /* Cinematic briefing card — building intro between transitions */

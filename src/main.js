@@ -17,6 +17,7 @@ import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass }          from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass }          from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass }        from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment }   from 'three/addons/environments/RoomEnvironment.js';
 import { applySequenceLayout, getSequenceGameplayProfile } from './levelSequences.js';
 import {
   createBaseRenderer,
@@ -101,14 +102,10 @@ import {
 // 16k-line body uses.
 const THREE = Object.assign({}, THREE_NS);
 
-// r155+ enabled THREE.ColorManagement by default. Hex literals like 0x1c1c20
-// in the legacy material code were authored against r128 (no color management)
-// where they were treated as linear values directly. Under the new default
-// they're interpreted as sRGB → squared into linear → tone-mapped → render
-// ~30% darker. Disable color management to match r128 color behavior.
-// GLB textures (PBR maps from GLTFLoader) still get correct color-space
-// handling via texture.colorSpace, set automatically by the loader.
-THREE_NS.ColorManagement.enabled = false;
+// Keep modern color management enabled. The procedural PBR pass now uses sRGB
+// color textures, ACES tone mapping, and physically plausible metalness, so
+// retaining r170's color pipeline avoids the neon/washed-out legacy look.
+THREE_NS.ColorManagement.enabled = true;
 THREE.ColorManagement = THREE_NS.ColorManagement;
 
 THREE.GLTFLoader      = GLTFLoader;
@@ -122,10 +119,11 @@ THREE.SMAAPass        = SMAAPass;
 THREE.OutputPass      = OutputPass;
 window.THREE = THREE;
 
-// ─── Light-intensity boost (r155+ physically-correct mode) ─────────────────
-// Pre-r155, intensities were arbitrary units; r155+ uses lux/candela. Legacy
-// values look ~π× too dim. Wrap the constructors so call-sites need no edits.
-const _LIGHT_BOOST = Math.PI;
+// ─── Light-intensity bridge (r155+ physically-correct mode) ────────────────
+// The old π boost made every authored source feel like a blown-out work light
+// once the project moved to PBR. A smaller bridge keeps legacy levels readable
+// while preserving warmer falloff, shadow depth, and material detail.
+const _LIGHT_BOOST = 1.82;
 for (const cls of ['AmbientLight','HemisphereLight','DirectionalLight','PointLight','SpotLight','RectAreaLight']) {
   const Orig = THREE_NS[cls];
   if (!Orig) continue;
@@ -143,6 +141,8 @@ function _readBootSettings(){
   try{const raw=localStorage.getItem('clearance_settings');return raw?JSON.parse(raw):{};}catch(_){return {};}
 }
 const _BOOT_SETTINGS=_readBootSettings();
+// Points at saved boot JSON until SETTINGS IIFE completes (avoids TDZ on SETTINGS during early _configureRenderStack).
+let _SETTINGS_FOR_RENDER=_BOOT_SETTINGS;
 const _AA_PBR_BOOT=_BOOT_SETTINGS.cheapMaterials!==true&&_BOOT_SETTINGS.pbrMaterials!==false;
 function _legacyMaterialParamsToPbr(params={},kind='phong'){
   const shininess=Number.isFinite(params.shininess)?params.shininess:(kind==='lambert'?8:45);
@@ -160,7 +160,7 @@ function _legacyMaterialParamsToPbr(params={},kind='phong'){
     side:params.side==null?THREE_NS.FrontSide:params.side,
     alphaTest:params.alphaTest||0,
     roughness:THREE_NS.MathUtils.clamp(1-(shininess/320),0.18,kind==='lambert'?0.92:0.86),
-    metalness:THREE_NS.MathUtils.clamp(specLum*.42,0,0.55),
+    metalness:THREE_NS.MathUtils.clamp(specLum*.18,0,0.24),
     normalMap:params.normalMap||null,
     roughnessMap:params.roughnessMap||null,
     metalnessMap:params.metalnessMap||null,
@@ -259,6 +259,57 @@ const _softRadialTex=(()=>{
   t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
   return t;
 })();
+const _grimeStreakTex=(()=>{
+  const c=document.createElement('canvas');c.width=512;c.height=512;
+  const g=c.getContext('2d');g.clearRect(0,0,512,512);
+  for(let i=0;i<90;i++){
+    const x=Math.random()*512,w=2+Math.random()*16,h=70+Math.random()*360;
+    const y=Math.random()*180-40;
+    const grad=g.createLinearGradient(0,y,0,y+h);
+    grad.addColorStop(0,'rgba(255,255,255,0)');
+    grad.addColorStop(.12,`rgba(255,255,255,${.035+Math.random()*.085})`);
+    grad.addColorStop(.72,`rgba(255,255,255,${.015+Math.random()*.045})`);
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    g.fillStyle=grad;g.fillRect(x,y,w,h);
+  }
+  for(let i=0;i<40;i++){
+    const x=Math.random()*512,y=280+Math.random()*190,r=18+Math.random()*70;
+    const grad=g.createRadialGradient(x,y,0,x,y,r);
+    grad.addColorStop(0,'rgba(255,255,255,.11)');
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    g.fillStyle=grad;g.fillRect(x-r,y-r,r*2,r*2);
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
+  t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
+  return t;
+})();
+const _floorScuffTex=(()=>{
+  const c=document.createElement('canvas');c.width=512;c.height=512;
+  const g=c.getContext('2d');g.clearRect(0,0,512,512);
+  for(let i=0;i<130;i++){
+    const x=Math.random()*512,y=Math.random()*512,len=20+Math.random()*130;
+    g.save();g.translate(x,y);g.rotate((Math.random()-.5)*.8);
+    const grad=g.createLinearGradient(-len/2,0,len/2,0);
+    grad.addColorStop(0,'rgba(255,255,255,0)');
+    grad.addColorStop(.2,`rgba(255,255,255,${.025+Math.random()*.07})`);
+    grad.addColorStop(.8,`rgba(255,255,255,${.015+Math.random()*.06})`);
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    g.fillStyle=grad;g.fillRect(-len/2,-1-Math.random()*2,len,1+Math.random()*3);
+    g.restore();
+  }
+  for(let i=0;i<34;i++){
+    const x=Math.random()*512,y=Math.random()*512,r=26+Math.random()*90;
+    const grad=g.createRadialGradient(x,y,0,x,y,r);
+    grad.addColorStop(0,'rgba(255,255,255,.08)');
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    g.fillStyle=grad;g.fillRect(x-r,y-r,r*2,r*2);
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
+  t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
+  return t;
+})();
 // White-base concrete-tile texture for floors. Material color tints it.
 const _floorTex=(()=>{
   const c=document.createElement('canvas');c.width=512;c.height=512;
@@ -285,25 +336,53 @@ const _floorTex=(()=>{
   t.repeat.set(8,12);
   return t;
 })();
-// White-base weathered-concrete texture for walls.
+// Weathered painted-concrete texture for walls.
 const _wallTex=(()=>{
   const c=document.createElement('canvas');c.width=512;c.height=512;
   const g=c.getContext('2d');
-  g.fillStyle='#e8e8e8';g.fillRect(0,0,512,512);
+  const base=g.createLinearGradient(0,0,512,512);
+  base.addColorStop(0,'#a3adb3');
+  base.addColorStop(.52,'#879199');
+  base.addColorStop(1,'#707c84');
+  g.fillStyle=base;g.fillRect(0,0,512,512);
+  // Mottled paint and aggregate, broad enough to read from first person.
+  for(let i=0;i<14000;i++){
+    const tone=82+Math.random()*76;
+    g.fillStyle=`rgba(${tone},${tone+5},${tone+9},${.012+Math.random()*.045})`;
+    g.fillRect(Math.random()*512,Math.random()*512,1,1);
+  }
   // Vertical streaks
-  for(let i=0;i<70;i++){g.fillStyle=`rgba(0,0,0,${0.08+Math.random()*0.10})`;g.fillRect(Math.random()*512,Math.random()*120,1+Math.random()*2,30+Math.random()*240);}
+  for(let i=0;i<88;i++){
+    const x=Math.random()*512,y=Math.random()*130,w=1+Math.random()*3,h=44+Math.random()*260;
+    const a=.035+Math.random()*.085;
+    const grad=g.createLinearGradient(x,y,x,y+h);
+    grad.addColorStop(0,`rgba(8,12,16,${a})`);
+    grad.addColorStop(1,'rgba(8,12,16,0)');
+    g.fillStyle=grad;g.fillRect(x,y,w,h);
+  }
+  // Rust, oil, and old forklift rub marks.
+  for(let i=0;i<24;i++){
+    const y=250+Math.random()*220;
+    g.fillStyle=`rgba(12,14,16,${.06+Math.random()*.13})`;
+    g.fillRect(Math.random()*430,y,42+Math.random()*86,2+Math.random()*4);
+  }
+  for(let i=0;i<10;i++){
+    const x=Math.random()*512,y=80+Math.random()*220,r=18+Math.random()*38;
+    const grad=g.createRadialGradient(x,y,0,x,y,r);
+    grad.addColorStop(0,'rgba(95,50,25,.14)');
+    grad.addColorStop(1,'rgba(95,50,25,0)');
+    g.fillStyle=grad;g.fillRect(x-r,y-r,r*2,r*2);
+  }
   // Horizontal panel seams
-  g.strokeStyle='rgba(0,0,0,.40)';g.lineWidth=3;
+  g.strokeStyle='rgba(0,0,0,.32)';g.lineWidth=2;
   for(let y=0;y<=512;y+=170){g.beginPath();g.moveTo(0,y);g.lineTo(512,y);g.stroke();}
   // Vertical panel seams (less frequent)
   for(let x=170;x<=512;x+=170){g.beginPath();g.moveTo(x,0);g.lineTo(x,512);g.stroke();}
-  // Grain
-  for(let i=0;i<4500;i++){g.fillStyle=`rgba(0,0,0,${0.03+Math.random()*0.06})`;g.fillRect(Math.random()*512,Math.random()*512,1,1);}
   // Splotches of damage
-  for(let i=0;i<6;i++){
+  for(let i=0;i<12;i++){
     const x=Math.random()*512,y=Math.random()*512,r=14+Math.random()*30;
     const grad=g.createRadialGradient(x,y,0,x,y,r);
-    grad.addColorStop(0,'rgba(0,0,0,.30)');grad.addColorStop(1,'rgba(0,0,0,0)');
+    grad.addColorStop(0,'rgba(0,0,0,.16)');grad.addColorStop(1,'rgba(0,0,0,0)');
     g.fillStyle=grad;g.fillRect(x-r,y-r,r*2,r*2);
   }
   const t=new THREE.CanvasTexture(c);
@@ -1229,7 +1308,9 @@ function _aaLoadTex(path,{isColor=false,repeat=3,channel=0}={}){
   const t=_AA_TEX_LOADER.load(path,undefined,undefined,err=>console.warn('[aa-texture] failed to load',path,err));
   t.wrapS=THREE.RepeatWrapping;t.wrapT=THREE.RepeatWrapping;
   t.repeat.set(repeat,repeat);
-  t.anisotropy=8;
+  t.anisotropy=12;
+  t.minFilter=THREE.LinearMipmapLinearFilter||THREE.LinearFilter;
+  t.magFilter=THREE.LinearFilter;
   t.colorSpace=isColor?THREE.SRGBColorSpace:THREE.NoColorSpace;
   if(channel!==undefined)t.channel=channel;
   return t;
@@ -1276,7 +1357,6 @@ function _cloneConcreteFloorMaps(repeatX, repeatZ){
     ['map','concreteAlbedo'],
     ['normalMap','concreteNormal'],
     ['roughnessMap','concreteRoughness'],
-    ['metalnessMap','concreteMetalness'],
     ['aoMap','concreteAo']
   ];
   for(const [slot,key]of pairs){
@@ -1285,7 +1365,6 @@ function _cloneConcreteFloorMaps(repeatX, repeatZ){
     const cl=src.clone();
     cl.wrapS=cl.wrapT=THREE.RepeatWrapping;
     cl.repeat.set(repeatX,repeatZ);
-    cl.needsUpdate=true;
     o[slot]=cl;
   }
   return o;
@@ -1310,11 +1389,214 @@ const AA_MATERIALS=createPbrMaterialLibrary(THREE,{
   ..._aaAuthoredTextures
 },()=>{try{return SETTINGS||_BOOT_SETTINGS;}catch(_){return _BOOT_SETTINGS;}});
 function _aaMat(name,overrides){return AA_MATERIALS.get(name,overrides);}
+const _LEVEL_REFLECTION_PROFILES=[
+  {id:'dock-wet-concrete',env:.98,floorEnv:.92,floorRoughMul:.82,wallEnv:.70,pillarEnv:.95,poolOpacity:.115,poolScale:1.10,poolEnv:1.18,poolRough:.20,peripheral:.78},
+  {id:'continental-polish',env:1.08,floorEnv:1.05,floorRoughMul:.72,wallEnv:.74,pillarEnv:1.08,poolOpacity:.090,poolScale:.96,poolEnv:1.12,poolRough:.22,peripheral:.66},
+  {id:'nightclub-gloss',env:1.18,floorEnv:1.24,floorRoughMul:.58,wallEnv:.84,pillarEnv:1.18,poolOpacity:.145,poolScale:1.22,poolEnv:1.34,poolRough:.16,peripheral:.88},
+  {id:'penthouse-marble',env:1.16,floorEnv:1.32,floorRoughMul:.56,wallEnv:.96,pillarEnv:1.24,poolOpacity:.110,poolScale:1.04,poolEnv:1.32,poolRough:.15,peripheral:.76},
+  {id:'hospital-tile',env:.92,floorEnv:.78,floorRoughMul:.86,wallEnv:.58,pillarEnv:.78,poolOpacity:.070,poolScale:.92,poolEnv:.95,poolRough:.28,peripheral:.58},
+  {id:'subway-damp',env:.86,floorEnv:.72,floorRoughMul:.90,wallEnv:.54,pillarEnv:.88,poolOpacity:.082,poolScale:1.00,poolEnv:.98,poolRough:.30,peripheral:.62},
+  {id:'yacht-varnish',env:1.12,floorEnv:1.18,floorRoughMul:.62,wallEnv:.82,pillarEnv:1.42,poolOpacity:.102,poolScale:1.05,poolEnv:1.28,poolRough:.17,peripheral:.74},
+  {id:'server-cold-metal',env:1.06,floorEnv:1.10,floorRoughMul:.72,wallEnv:.86,pillarEnv:1.28,poolOpacity:.112,poolScale:1.12,poolEnv:1.24,poolRough:.20,peripheral:.84},
+  {id:'border-dust',env:.90,floorEnv:.64,floorRoughMul:1.02,wallEnv:.50,pillarEnv:.82,poolOpacity:.060,poolScale:.90,poolEnv:.82,poolRough:.36,peripheral:.54},
+  {id:'cathedral-marble',env:1.04,floorEnv:1.22,floorRoughMul:.60,wallEnv:.82,pillarEnv:1.05,poolOpacity:.096,poolScale:1.02,poolEnv:1.18,poolRough:.18,peripheral:.60},
+  {id:'freighter-deck',env:.96,floorEnv:1.02,floorRoughMul:.78,wallEnv:.76,pillarEnv:1.24,poolOpacity:.125,poolScale:1.18,poolEnv:1.18,poolRough:.22,peripheral:.72},
+  {id:'spire-glass-chrome',env:1.24,floorEnv:1.44,floorRoughMul:.50,wallEnv:1.05,pillarEnv:1.50,poolOpacity:.118,poolScale:1.06,poolEnv:1.42,poolRough:.14,peripheral:.82}
+];
+function _levelReflectionProfile(bn){
+  return _LEVEL_REFLECTION_PROFILES[THREE.MathUtils.clamp((bn|0)-1,0,_LEVEL_REFLECTION_PROFILES.length-1)]||_LEVEL_REFLECTION_PROFILES[0];
+}
+// Max simultaneous world-space dynamic PointLights after ceiling/accent pooling.
+function _lightingBudget(){
+  let q='high';try{
+    q=(SETTINGS&&(SETTINGS.lightingQuality||SETTINGS.quality))||'high';
+  }catch(_){q='high';}
+  return ({low:3,medium:4,high:5,ultra:8})[q]||5;
+}
+function _peripheralMovingPointCap(){
+  let q='high';try{q=(SETTINGS&&SETTINGS.quality)||'high';}catch(_){q='high';}
+  return q==='ultra'?2:(q==='high'?1:0);
+}
+function _playerBouncePointEnabled(){
+  let q='high';try{q=(SETTINGS&&SETTINGS.quality)||'high';}catch(_){q='high';}
+  return q==='high'||q==='ultra';
+}
+// PointLight roles for GPU budgeting vs telemetry (traverse counts every Light).
+const AA_POINTLIGHT_WORLD_BUDGETED='worldBudgeted';
+const AA_POINTLIGHT_TEMP_VFX='temporaryVfx';
+const AA_POINTLIGHT_TEMP_OBJECTIVE='temporaryObjective';
+const AA_POINTLIGHT_CAMERA_VM_FILL='cameraVmFill';
+const AA_POINTLIGHT_CAMERA_VM_PERIPH='cameraVmPeripheral';
+const AA_POINTLIGHT_WEAPON_VM='weaponVm';
+function _tagAaPointLight(light,role,extra){
+  if(!light)return null;
+  light.userData=light.userData||{};
+  light.userData.aaPointLightRole=role;
+  if(extra&&typeof extra==='object')Object.assign(light.userData,extra);
+  return light;
+}
+function _aaPushFakePoolLamp(fakeCeilingLamps,x,y,z,colorHex,baseIntensity,extra){
+  if(!fakeCeilingLamps)return;
+  fakeCeilingLamps.push({
+    position:new THREE.Vector3(x,y,z),
+    color:new THREE.Color(colorHex),
+    userData:Object.assign({baseIntensity:baseIntensity!=null?baseIntensity:1},extra||{})
+  });
+}
+function _applyLevelEnvironmentProfile(scene,bn,lightProfile,reflProfile){
+  const rp=reflProfile||_levelReflectionProfile(bn);
+  if(scene&&'environmentIntensity' in scene)scene.environmentIntensity=rp.env;
+  if(scene&&scene.background&&scene.background.isColor&&lightProfile){
+    const fogCol=new THREE.Color(lightProfile.fog||0x070a12);
+    scene.background.copy(fogCol).lerp(new THREE.Color(0x070a12),.48);
+  }
+  return rp;
+}
+function _makeLevelLightingController({scene,bn,lightProfile,reflProfile,zoneBounds,ambient,hemisphere,rim,key,ceilingLights,fakeCeilingLamps,playerBounceLight,budget,maxRealWorldPoints}){
+  const base={
+    ambientIntensity:ambient?ambient.intensity:1,
+    hemiIntensity:hemisphere?hemisphere.intensity:1,
+    rimIntensity:rim?rim.intensity:1,
+    keyIntensity:key?key.intensity:1,
+    fogDensity:scene&&scene.fog?scene.fog.density:0,
+    envIntensity:scene&&'environmentIntensity' in scene?scene.environmentIntensity:(reflProfile&&reflProfile.env)||1,
+    exposure:(typeof renderer!=='undefined'&&renderer&&renderer.toneMappingExposure)||1.06
+  };
+  const colors={
+    ambientBase:new THREE.Color(lightProfile.ambCol),
+    hemiSkyBase:new THREE.Color(lightProfile.hemiSky),
+    hemiGroundBase:new THREE.Color(lightProfile.hemiGround),
+    rimBase:new THREE.Color(lightProfile.rimCol),
+    keyBase:new THREE.Color(lightProfile.keyCol),
+    fogBase:new THREE.Color(lightProfile.fog),
+    zone:new THREE.Color(),
+    pool:new THREE.Color(),
+    lamp:new THREE.Color(),
+    targetA:new THREE.Color(),
+    targetB:new THREE.Color(),
+    targetC:new THREE.Color()
+  };
+  const zSplit=zoneBounds&&zoneBounds.zSplit?zoneBounds.zSplit:6;
+  const zones=[
+    {id:'front',prof:lightProfile.zoneA},
+    {id:'mid',prof:lightProfile.zoneB},
+    {id:'back',prof:lightProfile.zoneC}
+  ];
+  const state={id:'adaptive-zone-lighting',zone:'mid',near:0,exposure:base.exposure,env:base.envIntensity};
+  const bounceTarget=new THREE.Vector3();
+  const zoneForZ=z=>z>zSplit?zones[0]:(z>=-zSplit?zones[1]:zones[2]);
+  function nearestLamp(pos){
+    if(!pos)return null;
+    let best=null,bestD2=Infinity;
+    const consider=(candidate,d2)=>{
+      if(candidate&&d2<bestD2){best=candidate;bestD2=d2;}
+    };
+    if(Array.isArray(ceilingLights)){
+      for(const L of ceilingLights){
+        if(!L||!L.position)continue;
+        const dx=pos.x-L.position.x,dz=pos.z-L.position.z;
+        consider({kind:'real',light:L},dx*dx+dz*dz);
+      }
+    }
+    if(Array.isArray(fakeCeilingLamps)){
+      for(const F of fakeCeilingLamps){
+        if(!F||!F.position)continue;
+        const dx=pos.x-F.position.x,dz=pos.z-F.position.z;
+        consider({kind:'fake',fake:F},dx*dx+dz*dz);
+      }
+    }
+    return best?Object.assign(best,{distance:Math.sqrt(bestD2)}):null;
+  }
+  function tick(dt,player){
+    const step=1-Math.exp(-Math.max(0,dt||0)*3.2);
+    const pos=player&&player.pos;
+    const zone=zoneForZ(pos?pos.z:0);
+    const lamp=nearestLamp(pos);
+    const lampNear=lamp?THREE.MathUtils.clamp(1-lamp.distance/15,0,1):0;
+    const zoneColor=colors.zone.set(zone.prof.col);
+    const poolColor=colors.pool.set(zone.prof.pool||zone.prof.col);
+    let lampChrom=zoneColor;
+    if(lamp&&lamp.kind==='real'&&lamp.light&&lamp.light.color)lampChrom=lamp.light.color;
+    else if(lamp&&lamp.kind==='fake'&&lamp.fake){
+      lampChrom=lamp.fake.color&&lamp.fake.color.isColor?lamp.fake.color:colors.pool.set(lamp.fake.color||0xffffff);
+    }
+    const lampColor=colors.lamp.copy(lampChrom).lerp(poolColor,.35);
+    const ads=player?player.ads||0:0;
+    const running=player&&player.running ? .045 : 0;
+    state.zone=zone.id;
+    state.near=lampNear;
+    if(ambient){
+      colors.targetA.copy(colors.ambientBase).lerp(poolColor,.13+lampNear*.18);
+      ambient.color.lerp(colors.targetA,step);
+      ambient.intensity+=(base.ambientIntensity*(.94+lampNear*.08+running)-ambient.intensity)*step;
+    }
+    if(hemisphere){
+      colors.targetA.copy(colors.hemiSkyBase).lerp(lampColor,.16+lampNear*.22);
+      colors.targetB.copy(colors.hemiGroundBase).lerp(poolColor,.12+lampNear*.16);
+      hemisphere.color.lerp(colors.targetA,step);
+      hemisphere.groundColor.lerp(colors.targetB,step);
+      hemisphere.intensity+=(base.hemiIntensity*(.96+lampNear*.12)-hemisphere.intensity)*step;
+    }
+    if(rim){
+      colors.targetA.copy(colors.rimBase).lerp(zoneColor,.18+lampNear*.16);
+      rim.color.lerp(colors.targetA,step);
+      rim.intensity+=(base.rimIntensity*(.92+lampNear*.18+ads*.04)-rim.intensity)*step;
+    }
+    if(key){
+      colors.targetA.copy(colors.keyBase).lerp(lampColor,.08+lampNear*.10);
+      key.color.lerp(colors.targetA,step*.7);
+      key.intensity+=(base.keyIntensity*(.98+lampNear*.08)-key.intensity)*step;
+    }
+    if(playerBounceLight&&pos){
+      playerBounceLight.position.lerp(bounceTarget.set(pos.x,1.10+(player.jumpH||0),pos.z),Math.min(1,step*1.7));
+      playerBounceLight.color.lerp(lampColor,step);
+      playerBounceLight.intensity+=((.055+lampNear*.16)*((reflProfile&&reflProfile.peripheral)||.7)-playerBounceLight.intensity)*step;
+    }
+    if(scene&&scene.fog){
+      colors.targetA.copy(colors.fogBase).lerp(poolColor,.08+lampNear*.10);
+      scene.fog.color.lerp(colors.targetA,step*.45);
+      const fogTarget=base.fogDensity*(.96-lampNear*.10+ads*.025);
+      scene.fog.density+=(fogTarget-scene.fog.density)*step*.45;
+    }
+    if(scene&&'environmentIntensity' in scene){
+      const envTarget=base.envIntensity*(.97+lampNear*.085+ads*.015);
+      scene.environmentIntensity+=(envTarget-scene.environmentIntensity)*step*.55;
+      state.env=scene.environmentIntensity;
+    }
+    if(typeof renderer!=='undefined'&&renderer){
+      const exposureTarget=base.exposure*(1+lampNear*.035-ads*.014);
+      renderer.toneMappingExposure+=(exposureTarget-renderer.toneMappingExposure)*step*.50;
+      state.exposure=renderer.toneMappingExposure;
+    }
+  }
+  return {
+    id:state.id,
+    tick,
+    snapshot:()=>{
+      let budgetedWorldPts=Array.isArray(ceilingLights)?ceilingLights.filter(L=>L&&L.isPointLight).length:0;
+      const fakePts=Array.isArray(fakeCeilingLamps)?fakeCeilingLamps.length:0;
+      if(playerBounceLight&&playerBounceLight.isPointLight)budgetedWorldPts++;
+      return {
+        id:state.id,building:bn,zone:state.zone,near:Number(state.near.toFixed(3)),exposure:Number(state.exposure.toFixed(3)),env:Number(state.env.toFixed(3)),
+        budget:budget|0,maxRealWorldPoints:maxRealWorldPoints!=null?(maxRealWorldPoints|0):undefined,
+        budgetedWorldPointLights:budgetedWorldPts,
+        realPointLights:budgetedWorldPts,
+        fakeLightPools:fakePts,
+        peripheralLights:{movingPointCap:_peripheralMovingPointCap()},
+        playerBounceEnabled:!!(playerBounceLight&&playerBounceLight.isPointLight&&playerBounceLight.intensity>1e-6)
+      };
+    }
+  };
+}
 function buildLevel(scene,bn){
   const bDims=getBuildingDims(bn); RW=bDims.RW; RD=bDims.RD; RH=bDims.RH||DEFAULT_RH;
+  function _overdrawDressingMul(){
+    return _qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.quality)||'high',{low:.46,medium:.68,high:.80,ultra:1.03});
+  }
+  const odMul=_overdrawDressingMul();
   const layout=(bn-1)%2; // 0=dock (baseline), 1=lobby (mirrored doors + different core obstacles)
   const ob=[],wl=[],vl=[];
-  const visualStats={dressingObjects:0,trimObjects:0,grimeDecals:0,contactShadows:0,atmosphereSheets:0,wetSurfaces:0};
+  const visualStats={dressingObjects:0,trimObjects:0,grimeDecals:0,contactShadows:0,atmosphereSheets:0,wetSurfaces:0,transparentSurfaces:0};
   // ── Verticality (floor regions) ───────────────────────────────────────
   // Each region: {x0,x1,z0,z1, floorY}. The player's standing Y is the
   // highest matching floorY at their XZ; default 0. Negative floorY = pit.
@@ -1326,6 +1608,7 @@ function buildLevel(scene,bn){
   function box(x,y,z,w,h,d,mat){
     const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     m.receiveShadow=true;
+    m.castShadow=h>.16&&w*d<18;
     m.position.set(x,y,z);scene.add(m);ob.push(m);return m;
   }
   // _addBox helper used by per-building decorations and Sifu density pass
@@ -1333,6 +1616,7 @@ function buildLevel(scene,bn){
   const _addBox=(x,y,z,w,h,d,mat,blocking)=>{
     const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     m.receiveShadow=true;
+    m.castShadow=h>.16&&w*d<18;
     m.position.set(x,y,z);scene.add(m);ob.push(m);
     if(blocking)wl.push({x0:x-w/2,x1:x+w/2,z0:z-d/2,z1:z+d/2});
     return m;
@@ -1343,14 +1627,88 @@ function buildLevel(scene,bn){
     const profile=getVisualProfile(bn);
     const atmosphereMul=_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.atmosphereQuality)||'high',{low:.34,medium:.62,high:1,ultra:1.28});
     const accent=profile.atmosphere.accent;
+    const odMul=_overdrawDressingMul();
     const accentC=new THREE.Color(accent);
     const darkAccent=accentC.clone().multiplyScalar(.28).getHex();
-    const panelM=new THREE.MeshPhongMaterial({color:0x151820,shininess:80,specular:darkAccent});
-    const trimGlowM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.42,blending:THREE.AdditiveBlending,depthWrite:false});
-    const grimeM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x101014,transparent:true,opacity:.24,depthWrite:false});
-    const contactM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x000000,transparent:true,opacity:.32,depthWrite:false});
+    const panelM=new THREE.MeshPhongMaterial({color:bn===1?0x33404a:0x151820,shininess:bn===1?120:80,specular:bn===1?0x7890a0:darkAccent});
+    const trimGlowM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.42*odMul,blending:THREE.AdditiveBlending,depthWrite:false});
+    const grimeM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x101014,transparent:true,opacity:bn===1?.10:.24,depthWrite:false});
+    const contactM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x000000,transparent:true,opacity:bn===1?.22:.32,depthWrite:false});
     const cableRunM=new THREE.MeshPhongMaterial({color:0x07080a,shininess:20,specular:0x101820});
     const laneZ=[18,10,2,-6,-14,-22].filter(z=>z>-hd+2&&z<hd-2);
+    function addFloorOverlay(x,z,w,d,mat,rot=0,y=WT+.022){
+      const m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),mat);
+      m.position.set(x,y,z);m.rotation.x=-Math.PI/2;m.rotation.z=rot;
+      m.renderOrder=3;scene.add(m);ob.push(m);return m;
+    }
+    function addWallOverlay(face,pos,center,w,h,mat){
+      const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);
+      m.position.y=WT+h/2;
+      if(face==='left'){m.position.set(-hw+.018,m.position.y,center);m.rotation.y=Math.PI/2;}
+      else if(face==='right'){m.position.set(hw-.018,m.position.y,center);m.rotation.y=-Math.PI/2;}
+      else if(face==='front'){m.position.set(center,m.position.y,hd-.018);m.rotation.y=Math.PI;}
+      else {m.position.set(center,m.position.y,-hd+.018);}
+      if(pos!=null){
+        if(face==='left'||face==='right')m.position.z=pos;
+        else m.position.x=pos;
+      }
+      m.renderOrder=3;scene.add(m);ob.push(m);return m;
+    }
+    function addCinematicRealismLayer(){
+      const transScale=_qualityScale((SETTINGS&&SETTINGS.quality)||'high',{low:.30,medium:.55,high:.70,ultra:1.02});
+      const grimeWallM=new THREE.MeshBasicMaterial({map:_grimeStreakTex,color:bn===1?0x27313a:0x050607,transparent:true,opacity:(bn===1?.08:.14)*transScale,depthWrite:false,side:THREE.DoubleSide,fog:true});
+      const scuffM=new THREE.MeshBasicMaterial({map:_floorScuffTex,color:0x050505,transparent:true,opacity:(bn===1?.075:.16)*transScale,depthWrite:false,side:THREE.DoubleSide,fog:true});
+      let sheenOpacity=((bn===1?.22:(bn===7||bn===11||bn===12)?.14:.065))*transScale;
+      const sheenM=new THREE.MeshStandardMaterial({map:_floorScuffTex,color:bn===1?0xdbe6e8:accentC.clone().lerp(new THREE.Color(0xb8d0ff),.34),transparent:true,opacity:sheenOpacity,roughness:bn===1?.055:.12,metalness:.0,envMapIntensity:bn===1?2.35:1.75,depthWrite:false,side:THREE.DoubleSide});
+      const polishM=new THREE.MeshStandardMaterial({color:bn===1?0xc9d0d0:0xb8d0ff,transparent:true,opacity:bn===1?.055:.025,roughness:bn===1?.065:.16,metalness:.0,envMapIntensity:bn===1?2.10:1.25,depthWrite:false,side:THREE.DoubleSide});
+      const cornerM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x000000,transparent:true,opacity:.16,depthWrite:false,side:THREE.DoubleSide,fog:true});
+      const wallWashM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:accent,transparent:true,opacity:.20*transScale,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide,fog:true});
+      const beamM=_aaMat('paintedMetal',{color:0x121820,map:false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.54,metalness:.18,envMapIntensity:.42});
+      const ribM=_aaMat('paintedMetal',{color:0x222a32,map:false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.68,metalness:.12,envMapIntensity:.30});
+      _floorScuffTex.repeat.set(Math.max(2,RW/12),Math.max(3,RD/12));
+      _grimeStreakTex.repeat.set(2.4,1.25);
+      addFloorOverlay(0,0,RW*.94,RD*.94,scuffM,0,WT+.019);
+      if(bn===1)addFloorOverlay(0,0,RW*.96,RD*.96,polishM,0,WT+.021);
+      if(bn!==6&&bn!==9){
+        addFloorOverlay(0,0,RW*.88,RD*.82,sheenM,0,WT+.024);
+        visualStats.wetSurfaces++;
+      }
+      for(const face of ['left','right']){
+        addWallOverlay(face,null,0,RD*.96,RH*.92,grimeWallM);
+        for(const z of [-hd*.55,0,hd*.55])addWallOverlay(face,z,0,3.2,2.4,wallWashM);
+      }
+      for(const face of ['front','back']){
+        addWallOverlay(face,null,0,RW*.92,RH*.88,grimeWallM);
+        for(const x of [-hw*.45,hw*.45])addWallOverlay(face,x,0,3.0,2.2,wallWashM);
+      }
+      for(const z of [-hd*.5,0,hd*.5]){
+        addFloorOverlay(-hw+.32,z,.9,8.0,cornerM,Math.PI/2,WT+.021);
+        addFloorOverlay( hw-.32,z,.9,8.0,cornerM,Math.PI/2,WT+.021);
+      }
+      for(const x of [-hw*.48,0,hw*.48]){
+        addFloorOverlay(x, hd-.32,8.0,.9,cornerM,0,WT+.021);
+        addFloorOverlay(x,-hd+.32,8.0,.9,cornerM,0,WT+.021);
+      }
+      for(let z=-hd+6;z<hd-3;z+=8.5){
+        _addBox(0,RH+WT-.055,z,RW*.94,.10,.11,beamM,false);
+      }
+      for(let x=-hw+6;x<hw-3;x+=8.5){
+        _addBox(x,RH+WT-.060,0,.10,.09,RD*.88,ribM,false);
+      }
+      const practicalM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.72*transScale,blending:THREE.AdditiveBlending,depthWrite:false});
+      for(const z of laneZ){
+        for(const sx of [-1,1]){
+          const x=sx*(hw-.28);
+          _addBox(x,RH*.68,z,.035,.42,1.35,practicalM,false);
+          // Practical strips use additive mesh only — real PointLights removed for GPU budget alignment.
+        }
+      }
+      visualStats.trimObjects+=laneZ.length*4;
+      visualStats.grimeDecals+=8;
+      visualStats.contactShadows+=12;
+      visualStats.atmosphereSheets+=8;
+    }
+    addCinematicRealismLayer();
     for(const z of laneZ){
       _addBox(-hw+.045,RH*.48,z,.055,1.15,2.3,panelM,false);
       _addBox( hw-.045,RH*.48,z,.055,1.15,2.3,panelM,false);
@@ -1380,6 +1738,33 @@ function buildLevel(scene,bn){
     if(bn===1){
       const puddleM=new THREE.MeshPhongMaterial({color:0x0a1620,shininess:260,specular:0x80c0ff,transparent:true,opacity:.48});
       for(let i=0;i<Math.max(2,Math.round(7*atmosphereMul));i++){_addBox((Math.random()-.5)*RW*.72,WT+.018,(Math.random()-.5)*RD*.72,1.0+Math.random()*1.8,.012,.45+Math.random()*1.0,puddleM,false);visualStats.wetSurfaces++;}
+      const pipeM=_aaMat('metal',{color:0x313940,map:false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.34,metalness:.76,envMapIntensity:.70});
+      const clampM=_aaMat('paintedMetal',{color:0x11161a,map:false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.58,metalness:.30,envMapIntensity:.38});
+      const palletM=_aaMat('wood',{color:0x6d4d2a,map:false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.74,metalness:.02,envMapIntensity:.28});
+      const addPipe=(x,y,z,len,axis='z')=>{
+        const m=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,len,10),pipeM);
+        if(axis==='z')m.rotation.x=Math.PI/2;
+        else m.rotation.z=Math.PI/2;
+        m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);ob.push(m);return m;
+      };
+      for(const sx of [-1,1]){
+        const x=sx*(hw-.24);
+        addPipe(x,RH*.42,0,RD*.82,'z');
+        addPipe(x,RH*.58,0,RD*.66,'z');
+        for(const z of [-18,-8,2,12,20]){
+          _addBox(x,RH*.50,z,.08,.48,.06,clampM,false);
+          _addBox(x-sx*.035,RH*.68,z,.12,.12,1.55,trimGlowM,false);
+        }
+      }
+      for(const z of [-15,-5,7,17]){
+        const x=-hw+2.1+(Math.random()*.7);
+        for(let row=0;row<3;row++){
+          _addBox(x,WT+.08+row*.16,z,.96,.10,.54,palletM,false);
+          _addBox(x-.34,WT+.18+row*.16,z,.08,.10,.54,palletM,false);
+          _addBox(x+.34,WT+.18+row*.16,z,.08,.10,.54,palletM,false);
+        }
+        visualStats.dressingObjects+=9;
+      }
     }else if(bn===3){
       for(let z of [-15,-7,1,9,17]){_addBox(0,WT+.032,z,RW*.72,.018,.12,trimGlowM,false);visualStats.trimObjects++;}
     }else if(bn===5){
@@ -1441,26 +1826,26 @@ function buildLevel(scene,bn){
     visualStats.dressingObjects+=ob.length-startCount;
   }
   const pal=[
-    [0x252525,0x353538,0x4a4a50,0x5a4a30],     // 1 dock: grey
-    [0x1c1812,0x282018,0x504030,0x4a5a30],     // 2 continental: warm brown
-    [0x2a1238,0x381c4a,0x6020a0,0x5a3a30],     // 3 nightclub: magenta/purple
-    [0x14141a,0x1a1a22,0x38384a,0x3a3a5a],     // 4 penthouse: dark blue
-    [0x3a4248,0x444c52,0x2a3036,0x1c2228],     // 5 hospital: abandoned ward, deep grey-blue
-    [0x303034,0x404048,0x282830,0x484850],     // 6 subway: dark grey concrete
-    [0x202028,0xe8e2d4,0x281408,0x504030],     // 7 yacht: dark base + cream upper
-    [0x06080e,0x10141c,0x202840,0x183050],     // 8 server farm: dark cyan
+    [0x9d9c94,0xaeb8c0,0x9298a0,0x837a68],     // 1 dock: weathered concrete + readable blue steel
+    [0x8a6442,0xc8ad83,0xb69a72,0x6e6042],     // 2 continental: warm stone and walnut
+    [0x2f2438,0x343040,0x5e4a78,0x52463c],     // 3 nightclub: restrained smoked acrylic
+    [0x4a4b54,0x7d808a,0x6e7184,0x55576a],     // 4 penthouse: dark stone and steel
+    [0xa8b4b5,0xc8d0cc,0x7b8588,0x5a6368],     // 5 hospital: aged ceramic and steel
+    [0x767574,0x7f8588,0x777b80,0x707078],     // 6 subway: dark grey concrete
+    [0x8f704d,0xe2ded2,0xb8c2ca,0x7b6448],     // 7 yacht: teak, cream panels, chrome
+    [0x303946,0x1d2734,0x53677a,0x244456],     // 8 server farm: cool rack metal
     // Act III — The Apparatus
-    [0x4a3820,0x6a4e2c,0x3a2810,0x8a6028],     // 9 border crossing: sandstone + dusk amber
-    [0x14100c,0x281c10,0x603018,0x806040],     // 10 cathedral: ash + candle gold
-    [0x1a2028,0x2a323a,0x405060,0x584a3a],     // 11 karelia freighter: salt-bleached steel
-    [0x06070a,0x10161e,0x202a38,0x80a0c8]      // 12 the spire: midnight glass + chrome
+    [0xae987c,0xa78866,0x8a7664,0xb08a58],     // 9 border crossing: sandstone + dusk amber
+    [0x5e5750,0x7c705e,0x8a7660,0x907050],     // 10 cathedral: ash + candle gold
+    [0x59636a,0x657079,0x7b8a92,0x6a5d50],     // 11 karelia freighter: salt-bleached steel
+    [0x30343a,0x46515c,0x6d7e8e,0x90aeca]      // 12 the spire: midnight glass + chrome
   ];
   const pc=pal[Math.min(bn-1,pal.length-1)];
   // ── Per-building texture & material profile ──────────────────────────────
   const _texProfile=[
-    // 1: LOADING DOCK — concrete floor + corrugated metal walls + brushed metal pillars
-    {floorTex:null,floorRepeat:[6,8],wallTex:_corrugatedTex,wallRepeat:[4,2],
-     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:18,wallShine:35,pillarShine:80,ceilCol:0x080810},
+    // 1: LOADING DOCK — polished concrete floor + clean painted-concrete walls + brushed metal pillars
+    {floorTex:null,floorRepeat:[4,6],wallTex:_wallTex,wallRepeat:[3,2],
+     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:42,wallShine:34,pillarShine:105,ceilCol:0x4e5a64},
     // 2: CONTINENTAL — hardwood floor + marble walls + marble pillars
     {floorTex:_woodTex,floorRepeat:[3,5],wallTex:_marbleTex,wallRepeat:[2,1],
      pillarTex:_marbleTex,pillarRepeat:[1,1],ceilTex:_velvetTex,floorShine:62,wallShine:48,pillarShine:60,ceilCol:0x14101c},
@@ -1472,10 +1857,10 @@ function buildLevel(scene,bn){
      pillarTex:_blackMarbleTex,pillarRepeat:[1,1],ceilTex:_velvetTex,floorShine:170,wallShine:90,pillarShine:120,ceilCol:0x06060e},
     // 5: HOSPITAL — abandoned ward, grimy tile, dim chrome
     {floorTex:_hospitalTileTex,floorRepeat:[5,7],wallTex:_hospitalTileTex,wallRepeat:[3,2],
-     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:8,wallShine:5,pillarShine:18,ceilCol:0x1a1e22},
+     pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:8,wallShine:5,pillarShine:18,ceilCol:0x3a4246},
     // 6: SUBWAY — concrete floor + concrete walls + steel pillars
-    {floorTex:null,floorRepeat:[5,8],wallTex:_subwayConcreteTex,wallRepeat:[4,2],
-     pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:8,wallShine:12,pillarShine:120,ceilCol:0x0a0e14},
+    {floorTex:null,floorRepeat:[4,7],wallTex:_subwayConcreteTex,wallRepeat:[2,1],
+     pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:8,wallShine:12,pillarShine:120,ceilCol:0x262b32},
     // 7: YACHT — teak floor + cream tufted leather walls + chrome pillars
     {floorTex:_teakTex,floorRepeat:[3,7],wallTex:_yachtWallTex,wallRepeat:[3,2],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:_velvetTex,floorShine:140,wallShine:32,pillarShine:280,ceilCol:0x0a0e18},
@@ -1483,13 +1868,13 @@ function buildLevel(scene,bn){
     {floorTex:_serverGrateTex,floorRepeat:[5,8],wallTex:_serverWallTex,wallRepeat:[2,1],
      pillarTex:_metalTex,pillarRepeat:[1,3],ceilTex:null,floorShine:60,wallShine:30,pillarShine:180,ceilCol:0x040810},
     // 9: BORDER CROSSING — sun-baked concrete floor + sandstone walls + steel-clad pillars
-    {floorTex:null,floorRepeat:[6,9],wallTex:_subwayConcreteTex,wallRepeat:[3,2],
+    {floorTex:null,floorRepeat:[4,7],wallTex:_subwayConcreteTex,wallRepeat:[2,1],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:10,wallShine:12,pillarShine:90,ceilCol:0x100a06},
     // 10: CATHEDRAL — polished marble floor + marble walls + carved pillars + velvet vaulted ceiling
     {floorTex:_blackMarbleTex,floorRepeat:[3,5],wallTex:_marbleTex,wallRepeat:[2,1],
      pillarTex:_marbleTex,pillarRepeat:[1,1],ceilTex:_velvetTex,floorShine:180,wallShine:80,pillarShine:130,ceilCol:0x0a0808},
     // 11: KARELIA FREIGHTER — corrugated grate floor + corrugated metal walls + chrome pillars
-    {floorTex:_serverGrateTex,floorRepeat:[5,9],wallTex:_corrugatedTex,wallRepeat:[4,2],
+    {floorTex:_serverGrateTex,floorRepeat:[4,7],wallTex:null,wallRepeat:[2,1],
      pillarTex:_metalTex,pillarRepeat:[1,2],ceilTex:null,floorShine:32,wallShine:22,pillarShine:200,ceilCol:0x080a0e},
     // 12: THE SPIRE — black marble floor + brushed glass-and-chrome walls + chrome pillars + velvet inner ceiling
     {floorTex:_blackMarbleTex,floorRepeat:[3,4],wallTex:_marbleTex,wallRepeat:[2,1],
@@ -1497,15 +1882,17 @@ function buildLevel(scene,bn){
   ][Math.min(bn-1,11)];
   // Per-object PBR materials - textured and tuned per building.
   const floorKind=bn===2?'wood':bn===3?'plastic':(bn===4||bn===10||bn===12)?'marble':bn===5?'tile':bn===7?'wood':(bn===8||bn===11)?'metal':'concrete';
-  const wallKind=bn===1||bn===11?'paintedMetal':bn===2||bn===4||bn===10||bn===12?'marble':bn===5?'tile':bn===7?'fabric':bn===8?'armor':'concrete';
+  const wallKind=bn===11?'paintedMetal':bn===2||bn===4||bn===10||bn===12?'marble':bn===5?'tile':bn===7?'fabric':bn===8?'armor':'concrete';
   const pillarKind=bn===2||bn===10?'marble':bn===7||bn===11||bn===12?'chrome':'metal';
+  const reflProfile=_levelReflectionProfile(bn);
   const floorRough=THREE.MathUtils.clamp(1-(_texProfile.floorShine||30)/260,.18,.92);
   const wallRough=THREE.MathUtils.clamp(1-(_texProfile.wallShine||30)/260,.22,.94);
   const pillarRough=THREE.MathUtils.clamp(1-(_texProfile.pillarShine||80)/320,.12,.78);
   const floorMatOpts={
     color:pc[0],
-    roughness:floorRough,
-    metalness:(bn===8||bn===11)?0.38:undefined
+    roughness:THREE.MathUtils.clamp(Math.max(.24,floorRough*.88)*reflProfile.floorRoughMul,.16,.90),
+    metalness:(bn===8||bn===11)?0.26:(floorKind==='concrete'?0.015:undefined),
+    envMapIntensity:reflProfile.floorEnv
   };
   if(floorKind==='concrete'){
     Object.assign(floorMatOpts,_cloneConcreteFloorMaps(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]));
@@ -1514,13 +1901,16 @@ function buildLevel(scene,bn){
     _texProfile.floorTex.repeat.set(_texProfile.floorRepeat[0],_texProfile.floorRepeat[1]);
   }
   const fM=_aaMat(floorKind,floorMatOpts);
-  const wM=_aaMat(wallKind,{color:pc[1],map:_texProfile.wallTex,roughness:wallRough,metalness:(bn===1||bn===8||bn===11)?0.35:undefined});
+  const wallMap=_texProfile.wallTex||false;
+  const wallColor=bn===1?0xdbe4e8:pc[1];
+  const wM=_aaMat(wallKind,{color:wallColor,map:wallMap,roughness:THREE.MathUtils.clamp(wallRough*.96,.20,.92),metalness:(bn===8||bn===11)?0.10:undefined,envMapIntensity:reflProfile.wallEnv});
   if(_texProfile.wallTex)_texProfile.wallTex.repeat.set(_texProfile.wallRepeat[0],_texProfile.wallRepeat[1]);
-  const pM=_aaMat(pillarKind,{color:pc[2],map:_texProfile.pillarTex,roughness:pillarRough,metalness:pillarKind==='marble'?0:.82});
+  const pM=_aaMat(pillarKind,{color:pc[2],map:_texProfile.pillarTex,roughness:pillarRough,metalness:pillarKind==='marble'?0:.82,envMapIntensity:reflProfile.pillarEnv});
   if(_texProfile.pillarTex)_texProfile.pillarTex.repeat.set(_texProfile.pillarRepeat[0],_texProfile.pillarRepeat[1]);
-  const cM=_aaMat(_texProfile.ceilTex?'fabric':'paintedMetal',{color:_texProfile.ceilCol,map:_texProfile.ceilTex,roughness:.92,metalness:.03});
-  const crM=_aaMat(bn===2||bn===7?'wood':bn===8||bn===11?'paintedMetal':'concrete',{color:pc[3],roughness:.76,metalness:(bn===8||bn===11)?0.32:0.04}); // crates
-  const dM=_aaMat(wallKind,{color:pc[1],map:_texProfile.wallTex,roughness:.86,metalness:(bn===1||bn===8||bn===11)?0.22:0});  // divider walls
+  const cM=_aaMat(_texProfile.ceilTex?'fabric':'paintedMetal',{color:_texProfile.ceilCol,map:_texProfile.ceilTex||false,normalMap:false,roughnessMap:false,metalnessMap:false,aoMap:false,roughness:.86,metalness:.01,envMapIntensity:.28,emissive:_texProfile.ceilCol,emissiveIntensity:.045});
+  const crateColor=bn===1?0x9a8a6d:pc[3];
+  const crM=_aaMat(bn===2||bn===7?'wood':bn===8||bn===11?'paintedMetal':'concrete',{color:crateColor,roughness:bn===1?.62:.76,metalness:(bn===8||bn===11)?0.32:0.04,envMapIntensity:bn===1?.52:undefined}); // crates
+  const dM=_aaMat(wallKind,{color:wallColor,map:wallMap,roughness:.80,metalness:(bn===8||bn===11)?0.08:0,envMapIntensity:Math.max(.52,reflProfile.wallEnv*.82)});  // divider walls
   // Emissive trim accent — colour keyed to building palette
   const trimCols=[0xffaa44,0xd4a040,0xff40c8,0x40c8ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff,
                    /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x6890b8, /* 12 */ 0xc8e0ff];
@@ -1739,11 +2129,11 @@ function buildLevel(scene,bn){
     // Ambient + hemisphere bumped so the room is legible without the warm
     // zone-lights dominating; fog density softened (was 0.022) so the back
     // wall reads from across the room.
-    {ambCol:0x4a5a70,ambInt:2.1,hemiSky:0x7a9ab8,hemiGround:0x302418,hemiInt:0.95,
-     keyCol:0xffaa50,keyInt:0.65,keyPos:[8,9,12],rimCol:0x6088c0,rimInt:0.85,rimPos:[-8,6,-12],
-     zoneA:{col:0xffb060,int:2.4,pool:0xffaa50},
-     zoneB:{col:0xffe0c0,int:2.0,pool:0xffd0a0},
-     zoneC:{col:0x80a0c8,int:1.8,pool:0x90b0d0},
+    {ambCol:0x56687c,ambInt:2.35,hemiSky:0x8fb0ca,hemiGround:0x473522,hemiInt:1.18,
+     keyCol:0xffaa50,keyInt:0.76,keyPos:[8,9,12],rimCol:0x84a9d4,rimInt:0.95,rimPos:[-8,6,-12],
+     zoneA:{col:0xffb060,int:2.65,pool:0xffaa50},
+     zoneB:{col:0xffe0c0,int:2.35,pool:0xffd0a0},
+     zoneC:{col:0x9db8d0,int:2.08,pool:0xa8c0d8},
      fog:0x131722,fogD:.016},
     // 2: CONTINENTAL — warm gold ambient, soft fill, royal accent
     {ambCol:0x6a4830,ambInt:2.0,hemiSky:0xc8a060,hemiGround:0x301810,hemiInt:0.85,
@@ -1767,12 +2157,12 @@ function buildLevel(scene,bn){
      zoneC:{col:0x80a0e8,int:2.2,pool:0x90b0e8},
      fog:0x06090e,fogD:.018},
     // 5: HOSPITAL — abandoned ward, failing fluorescents (dim & moody)
-    {ambCol:0x2a323c,ambInt:0.55,hemiSky:0x404a54,hemiGround:0x181c20,hemiInt:0.22,
-     keyCol:0x8a949c,keyInt:0.30,keyPos:[10,14,8],rimCol:0x40545c,rimInt:0.22,rimPos:[-8,10,-12],
-     zoneA:{col:0x8a9298,int:1.2,pool:0x6a7278},
-     zoneB:{col:0x707880,int:1.0,pool:0x585c60},
-     zoneC:{col:0x5a626a,int:0.85,pool:0x484c50},
-     fog:0x141820,fogD:.045},
+    {ambCol:0x3a4650,ambInt:1.15,hemiSky:0x6f7c86,hemiGround:0x20262c,hemiInt:0.55,
+     keyCol:0xc8d4d8,keyInt:0.58,keyPos:[10,14,8],rimCol:0x7da0aa,rimInt:0.42,rimPos:[-8,10,-12],
+     zoneA:{col:0xb8c4c8,int:1.9,pool:0xa0b0b4},
+     zoneB:{col:0xa8b4ba,int:1.65,pool:0x8f9ca2},
+     zoneC:{col:0x90a0a8,int:1.45,pool:0x74848c},
+     fog:0x141820,fogD:.028},
     // 6: SUBWAY — dim with red emergency, harsh shadows
     {ambCol:0x1a1820,ambInt:1.2,hemiSky:0x303040,hemiGround:0x080a0c,hemiInt:0.45,
      keyCol:0xff5040,keyInt:0.55,keyPos:[8,11,12],rimCol:0xfff060,rimInt:0.45,rimPos:[-8,8,-12],
@@ -1823,8 +2213,10 @@ function buildLevel(scene,bn){
      zoneC:{col:0xffd060,int:3.0,pool:0xffc040},
      fog:0x040608,fogD:.014}
   ][Math.min(bn-1,11)];
+  _applyLevelEnvironmentProfile(scene,bn,lightProfile,reflProfile);
+  visualStats.reflectionProfile=reflProfile.id;
   // Apply fog to the scene
-  scene.fog=new THREE.FogExp2(lightProfile.fog,lightProfile.fogD);
+  scene.fog=new THREE.FogExp2(lightProfile.fog,THREE.MathUtils.clamp(lightProfile.fogD*.72,.008,.032));
   // Ambient + hemisphere (sky/ground bounce)
   const amb=new THREE.AmbientLight(lightProfile.ambCol,lightProfile.ambInt);scene.add(amb);ob.push(amb);
   const hemi=new THREE.HemisphereLight(lightProfile.hemiSky,lightProfile.hemiGround,lightProfile.hemiInt);
@@ -1850,18 +2242,71 @@ function buildLevel(scene,bn){
   }
   _configureLevelShadowLight(key);
   const ceilingLights=[];
+  const fakeCeilingLamps=[];
+  const ceilSlots=[];
   for(let z=-20;z<=20;z+=10){
     let prof;
     if(z>ZONE_Z_SPLIT) prof=lightProfile.zoneA;
     else if(z>=-ZONE_Z_SPLIT) prof=lightProfile.zoneB;
     else prof=lightProfile.zoneC;
-    const pl=new THREE.PointLight(prof.col,prof.int,32);pl.position.set(0,RH-.2,z);scene.add(pl);ob.push(pl);
-    pl.userData.baseIntensity=prof.int;ceilingLights.push(pl);
-    const poolM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:prof.pool,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
-    const pool=new THREE.Mesh(new THREE.PlaneGeometry(3.4,3.4),poolM);
+    ceilSlots.push({z,prof});
+  }
+  ceilSlots.sort((a,b)=>b.prof.int-a.prof.int);
+  const worldPointBudget=_lightingBudget();
+  const reserveBounce=_playerBouncePointEnabled()?1:0;
+  let rem=Math.max(0,worldPointBudget-reserveBounce);
+  let usePhysicalRefl=false;
+  try{usePhysicalRefl=(SETTINGS&&SETTINGS.quality)==='ultra';}catch(_){usePhysicalRefl=false;}
+  for(const {z,prof} of ceilSlots){
+    const baseInt=prof.int*.82;
+    const asReal=rem>0;
+    if(asReal){
+      rem--;
+      const pl=new THREE.PointLight(prof.col,baseInt,30,1.35);pl.position.set(0,RH-.2,z);scene.add(pl);ob.push(pl);
+      pl.userData.baseIntensity=baseInt;_tagAaPointLight(pl,AA_POINTLIGHT_WORLD_BUDGETED);ceilingLights.push(pl);
+    }else{
+      fakeCeilingLamps.push({position:new THREE.Vector3(0,RH-.2,z),color:new THREE.Color(prof.col),userData:{baseIntensity:baseInt}});
+    }
+    const poolM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:prof.pool,transparent:true,opacity:(asReal?.24:.30)*odMul,depthWrite:false,blending:THREE.AdditiveBlending});
+    const pool=new THREE.Mesh(new THREE.PlaneGeometry(4.4,4.4),poolM);
     pool.rotation.x=-Math.PI/2;
     pool.position.set(0,WT+.012,z);
     scene.add(pool);ob.push(pool);
+    if(reflProfile.poolOpacity>0){
+      let sheenM;
+      if(usePhysicalRefl){
+        sheenM=new THREE.MeshPhysicalMaterial({
+          color:prof.pool,
+          transparent:true,
+          opacity:reflProfile.poolOpacity*THREE.MathUtils.clamp(odMul,.55,1.12),
+          depthWrite:false,
+          roughness:reflProfile.poolRough,
+          metalness:.01,
+          clearcoat:.72,
+          clearcoatRoughness:reflProfile.poolRough*.78,
+          envMapIntensity:reflProfile.poolEnv,
+          alphaMap:_softRadialTex,
+          side:THREE.DoubleSide
+        });
+      }else{
+        sheenM=new THREE.MeshBasicMaterial({
+          map:_softRadialTex,
+          color:prof.pool,
+          transparent:true,
+          opacity:reflProfile.poolOpacity*.92*odMul,
+          depthWrite:false,
+          blending:THREE.AdditiveBlending,
+          side:THREE.DoubleSide
+        });
+      }
+      const sheen=new THREE.Mesh(new THREE.PlaneGeometry(4.8*reflProfile.poolScale,1.35*reflProfile.poolScale),sheenM);
+      sheen.rotation.x=-Math.PI/2;
+      sheen.rotation.z=(z>=0?.08:-.08)+(bn%2?-.035:.035);
+      sheen.position.set(0,WT+.019,z+(z>=0?-.20:.20));
+      sheen.userData.noBlock=true;sheen.renderOrder=1;
+      scene.add(sheen);ob.push(sheen);
+      visualStats.wetSurfaces++;
+    }
     // Light fixture — visible mesh hanging from ceiling
     if(bn===1){
       // Industrial cage lamp
@@ -1896,7 +2341,10 @@ function buildLevel(scene,bn){
     // beneath the lamp (a soft glow) rather than a hard white wedge cutting
     // across the room. Also fade the cone with vertex colors so the base is
     // transparent on the floor.
-    const _rayGeo=new THREE.ConeGeometry(1.35,RH-.7,20,1,true);
+    const rq=(typeof SETTINGS!=='undefined'&&SETTINGS.quality)||'high';
+    const raySeg=({low:8,medium:10,high:14,ultra:20}[rq])||14;
+    const _rayRad=1.22*Math.max(0.55,odMul);
+    const _rayGeo=new THREE.ConeGeometry(_rayRad,RH-.7,raySeg,1,true);
     {
       const pos=_rayGeo.attributes.position;
       const colors=new Float32Array(pos.count*3);
@@ -1909,31 +2357,55 @@ function buildLevel(scene,bn){
       }
       _rayGeo.setAttribute('color',new THREE.BufferAttribute(colors,3));
     }
-    const rayM=new THREE.MeshBasicMaterial({color:prof.col,vertexColors:true,transparent:true,opacity:.022,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.BackSide,fog:true});
+    const rayM=new THREE.MeshBasicMaterial({color:prof.col,vertexColors:true,transparent:true,opacity:.012*odMul,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.BackSide,fog:true});
     const ray=new THREE.Mesh(_rayGeo,rayM);
     ray.position.set(0,WT+(RH-.7)/2+.30,z);ray.userData.noBlock=true;ray.renderOrder=2;scene.add(ray);ob.push(ray);
   }
-  // Per-building accent lights — extra side flair
+  // Per-building accent lights — extra side flair (budgeted: fake lamps + glow meshes)
   if(bn===3){
-    // Strobing color flares for nightclub
+    const discoColor=new THREE.Color(0xff40c8);
     for(const[ax,az]of[[-hw+1.5,8],[hw-1.5,8],[-hw+1.5,-8],[hw-1.5,-8]]){
-      const fl=new THREE.PointLight(0xff40c8,1.2,7);fl.position.set(ax,RH-.3,az);scene.add(fl);ob.push(fl);
-      ceilingLights.push(fl);fl.userData.baseIntensity=1.2;fl.userData.discoFlare=true;
+      fakeCeilingLamps.push({position:new THREE.Vector3(ax,RH-.3,az),color:discoColor.clone(),userData:{baseIntensity:1.2,discoFlare:true}});
+      const halo=new THREE.MeshBasicMaterial({color:0xff40c8,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
+      const flare=new THREE.Mesh(new THREE.SphereGeometry(.14,10,8),halo);
+      flare.position.set(ax,RH-.3,az);scene.add(flare);ob.push(flare);
+      flare.userData.discoFlareVisual=true;
     }
   }
   if(bn===4){
     // Soft moonlight casting from windows
     const moonL=new THREE.DirectionalLight(0xb0c8ff,0.42);moonL.position.set(-12,8,4);scene.add(moonL);ob.push(moonL);
   }
-  // Pick one ceiling light to flicker for atmosphere
-  const flickerLight=ceilingLights[Math.floor(Math.random()*ceilingLights.length)];
-  flickerLight.userData.flicker=true;flickerLight.userData.flickerPhase=Math.random()*10;
-  // Drifting dust motes — small additive specks in the room volume
+  if(bn===1){
+    const warmBounce=new THREE.Color(0xbdd4e2);
+    for(const sx of [-1,1]){
+      fakeCeilingLamps.push({position:new THREE.Vector3(sx*(hw*.72),RH*.56,0),color:warmBounce.clone(),userData:{baseIntensity:.34,dockBounce:true}});
+      const gM=new THREE.MeshBasicMaterial({color:0xbdd4e2,transparent:true,opacity:.42,depthWrite:false,blending:THREE.AdditiveBlending});
+      const gb=new THREE.Mesh(new THREE.SphereGeometry(.11,8,6),gM);
+      gb.position.set(sx*(hw*.72),RH*.56,0);scene.add(gb);ob.push(gb);
+    }
+  }
+  // Add a barely perceptible ballast drift to one real ceiling lamp.
+  const driftLight=ceilingLights.length?ceilingLights[Math.floor(Math.random()*ceilingLights.length)]:null;
+  if(driftLight){driftLight.userData.flicker=true;driftLight.userData.flickerPhase=Math.random()*10;}
+  let playerBounceLight=null;
+  if(_playerBouncePointEnabled()){
+    playerBounceLight=new THREE.PointLight(lightProfile.hemiSky,.05,7.8,2.18);
+    playerBounceLight.position.set(0,WT+1.10,0);
+    _tagAaPointLight(playerBounceLight,AA_POINTLIGHT_WORLD_BUDGETED,{playerBounce:true});
+    scene.add(playerBounceLight);ob.push(playerBounceLight);
+  }
+  const lightingController=_makeLevelLightingController({
+    scene,bn,lightProfile,reflProfile,zoneBounds,ambient:amb,hemisphere:hemi,rim,key,ceilingLights,fakeCeilingLamps,playerBounceLight,
+    budget:worldPointBudget,maxRealWorldPoints:worldPointBudget
+  });
+  visualStats.lightingSystem=lightingController.id;
+  // visualStats.realPointLights / fakeLightPools finalized after sequence + props (see pre-return recount).
   const dustG=new THREE.Group();scene.add(dustG);ob.push(dustG);
   const dustList=[];
-  const dustCount=Math.max(8,Math.round(36*_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.atmosphereQuality)||'high',{low:.35,medium:.62,high:1,ultra:1.28})));
+  const dustCount=Math.max(4,Math.round(36*_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.atmosphereQuality)||'high',{low:.35,medium:.62,high:1,ultra:1.28})*_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.quality)||'high',{low:.18,medium:.42,high:.58,ultra:1.24})));
   for(let i=0;i<dustCount;i++){
-    const m=new THREE.MeshBasicMaterial({color:0xffe9c0,transparent:true,opacity:.25+Math.random()*.30,depthWrite:false,blending:THREE.AdditiveBlending});
+    const m=new THREE.MeshBasicMaterial({color:0xffe9c0,transparent:true,opacity:(.25+Math.random()*.30)*odMul,depthWrite:false,blending:THREE.AdditiveBlending});
     const d=new THREE.Mesh(new THREE.SphereGeometry(.013+Math.random()*.012,4,3),m);
     d.position.set((Math.random()-.5)*RW*.85,WT+.5+Math.random()*(RH-.7),(Math.random()-.5)*RD*.85);
     d.userData.phaseX=Math.random()*Math.PI*2;
@@ -2015,8 +2487,11 @@ function buildLevel(scene,bn){
   // 2 small windows on the back wall flanking the player spawn
   addWindow(-7, winY,  hd-.012, .85, winH*.85, '-z');
   addWindow( 7, winY,  hd-.012, .85, winH*.85, '-z');
-  // Persistent amber light illuminating the door from in front
-  const doorLight=new THREE.PointLight(0xffaa33,2.5,6);doorLight.position.set(0,WT+2,-hd+2);scene.add(doorLight);ob.push(doorLight);
+  // Exit door glow — fake lamp metadata + mesh only (counts toward fakeLightPools, not PointLights).
+  _aaPushFakePoolLamp(fakeCeilingLamps,0,WT+2,-hd+2,0xffaa33,2.5,{doorExit:true});
+  const doorGlowM=new THREE.MeshBasicMaterial({color:0xffaa33,transparent:true,opacity:.52,blending:THREE.AdditiveBlending,depthWrite:false});
+  const doorGlow=new THREE.Mesh(new THREE.SphereGeometry(.38,12,10),doorGlowM);
+  doorGlow.position.set(0,WT+2,-hd+2);doorGlow.userData.noBlock=true;scene.add(doorGlow);ob.push(doorGlow);
   // Trigger zone — player stops ~0.35 from wall, so bring z1 well inside that range
   const ez={x0:-1.8,x1:1.8,z0:-hd-0.5,z1:-hd+1.8};
   const sp=(layout===0
@@ -2243,12 +2718,12 @@ function buildLevel(scene,bn){
   const fireSignM=new THREE.MeshLambertMaterial({color:0xff4040,emissive:0x4a0808});
   box(-hw+.04, 1.85, 0, .03, .14, .26, fireSignM);
   // Back zone — pallet stack near the corner
-  const palletM=new THREE.MeshLambertMaterial({color:0x4a3a20});
+  const palletM=new THREE.MeshLambertMaterial({color:bn===1?0x927a52:0x4a3a20});
   box(9, WT+.08, -16, 1.4, .14, .9, palletM);
   box(9, WT+.22, -16, 1.4, .14, .9, palletM);
   box(9, WT+.36, -16, 1.4, .14, .9, palletM);
   // Cargo dolly silhouette in back zone — long flat with two small wheels
-  const dollyM=new THREE.MeshPhongMaterial({color:0x4a4a52,shininess:60,specular:0x303838});
+  const dollyM=new THREE.MeshPhongMaterial({color:bn===1?0x6e7780:0x4a4a52,shininess:bn===1?95:60,specular:bn===1?0x8ca0aa:0x303838});
   const dollyWheelM=new THREE.MeshLambertMaterial({color:0x101010});
   box(-9, WT+.18, -18, 1.6, .10, .8, dollyM);
   box(-9.6, WT+.10, -18.3, .14, .14, .14, dollyWheelM);
@@ -2261,10 +2736,10 @@ function buildLevel(scene,bn){
   const dynProps=[];
   if(bn===1){
     // ── LOADING DOCK: cargo containers, shipping crates, hanging chains, exposed pipes
-    const containerColors=[0xa84830,0x3a6a8a,0x6a4a30];
+    const containerColors=[0xc46a4f,0x5d86a2,0x8a6748];
     function cargoContainer(x,z,col,rotY){
-      const cm=new THREE.MeshPhongMaterial({color:col,shininess:18,specular:0x141618});
-      const cmDark=new THREE.MeshLambertMaterial({color:new THREE.Color(col).multiplyScalar(.55).getHex()});
+      const cm=new THREE.MeshPhongMaterial({color:col,shininess:58,specular:0x6f7f88});
+      const cmDark=new THREE.MeshLambertMaterial({color:new THREE.Color(col).multiplyScalar(.72).getHex()});
       const grp=new THREE.Group();grp.position.set(x,WT+.85,z);grp.rotation.y=rotY||0;scene.add(grp);ob.push(grp);
       // Body
       const body=new THREE.Mesh(new THREE.BoxGeometry(2.4,1.7,1.2),cm);grp.add(body);
@@ -2274,7 +2749,7 @@ function buildLevel(scene,bn){
         const rd2=new THREE.Mesh(new THREE.BoxGeometry(.04,1.6,.03),cmDark);rd2.position.set(rx,0,-.61);grp.add(rd2);
       }
       // Doors at one end with handles
-      const doorM=new THREE.MeshPhongMaterial({color:new THREE.Color(col).multiplyScalar(.78).getHex(),shininess:30});
+      const doorM=new THREE.MeshPhongMaterial({color:new THREE.Color(col).multiplyScalar(.86).getHex(),shininess:70,specular:0x7a8992});
       const door=new THREE.Mesh(new THREE.BoxGeometry(2.42,1.6,.04),doorM);door.position.set(0,0,-.62);grp.add(door);
       // Door handles + hinges
       const hndM=new THREE.MeshPhongMaterial({color:0x202428,shininess:80});
@@ -2362,9 +2837,11 @@ function buildLevel(scene,bn){
     for(const lx of[-1.2,1.2]){
       const stand=new THREE.Mesh(new THREE.BoxGeometry(.08,.45,.08),lampStandM);stand.position.set(lx,WT+1.28,16.85);scene.add(stand);ob.push(stand);
       const shade=new THREE.Mesh(new THREE.ConeGeometry(.16,.30,8),lampShadeMW);shade.position.set(lx,WT+1.65,16.85);shade.rotation.x=Math.PI;scene.add(shade);ob.push(shade);
-      const pl=new THREE.PointLight(0xffd080,1.4,5);pl.position.set(lx,WT+1.55,16.85);scene.add(pl);ob.push(pl);
+      _aaPushFakePoolLamp(fakeCeilingLamps,lx,WT+1.55,16.85,0xffd080,1.4,{sequenceLobbyLamp:true});
+      const rg=new THREE.MeshBasicMaterial({color:0xffd080,transparent:true,opacity:.42,blending:THREE.AdditiveBlending,depthWrite:false});
+      const rgM=new THREE.Mesh(new THREE.SphereGeometry(.14,8,6),rg);rgM.position.set(lx,WT+1.55,16.85);scene.add(rgM);ob.push(rgM);
     }
-    // Chandelier in middle zone — animated swing
+    // Chandelier in middle zone — animated swing (inner glow mesh only — no PointLight)
     const chandM=new THREE.MeshPhongMaterial({color:0xc8a040,shininess:140,specular:0x806020,emissive:0x301808});
     const chand=new THREE.Group();chand.position.set(0,RH+WT-.05,0);scene.add(chand);ob.push(chand);
     const cord=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.7,5),new THREE.MeshLambertMaterial({color:0x141416}));
@@ -2379,8 +2856,6 @@ function buildLevel(scene,bn){
       cr.position.set(Math.cos(a)*.45,-.95,Math.sin(a)*.45);
       chand.add(cr);
     }
-    // Inner pendant lights
-    const innerPL=new THREE.PointLight(0xffe0a0,3.0,9);innerPL.position.y=-.85;chand.add(innerPL);
     dynProps.push({type:'chandelier',grp:chand,phaseX:0,phaseZ:0});
     // Paintings on side walls
     const frameM=new THREE.MeshPhongMaterial({color:0x806840,shininess:110,specular:0xa08050});
@@ -2410,10 +2885,13 @@ function buildLevel(scene,bn){
     // Disco ball stem
     const stemM=new THREE.MeshLambertMaterial({color:0x101014});
     const stem=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,.4,5),stemM);stem.position.set(0,RH+WT-.30,-2);scene.add(stem);ob.push(stem);
-    // Multi-color spotlight under it (animated)
-    const dl1=new THREE.PointLight(0xff40c8,2.5,12);dl1.position.set(0,RH+WT-.7,-2);scene.add(dl1);ob.push(dl1);
-    const dl2=new THREE.PointLight(0x40e0ff,2.5,12);dl2.position.set(0,RH+WT-.7,-2);scene.add(dl2);ob.push(dl2);
-    dynProps.push({type:'disco',grp:disco,light1:dl1,light2:dl2,phaseX:0,phaseZ:0});
+    const glowM1=new THREE.MeshBasicMaterial({color:0xff40c8,transparent:true,opacity:.38,blending:THREE.AdditiveBlending,depthWrite:false});
+    const glowM2=new THREE.MeshBasicMaterial({color:0x40e0ff,transparent:true,opacity:.38,blending:THREE.AdditiveBlending,depthWrite:false});
+    const dg1=new THREE.Mesh(new THREE.SphereGeometry(.42,14,12),glowM1);
+    const dg2=new THREE.Mesh(new THREE.SphereGeometry(.36,12,10),glowM2);
+    dg1.position.set(0,RH+WT-.7,-2);dg2.position.set(0,RH+WT-.7,-2);scene.add(dg1);scene.add(dg2);ob.push(dg1);ob.push(dg2);
+    _aaPushFakePoolLamp(fakeCeilingLamps,0,RH+WT-.7,-2,0xff40c8,2.5,{discoBall:true});
+    dynProps.push({type:'disco',grp:disco,glowM1,glowM2,phaseX:0,phaseZ:0});
     // Neon tubes along upper walls — magenta + cyan
     const neonMagM=new THREE.MeshBasicMaterial({color:0xff40c8});
     const neonCyanM=new THREE.MeshBasicMaterial({color:0x40e0ff});
@@ -2492,8 +2970,10 @@ function buildLevel(scene,bn){
     // Animated water jet (cone)
     const jetM=new THREE.MeshBasicMaterial({color:0x80c0ff,transparent:true,opacity:.55,blending:THREE.AdditiveBlending});
     const jet=new THREE.Mesh(new THREE.ConeGeometry(.18,.85,10,1,true),jetM);jet.position.y=1.20;fGrp.add(jet);
-    const fl1=new THREE.PointLight(0x60a8ff,2.4,7);fl1.position.set(0,WT+.6,0);scene.add(fl1);ob.push(fl1);
-    dynProps.push({type:'fountain',grp:fGrp,jet,light1:fl1,phaseX:0});
+    _aaPushFakePoolLamp(fakeCeilingLamps,0,WT+.55,0,0x60a8ff,2.4,{fountain:true});
+    const fqGlow=new THREE.MeshBasicMaterial({color:0x60a8ff,transparent:true,opacity:.35,blending:THREE.AdditiveBlending,depthWrite:false});
+    const fqOrb=new THREE.Mesh(new THREE.SphereGeometry(.35,12,10),fqGlow);fqOrb.position.set(0,WT+.55,0);scene.add(fqOrb);ob.push(fqOrb);
+    dynProps.push({type:'fountain',grp:fGrp,jet,waterMat:fWater.material,phaseX:0});
     wl.push({x0:-1.1,x1:1.1,z0:-1.1,z1:1.1});
     // Fireplace on west wall in middle zone
     const stoneM=new THREE.MeshPhongMaterial({color:0x2a2024,shininess:30});
@@ -2502,8 +2982,8 @@ function buildLevel(scene,bn){
     // Fire glow (animated)
     const fireM=new THREE.MeshBasicMaterial({color:0xff7020,transparent:true,opacity:.85,blending:THREE.AdditiveBlending});
     const fire=new THREE.Mesh(new THREE.PlaneGeometry(.85,.55),fireM);fire.position.set(.18,.55,0);fire.rotation.y=Math.PI/2;fp.add(fire);
-    const fireLight=new THREE.PointLight(0xff8030,2.8,7);fireLight.position.set(.4,1.2,0);fp.add(fireLight);
-    dynProps.push({type:'fire',grp:fire,light1:fireLight,baseIntensity:2.8,phaseX:Math.random()*Math.PI*2});
+    _aaPushFakePoolLamp(fakeCeilingLamps,-hw+.58,WT+.75,-3,0xff8030,2.5,{fireplace:true});
+    dynProps.push({type:'fire',grp:fire,phaseX:Math.random()*Math.PI*2});
     // Bookshelves
     const shelfM=new THREE.MeshPhongMaterial({color:0x281408,shininess:35,specular:0x4a2810,map:_woodTex});
     const sh=new THREE.Mesh(new THREE.BoxGeometry(.40,2.4,1.6),shelfM);sh.position.set(hw-.50,WT+1.2,8);scene.add(sh);ob.push(sh);
@@ -2525,8 +3005,8 @@ function buildLevel(scene,bn){
     wl.push({x0:-.3,x1:.3,z0:14.7,z1:15.3});
   } else if(bn===5){
     // ── HOSPITAL: gurneys, IV stands, monitors, surgical lights, glass partitions
-    const stainlessM=new THREE.MeshPhongMaterial({color:0xc0c8d0,shininess:240,specular:0xffffff});
-    const sheetM=new THREE.MeshLambertMaterial({color:0xe0e8f0});
+    const stainlessM=new THREE.MeshPhongMaterial({color:0x9aa4aa,shininess:120,specular:0xa8b4ba});
+    const sheetM=new THREE.MeshLambertMaterial({color:0xcfd8d8});
     const bloodM=new THREE.MeshLambertMaterial({color:0x6a0808,emissive:0x100404});
     function gurney(x,z,rotY,bloodied){
       const grp=new THREE.Group();grp.position.set(x,WT,z);grp.rotation.y=rotY||0;scene.add(grp);ob.push(grp);
@@ -2549,7 +3029,7 @@ function buildLevel(scene,bn){
       // IV pole
       const iv=new THREE.Mesh(new THREE.BoxGeometry(.04,1.6,.04),stainlessM);iv.position.set(.34,1.60,-.6);grp.add(iv);
       // IV bag
-      const bagM=new THREE.MeshPhongMaterial({color:0xf0f8e8,shininess:120,transparent:true,opacity:.85});
+      const bagM=new THREE.MeshPhongMaterial({color:0xbfd8d0,shininess:55,transparent:true,opacity:.72});
       const bag=new THREE.Mesh(new THREE.BoxGeometry(.10,.18,.05),bagM);bag.position.set(.34,2.18,-.6);grp.add(bag);
       // Bloodstains on sheets if marked
       if(bloodied){
@@ -2593,7 +3073,7 @@ function buildLevel(scene,bn){
       _addBox(-hw+.07,2.20,z, .03,.45,.75, new THREE.MeshBasicMaterial({color:0x040608}));
     }
     // Glass partition walls (transparent dividers in middle zone)
-    const glsM=new THREE.MeshPhongMaterial({color:0xc8e0e8,shininess:220,specular:0xffffff,transparent:true,opacity:.32});
+    const glsM=new THREE.MeshPhongMaterial({color:0x8fb0b8,shininess:120,specular:0xb8d0d8,transparent:true,opacity:.26});
     _addBox(-3.5,2.0,0, .04,3.4,4.0, glsM);
     _addBox(3.5,2.0,0, .04,3.4,4.0, glsM);
     // Wheelchair
@@ -2646,7 +3126,7 @@ function buildLevel(scene,bn){
     const vendM=new THREE.MeshPhongMaterial({color:0xa01818,shininess:50});
     function vending(x,z,col){
       _addBox(x,WT+.85,z, .80,1.70,.50, new THREE.MeshPhongMaterial({color:col,shininess:50}), true);
-      _addBox(x,WT+1.55,z+.26, .60,.60,.04, new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:.8}));
+      _addBox(x,WT+1.55,z+.26, .60,.60,.04, new THREE.MeshBasicMaterial({color:0x40c8ff}));
     }
     vending(hw-.5,12,0xa01818);vending(hw-.5,8,0x182840);
     // Station signage "LINE 7"
@@ -2683,7 +3163,7 @@ function buildLevel(scene,bn){
     const ctop=new THREE.Mesh(new THREE.BoxGeometry(2.6,.06,1.0),navM);ctop.position.set(0,1.13,.10);ctop.rotation.x=.18;helm.add(ctop);
     // Multiple display panels (cyan glow)
     for(let i=0;i<3;i++){
-      const dp=new THREE.Mesh(new THREE.PlaneGeometry(.65,.40),new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:1.4}));
+      const dp=new THREE.Mesh(new THREE.PlaneGeometry(.65,.40),new THREE.MeshBasicMaterial({color:0x40c8ff}));
       dp.position.set(-.85+i*.85,1.14,.06);dp.rotation.x=-.18;helm.add(dp);
     }
     // Throttle levers
@@ -2794,7 +3274,7 @@ function buildLevel(scene,bn){
     termGrp.add(new THREE.Mesh(new THREE.BoxGeometry(3.0,.85,1.0),rackM)).position.set(0,.42,0);
     // 3 angled monitors
     for(let i=-1;i<=1;i++){
-      const monM=new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:1.2});
+      const monM=new THREE.MeshBasicMaterial({color:0x40c8ff});
       const mon=new THREE.Mesh(new THREE.PlaneGeometry(.85,.55),monM);
       mon.position.set(i*1.0,1.20,-.10);mon.rotation.x=-.20;
       termGrp.add(mon);
@@ -2814,7 +3294,7 @@ function buildLevel(scene,bn){
     _addBox(0,WT+1.50,-15, 2.0,3.0,1.5, rackM, true);
     _addBox(0,WT+2.20,-15, 1.6,.40,1.55, ledCyanM);
     // Glowing core
-    _addBox(0,WT+1.50,-15, 1.0,1.4,.04, new THREE.MeshBasicMaterial({color:0x40e0ff,emissive:0x40e0ff}));
+    _addBox(0,WT+1.50,-15, 1.0,1.4,.04, new THREE.MeshBasicMaterial({color:0x40e0ff}));
     // Server room cooling fans (animated rotation via dynProps later)
     for(const[fx,fz]of[[-12,5],[12,-5]]){
       const fan=new THREE.Group();fan.position.set(fx,RH+WT-.5,fz);scene.add(fan);ob.push(fan);
@@ -2838,8 +3318,8 @@ function buildLevel(scene,bn){
   // (_addBox helper hoisted earlier so all per-building blocks can use it.)
   if(bn===1){
     // ── DOCK Sifu pass: raised concrete loading dock, conveyor belt, pallet stacks, oil drums, rolling cart, rust streaks
-    const concreteM=new THREE.MeshPhongMaterial({color:0x4a4a52,shininess:18,specular:0x14161a});
-    const concreteDarkM=new THREE.MeshPhongMaterial({color:0x303036,shininess:12,specular:0x101216});
+    const concreteM=new THREE.MeshPhongMaterial({color:0x80888d,shininess:70,specular:0x8d9aa0});
+    const concreteDarkM=new THREE.MeshPhongMaterial({color:0x667078,shininess:48,specular:0x748088});
     // Raised concrete loading platform along left side of front zone
     _addBox(-hw+3.5,WT+.45,11, 4.0,.90,3.6, concreteM,true);
     // Edge highlight strip (yellow safety paint)
@@ -2852,15 +3332,15 @@ function buildLevel(scene,bn){
     _addBox(-hw+1.5,WT+1.50,11+1.5, .35,2.10,.35, concreteDarkM,true);
     _addBox(-hw+1.5,WT+1.50,11-1.5, .35,2.10,.35, concreteDarkM,true);
     // Conveyor belt along the back zone — black rolling band on metal stand
-    const conveyorM=new THREE.MeshPhongMaterial({color:0x14141a,shininess:30,specular:0x303040});
-    const beltM=new THREE.MeshPhongMaterial({color:0x080808,shininess:8,specular:0x141414});
+    const conveyorM=new THREE.MeshPhongMaterial({color:0x505a62,shininess:84,specular:0x788894});
+    const beltM=new THREE.MeshPhongMaterial({color:0x151a1f,shininess:22,specular:0x384048});
     _addBox(8,WT+.55,-12, 5.0,.20,.85, conveyorM,true); // belt frame
     _addBox(8,WT+.66,-12, 4.85,.04,.78, beltM); // belt surface
     for(let r=0;r<6;r++){_addBox(8-2.0+r*.8,WT+.50,-12, .10,.12,.85, conveyorM);} // rollers
     _addBox(5.7,WT+.30,-12, .14,.60,.14, concreteDarkM,true); // leg
     _addBox(10.3,WT+.30,-12, .14,.60,.14, concreteDarkM,true);
     // Stacked pallets in back zone corner
-    const palletM2=new THREE.MeshLambertMaterial({color:0x4a3018});
+    const palletM2=new THREE.MeshLambertMaterial({color:0x806040});
     for(let p=0;p<4;p++){
       _addBox(-12,WT+.07+p*.14,-15, 1.4,.14,.9, palletM2);
     }
@@ -3147,8 +3627,8 @@ function buildLevel(scene,bn){
   }
   // ── HOSPITAL Sifu pass ── triage curtains, IV cluster, X-ray panels, supply cabinets, surgical tray
   if(bn===5){
-    const stainlessM=new THREE.MeshPhongMaterial({color:0xc0c8d0,shininess:240,specular:0xffffff});
-    const whiteM=new THREE.MeshLambertMaterial({color:0xe8eef0});
+    const stainlessM=new THREE.MeshPhongMaterial({color:0x9aa4aa,shininess:120,specular:0x9fb0b8});
+    const whiteM=new THREE.MeshLambertMaterial({color:0xcfd8d8});
     const blueM=new THREE.MeshPhongMaterial({color:0x40c8ff,shininess:30,emissive:0x081020});
     // Triage curtain dividers along middle zone (translucent)
     const curtM=new THREE.MeshPhongMaterial({color:0xc8e0e8,shininess:30,transparent:true,opacity:.45,side:THREE.DoubleSide});
@@ -3180,7 +3660,7 @@ function buildLevel(scene,bn){
     }
     supplyCab(hw-1.0,8);supplyCab(hw-1.0,-8);
     // Surgical tray on rolling cart
-    const trayM=new THREE.MeshPhongMaterial({color:0x808890,shininess:280,specular:0xffffff});
+    const trayM=new THREE.MeshPhongMaterial({color:0x6f7880,shininess:150,specular:0xa0b0b8});
     _addBox(-3,WT+.75,-2, .60,.04,.40, trayM, true);
     _addBox(-3,WT+.40,-2, .04,.30,.04, stainlessM);
     // Surgical tools
@@ -3205,10 +3685,10 @@ function buildLevel(scene,bn){
       _addBox(-hw+1.5,WT+.013,z, .12,.005,.30, new THREE.MeshLambertMaterial({color:0xff5040}));
     }
     // Reception desk near front zone
-    _addBox(0,WT+.55,16.5, 3.2,1.10,.85, new THREE.MeshPhongMaterial({color:0xe8eef0,shininess:90}), true);
-    _addBox(0,WT+1.13,16.5, 3.4,.06,1.0, new THREE.MeshPhongMaterial({color:0xa8b0b8,shininess:60}));
+    _addBox(0,WT+.55,16.5, 3.2,1.10,.85, new THREE.MeshPhongMaterial({color:0x768486,shininess:28,specular:0x354044}), true);
+    _addBox(0,WT+1.13,16.5, 3.4,.06,1.0, new THREE.MeshPhongMaterial({color:0x59666b,shininess:42,specular:0x607078}));
     // Computer monitor on desk
-    _addBox(0,WT+1.50,16.4, .55,.40,.05, new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:1.0}));
+    _addBox(0,WT+1.50,16.4, .55,.40,.05, new THREE.MeshBasicMaterial({color:0x40c8ff}));
     _addBox(0,WT+1.50,16.42, .55,.04,.04, new THREE.MeshLambertMaterial({color:0x141420}));
     // Hospital bed with patient (silent body bag)
     _addBox(-12,WT+.48,12, .65,.20,1.85, whiteM, true);
@@ -3345,7 +3825,7 @@ function buildLevel(scene,bn){
       }
       // Monitor
       _addBox(x,WT+.85,z-.20, .04,.50,.50, rackM);
-      _addBox(x,WT+.85,z-.21, .03,.45,.45, new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:1.0}));
+      _addBox(x,WT+.85,z-.21, .03,.45,.45, new THREE.MeshBasicMaterial({color:0x40c8ff}));
       _addBox(x,WT+.55,z-.20, .14,.04,.14, rackM); // base
       // Keyboard
       _addBox(x,WT+.43,z+.20, .50,.025,.18, new THREE.MeshLambertMaterial({color:0x080808}));
@@ -3377,7 +3857,7 @@ function buildLevel(scene,bn){
       _addBox(x,WT+1.0,z, .50,2.0,.85, rackM, true);
       // Multiple small screens stacked
       for(let i=0;i<6;i++){
-        _addBox(x,WT+.40+i*.30,z+.43, .42,.22,.04, new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff,emissiveIntensity:.8}));
+        _addBox(x,WT+.40+i*.30,z+.43, .42,.22,.04, new THREE.MeshBasicMaterial({color:0x40c8ff}));
       }
     }
     kvmRack(-2,4);kvmRack(2,4);
@@ -3398,7 +3878,7 @@ function buildLevel(scene,bn){
     for(let z=-15;z<=15;z+=3){
       _addBox(0,WT+.05,z, .60,.10,.30, new THREE.MeshPhongMaterial({color:0x202830,shininess:120}));
       // Cyan glow underneath
-      _addBox(0,WT+.02,z, .55,.02,.25, new THREE.MeshBasicMaterial({color:0x40c8ff,emissive:0x40c8ff}));
+      _addBox(0,WT+.02,z, .55,.02,.25, new THREE.MeshBasicMaterial({color:0x40c8ff}));
     }
   }
   // ─── PHASE B5: SCATTERED DEBRIS / CLUTTER (per-building) ───────────
@@ -3723,9 +4203,10 @@ function buildLevel(scene,bn){
   }
   function unlockExit(){
     eM.color.set(0x00ff44);eM.emissive.set(0x00ee22);
-    // Bright green flood when exit unlocks — visible from anywhere in the room
     const el=new THREE.PointLight(0x00ff44,10,14);el.position.set(0,WT+2,-hd+2);scene.add(el);ob.push(el);
+    _tagAaPointLight(el,AA_POINTLIGHT_TEMP_OBJECTIVE,{aaTemporary:true,exitFlood:true});
     const el2=new THREE.PointLight(0x44ff88,4,20);el2.position.set(0,WT+1.5,-hd+8);scene.add(el2);ob.push(el2);
+    _tagAaPointLight(el2,AA_POINTLIGHT_TEMP_OBJECTIVE,{aaTemporary:true,exitFill:true});
   }
   function cleanup(){for(const o of ob){scene.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();}}
   const spawnDoors=[];
@@ -3762,6 +4243,7 @@ function buildLevel(scene,bn){
   applySequenceLayout({
     THREE, scene, ob, wl, vl,
     bn, layout,
+    fakeCeilingLamps,
     helpers: { box, _addBox, blockingBox, _setBreak },
     dims: { RW, RD, RH, WT, hw, hd, zSplit: ZONE_Z_SPLIT },
     materials: {
@@ -4081,7 +4563,7 @@ function buildLevel(scene,bn){
     }
     // Candle pickups (visual lamps)
     for(const cx of [-5,-2,2,5]){
-      const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,0.30,8),new THREE.MeshBasicMaterial({color:0xffe8b0,emissive:0xffd060,emissiveIntensity:0.8}));
+      const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,0.30,8),new THREE.MeshBasicMaterial({color:0xffe8b0}));
       candle.position.set(cx,chY+0.40,-22);
       scene.add(candle);ob.push(candle);
     }
@@ -4186,24 +4668,24 @@ function buildLevel(scene,bn){
         dp.grp.rotation.y+=dt*.10;
       } else if(dp.type==='disco'){
         dp.grp.rotation.y+=dt*1.2;
-        // Color cycle
         const t=(now*.6)%1;
         const hue1=t,hue2=(t+.5)%1;
-        if(dp.light1){dp.light1.color.setHSL(hue1,.95,.55);}
-        if(dp.light2){dp.light2.color.setHSL(hue2,.95,.55);}
+        if(dp.glowM1&&dp.glowM1.color)dp.glowM1.color.setHSL(hue1,.95,.55);
+        if(dp.glowM2&&dp.glowM2.color)dp.glowM2.color.setHSL(hue2,.95,.55);
       } else if(dp.type==='fountain'){
         if(dp.jet){
           dp.jet.scale.y=1.0+Math.sin(now*4.5)*.10;
           dp.jet.material.opacity=.45+Math.abs(Math.sin(now*3.0))*.30;
         }
-        if(dp.light1)dp.light1.intensity=2.2+Math.sin(now*2.5)*.55;
+        if(dp.waterMat&&dp.waterMat.emissiveIntensity!=null){
+          dp.waterMat.emissiveIntensity=0.65+Math.sin(now*2.5)*.22;
+        }
       } else if(dp.type==='fire'){
         if(dp.grp){
           dp.grp.scale.y=1.0+Math.sin(now*9+dp.phaseX)*.20;
           dp.grp.scale.x=1.0+Math.cos(now*7+dp.phaseX)*.18;
           dp.grp.material.opacity=.75+Math.sin(now*11)*.18;
         }
-        if(dp.light1)dp.light1.intensity=dp.baseIntensity*(.85+Math.sin(now*8)*.30+Math.cos(now*13)*.10);
       } else if(dp.type==='sculpture'){
         dp.grp.rotation.y+=dt*.45;
       } else if(dp.type==='fan'){
@@ -4211,7 +4693,20 @@ function buildLevel(scene,bn){
       }
     }
   }
-  return{walls:wl,vaultables:vl,floorRegions,exitZone:ez,spawns:sp,zoneSpawns,zoneBounds,unlockExit,cleanup,solids,ceilingLights,shadowCasters,dustList,visualStats,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,wallIndex,cornerEdges,coverSlots,tickDynProps,dims:{RW,RD,RH}};
+  visualStats.fakeLightPools=fakeCeilingLamps.length;
+  visualStats.realPointLights=ceilingLights.length+(playerBounceLight?1:0);
+  visualStats.dynamicLights=visualStats.realPointLights;
+  let transpCount=0;
+  for(const o of ob){
+    if(!o||!o.isMesh)continue;
+    const mats=o.material;
+    const arr=Array.isArray(mats)?mats:[mats];
+    for(const mat of arr){
+      if(mat&&mat.transparent)transpCount++;
+    }
+  }
+  visualStats.transparentSurfaces=transpCount;
+  return{walls:wl,vaultables:vl,floorRegions,exitZone:ez,spawns:sp,zoneSpawns,zoneBounds,unlockExit,cleanup,solids,ceilingLights,fakeCeilingLamps,shadowCasters,dustList,reflectionProfile:reflProfile,lightingController,tickLighting:lightingController.tick,visualStats,zoneDoors,openZoneDoor,tickZoneDoors,alertDoorways,spawnDoors,tickSpawnDoors,navGrid,wallIndex,cornerEdges,coverSlots,tickDynProps,dims:{RW,RD,RH}};
 }
 // ─── ENEMY ───────────────────────────────────────────────────────────────────
 // Tactical-AI states (Phase 3 / LEVELS_AI_LEAN_UPGRADE_PLAN.md §6.1).
@@ -8349,23 +8844,258 @@ function updateKnife(dt){
 const canvas=document.getElementById('c');
 const _rendererBoot=await createBaseRenderer({THREE,canvas,settings:_BOOT_SETTINGS});
 const renderer=_rendererBoot.renderer;
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x0a0a0e);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x070a12);
 // Built-in ACES filmic tonemapping — no custom shader needed, applied per-object
 renderer.outputColorSpace=THREE.SRGBColorSpace;
-renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.18;
-const scene=new THREE.Scene();scene.fog=new THREE.FogExp2(0x0a0a0e,.020);
-// IBL env map omitted — RoomEnvironment + scene.environment was brightening
-// the corridor's existing Phong materials too much (shininess picked up the
-// reflection). Per-material PBR taming below handles GLB visibility instead.
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.06;
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x070a12);scene.fog=new THREE.FogExp2(0x0a0a0e,.020);
+try{
+  const pmrem=new THREE.PMREMGenerator(renderer);
+  const env=pmrem.fromScene(new RoomEnvironment(),0.035).texture;
+  scene.environment=env;
+  scene.environmentIntensity=.86;
+  pmrem.dispose();
+}catch(err){console.warn('[render] RoomEnvironment disabled:',err);}
 const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.05,120);
 camera.rotation.order='YXZ';camera.layers.enable(1);scene.add(camera);
+const viewmodelFill=new THREE.PointLight(0xe4ecff,0.68,4.4,1.65);
+viewmodelFill.position.set(0.25,-0.12,0.45);
+_tagAaPointLight(viewmodelFill,AA_POINTLIGHT_CAMERA_VM_FILL);
+camera.add(viewmodelFill);
+const _peripheralLightRig=[
+  {light:new THREE.PointLight(0xcfe4ff,0,5.2,1.78),pos:[-.74,.00,.62],weight:.95},
+  {light:new THREE.PointLight(0xffdfb8,0,4.4,1.92),pos:[ .72,.10,.78],weight:.72},
+  {light:new THREE.PointLight(0xdde8ff,0,3.6,2.15),pos:[ .00,.58,.42],weight:.42}
+];
+for(const r of _peripheralLightRig){
+  _tagAaPointLight(r.light,AA_POINTLIGHT_CAMERA_VM_PERIPH);
+  r.light.position.set(...r.pos);
+  r.light.visible=false;
+  camera.add(r.light);
+}
+const _peripheralLightTint=new THREE.Color(0xe4ecff);
+const _peripheralLightTmp=new THREE.Color(0xe4ecff);
+const _viewmodelFillBaseColor=new THREE.Color(0xe4ecff);
+function _updatePeripheralLighting(dt){
+  const step=1-Math.exp(-Math.max(0,dt||0)*7.5);
+  const cap=_peripheralMovingPointCap();
+  let targetTint=_peripheralLightTmp.set(0xe4ecff),strength=.10;
+  try{
+    const ld=G&&G.levelData;
+    const rp=(ld&&ld.reflectionProfile)||_levelReflectionProfile((G&&G.building)||1);
+    strength=.08*(rp.peripheral||.65);
+    if(ld&&P){
+      let best=null,bestD2=Infinity;
+      const consider=(L,isFake)=>{
+        if(!L||!L.position)return;
+        const dx=P.pos.x-L.position.x,dz=P.pos.z-L.position.z;
+        const d2=dx*dx+dz*dz;
+        if(d2<bestD2){best={L,isFake};bestD2=d2;}
+      };
+      if(Array.isArray(ld.ceilingLights)){
+        for(const L of ld.ceilingLights)consider(L,false);
+      }
+      if(Array.isArray(ld.fakeCeilingLamps)){
+        for(const F of ld.fakeCeilingLamps)consider(F,true);
+      }
+      if(best&&best.L){
+        const near=THREE.MathUtils.clamp(1-Math.sqrt(bestD2)/18,0,1);
+        if(best.isFake&&best.L.color){
+          targetTint=best.L.color;
+        }else if(best.L.color){
+          targetTint=best.L.color;
+        }
+        strength=(.12+near*.30)*(rp.peripheral||.65);
+      }
+      strength*=1-(P.ads||0)*.26;
+      if(P.reloading)strength+=.10;
+      if(P.running)strength+=.045;
+    }
+  }catch(_){}
+  _peripheralLightTint.lerp(targetTint,step*.72);
+  for(let i=0;i<_peripheralLightRig.length;i++){
+    const r=_peripheralLightRig[i];
+    const active=i<cap;
+    r.light.visible=active;
+    if(!active){
+      r.light.intensity+=(0-r.light.intensity)*step;
+      continue;
+    }
+    r.light.color.copy(_peripheralLightTint);
+    r.light.intensity+=(strength*r.weight-r.light.intensity)*step;
+  }
+  viewmodelFill.color.copy(_peripheralLightTint).lerp(_viewmodelFillBaseColor,.42);
+  viewmodelFill.intensity+=(.50+strength*.72-viewmodelFill.intensity)*step;
+  let pq='high';
+  try{pq=SETTINGS.quality||'high';}catch(_){pq='high';}
+  const vmCap=({low:.24,medium:.38,high:.56,ultra:.70}[pq])||.54;
+  if(viewmodelFill.intensity>vmCap)viewmodelFill.intensity=vmCap;
+}
+// ── Adaptive perf / frame pacing helpers (budget post + render scale hysteresis).
+const _PERF_ADAPT={
+  bloomHeldOff:false,
+  aoAdaptiveSteps:0,
+  badStreakMs:0,
+  goodStreakMs:0,
+  lastAdaptStackMs:0,
+  lastPixelTuneMs:0,
+  pendingPixelScale:null
+};
+let _perfLastPxApply=0;
+let _perfPixelScale=1;
+const _AO_ADAPT_ORDER=['off','low','medium','high','ultra'];
+function _aoAdaptiveUserIdx(t){
+  const i=_AO_ADAPT_ORDER.indexOf(t);
+  return i>=0?i:_AO_ADAPT_ORDER.indexOf('high');
+}
+function _effectiveAdaptiveAoTier(userAo,steps){
+  const ui=_aoAdaptiveUserIdx(userAo);
+  const si=Math.max(0,ui-(steps|0));
+  return _AO_ADAPT_ORDER[si];
+}
+function _perfFramePercentiles(samples){
+  const buf=samples;
+  if(!buf||!buf.length)return{p95ms:0,p99ms:0,worstMs:0,count:0};
+  const tmp=new Float32Array(buf.length);
+  let n=0;
+  for(let i=0;i<buf.length;i++){
+    const v=buf[i];
+    if(v>0.015)tmp[n++]=v;
+  }
+  if(!n)return{p95ms:0,p99ms:0,worstMs:0,count:0};
+  const slice=Array.from(tmp.subarray(0,n)).sort((a,b)=>a-b);
+  const worst=slice[n-1];
+  const p95=slice[Math.min(n-1,Math.floor((n-1)*.95))];
+  const p99=slice[Math.min(n-1,Math.floor((n-1)*.99))];
+  return{p95ms:p95,p99ms:p99,worstMs:worst,count:n};
+}
+function _tickPerfAdaptive(dt){
+  if(!SETTINGS||typeof PERF==='undefined')return;
+  const q=SETTINGS.quality||'high';
+  const pc=_perfFramePercentiles(PERF.samples);
+  PERF.lastP95ms=pc.p95ms;
+  PERF.lastP99ms=pc.p99ms;
+  PERF.worstRecentFrameMs=pc.worstMs;
+  const p95Thr=q==='ultra'?34:26;
+  const p99Thr=q==='ultra'?44:34;
+  const emaThr=q==='ultra'?32:25;
+  const stressed=pc.p95ms>p95Thr||pc.p99ms>p99Thr||PERF.emaMs>emaThr;
+  const chill=pc.p95ms<(q==='low'?24:21)&&pc.p99ms<(q==='low'?30:26)&&PERF.emaMs<(q==='low'?24:20);
+  if(stressed)_PERF_ADAPT.badStreakMs+=(dt||0)*1000;else _PERF_ADAPT.badStreakMs=Math.max(0,_PERF_ADAPT.badStreakMs-(dt||0)*280);
+  if(chill)_PERF_ADAPT.goodStreakMs+=(dt||0)*1000;else _PERF_ADAPT.goodStreakMs=Math.max(0,_PERF_ADAPT.goodStreakMs-(dt||0)*380);
+  const now=performance.now();
+  const reconfigGap=2600;
+  const userAo=(SETTINGS&&SETTINGS.aoQuality)||'high';
+  const maxAoSteps=_aoAdaptiveUserIdx(userAo);
+  if(q!=='ultra'){
+    if(_PERF_ADAPT.badStreakMs>3200&&SETTINGS.renderScale==='auto'){
+      if(_perfPixelScale>0.82&&now-_PERF_ADAPT.lastPixelTuneMs>4200&&now-_perfLastPxApply>3400){
+        _PERF_ADAPT.pendingPixelScale=THREE.MathUtils.clamp(_perfPixelScale-0.055,0.72,1.05);
+        _PERF_ADAPT.lastPixelTuneMs=now;
+      }
+    }
+    if(_PERF_ADAPT.badStreakMs>3000&&now-_PERF_ADAPT.lastAdaptStackMs>reconfigGap){
+      let stepped=false;
+      if(!_PERF_ADAPT.bloomHeldOff&&SETTINGS.bloomQuality&&SETTINGS.bloomQuality!=='off'){
+        _PERF_ADAPT.bloomHeldOff=true;stepped=true;
+      }else if((_PERF_ADAPT.aoAdaptiveSteps|0)<maxAoSteps){
+        _PERF_ADAPT.aoAdaptiveSteps=(_PERF_ADAPT.aoAdaptiveSteps|0)+1;stepped=true;
+      }
+      if(stepped){_PERF_ADAPT.lastAdaptStackMs=now;_configureRenderStack();}
+    }else if(_PERF_ADAPT.goodStreakMs>5600){
+      if((_PERF_ADAPT.aoAdaptiveSteps|0)>0&&now-_PERF_ADAPT.lastAdaptStackMs>reconfigGap){
+        _PERF_ADAPT.aoAdaptiveSteps=Math.max(0,(_PERF_ADAPT.aoAdaptiveSteps|0)-1);_PERF_ADAPT.lastAdaptStackMs=now;_configureRenderStack();
+      }else if(_PERF_ADAPT.bloomHeldOff&&(_PERF_ADAPT.aoAdaptiveSteps|0)===0&&now-_PERF_ADAPT.lastAdaptStackMs>reconfigGap){
+        _PERF_ADAPT.bloomHeldOff=false;_PERF_ADAPT.lastAdaptStackMs=now;_configureRenderStack();
+      }else if(SETTINGS.renderScale==='auto'&&_perfPixelScale<0.988&&now-_PERF_ADAPT.lastPixelTuneMs>5800&&now-_perfLastPxApply>5600&&chill){
+        _PERF_ADAPT.pendingPixelScale=THREE.MathUtils.clamp(_perfPixelScale+0.04,0.72,1.05);_PERF_ADAPT.lastPixelTuneMs=now;
+      }
+      if(_PERF_ADAPT.goodStreakMs>9000)_PERF_ADAPT.badStreakMs*=0.52;
+    }
+  }else{
+    if((_PERF_ADAPT.badStreakMs>2800)&&(SETTINGS.renderScale==='auto')&&_perfPixelScale>0.88&&now-_PERF_ADAPT.lastPixelTuneMs>4600&&now-_perfLastPxApply>3600){
+      _PERF_ADAPT.pendingPixelScale=THREE.MathUtils.clamp(_perfPixelScale-0.045,0.78,1.05);_PERF_ADAPT.lastPixelTuneMs=now;
+    }
+    if(_PERF_ADAPT.goodStreakMs>2200&&( _PERF_ADAPT.bloomHeldOff||(_PERF_ADAPT.aoAdaptiveSteps|0)>0)&&now-_PERF_ADAPT.lastAdaptStackMs>2200){
+      if((_PERF_ADAPT.aoAdaptiveSteps|0)>0)_PERF_ADAPT.aoAdaptiveSteps=Math.max(0,(_PERF_ADAPT.aoAdaptiveSteps|0)-1);
+      else _PERF_ADAPT.bloomHeldOff=false;
+      _PERF_ADAPT.lastAdaptStackMs=now;_configureRenderStack();
+    }
+  }
+}
+function _applyPendingPixelScaleIfStale(){
+  if(_PERF_ADAPT.pendingPixelScale==null)return;
+  const now=performance.now();
+  const tgt=_PERF_ADAPT.pendingPixelScale;
+  if(now-_perfLastPxApply<3200&&Math.abs(tgt-_perfPixelScale)<0.035)return;
+  _PERF_ADAPT.pendingPixelScale=null;
+  _perfLastPxApply=now;
+  _perfPixelScale=tgt;
+  applyQuality();
+}
+function _adaptivePerfTelemetry(){
+  const liv=_SETTINGS_FOR_RENDER||_BOOT_SETTINGS;
+  const uaq=(liv&&liv.aoQuality)||'high';
+  return{
+    bloomHeldOff:!!_PERF_ADAPT.bloomHeldOff,
+    aoAdaptiveSteps:_PERF_ADAPT.aoAdaptiveSteps|0,
+    effectiveAoQuality:_effectiveAdaptiveAoTier(uaq,_PERF_ADAPT.aoAdaptiveSteps|0),
+    userAoQuality:uaq,
+    badStreakMs:_PERF_ADAPT.badStreakMs||0,
+    goodStreakMs:_PERF_ADAPT.goodStreakMs||0,
+    pendingPixelScale:_PERF_ADAPT.pendingPixelScale,
+    activePixelScale:_perfPixelScale,
+    lastPixelApplyMs:_perfLastPxApply
+  };
+}
+function damp(current,target,lambda,dt){return target+(current-target)*Math.exp(-lambda*Math.max(0,dt||0));}
+function _gatherScenePointLightTelemetry(scene){
+  const out={
+    scenePointLightsTotal:0,
+    byRole:{},
+    legacyUntagged:0,
+    budgetedWorldPointLightsInScene:0,
+    cameraViewmodelFill:0,
+    cameraPeripheralAuthoredSlots:typeof _peripheralLightRig!=='undefined'?_peripheralLightRig.length:0,
+    cameraPeripheralInScene:0,
+    cameraPeripheralCap:_peripheralMovingPointCap(),
+    cameraPeripheralVisibleActive:0,
+    weaponViewmodel:0,
+    temporaryVfx:0,
+    temporaryObjective:0,
+    nonWorldPointLightsInScene:0
+  };
+  if(!scene||typeof scene.traverse!=='function')return out;
+  scene.traverse(o=>{
+    if(!o.isPointLight)return;
+    out.scenePointLightsTotal++;
+    const role=(o.userData&&o.userData.aaPointLightRole)||'legacyUntagged';
+    out.byRole[role]=(out.byRole[role]||0)+1;
+    if(role==='legacyUntagged')out.legacyUntagged++;
+    if(role===AA_POINTLIGHT_WORLD_BUDGETED)out.budgetedWorldPointLightsInScene++;
+    else out.nonWorldPointLightsInScene++;
+    if(role===AA_POINTLIGHT_CAMERA_VM_FILL)out.cameraViewmodelFill++;
+    if(role===AA_POINTLIGHT_CAMERA_VM_PERIPH){
+      out.cameraPeripheralInScene++;
+      if(o.visible)out.cameraPeripheralVisibleActive++;
+    }
+    if(role===AA_POINTLIGHT_WEAPON_VM)out.weaponViewmodel++;
+    if(role===AA_POINTLIGHT_TEMP_VFX)out.temporaryVfx++;
+    if(role===AA_POINTLIGHT_TEMP_OBJECTIVE)out.temporaryObjective++;
+  });
+  out.cameraPeripheralHiddenInactive=Math.max(0,out.cameraPeripheralInScene-out.cameraPeripheralVisibleActive);
+  return out;
+}
 let _renderStack=null,_composer=null,_bloomPass=null,_gtaoPass=null,_gradePass=null,_smaaPass=null;
 let _forcedVisualProfile=null;
 function _activeVisualProfile(){if(_forcedVisualProfile)return _forcedVisualProfile;let b=1;try{if(G&&G.building)b=G.building;}catch(_){}return getVisualProfile(b);}
 function _configureRenderStack(){
   if(!_renderStack)return;
-  let settings=_BOOT_SETTINGS;try{if(SETTINGS)settings=SETTINGS;}catch(_){}
-  _renderStack.configure(settings,{visualProfile:_activeVisualProfile()});
+  const settings=_SETTINGS_FOR_RENDER||_BOOT_SETTINGS;
+  const eff=Object.assign({},settings);
+  if(_PERF_ADAPT.bloomHeldOff)eff.bloomQuality='off';
+  eff.aoQuality=_effectiveAdaptiveAoTier((settings&&settings.aoQuality)||'high',_PERF_ADAPT.aoAdaptiveSteps|0);
+  _renderStack.configure(eff,{visualProfile:_activeVisualProfile()});
   _composer=_renderStack.composer;
   _bloomPass=_renderStack.passes.bloom;
   _gtaoPass=_renderStack.passes.gtao;
@@ -8392,7 +9122,7 @@ const _ASSET_REGISTRY=createAssetRegistry({
   THREE,
   gltfLoader:_ASSET_GLTF_LOADER,
   textureLoader:_ASSET_TEX_LOADER,
-  getSettings:()=>{try{return SETTINGS||_BOOT_SETTINGS;}catch(_){return _BOOT_SETTINGS;}}
+  getSettings:()=>_SETTINGS_FOR_RENDER||_BOOT_SETTINGS
 });
 const _ASSET_PREFLIGHT=_ASSET_REGISTRY.preflight();
 // ── Renderer health monitor ──────────────────────────────────────────────────
@@ -8513,7 +9243,7 @@ function _sampleRuntimeFrame(){
   }
   return sample;
 }
-const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0};
+const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0,throttleInterval:1,renderedThisFrame:false,skippedThrottle:false};
 function _renderScopeTarget(target,cam){
   try{
     if(_renderStack)_renderStack.renderToTarget(target,cam);
@@ -8595,7 +9325,7 @@ const gButt     = _m4(.038,.072,.014,m4MetalM, 0, .010, .210);
 const m4ScopeGrp=new THREE.Group();
 m4ScopeGrp.visible=false;
 gunGrp.add(m4ScopeGrp);
-let m4ReticleM=null,m4ReticleHaloM=null,m4LensM_active=null,gReticle=null,gReticleHalo=null;
+let m4ReticleM=null,m4ReticleHaloM=null,m4LensM_active=null,gReticle=null,gReticleHalo=null,m4ScopeView=null,m4ScopeViewM=null;
 function buildScopeMesh(att){
   // Tear down previous scope build
   while(m4ScopeGrp.children.length){
@@ -8603,7 +9333,7 @@ function buildScopeMesh(att){
     if(c.geometry)c.geometry.dispose();
     if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}
   }
-  m4ReticleM=null;m4ReticleHaloM=null;m4LensM_active=null;gReticle=null;gReticleHalo=null;
+  m4ReticleM=null;m4ReticleHaloM=null;m4LensM_active=null;gReticle=null;gReticleHalo=null;m4ScopeView=null;m4ScopeViewM=null;
   if(!att){m4ScopeGrp.visible=false;return;}
   // ── REFLEX-STYLE OPEN-FRAME RED DOT (Holosun/EOTech-inspired) ───────────────
   // Open frame: mount + projector housing below, two thin posts at the sides,
@@ -8643,7 +9373,9 @@ function buildScopeMesh(att){
   // PIP "look-through" plane — magnified scene rendered onto the glass
   const scopeViewM=new THREE.MeshBasicMaterial({map:rtScope.texture,transparent:true,opacity:0,depthWrite:false,depthTest:false});
   scopeViewM_active=scopeViewM;
+  m4ScopeViewM=scopeViewM;
   const scopeView=new THREE.Mesh(new THREE.PlaneGeometry(glassW-.001,glassH-.001),scopeViewM);
+  m4ScopeView=scopeView;
   scopeView.position.set(0,.078,-.0578);
   scopeView.rotation.x=GLASS_TILT;
   scopeView.layers.set(1);scopeView.renderOrder=1100;
@@ -8712,8 +9444,9 @@ function buildScopeMesh(att){
 }
 function refreshAttachmentVisuals(){
   const att=P.attachments&&P.attachments.scope;
-  // Policy: scope stat multipliers apply to all weapons, but the rendered
-  // optic model + PIP lens are intentionally M4-only for readability.
+  // Scope attachment stat multipliers apply globally. The attachment's 3D
+  // optic is M4-only, while built-in DMR/sniper optics use their own PIP
+  // overlays through _currentOpticProfile().
   buildScopeMesh(P.weaponIdx===0?att:null);
 }
 // Ejection port cover (small rectangle on right side of upper)
@@ -9191,7 +9924,7 @@ applyAAWeaponSurfacePass();
 gunGrp.position.set(.12,-.11,-.22);camera.add(gunGrp);
 // Player muzzle flash — child of gunGrp so it follows the weapon. Position
 // is updated per-weapon in switchWeapon (M4 muzzle is much further forward).
-const muzzleLight=new THREE.PointLight(0xffcc55,0,5);muzzleLight.position.set(0,.030,-.48);gunGrp.add(muzzleLight);
+const muzzleLight=new THREE.PointLight(0xffcc55,0,5);muzzleLight.position.set(0,.030,-.48);_tagAaPointLight(muzzleLight,AA_POINTLIGHT_WEAPON_VM);gunGrp.add(muzzleLight);
 const _pmfMat=new THREE.MeshBasicMaterial({color:0xffee99,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide});
 const _pmfH=new THREE.Mesh(new THREE.PlaneGeometry(.16,.038),_pmfMat);
 _pmfH.position.set(0,.030,-.49);gunGrp.add(_pmfH);
@@ -9480,6 +10213,10 @@ const reloadHoloGrp=new THREE.Group();reloadHoloGrp.add(reloadGlow,reloadHolo);
 const _reloadHoloAnchorLocal=new THREE.Vector3(_bandX,_bandY+.110,_bandZ);
 const _reloadHoloTgtW=new THREE.Vector3();
 const _reloadHoloSmW=new THREE.Vector3();
+const _reloadHoloAnchorW=new THREE.Vector3();
+const _reloadHoloSafeCam=new THREE.Vector3();
+const _reloadHoloSafeW=new THREE.Vector3();
+const _reloadHoloPanelW=new THREE.Vector3();
 reloadHoloGrp.scale.setScalar(.001);
 scene.add(reloadHoloGrp);
 _reloadHoloTgtW.copy(_reloadHoloAnchorLocal);armBandGrp.updateMatrixWorld(true);armBandGrp.localToWorld(_reloadHoloTgtW);
@@ -9487,6 +10224,29 @@ _reloadHoloSmW.copy(_reloadHoloTgtW);
 reloadHoloGrp.position.copy(_reloadHoloSmW);
 reloadHoloGrp.up.copy(camera.up);reloadHoloGrp.lookAt(camera.position);
 reloadHoloGrp.rotateX(0.10);reloadHoloGrp.rotateY(-0.06);reloadHoloGrp.rotateZ(0.012);
+// Eye-readable tether from wrist emitter to stabilized panel. The panel can
+// float into a view-safe pocket during violent reload motion, while this beam
+// keeps the projection visually rooted at the wristband.
+const reloadTetherM=new THREE.MeshBasicMaterial({color:0x80e0ff,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const reloadTether=new THREE.Mesh(new THREE.PlaneGeometry(.006,1),reloadTetherM);
+reloadTether.renderOrder=993;reloadTether.layers.set(1);reloadTether.visible=false;scene.add(reloadTether);
+const _reloadTetherMid=new THREE.Vector3(),_reloadTetherY=new THREE.Vector3(),_reloadTetherX=new THREE.Vector3(),_reloadTetherZ=new THREE.Vector3(),_reloadTetherMtx=new THREE.Matrix4();
+function _placeReloadTether(a,b,vis){
+  const d=a.distanceTo(b);
+  if(!reloadTether||vis<=0.01||d<0.012){reloadTether.visible=false;reloadTetherM.opacity=0;return;}
+  _reloadTetherMid.copy(a).add(b).multiplyScalar(.5);
+  _reloadTetherY.copy(b).sub(a).normalize();
+  _reloadTetherZ.copy(camera.position).sub(_reloadTetherMid).normalize();
+  _reloadTetherX.crossVectors(_reloadTetherY,_reloadTetherZ).normalize();
+  if(_reloadTetherX.lengthSq()<0.0001)_reloadTetherX.set(1,0,0);
+  _reloadTetherZ.crossVectors(_reloadTetherX,_reloadTetherY).normalize();
+  _reloadTetherMtx.makeBasis(_reloadTetherX,_reloadTetherY,_reloadTetherZ);
+  reloadTether.position.copy(_reloadTetherMid);
+  reloadTether.quaternion.setFromRotationMatrix(_reloadTetherMtx);
+  reloadTether.scale.set(1,d,1);
+  reloadTetherM.opacity=vis;
+  reloadTether.visible=true;
+}
 // Emitter pad → hologram light column (pad still on arm; readout floats in view)
 const reloadBeamM=new THREE.MeshBasicMaterial({color:0x80e0ff,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
 const reloadBeam=new THREE.Mesh(new THREE.PlaneGeometry(.014,.058),reloadBeamM);
@@ -9552,10 +10312,126 @@ function _drawReloadHolo(curr,mag,progress){
 // Layer 0 = world; layer 1 = viewmodel (gun, hands, knife, wrist/shop/reload holos).
 // Main camera renders both. Scope camera renders ONLY layer 0 so the magnified
 // view through the optic doesn't show the gun itself.
-const rtScope=new THREE.WebGLRenderTarget(1024,1024,{minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
+const rtScope=new THREE.WebGLRenderTarget(768,768,{minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
 const scopeCamera=new THREE.PerspectiveCamera(28,1,.05,120);
 scopeCamera.layers.set(0);
 let scopeViewM_active=null;
+let _scopePipStressDown=0;
+function _baseScopePipPixelSize(){
+  const q=SETTINGS.quality||'high';
+  const map={low:256,medium:400,high:576,ultra:1536};
+  if(SETTINGS.scopePipResolution>0)return SETTINGS.scopePipResolution|0;
+  return map[q]||576;
+}
+function _scopePipRenderStride(){
+  const q=SETTINGS.quality||'high';
+  if(q==='ultra')return 1;
+  if(q==='low')return 4;
+  if(q==='medium')return 3;
+  const p95=typeof PERF!=='undefined'?PERF.lastP95ms||0:0;
+  const p99=typeof PERF!=='undefined'?PERF.lastP99ms||0:0;
+  const fps=typeof PERF!=='undefined'?PERF.emaFps||60:60;
+  if(p95>24||p99>34||fps<46)return 3;
+  if(p95>18||p99>26||fps<54)return 2;
+  return 1;
+}
+function _effectiveScopePipPixelSize(){
+  let w=_baseScopePipPixelSize();
+  if(_scopePipStressDown){
+    const step={1536:1024,1024:768,768:512,512:384,384:384}[w]|0;
+    w=step||Math.max(256,Math.round(w*.72));
+  }
+  return w;
+}
+function applyScopePipRenderTargetSize(){
+  if(typeof rtScope==='undefined')return;
+  const w=_effectiveScopePipPixelSize();
+  if(rtScope.width!==w||rtScope.height!==w)rtScope.setSize(w,w);
+}
+function _makeScopePipOverlay(w,h,x,y,z){
+  const mat=new THREE.MeshBasicMaterial({map:rtScope.texture,transparent:true,opacity:0,depthWrite:false,depthTest:false});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);
+  mesh.position.set(x,y,z);
+  mesh.layers.set(1);
+  mesh.renderOrder=1104;
+  mesh.visible=false;
+  gunGrp.add(mesh);
+  return {mesh,mat};
+}
+const _dmrScopePip=_makeScopePipOverlay(.026,.026,0,.080,.0346);
+const _sniperScopePip=_makeScopePipOverlay(.030,.030,0,.092,.0346);
+const _scopeLensLocalM4=new THREE.Vector3(0,.078,-.057);
+const _scopeLensLocalDmr=new THREE.Vector3(0,.080,.034);
+const _scopeLensLocalSniper=new THREE.Vector3(0,.092,.034);
+function _hideScopePipViews(){
+  if(m4ScopeViewM)m4ScopeViewM.opacity=0;
+  if(_dmrScopePip){_dmrScopePip.mat.opacity=0;_dmrScopePip.mesh.visible=false;}
+  if(_sniperScopePip){_sniperScopePip.mat.opacity=0;_sniperScopePip.mesh.visible=false;}
+}
+function _currentOpticProfile(){
+  if(typeof P==='undefined')return null;
+  const att=P.attachments&&P.attachments.scope;
+  if(P.weaponIdx===0&&att&&m4ScopeViewM&&m4ScopeView){
+    return {
+      name:att.name||'scope',
+      tier:att.tier||1,
+      pipFov:Number.isFinite(att.pipFov)?att.pipFov:14,
+      pipOpacityMax:Number.isFinite(att.pipOpacityMax)?att.pipOpacityMax:.97,
+      vignetteColor:att.vignetteColor||'rgba(80,180,255,.12)',
+      lensLocal:_scopeLensLocalM4,
+      lensY:.078,
+      adsGunZ:-.12,
+      adsFovDelta:36+(att.tier||1)*3,
+      view:m4ScopeView,
+      viewM:m4ScopeViewM
+    };
+  }
+  if(P.weaponIdx===5&&_dmrScopePip){
+    return {
+      name:'MK14 SCOPE',
+      tier:3,
+      pipFov:9,
+      pipOpacityMax:.94,
+      vignetteColor:'rgba(92,190,255,.12)',
+      lensLocal:_scopeLensLocalDmr,
+      lensY:.080,
+      adsGunZ:-.12,
+      adsFovDelta:44,
+      view:_dmrScopePip.mesh,
+      viewM:_dmrScopePip.mat
+    };
+  }
+  if(P.weaponIdx===7&&_sniperScopePip){
+    return {
+      name:'AWM SCOPE',
+      tier:4,
+      pipFov:6,
+      pipOpacityMax:.97,
+      vignetteColor:'rgba(96,210,255,.16)',
+      lensLocal:_scopeLensLocalSniper,
+      lensY:.092,
+      adsGunZ:-.13,
+      adsFovDelta:52,
+      view:_sniperScopePip.mesh,
+      viewM:_sniperScopePip.mat
+    };
+  }
+  return null;
+}
+function _opticGunX(profile){return profile&&profile.lensLocal?-profile.lensLocal.x:0;}
+function _opticGunY(profile){return profile?-(profile.lensY||.078):-.078;}
+function _opticGunZ(profile){
+  if(!profile)return -.22;
+  const adsZ=Number.isFinite(profile.adsGunZ)?profile.adsGunZ:-.12;
+  return -.22+P.ads*(adsZ+.22);
+}
+function _setScopePipView(profile,alpha){
+  _hideScopePipViews();
+  if(!profile||!profile.viewM){scopeViewM_active=profile&&profile.viewM?profile.viewM:null;return;}
+  profile.viewM.opacity=alpha;
+  if(profile.view)profile.view.visible=alpha>0.01;
+  scopeViewM_active=profile.viewM;
+}
 // Tag viewmodel groups onto layer 1 so scope camera can ignore them
 function _setLayer(grp,n){grp.traverse(o=>o.layers.set(n));}
 // ── THROWING KNIFE viewmodel + projectile ────────────────────────────────────
@@ -9776,7 +10652,7 @@ function randomAttachment(type,minTier,maxTier){
   return Object.assign({},list[idx]);
 }
 // ── STATE ─────────────────────────────────────────────────────────────────────
-const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,hp:100,ammo:30,ammoRes:90,reloading:false,reloadTimer:0,RELOAD_TIME:2.2,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:.10,dmgFlash:0,weaponIdx:0,running:false,
+const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,hp:100,ammo:30,ammoRes:90,reloading:false,reloadTimer:0,RELOAD_TIME:2.2,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:.10,dmgFlash:0,weaponIdx:0,running:false,
   vy:0,jumpH:0,grounded:true,
   vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
   nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
@@ -9880,6 +10756,7 @@ function normalizePlayerRuntime(){
   if(!Array.isArray(P.weaponAmmo)||P.weaponAmmo.length<WEAPONS.length)P.weaponAmmo=_weaponAmmoDefaults().map((v,i)=>P.weaponAmmo?.[i]??v);
   if(!Array.isArray(P.weaponRes)||P.weaponRes.length<WEAPONS.length)P.weaponRes=_weaponReserveDefaults().map((v,i)=>P.weaponRes?.[i]??v);
   _padWeaponState();
+  if(typeof P.adsVis!=='number'||Number.isNaN(P.adsVis))P.adsVis=P.ads||0;
   P.smokes=P.smokes||0;P.flashes=P.flashes||0;P.healPacks=P.healPacks||0;P.grenades=P.grenades||0;
 }
 // ── INPUT ─────────────────────────────────────────────────────────────────────
@@ -10453,6 +11330,7 @@ function spawnExplosionFx(pos){
   // Bright flash light
   const flash=new THREE.PointLight(0xffaa44,32,12);
   flash.position.copy(pos);scene.add(flash);
+  _tagAaPointLight(flash,AA_POINTLIGHT_TEMP_VFX,{aaTemporary:true});
   setTimeout(()=>{scene.remove(flash);},140);
   // Big additive ring shockwave
   const ringM=new THREE.MeshBasicMaterial({color:0xffd070,transparent:true,opacity:.95,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
@@ -10597,6 +11475,7 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
+const VISUAL_PATCH_SETTINGS_VERSION=4;
 const SETTINGS=(()=>{
   // Defaults FIRST — then merge the saved values on top. Phase 6: new tactical
   // and lean fields default to enabled; loading an older settings JSON simply
@@ -10605,16 +11484,18 @@ const SETTINGS=(()=>{
   let s={
     sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,invY:false,radar:true,dmgNum:true,
     scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
-    pixelRatioCap:1.5,maxPointLightsEffective:18,perfHud:false,
+    pixelRatioCap:1.18,maxPointLightsEffective:24,perfHud:false,
     aiSkipFramesModulo:3,raycastSpatialIndex:true,
     maxParticlesBlood:120,maxParticlesSmoke:80,
     cheapMaterials:false,reducedBloomish:false,
     rendererMode:'auto',postEnabled:true,aoQuality:'high',bloomQuality:'high',
-    shadowQuality:'medium',atmosphereQuality:'high',textureQuality:'high',
+    shadowQuality:'high',atmosphereQuality:'high',textureQuality:'high',
     characterQuality:'high',weaponQuality:'high',renderScale:'auto',
     vfxQuality:'high',particleQuality:'high',decalQuality:'high',
-    colorGrade:true,filmGrain:false,chromaticAberration:true,sharpen:true,
-    smaa:true,pbrMaterials:true,vignette:false,gradeIntensity:1,
+    colorGrade:true,filmGrain:false,chromaticAberration:false,sharpen:true,
+    smaa:true,pbrMaterials:true,vignette:false,gradeIntensity:.9,
+    lightingQuality:null,
+    visualPatchSettingsVersion:VISUAL_PATCH_SETTINGS_VERSION,
     // Phase 6 — tactical AI + lean toggles
     aiTacticalEnabled:true,
     aiPeekDebugRender:false,
@@ -10622,6 +11503,23 @@ const SETTINGS=(()=>{
     playerLeanBodyRig:true,
   };
   try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}
+  if(s.visualPatchSettingsVersion!==VISUAL_PATCH_SETTINGS_VERSION){
+    Object.assign(s,{
+      filmGrain:false,
+      chromaticAberration:false,
+      vignette:false,
+      gradeIntensity:.9,
+      bloomQuality:s.bloomQuality==='ultra'?'high':(s.bloomQuality||'high'),
+      aoQuality:s.aoQuality==='ultra'?'high':(s.aoQuality||'high'),
+      pixelRatioCap:typeof s.pixelRatioCap==='number'&&s.pixelRatioCap>1.34?1.18:(typeof s.pixelRatioCap==='number'?Math.min(s.pixelRatioCap,1.35):1.18),
+      scopePipResolution:0,
+      lightingQuality:s.lightingQuality||(s.quality||'high'),
+      shadowQuality:s.shadowQuality==='off'||s.shadowQuality==='medium'?'high':(s.shadowQuality||'high'),
+      textureQuality:s.textureQuality==='low'?'high':(s.textureQuality||'high'),
+      visualPatchSettingsVersion:VISUAL_PATCH_SETTINGS_VERSION
+    });
+    if((s.quality||'')==='medium'&&s.aoQuality==='high')s.aoQuality='medium';
+  }
   // Force-on the new tactical flags if a legacy save explicitly nulled them
   if(s.aiTacticalEnabled==null)s.aiTacticalEnabled=true;
   if(s.playerLeanAntiClip==null)s.playerLeanAntiClip=true;
@@ -10630,7 +11528,7 @@ const SETTINGS=(()=>{
   if(s.postEnabled==null)s.postEnabled=true;
   if(s.aoQuality==null)s.aoQuality='high';
   if(s.bloomQuality==null)s.bloomQuality='high';
-  if(s.shadowQuality==null)s.shadowQuality='medium';
+  if(s.shadowQuality==null)s.shadowQuality='high';
   if(s.atmosphereQuality==null)s.atmosphereQuality='high';
   if(s.textureQuality==null)s.textureQuality='high';
   if(s.characterQuality==null)s.characterQuality='high';
@@ -10641,17 +11539,26 @@ const SETTINGS=(()=>{
   if(s.decalQuality==null)s.decalQuality='high';
   if(s.colorGrade==null)s.colorGrade=true;
   if(s.gradeIntensity==null)s.gradeIntensity=1;
+  if(s.lightingQuality==null)s.lightingQuality=s.quality||'high';
   if(s.filmGrain==null)s.filmGrain=false;
-  if(s.chromaticAberration==null)s.chromaticAberration=true;
+  if(s.chromaticAberration==null)s.chromaticAberration=false;
   if(s.sharpen==null)s.sharpen=true;
   if(s.smaa==null)s.smaa=true;
   if(s.vignette==null)s.vignette=false;
+  if(s.visualPatchSettingsVersion==null)s.visualPatchSettingsVersion=VISUAL_PATCH_SETTINGS_VERSION;
   return s;
 })();
+_SETTINGS_FOR_RENDER=SETTINGS;
 function _goreMul(){return ({low:.30,med:1.0,high:1.5}[SETTINGS.gore])||1.0;}
 function saveSettings(){try{localStorage.setItem('clearance_settings',JSON.stringify(SETTINGS));}catch(_){}}
 function _qualityScale(value,table){
   return table[value] ?? table.high ?? 1;
+}
+function _additiveVfxTierMul(){
+  return _qualityScale((_SETTINGS_FOR_RENDER&&_SETTINGS_FOR_RENDER.quality)||'high',{low:.50,medium:.72,high:.86,ultra:1.02});
+}
+function _pickupFxMul(){
+  return _qualityScale((_SETTINGS_FOR_RENDER&&_SETTINGS_FOR_RENDER.quality)||'high',{low:.52,medium:.72,high:.86,ultra:1.02});
 }
 function _applyShadowQuality(){
   if(!renderer||!renderer.shadowMap)return;
@@ -10669,37 +11576,30 @@ function _applyShadowQuality(){
 }
 function applyQuality(){
   const q=SETTINGS.quality||'high';
-  let stren=0;
-  if(_bloomPass){
-    const bloomScale=({off:0,low:.55,medium:.78,high:1,ultra:1.22}[SETTINGS.bloomQuality||'high'])??1;
-    stren=((SETTINGS.reducedBloomish?{low:0,medium:.12,high:.20,ultra:.30}:{low:0,medium:.18,high:.28,ultra:.45})[q]||0)*bloomScale;
-    _bloomPass.strength=stren;
-  }
-  // Pixel ratio
-  const autoPx=Math.min(({low:1.0,medium:1.25,high:Math.min(devicePixelRatio,2),ultra:Math.min(devicePixelRatio,2)}[q]),SETTINGS.pixelRatioCap||1.5);
   const rs=SETTINGS.renderScale||'auto';
-  const px=rs==='auto'?autoPx:Math.min(Math.max(.55,parseFloat(rs)||1)*Math.min(devicePixelRatio,2),2.25);
+  if(rs!=='auto')_perfPixelScale=1;
+  // Pixel ratio — aggressive Retina cap on high + optional adaptive scale multiplier
+  const autoPx=Math.min(({low:1.0,medium:1.06,high:Math.min(devicePixelRatio,1.11),ultra:Math.min(devicePixelRatio,2)}[q]),SETTINGS.pixelRatioCap||1.18);
+  const basePx=rs==='auto'?autoPx:Math.min(Math.max(.55,parseFloat(rs)||1)*Math.min(devicePixelRatio,1.78),2.1);
+  const px=THREE.MathUtils.clamp(basePx*(_perfPixelScale||1),.65,2.1);
   if(_renderStack)_renderStack.setPixelRatio(px);else renderer.setPixelRatio(px);
   _applyShadowQuality();
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
   _configureRenderStack();
+  const stren=(_bloomPass&&_bloomPass.enabled)?(_bloomPass.strength||0):0;
   G._useComposer=SETTINGS.postEnabled!==false&&(q!=='low'||stren>0||SETTINGS.aoQuality!=='off');
-  // Scope PIP resolution
-  if(typeof rtScope!=='undefined'){
-    const sr=SETTINGS.scopePipResolution||{low:512,medium:768,high:1024,ultra:1536}[q];
-    rtScope.setSize(sr,sr);
-  }
+  applyScopePipRenderTargetSize();
 }
 const POST_STATE_PROFILES={
   normal:{},
-  ads:{vignette:.10,sharpen:.04,grain:-.010,aberration:-.0005,bloomMultiplier:.88},
-  focus:{exposure:.08,contrast:-.04,saturation:-.22,cool:.22,vignette:.08,grain:.018,sharpen:.05,bloomMultiplier:1.05},
-  lowHp:{contrast:.16,saturation:-.14,warm:.24,vignette:.20,grain:.020,aberration:.0010,bloomMultiplier:.90},
-  killBeat:{exposure:.14,contrast:.18,saturation:.10,warm:.10,bloomMultiplier:1.25},
-  death:{exposure:-.20,contrast:.18,saturation:-.42,cool:.14,vignette:.26,grain:.035,aberration:.0012,bloomMultiplier:.72},
-  alarm:{contrast:.10,warm:.18,vignette:.08,grain:.010,bloomMultiplier:1.20},
-  blackout:{exposure:-.24,contrast:.22,saturation:-.10,cool:.10,vignette:.26,grain:.020,bloomMultiplier:.62},
-  menu:{exposure:-.06,contrast:.08,saturation:-.08,vignette:.18,grain:.010,bloomMultiplier:.80}
+  ads:{vignette:.05,sharpen:.025,grain:-.006,aberration:-.0002,bloomMultiplier:.90},
+  focus:{exposure:.05,contrast:-.03,saturation:-.12,cool:.12,vignette:.04,grain:.004,sharpen:.025,bloomMultiplier:1.02},
+  lowHp:{contrast:.10,saturation:-.10,warm:.14,vignette:.12,grain:.004,aberration:.00025,bloomMultiplier:.92},
+  killBeat:{exposure:.08,contrast:.10,saturation:.05,warm:.06,bloomMultiplier:1.12},
+  death:{exposure:-.14,contrast:.12,saturation:-.32,cool:.10,vignette:.16,grain:.006,aberration:.00035,bloomMultiplier:.76},
+  alarm:{contrast:.06,warm:.10,vignette:.04,grain:.002,bloomMultiplier:1.10},
+  blackout:{exposure:-.18,contrast:.14,saturation:-.08,cool:.08,vignette:.18,grain:.004,bloomMultiplier:.68},
+  menu:{exposure:-.04,contrast:.05,saturation:-.05,vignette:.08,grain:.002,bloomMultiplier:.82}
 };
 let _lastPostSignature='';
 function _mergePostGrade(base,mods){
@@ -10716,8 +11616,8 @@ function _mergePostGrade(base,mods){
     if(mod.aoMultiplier!=null)aoMultiplier*=mod.aoMultiplier;
   }
   mul('exposure',.55,1.45);mul('contrast',.70,1.65);mul('saturation',.42,1.42);
-  mul('warm',-.10,.56);mul('cool',-.08,.60);mul('vignette',0,.82);mul('grain',0,.095);
-  mul('aberration',0,.0034);mul('sharpen',0,.22);
+  mul('warm',-.08,.34);mul('cool',-.06,.34);mul('vignette',0,.38);mul('grain',0,.012);
+  mul('aberration',0,.0007);mul('sharpen',0,.10);
   return {grade,bloomMultiplier,aoMultiplier};
 }
 function _applyGradeIntensity(grade){
@@ -10798,21 +11698,21 @@ function _applyScreenPostProfile(ctx){
   const saturation=grade.saturation??0.98;
   const grainAmt=SETTINGS.filmGrain===false?0:(grade.grain??0.035);
   const accent=visual&&visual.atmosphere?visual.atmosphere.accent:0x80c8ff;
-  const coolCol=_rgbaFromHex(0x5eb8ff,0.10+cool*0.30);
-  const warmCol=_rgbaFromHex(0xffb060,0.08+warm*0.28);
-  const accentCol=_rgbaFromHex(accent,0.08+Math.max(warm,cool)*0.20);
+  const coolCol=_rgbaFromHex(0x5eb8ff,0.045+cool*0.16);
+  const warmCol=_rgbaFromHex(0xffb060,0.040+warm*0.14);
+  const accentCol=_rgbaFromHex(accent,0.035+Math.max(warm,cool)*0.10);
   const vignOff=SETTINGS.vignette===false;
-  const shadeBase=vignOff?0.03:0.18;
-  const shade=THREE.MathUtils.clamp(shadeBase+vignetteStrength*0.58+(contrast-1)*0.14,vignOff?0.015:0.08,vignOff?0.14:0.62);
-  const lift=THREE.MathUtils.clamp(0.18+(exposure-1)*0.24+Math.abs(saturation-1)*0.10,0.08,0.42);
-  cg.style.opacity=String(THREE.MathUtils.clamp(lift+(vignOff?0:vignetteStrength*.20),vignOff?0.04:0.06,vignOff?0.22:0.72));
-  cg.style.mixBlendMode='overlay';
+  const shadeBase=vignOff?0.012:0.10;
+  const shade=THREE.MathUtils.clamp(shadeBase+vignetteStrength*0.38+(contrast-1)*0.08,vignOff?0.006:0.04,vignOff?0.065:0.34);
+  const lift=THREE.MathUtils.clamp(0.08+(exposure-1)*0.16+Math.abs(saturation-1)*0.05,0.035,0.18);
+  cg.style.opacity=String(THREE.MathUtils.clamp(lift+(vignOff?0:vignetteStrength*.12),vignOff?0.025:0.035,vignOff?0.14:0.36));
+  cg.style.mixBlendMode='soft-light';
   cg.style.background=[
     `radial-gradient(ellipse at 50% 50%, transparent 28%, rgba(0,0,0,${shade.toFixed(3)}) 86%, rgba(0,0,0,${(shade*1.35).toFixed(3)}) 100%)`,
     `linear-gradient(180deg, ${coolCol} 0%, rgba(0,0,0,0) 42%, rgba(0,0,0,0) 58%, ${warmCol} 100%)`,
     `linear-gradient(90deg, rgba(0,0,0,0) 0%, ${accentCol} 50%, rgba(0,0,0,0) 100%)`
   ].join(',');
-  if(grain)grain.style.opacity=String(THREE.MathUtils.clamp(grainAmt*4.2,0,0.34));
+  if(grain)grain.style.opacity=String(THREE.MathUtils.clamp(grainAmt*1.8,0,0.045));
   G._screenPost={
     enabled:true,
     profile:ctx&&ctx.postProfile||'normal',
@@ -10857,20 +11757,22 @@ function _alignCyl(mesh,from,to){
 }
 function addTrail(from,to){
   const dir=to.clone().sub(from);const len=dir.length();if(len<.05)return;
+  const am=_additiveVfxTierMul();
   // Outer halo — thick, soft additive glow
-  const matG=new THREE.MeshBasicMaterial({color:0xffd070,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
+  const matG=new THREE.MeshBasicMaterial({color:0xffd070,transparent:true,opacity:.55*am,depthWrite:false,blending:THREE.AdditiveBlending});
   const mG=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,len,6,1,true),matG);
   _alignCyl(mG,from,to);scene.add(mG);
   // Inner core — bright white-yellow streak
-  const matC=new THREE.MeshBasicMaterial({color:0xfffce0,transparent:true,opacity:.95,depthWrite:false,blending:THREE.AdditiveBlending});
+  const matC=new THREE.MeshBasicMaterial({color:0xfffce0,transparent:true,opacity:.95*am,depthWrite:false,blending:THREE.AdditiveBlending});
   const mC=new THREE.Mesh(new THREE.CylinderGeometry(.006,.006,len,6,1,true),matC);
   _alignCyl(mC,from,to);scene.add(mC);
   G.trails.push({mesh:mG,mat:matG,timer:.16,maxTime:.16,isTracer:true,extra:[{mesh:mC,mat:matC}]});
 }
 function addParticle(pos,hs){
-  // Spark burst (hit-feedback): bright additive specks shoot outward
-  for(let i=0;6>i;i++){
-    const mat=new THREE.MeshBasicMaterial({color:hs?0xffee00:0xff7a30,transparent:true,opacity:1,depthWrite:false,blending:THREE.AdditiveBlending});
+  const am=_additiveVfxTierMul();
+  const nSpark=Math.max(2,Math.round(6*am));
+  for(let i=0;i<nSpark;i++){
+    const mat=new THREE.MeshBasicMaterial({color:hs?0xffee00:0xff7a30,transparent:true,opacity:Math.min(1,.88+.12*am),depthWrite:false,blending:THREE.AdditiveBlending});
     const mesh=new THREE.Mesh(new THREE.SphereGeometry(.024,4,4),mat);
     mesh.position.copy(pos);
     const vel=new THREE.Vector3((Math.random()-.5)*7,(Math.random()*.3+.1)*5,(Math.random()-.5)*7);
@@ -10880,11 +11782,11 @@ function addParticle(pos,hs){
 }
 // Red blood mist on enemy hits — slower drift, subtractive feel via dark tone
 function addBlood(pos,hs){
-  // Gore tier scales spray count + particle size
   const gm=typeof _goreMul==='function'?_goreMul():1.0;
-  const sprayCount=Math.max(2,Math.floor((hs?14:7)*gm));
+  const am=_additiveVfxTierMul();
+  const sprayCount=Math.max(2,Math.floor((hs?14:7)*gm*am));
   for(let i=0;i<sprayCount;i++){
-    const mat=new THREE.MeshBasicMaterial({color:hs?0xa60810:0x661018,transparent:true,opacity:.85,depthWrite:false});
+    const mat=new THREE.MeshBasicMaterial({color:hs?0xa60810:0x661018,transparent:true,opacity:.85*am,depthWrite:false});
     const r=hs?(.035+Math.random()*.04):(.030+Math.random()*.03);
     const mesh=new THREE.Mesh(new THREE.SphereGeometry(r,5,4),mat);
     mesh.position.copy(pos);
@@ -10895,8 +11797,9 @@ function addBlood(pos,hs){
   }
   // Arterial mist puff for headshots — extra fine particles
   if(hs){
-    for(let i=0;i<10;i++){
-      const mat=new THREE.MeshBasicMaterial({color:0xc8202c,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
+    const nMist=Math.max(4,Math.round(10*am));
+    for(let i=0;i<nMist;i++){
+      const mat=new THREE.MeshBasicMaterial({color:0xc8202c,transparent:true,opacity:.55*am,depthWrite:false,blending:THREE.AdditiveBlending});
       const mesh=new THREE.Mesh(new THREE.SphereGeometry(.02+Math.random()*.04,4,3),mat);
       mesh.position.copy(pos);
       const vel=new THREE.Vector3((Math.random()-.5)*4,Math.random()*3,(Math.random()-.5)*4);
@@ -10907,8 +11810,9 @@ function addBlood(pos,hs){
     // Phase AB: body-shot mist — softer + shorter than headshot mist but
     // still gives the hit a "puff" tell. Skipped at low gore tier.
     if(typeof _goreMul==='function'&&_goreMul()>=1.0){
-      for(let i=0;i<4;i++){
-        const mat=new THREE.MeshBasicMaterial({color:0x801018,transparent:true,opacity:.40,depthWrite:false});
+      const nb=Math.max(2,Math.round(4*am));
+      for(let i=0;i<nb;i++){
+        const mat=new THREE.MeshBasicMaterial({color:0x801018,transparent:true,opacity:.40*am,depthWrite:false});
         const mesh=new THREE.Mesh(new THREE.SphereGeometry(.018+Math.random()*.024,4,3),mat);
         mesh.position.copy(pos);
         const vel=new THREE.Vector3((Math.random()-.5)*2.4,Math.random()*1.6,(Math.random()-.5)*2.4);
@@ -10997,8 +11901,9 @@ function addMuzzleRing(originLocal,gunGroup){
 function addMuzzleSmoke(originLocal,gunGroup){
   const wp=originLocal.clone();gunGroup.localToWorld(wp);
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const am=_additiveVfxTierMul();
   for(let i=0;3>i;i++){
-    const mat=new THREE.MeshBasicMaterial({color:0x6e6e76,transparent:true,opacity:.36,depthWrite:false});
+    const mat=new THREE.MeshBasicMaterial({color:0x6e6e76,transparent:true,opacity:.36*am,depthWrite:false});
     const mesh=new THREE.Mesh(new THREE.SphereGeometry(.045+Math.random()*.025,6,5),mat);
     mesh.position.copy(wp).add(fwd.clone().multiplyScalar(i*.04));
     const vel=fwd.clone().multiplyScalar(1.0+Math.random()*.6).add(new THREE.Vector3((Math.random()-.5)*.4,.6+Math.random()*.4,(Math.random()-.5)*.4));
@@ -11015,10 +11920,10 @@ function wallRaycast(origin,dir){
 // ── ATTACHMENT PICKUPS ───────────────────────────────────────────────────────
 function tierColor(t){return ATTACH_TIER_COL[Math.max(0,Math.min(3,(t|0)-1))];}
 function spawnPickup(att,pos){
+  const pkS=_pickupFxMul();
   const grp=new THREE.Group();
-  // Soft floor halo (radial alpha, additive)
-  const haloM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:att.dotColor,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
-  const halo=new THREE.Mesh(new THREE.PlaneGeometry(1.1,1.1),haloM);
+  const haloM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:att.dotColor,transparent:true,opacity:.55*pkS,depthWrite:false,blending:THREE.AdditiveBlending});
+  const halo=new THREE.Mesh(new THREE.PlaneGeometry(1.1*pkS,1.1*pkS),haloM);
   halo.rotation.x=-Math.PI/2;halo.position.y=-.10;
   grp.add(halo);
   // Scope body (chunky preview)
@@ -11032,11 +11937,11 @@ function spawnPickup(att,pos){
   const mount=new THREE.Mesh(new THREE.BoxGeometry(.20,.024,.14),mountM);mount.position.set(0,-.062,0);grp.add(mount);
   // Tier rim ring + outline
   const rimC=new THREE.Color(tierColor(att.tier));
-  const ringM=new THREE.MeshBasicMaterial({color:rimC,transparent:true,opacity:.90,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const ringM=new THREE.MeshBasicMaterial({color:rimC,transparent:true,opacity:.90*pkS,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
   const ring=new THREE.Mesh(new THREE.RingGeometry(.30,.345,32),ringM);ring.rotation.x=-Math.PI/2;ring.position.y=-.099;grp.add(ring);
   // Vertical beacon column — thin additive cylinder so the pickup is visible across the room
-  const beamM=new THREE.MeshBasicMaterial({color:rimC,transparent:true,opacity:.30,depthWrite:false,blending:THREE.AdditiveBlending});
-  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,2.4,8,1,true),beamM);
+  const beamM=new THREE.MeshBasicMaterial({color:rimC,transparent:true,opacity:.30*pkS,depthWrite:false,blending:THREE.AdditiveBlending});
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.02*pkS,.02*pkS,2.4*Math.max(.55,pkS),7,1,true),beamM);
   beam.position.y=1.10;grp.add(beam);
   grp.position.set(pos.x,pos.y+.30,pos.z);
   scene.add(grp);
@@ -11046,9 +11951,10 @@ function spawnPickup(att,pos){
 }
 // Corpse ammo pack — small drop chance per kill. Refills ammo + grenade.
 function spawnAmmoPickup(pos){
+  const pkS=_pickupFxMul();
   const grp=new THREE.Group();
-  const haloM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x40c8ff,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending});
-  const halo=new THREE.Mesh(new THREE.PlaneGeometry(.9,.9),haloM);
+  const haloM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0x40c8ff,transparent:true,opacity:.55*pkS,depthWrite:false,blending:THREE.AdditiveBlending});
+  const halo=new THREE.Mesh(new THREE.PlaneGeometry(.9*pkS,.9*pkS),haloM);
   halo.rotation.x=-Math.PI/2;halo.position.y=-.10;grp.add(halo);
   const bodyM=new THREE.MeshPhongMaterial({color:0x14181f,shininess:60,specular:0x303838});
   const accentM=new THREE.MeshLambertMaterial({color:0x40c8ff,emissive:0x103848});
@@ -11056,8 +11962,8 @@ function spawnAmmoPickup(pos){
   const stripeT=new THREE.Mesh(new THREE.BoxGeometry(.20,.022,.24),accentM);stripeT.position.y=.066;grp.add(stripeT);
   const stripeB=new THREE.Mesh(new THREE.BoxGeometry(.20,.022,.24),accentM);stripeB.position.y=-.066;grp.add(stripeB);
   // Vertical beacon — visible across the room
-  const beamM=new THREE.MeshBasicMaterial({color:0x40c8ff,transparent:true,opacity:.28,depthWrite:false,blending:THREE.AdditiveBlending});
-  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,2.4,8,1,true),beamM);
+  const beamM=new THREE.MeshBasicMaterial({color:0x40c8ff,transparent:true,opacity:.28*pkS,depthWrite:false,blending:THREE.AdditiveBlending});
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.022*pkS,.022*pkS,2.4*Math.max(.55,pkS),7,1,true),beamM);
   beam.position.y=1.10;grp.add(beam);
   grp.position.set(pos.x,Math.max(.50,pos.y+.40),pos.z);
   scene.add(grp);
@@ -11303,6 +12209,21 @@ function tryEquipPickup(pk){
 // ── SHOOT ────────────────────────────────────────────────────────────────────
 const rc=new THREE.Raycaster();rc.far=80;
 const _rcShared=new THREE.Raycaster();
+const _aimHudDir=new THREE.Vector3();
+function _aimRayDir(out=new THREE.Vector3()){
+  return out.set(0,0,-1).applyQuaternion(camera.quaternion).normalize();
+}
+function _aimRayDirWithSpread(sp,out=new THREE.Vector3()){
+  return out.set((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize().applyQuaternion(camera.quaternion);
+}
+function _syncAimHud(){
+  // The true fire ray is the camera center. Keep DOM HUD elements fixed at
+  // their CSS center instead of reprojecting a point every frame; projection
+  // math picked up FOV/breath/roll noise and made the crosshair shimmer.
+  const x=$e('xhair'),hm=$e('hitmark');
+  if(x&&(x.style.left||x.style.top)){x.style.left='';x.style.top='';}
+  if(hm&&(hm.style.left||hm.style.top)){hm.style.left='';hm.style.top='';}
+}
 function _rayHits(origin,dir,near,far,targets){
   _rcShared.set(origin,dir);_rcShared.near=near||0;_rcShared.far=far||80;
   return _rcShared.intersectObjects(targets,false);
@@ -11767,8 +12688,7 @@ function shoot(){
   let pelletHit=false;
   // ── BALLISTIC PATH: spawn projectile for sniper/DMR/Deagle (single-shot only)
   if(BALLISTICS[P.weaponIdx]&&BALLISTICS[P.weaponIdx].enabled&&numShots===1){
-    const dir=new THREE.Vector3((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize();
-    dir.applyQuaternion(camera.quaternion);
+    const dir=_aimRayDirWithSpread(sp);
     // Headhunter perk
     const dmgMul=hasPerk('hsBoost')?1.25:1.0;
     const apMul=(P.attachments&&P.attachments.mag&&P.attachments.mag.dmgMul)||1.0;
@@ -11791,8 +12711,7 @@ function shoot(){
   // avoid creating dozens of meshes per shot (GC hitches at full auto).
   const FX_CAP=Math.min(numShots,3);
   for(let pellet=0;pellet<numShots;pellet++){
-    const dir=new THREE.Vector3((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize();
-    dir.applyQuaternion(camera.quaternion);rc.set(camera.position.clone(),dir);
+    const dir=_aimRayDirWithSpread(sp);rc.set(camera.position.clone(),dir);
     const hits=rc.intersectObjects(meshes,false);
     let hitPt=camera.position.clone().addScaledVector(dir,60);
     const allowFx=pellet<FX_CAP;
@@ -12214,10 +13133,12 @@ function doJump(){
     }
     return;
   }
-  // SLIDE-CANCEL: jumping during a slide cancels it and adds small speed boost
-  if(P.sliding||P.slideAmt>.30){
-    P.sliding=false;P.slideTimer=0;
-    P.slideCarryTimer=.65; // longer carry boost = slide-cancel reward
+  // SLIDE-CANCEL: jumping during a slide ends slide physics immediately. Must
+  // zero slideTarget/slideAmt — otherwise damp() still chases slideTarget=1 and
+  // the move branch treats slideAmt>.1 as "still sliding" (ignores WASD).
+  if(P.sliding||P.slideAmt>.08){
+    P.sliding=false;P.slideTimer=0;P.slideTarget=0;P.slideAmt=0;
+    P.slideCarryTimer=Math.max(P.slideCarryTimer||0,.65); // longer carry boost = slide-cancel reward
   }
   // BUNNYHOP: chain jumps preserve speed if landed within bhop window
   P._lastLandT=P._lastLandT||0;
@@ -16375,7 +17296,7 @@ function startEndlessMode(){
   G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
-  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
+  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
   P.weaponIdx=0;resetWeaponAmmoState(G.building*18,G.building*8,false);
   M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);DMR_MESHES.forEach(m=>m.visible=false);SPP_MESHES.forEach(m=>m.visible=false);SNI_MESHES.forEach(m=>m.visible=false);
   hudUpdate();
@@ -16462,15 +17383,16 @@ const POWERUP_DEFS=[
 ];
 function spawnPowerupPickup(pos){
   const def=POWERUP_DEFS[Math.floor(Math.random()*POWERUP_DEFS.length)];
+  const pkS=_pickupFxMul();
   const grp=new THREE.Group();grp.position.copy(pos);grp.position.y=WT+.50;
-  const coreM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.85});
-  const core=new THREE.Mesh(new THREE.OctahedronGeometry(.18,0),coreM);grp.add(core);
+  const coreM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.85*pkS});
+  const core=new THREE.Mesh(new THREE.OctahedronGeometry(.18*pkS,0),coreM);grp.add(core);
   // Halo ring
-  const haloM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.40,side:THREE.DoubleSide,blending:THREE.AdditiveBlending});
-  const halo=new THREE.Mesh(new THREE.RingGeometry(.30,.42,16),haloM);halo.rotation.x=-Math.PI/2;halo.position.y=.15;grp.add(halo);
+  const haloM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.40*pkS,side:THREE.DoubleSide,blending:THREE.AdditiveBlending});
+  const halo=new THREE.Mesh(new THREE.RingGeometry(.30*pkS,.42*pkS,12),haloM);halo.rotation.x=-Math.PI/2;halo.position.y=.15;grp.add(halo);
   // Beam upward
-  const beamM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.18,blending:THREE.AdditiveBlending});
-  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.10,.10,3.5,8),beamM);beam.position.y=1.5;grp.add(beam);
+  const beamM=new THREE.MeshBasicMaterial({color:def.col,transparent:true,opacity:.18*pkS,blending:THREE.AdditiveBlending});
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(.10*pkS,.10*pkS,3.5*Math.max(.5,pkS),6,1,true),beamM);beam.position.y=1.5;grp.add(beam);
   scene.add(grp);
   POWERUPS.spawned.push({grp,def,phase:0,core,halo});
 }
@@ -16968,7 +17890,7 @@ window.addEventListener('keydown',e=>{
 function tickAimAssist(dt){
   if(!SETTINGS.aimAssist||!P.ads||P.ads<.5||!G.enemyMgr||P.dead)return;
   // Find closest enemy in ADS cone (within ~6° from reticle)
-  const dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const dir=_aimRayDir(_aimHudDir);
   let best=null,bestAng=Infinity;
   for(const e of G.enemyMgr._list){
     if(e.dead)continue;
@@ -17236,7 +18158,7 @@ function tickCrosshairTarget(){
   if(P.dead||!G.enemyMgr){
     const x=$e('xhair');if(x)x.classList.remove('on-target','on-head');return;
   }
-  const dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const dir=_aimRayDir(_aimHudDir);
   rc.set(camera.position.clone(),dir);rc.far=80;
   const meshes=G.enemyMgr.getMeshes();
   const hits=rc.intersectObjects(meshes,false);
@@ -17252,24 +18174,26 @@ function tickCrosshairTarget(){
 }
 // ── TARGETED ENEMY HP BAR ───────────────────────────────────────
 const _ENEMY_HP={target:null,timer:0};
-function tickTargetedEnemyHp(){
+function tickTargetedEnemyHp(dt){
+  const _dt=typeof dt==='number'?dt:0.016;
   if(P.dead||!G.enemyMgr){
     $e('enemy-hp').classList.remove('show');return;
   }
-  // Cast a ray from camera and find first enemy hit within 30m
-  const dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  rc.set(camera.position.clone(),dir);rc.far=30;
-  const hits=rc.intersectObjects(G.enemyMgr.getMeshes(),false);
-  if(hits.length){
-    const e=hits[0].object.userData.enemy;
-    if(e&&!e.dead){
-      _ENEMY_HP.target=e;_ENEMY_HP.timer=1.2;
+  tickTargetedEnemyHp._fc=(tickTargetedEnemyHp._fc|0)+1;
+  if((tickTargetedEnemyHp._fc&1)===1){
+    const dir=_aimRayDir(_aimHudDir);
+    rc.set(camera.position.clone(),dir);rc.far=30;
+    const hits=rc.intersectObjects(G.enemyMgr.getMeshes(),false);
+    if(hits.length){
+      const e=hits[0].object.userData.enemy;
+      if(e&&!e.dead){
+        _ENEMY_HP.target=e;_ENEMY_HP.timer=1.2;
+      }
     }
+    rc.far=80;
   }
-  rc.far=80;
-  // Decay timer
   if(_ENEMY_HP.target){
-    _ENEMY_HP.timer-=0.016;
+    _ENEMY_HP.timer-=_dt;
     if(_ENEMY_HP.timer<=0||_ENEMY_HP.target.dead){
       _ENEMY_HP.target=null;
       $e('enemy-hp').classList.remove('show');
@@ -17732,7 +18656,7 @@ function startBuilding(){
   G.levelState={alarm:false,powerDown:false,hazardPrimed:false,signature:campaignLevel.signaturePressure,masteryFailed:false};G.vaultables=G.levelData.vaultables||[];
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
-  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
+  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
   P.weaponIdx=0;M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);throwGrp.visible=false;TK.active=false;lGrp.visible=true;_setMuzzlePos(0,.030,-.49);
   refreshAttachmentVisuals();
   const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
@@ -19238,7 +20162,7 @@ function startRange(){
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   G.enemyMgr.clear();
-  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;
+  P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
   P.weaponIdx=0;
   M4_MESHES.forEach(m=>m.visible=true);
   DE_MESHES.forEach(m=>m.visible=false);
@@ -19618,7 +20542,7 @@ function updateHands(dt){
   // --- Trigger finger target ---
   let idxTRX=0;
   // ── ADS: pull hands together and up — gun rises to eye level along sight line
-  const a=P.ads;
+  const a=P.adsVis;
   // Per-weapon ADS sight-line offset (where the gun must end up to align iron
   // sights / scope dot with center crosshair). M4 sight is high, deagle low.
   const adsProf=({0:{x:-.014,y:.020,z:.000,rx:-.05},1:{x:-.012,y:.022,z:.000,rx:-.06},
@@ -19783,25 +20707,21 @@ function updateHands(dt){
       lTX=H.lBase.x+(.030-ph*.030);
     }
   }
-  // ── Smooth lerp everything toward targets
-  const ls=Math.min(dt*22,1);  // fast — responsive
-  const lm=Math.min(dt*14,1);  // medium — left hand slightly lazy
-  // Right hand position + rotation
-  rGrp.position.x+=(rTX-rGrp.position.x)*ls;
-  rGrp.position.y+=(rTY-rGrp.position.y)*ls;
-  rGrp.position.z+=(rTZ-rGrp.position.z)*ls;
-  rGrp.rotation.x+=(rTRX-rGrp.rotation.x)*ls;
-  rGrp.rotation.y+=(rTRY-rGrp.rotation.y)*ls;
-  rGrp.rotation.z+=(rTRZ-rGrp.rotation.z)*ls;
-  // Left hand position + rotation
-  lGrp.position.x+=(lTX-lGrp.position.x)*lm;
-  lGrp.position.y+=(lTY-lGrp.position.y)*lm;
-  lGrp.position.z+=(lTZ-lGrp.position.z)*lm;
-  lGrp.rotation.x+=(lTRX-lGrp.rotation.x)*lm;
-  lGrp.rotation.y+=(lTRY-lGrp.rotation.y)*lm;
-  lGrp.rotation.z+=(lTRZ-lGrp.rotation.z)*lm;
-  // Trigger finger
-  rIdxGrp.rotation.x+=(idxTRX-rIdxGrp.rotation.x)*ls;
+  // ── Smooth toward targets — exponential damping keeps motion frame-rate stable
+  const ls=22,lm=14;
+  rGrp.position.x=damp(rGrp.position.x,rTX,ls,dt);
+  rGrp.position.y=damp(rGrp.position.y,rTY,ls,dt);
+  rGrp.position.z=damp(rGrp.position.z,rTZ,ls,dt);
+  rGrp.rotation.x=damp(rGrp.rotation.x,rTRX,ls,dt);
+  rGrp.rotation.y=damp(rGrp.rotation.y,rTRY,ls,dt);
+  rGrp.rotation.z=damp(rGrp.rotation.z,rTRZ,ls,dt);
+  lGrp.position.x=damp(lGrp.position.x,lTX,lm,dt);
+  lGrp.position.y=damp(lGrp.position.y,lTY,lm,dt);
+  lGrp.position.z=damp(lGrp.position.z,lTZ,lm,dt);
+  lGrp.rotation.x=damp(lGrp.rotation.x,lTRX,lm,dt);
+  lGrp.rotation.y=damp(lGrp.rotation.y,lTRY,lm,dt);
+  lGrp.rotation.z=damp(lGrp.rotation.z,lTRZ,lm,dt);
+  rIdxGrp.rotation.x=damp(rIdxGrp.rotation.x,idxTRX,ls,dt);
   // ── DEAGLE SLIDE CYCLE — driven by fire envelope. Slide racks rearward
   // ~14mm then returns; hammer falls forward on shot, re-cocks on return.
   // M4 bolt cycles internally so no external slide animation is correct.
@@ -19863,7 +20783,7 @@ _setLayer(shopGrp,1);
 _setLayer(reloadHoloGrp,1);
 _setLayer(throwGrp,1);
 const clock=new THREE.Clock();
-const PERF={emaMs:16.7,emaFps:60,samples:new Float32Array(120),sampleIdx:0,lastHudUpdate:0,lastMemLog:0,hud:null,txtA:null,txtB:null,txtC:null,txtD:null,txtE:null};
+const PERF={emaMs:16.7,emaFps:60,samples:new Float32Array(120),sampleIdx:0,lastHudUpdate:0,lastMemLog:0,hud:null,txtA:null,txtB:null,txtC:null,txtD:null,txtE:null,lastP95ms:0,lastP99ms:0,worstRecentFrameMs:0};
 const _perfEnabled=()=>SETTINGS.perfHud||new URLSearchParams(location.search).get('perf')==='1';
 function _ensurePerfHud(){
   if(PERF.hud||!_perfEnabled())return;
@@ -19926,7 +20846,7 @@ function _enforceTrailBudgets(){
 }
 function _visualRuntimeStats(){
   const trails=Array.isArray(G.trails)?G.trails:[];
-  const stats={vfx:trails.length,decals:0,particles:0,blood:0,smoke:0,shells:0,flashes:0,tracers:0,vfxBudget:_trailBudget(),vfxBudgetDrops:G._vfxBudgetDrops||0,characters:0,characterParts:0,characterDamageOverlays:0,characterLods:{high:0,medium:0,low:0},characterAnimationStates:{},characterTypes:{},playerProxyParts:PLAYER_PROXY.parts.length,playerProxyVisible:!!PLAYER_PROXY.group.visible,viewmodelParts:gunGrp.userData.viewmodelParts|0,weaponParts:gunGrp.userData.weaponDetailParts|0,shadowCasters:0,atmosphereQuality:SETTINGS.atmosphereQuality||'high',visualStats:null};
+  const stats={vfx:trails.length,decals:0,particles:0,blood:0,smoke:0,shells:0,flashes:0,tracers:0,vfxBudget:_trailBudget(),vfxBudgetDrops:G._vfxBudgetDrops||0,characters:0,characterParts:0,characterDamageOverlays:0,characterLods:{high:0,medium:0,low:0},characterAnimationStates:{},characterTypes:{},playerProxyParts:PLAYER_PROXY.parts.length,playerProxyVisible:!!PLAYER_PROXY.group.visible,viewmodelParts:gunGrp.userData.viewmodelParts|0,weaponParts:gunGrp.userData.weaponDetailParts|0,shadowCasters:0,atmosphereQuality:SETTINGS.atmosphereQuality||'high',visualStats:null,lighting:null};
   for(const t of trails){
     if(t.isDecal||t.isBloodPool)stats.decals++;
     if(t.isBlood)stats.blood++;
@@ -19951,6 +20871,55 @@ function _visualRuntimeStats(){
   }
   if(G.levelData&&Array.isArray(G.levelData.shadowCasters))stats.shadowCasters=G.levelData.shadowCasters.filter(l=>l&&l.castShadow).length;
   if(G.levelData&&G.levelData.visualStats)stats.visualStats=Object.assign({},G.levelData.visualStats);
+  if(G.levelData&&G.levelData.lightingController&&typeof G.levelData.lightingController.snapshot==='function'){
+    let bq='high',lq='high';
+    try{bq=SETTINGS.quality||'high';lq=SETTINGS.lightingQuality||bq;}catch(_){bq='high';lq='high';}
+    stats.lighting=Object.assign({
+      quality:bq,lightingQuality:lq,budget:_lightingBudget(),
+      rendererPixelRatio:(renderer&&renderer.getPixelRatio)?renderer.getPixelRatio():1
+    },G.levelData.lightingController.snapshot());
+  }
+  const pt=_gatherScenePointLightTelemetry(scene);
+  const fakePoolLen=(G.levelData&&Array.isArray(G.levelData.fakeCeilingLamps))?G.levelData.fakeCeilingLamps.length:null;
+  if(stats.lighting){
+    const bwBudgeted=stats.lighting.budgetedWorldPointLights|0;
+    Object.assign(stats.lighting,{
+      scenePointLightsTotal:pt.scenePointLightsTotal,
+      scenePointLightsByRole:{...pt.byRole},
+      budgetedWorldPointLightsInScene:pt.budgetedWorldPointLightsInScene,
+      budgetedWorldMatchesTaggedScene:(bwBudgeted===pt.budgetedWorldPointLightsInScene),
+      nonWorldPointLightsInScene:pt.nonWorldPointLightsInScene,
+      cameraViewmodelFillLights:pt.cameraViewmodelFill,
+      cameraPeripheralAuthoredSlots:pt.cameraPeripheralAuthoredSlots,
+      cameraPeripheralInScene:pt.cameraPeripheralInScene,
+      cameraPeripheralMovingCap:pt.cameraPeripheralCap,
+      cameraPeripheralVisibleActive:pt.cameraPeripheralVisibleActive,
+      cameraPeripheralHiddenInactive:pt.cameraPeripheralHiddenInactive,
+      weaponViewmodelLights:pt.weaponViewmodel,
+      temporaryVfxLights:pt.temporaryVfx,
+      temporaryObjectiveLights:pt.temporaryObjective,
+      legacyUntaggedPointLights:pt.legacyUntagged,
+      fakeLightPoolsFromLevel:fakePoolLen!=null?fakePoolLen:(stats.lighting.fakeLightPools|0)
+    });
+  }else{
+    stats.lighting={
+      scenePointLightsTotal:pt.scenePointLightsTotal,
+      scenePointLightsByRole:{...pt.byRole},
+      budgetedWorldPointLightsInScene:pt.budgetedWorldPointLightsInScene,
+      nonWorldPointLightsInScene:pt.nonWorldPointLightsInScene,
+      cameraViewmodelFillLights:pt.cameraViewmodelFill,
+      cameraPeripheralAuthoredSlots:pt.cameraPeripheralAuthoredSlots,
+      cameraPeripheralInScene:pt.cameraPeripheralInScene,
+      cameraPeripheralMovingCap:pt.cameraPeripheralCap,
+      cameraPeripheralVisibleActive:pt.cameraPeripheralVisibleActive,
+      cameraPeripheralHiddenInactive:pt.cameraPeripheralHiddenInactive,
+      weaponViewmodelLights:pt.weaponViewmodel,
+      temporaryVfxLights:pt.temporaryVfx,
+      temporaryObjectiveLights:pt.temporaryObjective,
+      legacyUntaggedPointLights:pt.legacyUntagged,
+      fakeLightPoolsFromLevel:fakePoolLen
+    };
+  }
   // Budget-relative stats (Section 12) — each tier is the configured cap so
   // perf tests can report headroom vs. exhaustion.
   const vfxQ=SETTINGS.vfxQuality||'high';
@@ -20200,6 +21169,9 @@ function _rendererMetadataSnapshot(){
   };
   out.pixelRatio=renderer.getPixelRatio?renderer.getPixelRatio():1;
   out.renderScale=SETTINGS.renderScale||'auto';
+  out.effectivePixelRatioScale=_perfPixelScale;
+  out.adaptivePost=_adaptivePerfTelemetry();
+  out.activePostPasses=src.activePostPasses||[];
   return out;
 }
 const VIS_DEBUG={
@@ -20322,7 +21294,7 @@ function _debugForcePostState(state='normal'){
     G.menuOpen=false;
     P.dead=false;
     P.focusActive=false;
-    P.ads=0;
+    P.ads=0;P.adsVis=0;
     P.hp=P.maxHp||100;
     if(typeof DEATHCAM!=='undefined')DEATHCAM.active=false;
     if(typeof SETPIECE!=='undefined'){
@@ -20333,7 +21305,7 @@ function _debugForcePostState(state='normal'){
     if(typeof _killCamT!=='undefined')_killCamT=0;
   }catch(_){}
   if(s==='menu')G.menuOpen=true;
-  if(s==='ads')P.ads=1;
+  if(s==='ads'){P.ads=1;P.adsVis=1;}
   if(s==='focus')P.focusActive=true;
   if(s==='lowHp')P.hp=Math.max(1,Math.round((P.maxHp||100)*.22));
   if(s==='killBeat'&&typeof _killCamT!=='undefined'){
@@ -20367,7 +21339,69 @@ function _visualDebugState(){
     forcedVisualProfile:_forcedVisualProfile?_forcedVisualProfile.id:null
   };
 }
-window.__PERF={snapshot:()=>({emaMs:PERF.emaMs,emaFps:PERF.emaFps,p99ms:Array.from(PERF.samples).sort((a,b)=>a-b)[Math.floor(PERF.samples.length*.99)]||0,info:renderer.info?.render||{},visual:_rendererMetadataSnapshot(),runtime:_visualRuntimeStats()})};
+window.__PERF={snapshot:()=>{
+  const sorted=Array.from(PERF.samples).filter(x=>x>.012).sort((a,b)=>a-b);
+  const p99Snap=sorted.length?sorted[Math.floor((sorted.length-1)*.99)]:0;
+  const pct=_perfFramePercentiles(PERF.samples);
+  const vm=_rendererMetadataSnapshot();
+  const lg=(typeof _visualRuntimeStats==='function'&&_visualRuntimeStats().lighting)||null;
+  return{
+    emaMs:PERF.emaMs,
+    emaFps:PERF.emaFps,
+    avgFps:PERF.emaFps,
+    frameMsEma:PERF.emaMs,
+    p95ms:Number(pct.p95ms.toFixed(3)),
+    p99ms:Number((p99Snap||pct.p99ms).toFixed(3)),
+    worstRecentFrameMs:Number(pct.worstMs.toFixed(3)),
+    info:renderer.info?.render||{},
+    memory:renderer.info?.memory||{},
+    activePostPasses:(_renderStack&&_renderStack.metadata&&_renderStack.metadata.activePostPasses)||[],
+    scopePip:{
+      width:typeof rtScope!=='undefined'&&rtScope?rtScope.width:0,
+      height:typeof rtScope!=='undefined'&&rtScope?rtScope.height:0,
+      renderedThisFrame:!!_scopePipStatus.renderedThisFrame,
+      throttleInterval:_scopePipStatus.throttleInterval|0,
+      skippedThrottle:!!_scopePipStatus.skippedThrottle,
+      visible:!!_scopePipStatus.visible,
+      stressDown:!!_scopePipStressDown
+    },
+    lightingTelemetry:lg?{
+      scenePointLightsTotal:lg.scenePointLightsTotal,
+      budgetedWorldPointLights:lg.budgetedWorldPointLights,
+      budgetedWorldMatchesTaggedScene:lg.budgetedWorldMatchesTaggedScene,
+      legacyUntaggedPointLights:lg.legacyUntaggedPointLights
+    }:null,
+    adaptivePost:_adaptivePerfTelemetry(),
+    effectivePixelRatioScale:_perfPixelScale,
+    effectivePixelRatio:renderer.getPixelRatio?renderer.getPixelRatio():1,
+    visual:vm,
+    runtime:_visualRuntimeStats()
+  };
+}};
+function _perfTriage(){
+  const pct=_perfFramePercentiles(PERF.samples);
+  const ri=renderer.info?.render||{};
+  const vm=_renderStack?_renderStack.metadata:{};
+  const L=(typeof _visualRuntimeStats==='function'&&_visualRuntimeStats().lighting)||{};
+  const transp=G.levelData&&G.levelData.visualStats?G.levelData.visualStats.transparentSurfaces|0:0;
+  const cats=[];
+  if(vm.postEnabled&&(pct.p95ms>20||PERF.emaMs>22))cats.push('pixel/post');
+  if((L.scenePointLightsTotal|0)>16)cats.push('lights');
+  if(transp>80)cats.push('transparentOverdraw');
+  if((_scopePipStatus.rendered||_scopePipStatus.visible)&&pct.p95ms>22)cats.push('PIP');
+  if(G.enemyMgr&&(G.enemyMgr.aliveCount|0)>14&&pct.p95ms>24)cats.push('AI/update');
+  if(!cats.length)cats.push('unknown');
+  return{
+    categories:cats,
+    percentiles:{p95ms:Number(pct.p95ms.toFixed(2)),p99ms:Number(pct.p99ms.toFixed(2)),worstMs:Number(pct.worstMs.toFixed(2)),emaMs:Number(PERF.emaMs.toFixed(2))},
+    drawCalls:ri.calls|0,
+    triangles:ri.triangles|0,
+    transparentSurfaces:transp,
+    enemiesAlive:G.enemyMgr?G.enemyMgr.aliveCount:0,
+    adaptivePerf:_adaptivePerfTelemetry(),
+    note:'Heuristic triage — use GPU profiler to confirm bottlenecks.'
+  };
+}
 renderer.setAnimationLoop(()=>{
   let dt=Math.min(clock.getDelta(),.05);
   if(VIS_DEBUG.freezeTime)dt=0;
@@ -20375,6 +21409,11 @@ renderer.setAnimationLoop(()=>{
   PERF.emaMs=PERF.emaMs*0.9+frameMs*0.1;
   PERF.emaFps=1000/Math.max(0.0001,PERF.emaMs);
   PERF.samples[PERF.sampleIdx++%PERF.samples.length]=frameMs;
+  _tickPerfAdaptive(dt);
+  _applyPendingPixelScaleIfStale();
+  if(PERF.emaFps>0&&PERF.emaFps<36)_scopePipStressDown=1;
+  else if(PERF.emaFps>50)_scopePipStressDown=0;
+  if((G._frame|0)%20===0)applyScopePipRenderTargetSize();
   const now=performance.now()*.001;
   // Drive the Deagle slide-cycle / hammer-fall animation. Decoupled from any
   // enemy mixer; only ticks when the GLB rig is loaded.
@@ -20399,10 +21438,10 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickTutorial==='function'&&G._tutState)tickTutorial(dt);
   if(typeof tickObjective==='function'&&G._objective&&G.started)tickObjective(dt);
   if(typeof tickFootsteps==='function'&&G.started)tickFootsteps();
-  if(typeof tickCompass==='function'&&G.started)tickCompass();
-  if(typeof tickRadar==='function'&&G.started)tickRadar(dt);
-  if(typeof tickTargetedEnemyHp==='function'&&G.started)tickTargetedEnemyHp();
-  if(typeof tickCrosshairTarget==='function'&&G.started)tickCrosshairTarget();
+  if(typeof tickCompass==='function'&&G.started&&(G._frameAlt&1)===0)tickCompass();
+  if(typeof tickRadar==='function'&&G.started&&(G._frameAlt&1)===0)tickRadar(dt*2);
+  if(typeof tickTargetedEnemyHp==='function'&&G.started)tickTargetedEnemyHp(dt);
+  if(typeof tickCrosshairTarget==='function'&&G.started&&(G._frameAlt&1)===0)tickCrosshairTarget();
   if(typeof tickEnemyAlertness==='function'&&G.started&&(G._frameAlt=(G._frameAlt|0)+1)%4===0)tickEnemyAlertness();
   if(typeof tickStrafe==='function'&&G.started)tickStrafe(dt);
   if(typeof tickAimAssist==='function'&&G.started)tickAimAssist(dt);
@@ -20423,9 +21462,9 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickMissionHud==='function'&&G.started)tickMissionHud();
   if(typeof tickGamepad==='function')tickGamepad(dt);
   if(typeof ambientEventTick==='function')ambientEventTick(dt);
-  // Low-HP visual: red vignette + chromatic aberration when below 30% HP
+  // Low-HP visual: red vignette + chromatic aberration when below 30% HP (DOM throttle)
   const hpRatio=P.hp/(P.maxHp||100);
-  $e('low-hp').style.opacity=hpRatio<.30?String(.85*(1-hpRatio/.30)):'0';
+  if((G._frame|0)%3===0)$e('low-hp').style.opacity=hpRatio<.30?String(.85*(1-hpRatio/.30)):'0';
   $e('chrom').classList.toggle('show',SETTINGS.chromaticAberration!==false&&hpRatio<.30&&!P.dead);
   _updatePostProfile(hpRatio);
   if(VIS_DEBUG.postIsolation!=='none')_applyPostIsolation();
@@ -20437,9 +21476,12 @@ renderer.setAnimationLoop(()=>{
     const nowMs=performance.now();
     if(PERF.hud&&nowMs-PERF.lastHudUpdate>1000){
       PERF.lastHudUpdate=nowMs;
-      const p99=Array.from(PERF.samples).sort((a,b)=>a-b)[Math.floor(PERF.samples.length*.99)]||0;
+      const pcHud=_perfFramePercentiles(PERF.samples);
+      const sortedHud=Array.from(PERF.samples).filter(x=>x>.012).sort((a,b)=>a-b);
+      const p95h=pcHud.p95ms,worsth=pcHud.worstMs;
+      const p99h=sortedHud.length?sortedHud[Math.floor((sortedHud.length-1)*.99)]:0;
       const ri=renderer.info;
-      PERF.txtA.textContent=`fps ${PERF.emaFps.toFixed(1)} | frame ${PERF.emaMs.toFixed(2)}ms | p99 ${p99.toFixed(2)}ms`;
+      PERF.txtA.textContent=`fps ${PERF.emaFps.toFixed(1)} | frame ${PERF.emaMs.toFixed(2)}ms | p95 ${p95h.toFixed(2)} | p99 ${p99h.toFixed(2)} | worst ${worsth.toFixed(2)}`;
       PERF.txtB.textContent=`draw ${ri.render.calls} tri ${ri.render.triangles} geo ${ri.memory.geometries} tex ${ri.memory.textures}`;
       // Phase 6 §9.4 — tactical AI counters
       const _ce=G.levelData&&G.levelData.cornerEdges?G.levelData.cornerEdges.length:0;
@@ -20500,7 +21542,7 @@ renderer.setAnimationLoop(()=>{
   P.leanTarget=K['KeyQ']?-1:K['KeyE']?1:0;
   // Cancel lean when sprinting or sliding — the body can't sustain lean while running.
   if(P.sprintLatched||P.sliding||P.slideAmt>0.2||P.dead||P.vaulting)P.leanTarget=0;
-  P.lean+=(P.leanTarget-P.lean)*Math.min(dt*10,1);
+  P.lean=damp(P.lean,P.leanTarget,10,dt);
   // Anti-clip: cast a horizontal ray from player center along the right vector
   // by leanOff distance; if a wall AABB intersects, scale lean toward 0 so the
   // camera stops short of the wall by ~0.08m.
@@ -20562,21 +21604,14 @@ renderer.setAnimationLoop(()=>{
     const isRunning=!!P.sprintLatched;
     P.running=isRunning;
     P.adsTarget=M.rmbDown&&!P.reloading&&!isRunning?1:0;
-    // Slicker: faster engage when entering ADS than releasing (asymmetric)
-    const _adsBase=P.adsTarget>P.ads?15:11;
-    const _adsSpeed=_adsBase*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
-    P.ads+=(P.adsTarget-P.ads)*Math.min(dt*_adsSpeed,1);
-    // FOV: wider when running. With a scope equipped, ADS narrows the main
-    // camera FOV more aggressively than iron sights (tier-weighted), and the
-    // PIP lens layers FURTHER zoom on top of that narrowed view. The result
-    // is "scope ADS always feels more zoomed than iron-sight ADS" — the
-    // periphery tightens with the camera FOV, the center magnifies through
-    // the lens. Iron-sight ADS keeps the original 32° narrow.
-    const _scopeEquipped=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
-    const _scopeTier=_scopeEquipped?P.attachments.scope.tier:0;
-    const _adsFovDelta=_scopeEquipped?(36+_scopeTier*3):32; // 39,42,45,48 vs iron's 32
-    const targetFov=SETTINGS.fov-P.ads*_adsFovDelta+(isRunning?6:0);
-    camera.fov+=(targetFov-camera.fov)*Math.min(dt*8,1);
+    const _adsLamIn=32*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
+    const _adsLamOut=22*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
+    P.ads=damp(P.ads,P.adsTarget,P.adsTarget>P.ads?_adsLamIn:_adsLamOut,dt);
+    P.adsVis=damp(typeof P.adsVis==='number'?P.adsVis:P.ads,P.ads,13,dt);
+    const _opticForFov=_currentOpticProfile();
+    const _adsFovDelta=_opticForFov?(_opticForFov.adsFovDelta||44):32;
+    const targetFov=SETTINGS.fov-P.adsVis*_adsFovDelta+(isRunning?6:0);
+    camera.fov=damp(camera.fov,targetFov,8,dt);
     camera.updateProjectionMatrix();
     if(P.ads>.6)$e('xhair').classList.add('ads');else $e('xhair').classList.remove('ads');
     // Phase BA: throttle per-frame HUD DOM writes (crosshair scale, shotgun
@@ -20605,10 +21640,12 @@ renderer.setAnimationLoop(()=>{
       const _W=WEAPONS[P.weaponIdx];
       const baseSpread=(_W&&_W.spread)||.025;
       const sinceShot=Math.max(0,1-(performance.now()/1000-P.lastShot)/.18);
-      const moveScale=(K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']?.4:0)+(P.running?.5:0);
-      const adsScale=P.ads*-.5;
-      const crosshairScale=Math.max(.45,1.0+baseSpread*22+sinceShot*1.2+moveScale-adsScale);
-      _xhEl.style.transform=`translate(-50%,-50%) scale(${crosshairScale.toFixed(3)})`;
+      const moveScale=((K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']) ? .4 : 0)+(P.running ? .5 : 0);
+      const adsScale=P.adsVis*-.5;
+      const crosshairRaw=Math.max(.45,1.0+baseSpread*22+sinceShot*1.2+moveScale-adsScale);
+      if(typeof P._xhScaleSmooth!=='number')P._xhScaleSmooth=crosshairRaw;
+      P._xhScaleSmooth=damp(P._xhScaleSmooth,crosshairRaw,19,dt);
+      _xhEl.style.transform=`translate(-50%,-50%) scale(${P._xhScaleSmooth.toFixed(3)})`;
     }
     // Direction vectors — shared by move + camera
     const fx=-Math.sin(P.yaw),fz=-Math.cos(P.yaw),rx=Math.cos(P.yaw),rz=-Math.sin(P.yaw);
@@ -20707,11 +21744,11 @@ renderer.setAnimationLoop(()=>{
       } else if(P.slideCarryTimer>0){
         P.slideCarryTimer-=dt;
       }
-      P.slideAmt+=(P.slideTarget-P.slideAmt)*Math.min(dt*16,1);
+      P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dt);
       // ── Horizontal movement — SHIFT = sprint, slide overrides direction + speed
       let spd;
       let mx=0,mz=0;
-      if(P.sliding||P.slideAmt>.1){
+      if(P.grounded&&(P.sliding||P.slideAmt>.1)){
         // Sliding — boosted speed in the captured direction, ignore WASD
         spd=(12.5*Math.max(P.slideAmt,.4))*dt;
         mx=P.slideDirX*spd;mz=P.slideDirZ*spd;
@@ -20772,19 +21809,23 @@ renderer.setAnimationLoop(()=>{
   // ── Camera — incorporate jump height, vault tilt, landing dip, ADS breath
   const _leanEff=P.lean*(P.leanClipScale==null?1:P.leanClipScale);
   const leanOff=_leanEff*.4,bY=Math.sin(P.bobPhase)*P.bobAmt,bX=Math.cos(P.bobPhase*.5)*P.bobAmt*.5;
+  if(typeof P._camBobY!=='number')P._camBobY=bY;
+  if(typeof P._camBobX!=='number')P._camBobX=bX;
+  P._camBobY=damp(P._camBobY,bY,14,dt);
+  P._camBobX=damp(P._camBobX,bX,14,dt);
   // Landing dip — exponential decay
   P.landKick*=Math.exp(-dt*9);
   // Subtle ADS breath sway (held breath wobble)
-  const adsBY=P.ads>.4?Math.sin(now*1.7)*.0028*P.ads:0;
-  const adsBX=P.ads>.4?Math.sin(now*1.15)*.0022*P.ads:0;
+  const adsBY=P.adsVis>.35?Math.sin(now*1.7)*.0028*P.adsVis:0;
+  const adsBX=P.adsVis>.35?Math.sin(now*1.15)*.0022*P.adsVis:0;
   // Crouch lowers eye height
   P.crouchAmt=P.crouchAmt||0;
   const crouchTarget=P.crouching?.45:0;
-  P.crouchAmt+=(crouchTarget-P.crouchAmt)*Math.min(dt*8,1);
+  P.crouchAmt=damp(P.crouchAmt,crouchTarget,8,dt);
   camera.position.set(
-    P.pos.x+rx*leanOff+bX*rx+PP.shakeX*.012+adsBX,
-    EYE+bY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY-P.slideAmt*0.55-P.crouchAmt,
-    P.pos.z+rz*leanOff+bX*rz
+    P.pos.x+rx*leanOff+P._camBobX*rx+PP.shakeX*.012+adsBX,
+    EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY-P.slideAmt*0.55-P.crouchAmt,
+    P.pos.z+rz*leanOff+P._camBobX*rz
   );
   // ── Vault camera animation: direction-specific pitch + roll
   let vaultPitch=0,vaultRoll=0;
@@ -20825,7 +21866,9 @@ renderer.setAnimationLoop(()=>{
   camera.rotation.y=P.yaw;
   camera.rotation.x=P.pitch+vaultPitch+P.dmgPitch;
   camera.rotation.z=_leanEff*-.12+vaultRoll+P.dmgRoll;
+  _syncAimHud();
   _updatePlayerProxy();
+  _updatePeripheralLighting(dt);
   // Gun settle / vault one-hand animation — varies by direction
   if(P.vaulting){
     const t=P.vaultT;
@@ -20867,42 +21910,46 @@ renderer.setAnimationLoop(()=>{
         gunGrp.position.y=(-.11+P.ads*.032)-h*0.09;
         break;
     }
-    {const _scOn=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
-     const _zT=_scOn?(-.22+P.ads*.10):-.22;
-     gunGrp.position.z+=(_zT-gunGrp.position.z)*Math.min(dt*18,1);}
+    {const _opticPose=_currentOpticProfile();
+     const _zT=_opticGunZ(_opticPose);
+     gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);}
     } else {
       // Smoothly decay vault rotation back to zero
-      gunGrp.rotation.z+=(0-gunGrp.rotation.z)*Math.min(dt*12,1);
-      gunGrp.rotation.x+=(0-gunGrp.rotation.x)*Math.min(dt*14,1);
-      gunGrp.rotation.y+=(0-gunGrp.rotation.y)*Math.min(dt*12,1);
+      gunGrp.rotation.z=damp(gunGrp.rotation.z,0,11,dt);
+      gunGrp.rotation.x=damp(gunGrp.rotation.x,0,12,dt);
+      gunGrp.rotation.y=damp(gunGrp.rotation.y,0,11,dt);
       // Sprint pose: gun drops + tilts down + extra bob amplitude.
       // Smoothed lerp so the transition into / out of sprint feels heavy.
       const _sprintTarget=(P.running&&!P.ads&&!P.reloading)?1:0;
-      P.sprintAmt+=(_sprintTarget-P.sprintAmt)*Math.min(dt*7,1);
+      P.sprintAmt=damp(P.sprintAmt,_sprintTarget,7,dt);
       // Idle figure-8 sway — disappears when ADS active; sprint amplifies bob.
       // Phase U: enriched with weapon-weight cues —
       //   • lateral drift opposite to recent strafe (inertia carry),
       //   • subtle breath cycle (slow up/down), distinct from gun-bob,
       //   • crouch dip so the weapon visibly settles when the player crouches.
       const _gT=performance.now()*.001;
-      const _swAmt=(1-P.ads)*(P.bobAmt>.01?.016:.008)*(1+P.sprintAmt*.6);
+      const _swAmt=(1-P.adsVis)*(P.bobAmt>.01?.016:.008)*(1+P.sprintAmt*.6);
       // Track strafe inertia for a subtle weight-shift effect
       const _stxNow=(K['KeyA']?-1:0)+(K['KeyD']?1:0);
       P._gunInertia=(P._gunInertia||0);
       P._gunInertia+=(_stxNow-P._gunInertia)*Math.min(dt*4,1);
-      const _strafeBias=P._gunInertia*0.020*(1-P.ads);
+      const _strafeBias=P._gunInertia*0.020*(1-P.adsVis);
       // Slow breath wave — separate from sway
-      const _breath=(1-P.ads)*Math.sin(_gT*0.95)*0.0035;
+      const _breath=(1-P.adsVis)*Math.sin(_gT*0.95)*0.0035;
       // Crouch settle — gun dips when crouching, easier to read
       const _crouchDip=(P.crouchAmt||0)*0.022;
-      gunGrp.position.x=.12-P.ads*.12+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias;
-      gunGrp.position.y=-.11+P.ads*.032-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip;
-      {const _scOn=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
-     const _zT=_scOn?(-.22+P.ads*.10):-.22;
-     gunGrp.position.z+=(_zT-gunGrp.position.z)*Math.min(dt*18,1);}
+      const _opticPose=_currentOpticProfile();
+      const _adsGunX=_opticGunX(_opticPose);
+      const _adsGunY=_opticGunY(_opticPose);
+      const _baseGunX=.12+(_adsGunX-.12)*P.ads;
+      const _baseGunY=-.11+(_adsGunY+.11)*P.ads;
+      gunGrp.position.x=_baseGunX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias;
+      gunGrp.position.y=_baseGunY-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip;
+      {const _zT=_opticGunZ(_opticPose);
+     gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);}
       // Sprint tilt — barrel angles down + slight roll
-      gunGrp.rotation.x+=(P.sprintAmt*.32-gunGrp.rotation.x)*Math.min(dt*9,1);
-      gunGrp.rotation.z+=(P.sprintAmt*-.18-gunGrp.rotation.z)*Math.min(dt*9,1);
+      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.32,9,dt);
+      gunGrp.rotation.z=damp(gunGrp.rotation.z,P.sprintAmt*-.18,9,dt);
       // Phase 5: body lean — weapon viewmodel follows the body, not just the
       // head. Adds a lateral push + extra roll on top of the camera's
       // existing -.12 roll, so the weapon visibly leans with the player.
@@ -20978,8 +22025,10 @@ renderer.setAnimationLoop(()=>{
     if(P.dmgFlash>0){P.dmgFlash-=dt;if(P.dmgFlash<=0){P.dmgFlash=0;$e('dmg-flash').style.opacity='0';}}
     // Low-HP vignette — pulses when HP < 35
     const _lhEl=$e('low-hp');
-    if(!P.dead&&P.hp<35){const _lhP=.55+.45*Math.sin(now*4.5);_lhEl.style.opacity=String(_lhP*(1-P.hp/35)*.92);}
-    else _lhEl.style.opacity='0';
+    if(!P.dead&&P.hp<35&&((G._frame|0)%3)===0){
+      const _lhP=.55+.45*Math.sin(now*4.5);
+      _lhEl.style.opacity=String(_lhP*(1-P.hp/35)*.92);
+    }else if(P.dead||(P.hp>=35&&((G._frame|0)%3)===0))_lhEl.style.opacity='0';
   // Hitmark fade
   if(G.hitMarkTimer>0){G.hitMarkTimer-=dt;if(G.hitMarkTimer<=0)$e('hitmark').style.opacity='0';}
     // Enemy AI
@@ -21197,15 +22246,15 @@ renderer.setAnimationLoop(()=>{
   }
   // ── Atmospheric: flicker + dust drift ────────────────────────────────────
   if(G.levelData){
+    if(typeof G.levelData.tickLighting==='function'){
+      G.levelData.tickLighting(dt,P,now);
+    }
     if(G.levelData.ceilingLights){
       for(const L of G.levelData.ceilingLights){
         if(L.userData.flicker){
-          L.userData.flickerPhase+=dt*4.5;
-          // Subtle hum — gentle sine drift, occasional small dimming. The
-          // legacy version dropped to 25 % every ~2 s which read as the
-          // light "snapping off" each second; players reported flicker.
-          const r=Math.random();
-          const f=r<.008?(.66+Math.random()*.18):(.96+Math.sin(L.userData.flickerPhase)*.04);
+          L.userData.flickerPhase+=dt*1.35;
+          const p=L.userData.flickerPhase;
+          const f=.985+Math.sin(p)*.012+Math.sin(p*.41+1.7)*.006;
           L.intensity=L.userData.baseIntensity*f;
         }
       }
@@ -21223,13 +22272,14 @@ renderer.setAnimationLoop(()=>{
   // ── Attachment pickups: animate + proximity prompt ───────────────────────
   if(G.pickups&&G.pickups.length){
     let near=null,nearD=999;
+    const pkVis=_qualityScale(SETTINGS.quality||'high',{low:.42,medium:.62,high:.74,ultra:1});
     for(const pk of G.pickups){
       pk.phase+=dt*1.7;
       pk.grp.position.y=pk.baseY+Math.sin(pk.phase)*.10;
       pk.grp.rotation.y=pk.phase*.55;
-      pk.haloM.opacity=.45+.18*Math.sin(pk.phase*1.5);
-      pk.beamM.opacity=.22+.18*Math.sin(pk.phase*2.2);
-      pk.lensM.emissiveIntensity=1.0+.45*Math.sin(pk.phase*3.1);
+      pk.haloM.opacity=(.45+.18*Math.sin(pk.phase*1.5))*pkVis;
+      pk.beamM.opacity=(.22+.18*Math.sin(pk.phase*2.2))*pkVis;
+      pk.lensM.emissiveIntensity=1.0+.45*Math.sin(pk.phase*3.1)*pkVis;
       const dx=pk.grp.position.x-P.pos.x,dz=pk.grp.position.z-P.pos.z;
       const d=Math.sqrt(dx*dx+dz*dz);
       if(d<1.85&&d<nearD){nearD=d;near=pk;}
@@ -21357,19 +22407,34 @@ renderer.setAnimationLoop(()=>{
       shopPanelM.opacity=Math.min(1,shopDeployed*.97);
       shopGlowM.opacity=(.30+.10*Math.sin(now*4.0))*shopDeployed;
       // ── Reload holo: wrist anchor + billboard; snap + fast follow on emergence
-      reloadHoloDeployed+=(reloadHoloTarget-reloadHoloDeployed)*Math.min(dt*12,1);
+      reloadHoloDeployed=damp(reloadHoloDeployed,reloadHoloTarget,12,dt);
       let _scl3=Math.max(.001,reloadHoloDeployed);
       if(reloadHoloTarget===1&&reloadHoloDeployed<.95)_scl3*=(1+(.96-reloadHoloDeployed)*.22);
       reloadHoloGrp.scale.setScalar(_scl3);
       // World matrices lag one phase unless we flatten here — stale localToWorld
       // pinned the hologram incorrectly while the wrist moved (fixed by end pose).
       camera.updateMatrixWorld(true);
-      _reloadHoloTgtW.copy(_reloadHoloAnchorLocal);armBandGrp.localToWorld(_reloadHoloTgtW);
+      armBandGrp.updateMatrixWorld(true);
+      _reloadHoloAnchorW.copy(_reloadHoloAnchorLocal);armBandGrp.localToWorld(_reloadHoloAnchorW);
+      // Elastic readability pocket: start at the wrist emitter, then gently
+      // clamp the readout in camera-local space so reload hand motion cannot
+      // fling the text off-screen or too close to the near plane.
+      _reloadHoloSafeCam.copy(_reloadHoloAnchorW);camera.worldToLocal(_reloadHoloSafeCam);
+      const _safeX=THREE.MathUtils.clamp(_reloadHoloSafeCam.x,-.205,.205);
+      const _safeY=THREE.MathUtils.clamp(_reloadHoloSafeCam.y,-.150,.135);
+      const _safeZ=THREE.MathUtils.clamp(_reloadHoloSafeCam.z,-.58,-.34);
+      const _edge=Math.max(Math.abs(_reloadHoloSafeCam.x)/.205,Math.abs(_reloadHoloSafeCam.y)/.150,_reloadHoloSafeCam.z>-.34?1:0,_reloadHoloSafeCam.z<-.58?1:0);
+      _reloadHoloSafeCam.set(_safeX,_safeY,_safeZ);
+      _reloadHoloSafeW.copy(_reloadHoloSafeCam);camera.localToWorld(_reloadHoloSafeW);
+      const _stabilize=THREE.MathUtils.clamp(.38+Math.max(0,_edge-0.72)*.55+(P.reloading?.16:0),0,0.82);
+      _reloadHoloTgtW.copy(_reloadHoloAnchorW).lerp(_reloadHoloSafeW,_stabilize);
       if(_reloadHoloNeedsSnap){_reloadHoloSmW.copy(_reloadHoloTgtW);_reloadHoloNeedsSnap=false;}
       const _rDpl=reloadHoloDeployed;
-      let _rSpd=_rDpl<0.14?72:_rDpl<0.5?42:21+13*_rDpl;
-      if(reloadHoloTarget<1&&_rDpl<0.035)_rSpd=Math.max(_rSpd,52);
-      _reloadHoloSmW.lerp(_reloadHoloTgtW,1-Math.exp(-_rSpd*dt));
+      let _rSpd=_rDpl<0.14?74:_rDpl<0.5?44:22+14*_rDpl;
+      if(reloadHoloTarget<1&&_rDpl<0.035)_rSpd=Math.max(_rSpd,56);
+      _reloadHoloSmW.x=damp(_reloadHoloSmW.x,_reloadHoloTgtW.x,_rSpd,dt);
+      _reloadHoloSmW.y=damp(_reloadHoloSmW.y,_reloadHoloTgtW.y,_rSpd,dt);
+      _reloadHoloSmW.z=damp(_reloadHoloSmW.z,_reloadHoloTgtW.z,_rSpd,dt);
       reloadHoloGrp.position.copy(_reloadHoloSmW);
       reloadHoloGrp.up.copy(camera.up);reloadHoloGrp.lookAt(camera.position);
       reloadHoloGrp.rotateX(0.10);reloadHoloGrp.rotateY(-0.06);reloadHoloGrp.rotateZ(0.012);
@@ -21384,6 +22449,8 @@ renderer.setAnimationLoop(()=>{
       reloadBeam.scale.y=Math.max(.001,_beamT);
       reloadBeam2M.opacity=(.85+.10*Math.sin(now*14))*_beamT;
       reloadBeam2.scale.y=Math.max(.001,_beamT);
+      _reloadHoloPanelW.copy(_reloadHoloSmW);
+      _placeReloadTether(_reloadHoloAnchorW,_reloadHoloPanelW,(.32+.14*Math.sin(now*10))*_beamT);
       // Pulse band emitter brighter while reloading
       _emitM.opacity=.55+(P.reloading?.40+.20*Math.sin(now*9):0);
       _ledM_R.opacity=.85+(P.reloading?.10*Math.sin(now*6):.05*Math.sin(now*1.4));
@@ -21394,50 +22461,64 @@ renderer.setAnimationLoop(()=>{
     PP.shakeX*=Math.max(0,1-dt*PP.shakeDecay);
     PP.shakeY*=Math.max(0,1-dt*PP.shakeDecay);
       hudUpdate();
-      // ── PIP scope render — only when scope equipped + ADS engaged
-      const _hasScope=P.attachments&&P.attachments.scope&&P.weaponIdx===0;
+      // ── PIP scope render — attachment optics plus built-in DMR/sniper scopes
+      const _opticForPip=_currentOpticProfile();
       _scopePipStatus.enabled=!!SETTINGS.scopePipEnabled;
       _scopePipStatus.visible=false;
       _scopePipStatus.opacity=0;
-      if(_hasScope&&P.ads>.05){
-        const _scopeAtt=P.attachments.scope;
-        const _pipMax=Number.isFinite(_scopeAtt.pipOpacityMax)?_scopeAtt.pipOpacityMax:.97;
+      if(_opticForPip&&P.ads>.05){
+        const _pipMax=Number.isFinite(_opticForPip.pipOpacityMax)?_opticForPip.pipOpacityMax:.97;
         const _pipAlpha=Math.min(_pipMax,Math.max(0,(P.ads-.06)/.76));
+        const _opticMesh=_opticForPip.view;
+        const _opticVisible=!_opticMesh||(_opticMesh.visible!==false);
+        const _lowAds=P.ads<0.08;
+        const _skipMotion=((P.running||P.reloading)&&_lowAds);
+        const _skipFade=_pipAlpha<0.038;
         const _vig=$e('scope-vignette');
-        if(_vig)_vig.style.setProperty('--scope-tint',_scopeAtt.vignetteColor||'rgba(80,180,255,.12)');
-        // Scope PIP camera: stays at the player's head position (so the
-        // captured view is from the natural eye pose), but applies the same
-        // *roll* the gunGrp picks up from the body-rig lean. The lens quad
-        // (child of gunGrp) ends up rolled by camera roll + gun extra roll;
-        // we apply the matching extra roll to scopeCamera so the rendered
-        // texture content rolls in lockstep with its container.
-        //
-        // Lateral position offsets on the gun (gunGrp.position.x shift) are
-        // intentionally NOT mirrored here — they're inside the camera-local
-        // viewmodel frame; mirroring them would shift the scope camera away
-        // from the head and parallax-warp the view.
+        if(_vig)_vig.style.setProperty('--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
+        // Scope PIP camera: render from the player's actual eye/aim pose, then
+        // mirror the current viewmodel-local roll. That keeps tilted scopes
+        // visually looking through the optic without changing where bullets go.
         scopeCamera.position.copy(camera.position);
         scopeCamera.quaternion.copy(camera.quaternion);
-        const _leanForScope=(typeof P!=='undefined'&&P.lean!=null)?P.lean*(P.leanClipScale==null?1:P.leanClipScale):0;
-        if(Math.abs(_leanForScope)>0.01){
-          // Roll around the camera's own forward axis to match gunGrp.rotation.z
-          scopeCamera.rotateZ(_leanForScope*-0.06);
-        }
-        scopeCamera.fov=Number.isFinite(_scopeAtt.pipFov)?_scopeAtt.pipFov:14;
+        const _vmRoll=Number.isFinite(gunGrp.rotation.z)?gunGrp.rotation.z:0;
+        if(Math.abs(_vmRoll)>0.0001)scopeCamera.rotateZ(_vmRoll);
+        scopeCamera.fov=Number.isFinite(_opticForPip.pipFov)?_opticForPip.pipFov:14;
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
-        _scopePipStatus.visible=!!SETTINGS.scopePipEnabled;
-        _scopePipStatus.opacity=SETTINGS.scopePipEnabled?_pipAlpha:0;
+        const _shouldPip=SETTINGS.scopePipEnabled&&_opticVisible&&!_skipMotion&&!_skipFade;
+        const stride=_scopePipRenderStride();
+        const _contribAlpha=_pipAlpha>0.084;
+        _scopePipStatus.throttleInterval=stride;
+        _scopePipStatus.skippedThrottle=false;
+        _scopePipStatus.renderedThisFrame=false;
+        _scopePipStatus.visible=!!_shouldPip;
+        _scopePipStatus.opacity=_shouldPip?_pipAlpha:0;
         _scopePipStatus.fov=scopeCamera.fov;
-        _scopePipStatus.attachment=_scopeAtt.name||'scope';
-        if(SETTINGS.scopePipEnabled){
-          _scopePipStatus.visible=_renderScopeTarget(rtScope,scopeCamera);
+        _scopePipStatus.attachment=_opticForPip.name||'scope';
+        _scopePipStatus.weapon=WEAPONS[P.weaponIdx]?WEAPONS[P.weaponIdx].name:null;
+        if(_shouldPip&&_contribAlpha&&((G._frame|0)%stride)===0){
+          _renderScopeTarget(rtScope,scopeCamera);
+          _scopePipStatus.renderedThisFrame=true;
+          _scopePipStatus.rendered=true;
+          _scopePipStatus.skippedThrottle=false;
+        }else if(_shouldPip&&_contribAlpha){
+          _scopePipStatus.skippedThrottle=true;
+          _scopePipStatus.rendered=false;
+        }else if(_shouldPip){
+          _scopePipStatus.skippedThrottle=false;
+          _scopePipStatus.rendered=false;
+        }else{
+          _scopePipStatus.rendered=false;
         }
-        if(scopeViewM_active)scopeViewM_active.opacity=_scopePipStatus.visible?_pipAlpha:0;
+        _setScopePipView(_opticForPip,_shouldPip?_pipAlpha:0);
         if(_vig)_vig.style.opacity=String(Math.max(0,P.ads*P.ads-.18)*1.6);
       } else {
-        if(scopeViewM_active)scopeViewM_active.opacity=0;
+        _setScopePipView(null,0);
         const _vig=$e('scope-vignette');if(_vig)_vig.style.opacity='0';
         _scopePipStatus.rendered=false;
+        _scopePipStatus.renderedThisFrame=false;
+        _scopePipStatus.skippedThrottle=false;
+        _scopePipStatus.throttleInterval=1;
       }
       _renderFramePost();
       // Sample the canvas every ~12 frames after boot to catch runtime
@@ -21595,10 +22676,81 @@ window.__game={
     camera:()=>camera,
     setToneMappingExposure:(v)=>{if(renderer&&typeof v==='number')renderer.toneMappingExposure=v;return renderer?.toneMappingExposure;},
     screenPost:()=>G._screenPost||null,
-    scopePip:()=>Object.assign({},_scopePipStatus,{target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
+    scopePip:()=>Object.assign({},_scopePipStatus,{stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
+    lightingStats:()=>{
+      const rs=_visualRuntimeStats();
+      const L=rs.lighting||{};
+      const pct=_perfFramePercentiles(PERF.samples);
+      let postEn=false,aoQ='',blQ='',activePasses=[];
+      try{
+        const md=_renderStack&&_renderStack.metadata;
+        postEn=!!(md&&md.postEnabled);
+        aoQ=(md&&md.aoQuality)||SETTINGS.aoQuality||'high';
+        blQ=(md&&md.bloomQuality)||SETTINGS.bloomQuality||'high';
+        activePasses=Array.isArray(md.activePostPasses)?md.activePostPasses.slice():[];
+      }catch(_){}
+      let pipW=0,pipH=0;
+      try{
+        if(typeof rtScope!=='undefined'&&rtScope){pipW=rtScope.width|0;pipH=rtScope.height|0;}
+      }catch(_){}
+      let realC=0,fakeC=0,bud=0;
+      try{bud=_lightingBudget();}catch(_){bud=0;}
+      if(L.realPointLights!=null)realC=L.realPointLights|0;
+      if(L.fakeLightPools!=null)fakeC=L.fakeLightPools|0;
+      const sceneTotal=L.scenePointLightsTotal!=null?L.scenePointLightsTotal:_gatherScenePointLightTelemetry(scene).scenePointLightsTotal;
+      return{
+        quality:SETTINGS.quality||'high',
+        lightingQuality:SETTINGS.lightingQuality||SETTINGS.quality||'high',
+        pixelRatio:(renderer&&renderer.getPixelRatio)?renderer.getPixelRatio():1,
+        scenePointLightsTotal:sceneTotal,
+        scenePointLightsByRole:L.scenePointLightsByRole||{},
+        budgetedWorldPointLights:realC,
+        budgetedWorldPointLightsInScene:L.budgetedWorldPointLightsInScene,
+        budgetedWorldMatchesTaggedScene:L.budgetedWorldMatchesTaggedScene,
+        fakeLightPools:fakeC,
+        fakeLightPoolsFromLevel:L.fakeLightPoolsFromLevel,
+        nonWorldPointLightsInScene:L.nonWorldPointLightsInScene,
+        temporary:{vfx:L.temporaryVfxLights|0,objective:L.temporaryObjectiveLights|0},
+        cameraRig:{
+          viewmodelFill:L.cameraViewmodelFillLights|0,
+          peripheralAuthoredSlots:L.cameraPeripheralAuthoredSlots|0,
+          peripheralInScene:L.cameraPeripheralInScene|0,
+          peripheralMovingCap:L.cameraPeripheralMovingCap|0,
+          peripheralVisibleActive:L.cameraPeripheralVisibleActive|0,
+          peripheralHiddenInactive:L.cameraPeripheralHiddenInactive|0
+        },
+        weaponViewmodelLights:L.weaponViewmodelLights|0,
+        legacyUntaggedPointLights:L.legacyUntaggedPointLights|0,
+        lightingBudget:bud,
+        postEnabled:postEn,
+        aoQuality:aoQ,
+        bloomQuality:blQ,
+        framePacing:{
+          lastP95ms:PERF.lastP95ms||0,
+          lastP99ms:PERF.lastP99ms||0,
+          worstRecentFrameMs:PERF.worstRecentFrameMs||0,
+          emaMs:PERF.emaMs||0,
+          emaFps:PERF.emaFps||0,
+          sampleCount:pct.count|0
+        },
+        adaptivePost:_adaptivePerfTelemetry(),
+        effectivePixelRatioScale:_perfPixelScale,
+        activePostPasses:activePasses,
+        transparentSurfaces:(G.levelData&&G.levelData.visualStats)?G.levelData.visualStats.transparentSurfaces|0:null,
+        scopePipPixels:{
+          width:pipW,height:pipH,stressDown:!!_scopePipStressDown,
+          throttleInterval:_scopePipStatus.throttleInterval|0,
+          renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,
+          renderedThisFrame:!!_scopePipStatus.renderedThisFrame,
+          skippedThrottle:!!_scopePipStatus.skippedThrottle,
+          visible:!!_scopePipStatus.visible
+        },
+        realPointLights:realC
+      };
+    },
     vfxStress:(count)=>_debugSpawnVfxStress(count),
     equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);P.weaponIdx=0;refreshAttachmentVisuals();return P.attachments.scope;},
-    setAds:(v=1)=>{P.ads=THREE.MathUtils.clamp(Number(v)||0,0,1);return P.ads;},
+    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P.ads=x;P.adsVis=x;return P.ads;},
     vfxBudget:()=>_trailBudget(),
     visualDebug:()=>_visualDebugState(),
     setHitboxOverlay:(on)=>_setVisualDebugFlag('hitboxes',on),
@@ -21611,6 +22763,7 @@ window.__game={
     forceVisualProfile:(idOrBuilding)=>_forceVisualProfile(idOrBuilding),
     captureScreenshot:(name)=>_captureScreenshot(name),
     capturePerf:()=>window.__PERF&&window.__PERF.snapshot?window.__PERF.snapshot():null,
+    perfTriage:()=>_perfTriage(),
     playerProxy:()=>({enabled:PLAYER_PROXY.enabled,visible:PLAYER_PROXY.group.visible,parts:PLAYER_PROXY.parts.length,state:PLAYER_PROXY.group.userData.proxyState||null}),
     setPlayerProxy:(on)=>{PLAYER_PROXY.enabled=!!on;_updatePlayerProxy();return {enabled:PLAYER_PROXY.enabled,visible:PLAYER_PROXY.group.visible,parts:PLAYER_PROXY.parts.length};},
     getCampaignLevel:(bn)=>getCampaignLevel(bn),
@@ -21627,6 +22780,14 @@ window.__game={
       G.levelData=ld;G.building=bn;
       _applyShadowQuality();
       const ri=renderer.info||{render:{},memory:{}};
+      const lcSnap=(ld.lightingController&&typeof ld.lightingController.snapshot==='function')?ld.lightingController.snapshot():null;
+      const pt=_gatherScenePointLightTelemetry(scene);
+      let traverseMatchesTelemetry=true;
+      try{
+        const taggedWorld=pt.budgetedWorldPointLightsInScene|0;
+        const lcWorld=(lcSnap&&lcSnap.budgetedWorldPointLights!=null)?(lcSnap.budgetedWorldPointLights|0):null;
+        traverseMatchesTelemetry=(lcWorld==null)||(lcWorld===taggedWorld);
+      }catch(_){traverseMatchesTelemetry=false;}
       return {
         bn,
         walls:ld.walls.length,
@@ -21641,6 +22802,12 @@ window.__game={
         renderTris:ri.render.triangles|0,
         memGeo:ri.memory.geometries|0,
         memTex:ri.memory.textures|0,
+        lightingBudget:_lightingBudget(),
+        realPointLights:(ld.visualStats&&ld.visualStats.realPointLights!=null)?ld.visualStats.realPointLights:((ld.ceilingLights||[]).length),
+        fakeLightPools:(ld.fakeCeilingLamps||[]).length,
+        lightingControllerSnapshot:lcSnap,
+        scenePointLightsTelemetry:pt,
+        budgetedWorldMatchesTaggedScene:traverseMatchesTelemetry
       };
     },
     // Phase AD: stress sample — builds the level, spawns N enemies, fires

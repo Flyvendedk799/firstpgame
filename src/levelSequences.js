@@ -19,6 +19,32 @@
 // onto the existing ob[] / wl[] / vl[] arrays so the host's nav-grid bake,
 // collider list, and cleanup() pick them up automatically.
 
+function pushFakeAccent(ctx, x, y, z, color, baseIntensity, extra) {
+  if (!ctx.fakeCeilingLamps) return;
+  const { THREE } = ctx;
+  ctx.fakeCeilingLamps.push({
+    position: new THREE.Vector3(x, y, z),
+    color: new THREE.Color(color),
+    userData: Object.assign({ baseIntensity: baseIntensity != null ? baseIntensity : 1 }, extra || {})
+  });
+}
+
+function addAccentGlowOrb(ctx, x, y, z, color, radius = 0.12) {
+  const { THREE, scene, ob } = ctx;
+  const m = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.48,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 10, 8), m);
+  mesh.position.set(x, y, z);
+  mesh.userData.noBlock = true;
+  scene.add(mesh);
+  ob.push(mesh);
+}
+
 export function applySequenceLayout(ctx) {
   const { THREE, scene, ob, wl, vl, helpers, dims, materials, accent, bn, layout } = ctx;
   const def = SEQUENCE_DEFS[bn];
@@ -59,12 +85,16 @@ export function applySequenceLayout(ctx) {
     if (builder) builder(ctx, el);
   }
 
-  // Per-building extra accent lights tuned to the theme.
+  // Per-building extra accent lights tuned to the theme (fake pool + glow — no scene PointLights).
   if (def.lights) for (const L of def.lights) {
-    const pl = new THREE.PointLight(L.col || def.accent, L.int || 1.4, L.r || 11, 1.6);
-    pl.position.set(L.x || 0, L.y != null ? L.y : (dims.RH - 0.5), L.z || 0);
-    scene.add(pl); ob.push(pl);
-    if (L.flicker) { pl.userData.flicker = true; pl.userData.flickerPhase = Math.random()*10; }
+    const baseIntensity = (L.int || 1.4) * 0.72;
+    const x = L.x || 0;
+    const y = L.y != null ? L.y : (dims.RH - 0.5);
+    const z = L.z || 0;
+    const col = L.col || def.accent;
+    const flick = L.flicker ? { flicker: true, flickerPhase: Math.random() * 10, sequenceDefLight: true } : { sequenceDefLight: true };
+    pushFakeAccent(ctx, x, y, z, col, baseIntensity, flick);
+    addAccentGlowOrb(ctx, x, y, z, col, 0.14);
   }
 }
 
@@ -538,8 +568,9 @@ const ELEMENT_BUILDERS = {
     bulb.userData.noBlock = true;
     bulb.position.set(e.x, RH + WT - 0.78, e.z); scene.add(bulb); ob.push(bulb);
     if (e.light !== false) {
-      const pl = new THREE.PointLight(col, e.int || 1.6, e.r || 7.5, 1.6);
-      pl.position.set(e.x, RH + WT - 0.85, e.z); scene.add(pl); ob.push(pl);
+      const lx = e.x, ly = RH + WT - 0.85, lz = e.z;
+      pushFakeAccent(ctx, lx, ly, lz, col, e.int || 1.6, { sequenceAccent: 'pend' });
+      addAccentGlowOrb(ctx, lx, ly, lz, col, 0.085);
     }
   },
 
@@ -895,8 +926,10 @@ const ELEMENT_BUILDERS = {
     const cap = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.36, 14, 1, true), shade);
     cap.position.set(e.x, WT + 1.78, e.z); scene.add(cap); ob.push(cap);
     if (e.light !== false) {
-      const pl = new THREE.PointLight(e.col || 0xffd070, 1.3, 6.2);
-      pl.position.set(e.x, WT + 1.4, e.z); scene.add(pl); ob.push(pl);
+      const lc = e.col || 0xffd070;
+      const lx = e.x, ly = WT + 1.4, lz = e.z;
+      pushFakeAccent(ctx, lx, ly, lz, lc, 1.3, { sequenceAccent: 'lamp' });
+      addAccentGlowOrb(ctx, lx, ly, lz, lc, 0.10);
     }
   },
 
@@ -1043,8 +1076,8 @@ const ELEMENT_BUILDERS = {
     dome.position.set(e.x, WT + 2.6, e.z);
     dome.userData.noBlock = true;
     scene.add(dome); ob.push(dome);
-    const pl = new THREE.PointLight(0xffffff, 2.2, 8.0, 1.6);
-    pl.position.set(e.x, WT + 2.0, e.z); scene.add(pl); ob.push(pl);
+    pushFakeAccent(ctx, e.x, WT + 2.0, e.z, 0xffffff, 2.2, { sequenceAccent: 'optable' });
+    addAccentGlowOrb(ctx, e.x, WT + 2.06, e.z, 0xe0f0ff, 0.22);
     const aabb = { x0: e.x - 0.45, x1: e.x + 0.45, z0: e.z - 1.0, z1: e.z + 1.0, height: WT + 0.95 };
     vl.push(aabb); wl.push({ x0: aabb.x0, x1: aabb.x1, z0: aabb.z0, z1: aabb.z1 });
   },

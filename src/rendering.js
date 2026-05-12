@@ -28,12 +28,12 @@ function makeColorGradeShader(THREE) {
       exposure: { value: 1.0 },
       contrast: { value: 1.0 },
       saturation: { value: 1.0 },
-      warm: { value: 0.08 },
-      cool: { value: 0.12 },
-      vignette: { value: 0.42 },
-      grain: { value: 0.035 },
-      aberration: { value: 0.0012 },
-      sharpen: { value: 0.10 }
+      warm: { value: 0.06 },
+      cool: { value: 0.08 },
+      vignette: { value: 0.22 },
+      grain: { value: 0.0 },
+      aberration: { value: 0.00035 },
+      sharpen: { value: 0.055 }
     },
     vertexShader: `
       varying vec2 vUv;
@@ -83,6 +83,7 @@ function makeColorGradeShader(THREE) {
 
         col *= exposure;
         col = (col - 0.5) * contrast + 0.5;
+        col = col / (col + vec3(0.72));
 
         float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
         col = mix(vec3(luma), col, saturation);
@@ -92,10 +93,10 @@ function makeColorGradeShader(THREE) {
         float d = distance(vUv, vec2(0.5));
         col *= 1.0 - smoothstep(0.30, 0.82, d) * vignette;
 
-        float n = hash(vUv * resolution + time * 37.0) - 0.5;
+        float n = hash(floor(vUv * resolution) + vec2(17.0, 91.0)) - 0.5;
         col += n * grain;
 
-        gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+        gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(1.0)), 1.0);
       }
     `
   };
@@ -532,7 +533,7 @@ export function createRenderSubsystem({
       const bloomStrength = mods.tsl.uniform(0.28);
       const bloomSoftness = mods.tsl.uniform(0.08);
       const bloomThreshold = mods.tsl.uniform(0.90);
-      const grain = mods.tsl.uniform(0.035);
+      const grain = mods.tsl.uniform(0.0);
       let outputNode = source;
       if (mods.tsl.luminance && mods.tsl.smoothstep && mods.tsl.float) {
         const bloomMask = mods.tsl.smoothstep(
@@ -617,31 +618,112 @@ export function createRenderSubsystem({
 
     if (passes.gtao) {
       passes.gtao.enabled = postEnabled && aoQuality !== 'off' && q !== 'medium-low';
-      passes.gtao.blendIntensity = ({ low: 0, medium: 0.24, high: 0.42, ultra: 0.56 }[aoQuality] ?? 0.42) * aoMul;
+      // High quality uses a tighter blend — closer to "medium‑high" than ultra-ish.
+      passes.gtao.blendIntensity = ({ low: 0, medium: 0.24, high: 0.30, ultra: 0.56 }[aoQuality] ?? 0.30) * aoMul;
+      // Full GTAO sample cost is meant for ultra; otherwise cap internal quality.
+      let effAo = aoQuality;
+      if (effAo === 'ultra' && q !== 'ultra') effAo = 'high';
+      if (typeof passes.gtao.updateGtaoMaterial === 'function' && typeof passes.gtao.updatePdMaterial === 'function') {
+        const tune = ({
+          ultra: {
+            radius: 0.24,
+            distanceExponent: 1.42,
+            thickness: 0.74,
+            scale: 0.82,
+            samples: 16,
+            lumaPhi: 9,
+            depthPhi: 2,
+            normalPhi: 3,
+            pdRadius: 8,
+            pdSamples: 16
+          },
+          high: {
+            radius: 0.195,
+            distanceExponent: 1.305,
+            thickness: 0.685,
+            scale: 0.735,
+            samples: 6,
+            lumaPhi: 7.4,
+            depthPhi: 1.94,
+            normalPhi: 2.85,
+            pdRadius: 7,
+            pdSamples: 8
+          },
+          medium: {
+            radius: 0.175,
+            distanceExponent: 1.26,
+            thickness: 0.64,
+            scale: 0.70,
+            samples: 5,
+            lumaPhi: 7,
+            depthPhi: 1.85,
+            normalPhi: 2.75,
+            pdRadius: 6,
+            pdSamples: 7
+          },
+          low: {
+            radius: 0.15,
+            distanceExponent: 1.18,
+            thickness: 0.58,
+            scale: 0.66,
+            samples: 4,
+            lumaPhi: 6,
+            depthPhi: 1.65,
+            normalPhi: 2.55,
+            pdRadius: 5,
+            pdSamples: 6
+          }
+        })[effAo] || ({
+          radius: 0.195,
+          distanceExponent: 1.305,
+          thickness: 0.685,
+          scale: 0.735,
+          samples: 6,
+          lumaPhi: 7.4,
+          depthPhi: 1.94,
+          normalPhi: 2.85,
+          pdRadius: 7,
+          pdSamples: 8
+        });
+        passes.gtao.updateGtaoMaterial({
+          radius: tune.radius,
+          distanceExponent: tune.distanceExponent,
+          thickness: tune.thickness,
+          scale: tune.scale,
+          samples: tune.samples
+        });
+        passes.gtao.updatePdMaterial({
+          lumaPhi: tune.lumaPhi,
+          depthPhi: tune.depthPhi,
+          normalPhi: tune.normalPhi,
+          radius: tune.pdRadius,
+          samples: tune.pdSamples
+        });
+      }
     }
     if (passes.bloom) {
       const reduced = nextSettings.reducedBloomish;
       const strengthByQ = reduced
-        ? { low: 0, medium: 0.12, high: 0.20, ultra: 0.30 }
-        : { low: 0, medium: 0.18, high: 0.28, ultra: 0.45 };
-      const bloomScale = ({ low: 0.55, medium: 0.78, high: 1.0, ultra: 1.22 }[bloomQuality] ?? 1.0);
+        ? { low: 0, medium: 0.10, high: 0.16, ultra: 0.30 }
+        : { low: 0, medium: 0.15, high: 0.19, ultra: 0.45 };
+      const bloomScale = ({ low: 0.55, medium: 0.78, high: 0.88, ultra: 1.22 }[bloomQuality] ?? 0.88);
       passes.bloom.enabled = postEnabled && bloomQuality !== 'off';
       passes.bloom.strength = (strengthByQ[q] ?? 0.28) * bloomMul * bloomScale;
-      passes.bloom.radius = (({ low: 0.10, medium: 0.22, high: 0.30, ultra: 0.38 }[q] ?? 0.30) *
-        ({ low: 0.78, medium: 0.90, high: 1.0, ultra: 1.12 }[bloomQuality] ?? 1.0));
-      passes.bloom.threshold = grade.bloomThreshold ?? 0.90;
+      passes.bloom.radius = (({ low: 0.10, medium: 0.22, high: 0.265, ultra: 0.38 }[q] ?? 0.265) *
+        ({ low: 0.78, medium: 0.90, high: 0.92, ultra: 1.12 }[bloomQuality] ?? 0.92));
+      passes.bloom.threshold = grade.bloomThreshold ?? 0.92;
     }
     if (passes.grade) {
       passes.grade.enabled = nextSettings.colorGrade !== false && postEnabled;
-      passes.grade.uniforms.exposure.value = grade.exposure ?? 1.08;
-      passes.grade.uniforms.contrast.value = grade.contrast ?? 1.10;
-      passes.grade.uniforms.saturation.value = grade.saturation ?? 0.98;
-      passes.grade.uniforms.warm.value = grade.warm ?? 0.08;
-      passes.grade.uniforms.cool.value = grade.cool ?? 0.12;
-      passes.grade.uniforms.vignette.value = nextSettings.vignette === false ? 0 : (grade.vignette ?? 0.42);
-      passes.grade.uniforms.grain.value = nextSettings.filmGrain === false ? 0 : (grade.grain ?? 0.035);
-      passes.grade.uniforms.aberration.value = nextSettings.chromaticAberration === false ? 0 : (grade.aberration ?? ({ medium: 0.0007, high: 0.0012, ultra: 0.0016 }[q] ?? 0.0010));
-      passes.grade.uniforms.sharpen.value = nextSettings.sharpen === false ? 0 : (grade.sharpen ?? ({ medium: 0.06, high: 0.10, ultra: 0.14 }[q] ?? 0.08));
+      passes.grade.uniforms.exposure.value = THREE.MathUtils.clamp(grade.exposure ?? 1.04, 0.78, 1.24);
+      passes.grade.uniforms.contrast.value = THREE.MathUtils.clamp(grade.contrast ?? 1.06, 0.88, 1.22);
+      passes.grade.uniforms.saturation.value = THREE.MathUtils.clamp(grade.saturation ?? 0.98, 0.78, 1.12);
+      passes.grade.uniforms.warm.value = THREE.MathUtils.clamp(grade.warm ?? 0.06, -0.06, 0.28);
+      passes.grade.uniforms.cool.value = THREE.MathUtils.clamp(grade.cool ?? 0.08, -0.04, 0.28);
+      passes.grade.uniforms.vignette.value = nextSettings.vignette === false ? 0 : THREE.MathUtils.clamp(grade.vignette ?? 0.22, 0, 0.36);
+      passes.grade.uniforms.grain.value = nextSettings.filmGrain === false ? 0 : THREE.MathUtils.clamp(grade.grain ?? 0.0, 0, 0.012);
+      passes.grade.uniforms.aberration.value = nextSettings.chromaticAberration === false ? 0 : THREE.MathUtils.clamp(grade.aberration ?? ({ medium: 0.00018, high: 0.00030, ultra: 0.00042 }[q] ?? 0.00024), 0, 0.0007);
+      passes.grade.uniforms.sharpen.value = nextSettings.sharpen === false ? 0 : THREE.MathUtils.clamp(grade.sharpen ?? ({ medium: 0.035, high: 0.055, ultra: 0.075 }[q] ?? 0.05), 0, 0.10);
     }
     if (passes.smaa) passes.smaa.enabled = postEnabled && nextSettings.smaa !== false;
     if (passes.output) passes.output.enabled = true;
@@ -655,8 +737,8 @@ export function createRenderSubsystem({
           ? (({ low: 0.08, medium: 0.16, high: 0.28, ultra: 0.42 }[bloomQuality] ?? 0.28) * bloomMul)
           : 0;
         webgpuPost.bloomSoftness.value = ({ low: 0.04, medium: 0.06, high: 0.08, ultra: 0.12 }[bloomQuality] ?? 0.08);
-        webgpuPost.bloomThreshold.value = grade.bloomThreshold ?? 0.90;
-        webgpuPost.grain.value = nextSettings.filmGrain === false || !postEnabled ? 0 : (grade.grain ?? 0.035);
+        webgpuPost.bloomThreshold.value = grade.bloomThreshold ?? 0.92;
+        webgpuPost.grain.value = nextSettings.filmGrain === false || !postEnabled ? 0 : THREE.MathUtils.clamp(grade.grain ?? 0, 0, 0.012);
         metadata.postPath = postEnabled ? 'webgpu-node-post' : 'webgpu-direct';
         metadata.webgpuNodePost = { active: !!postEnabled, chain: webgpuPost.nodeChain };
       } else {
@@ -673,17 +755,26 @@ export function createRenderSubsystem({
       };
     }
 
+    const activePasses = [];
+    if (composer && passes.render && postEnabled !== false && q !== 'low') activePasses.push('render');
+    if (passes.gtao && passes.gtao.enabled) activePasses.push('gtao');
+    if (passes.bloom && passes.bloom.enabled) activePasses.push('bloom');
+    if (passes.grade && passes.grade.enabled) activePasses.push('grade');
+    if (passes.smaa && passes.smaa.enabled) activePasses.push('smaa');
+    if (passes.output && passes.output.enabled) activePasses.push('output');
+    metadata.activePostPasses = activePasses;
+
     metadata.postEnabled = !!postEnabled;
     metadata.aoQuality = aoQuality;
     metadata.bloomQuality = bloomQuality;
     metadata.profile = profile.id || 'default';
     metadata.postProfile = postProfile;
     metadata.grade = {
-      exposure: grade.exposure ?? 1.08,
-      contrast: grade.contrast ?? 1.10,
+      exposure: grade.exposure ?? 1.04,
+      contrast: grade.contrast ?? 1.06,
       saturation: grade.saturation ?? 0.98,
-      vignette: grade.vignette ?? 0.42,
-      grain: grade.grain ?? 0.035,
+      vignette: grade.vignette ?? 0.22,
+      grain: grade.grain ?? 0,
       gradeIntensity: grade.gradeIntensity ?? nextSettings.gradeIntensity ?? 1
     };
   }
