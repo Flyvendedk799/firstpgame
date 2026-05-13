@@ -22,7 +22,17 @@ export const REQUIRED_HAND_NODES = [
   'palm_r',
   'wrist_l',
   'palm_l',
-  'weapon_socket'
+  'weapon_socket',
+  'wristband_root',
+  'wristband_screen',
+  'wristband_emitter',
+  'wristband_holo_mount',
+  'hologram_inventory',
+  'hologram_reload',
+  'hologram_shop',
+  'holo_ray_inventory',
+  'holo_ray_reload',
+  'holo_ray_idle'
 ];
 
 export const REQUIRED_HAND_CLIPS = [
@@ -34,7 +44,11 @@ export const REQUIRED_HAND_CLIPS = [
   'fireRifle',
   'inspect',
   'weaponSwap',
-  'tacticalLean'
+  'tacticalLean',
+  'wristbandIdle',
+  'holoInventoryDeploy',
+  'holoReloadDeploy',
+  'holoShopDeploy'
 ];
 
 export function resolvePublicAssetUrl(src, baseUrl) {
@@ -161,7 +175,8 @@ export function validateHandsViewmodel(gltf, entry = {}, options = {}) {
   for (const name of requiredNodes) if (!nodes.has(name)) errors.push(`missing node:${name}`);
   for (const name of requiredClips) if (!clips.has(name)) errors.push(`missing clip:${name}`);
   const stats = collectViewmodelStats(gltf && gltf.scene);
-  if (stats.materials > (options.materialBudget || 6)) warnings.push(`materials over budget:${stats.materials}`);
+  const materialBudget = options.materialBudget || entry.materialBudget || 10;
+  if (stats.materials > materialBudget) warnings.push(`materials over budget:${stats.materials}/${materialBudget}`);
   return {
     ok: errors.length === 0,
     errors,
@@ -225,7 +240,7 @@ export function createClipActions(THREE, mixer, clips, names) {
     const clip = clips.find(c => c.name === name);
     if (!clip) continue;
     const action = mixer.clipAction(clip);
-    const oneShot = !['idle', 'walkSway', 'sprint', 'ads', 'tacticalLean'].includes(name);
+    const oneShot = !['idle', 'walkSway', 'sprint', 'ads', 'tacticalLean', 'wristbandIdle'].includes(name);
     action.setLoop(oneShot ? THREE.LoopOnce : THREE.LoopRepeat, oneShot ? 1 : Infinity);
     action.clampWhenFinished = oneShot;
     out[name] = action;

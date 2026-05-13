@@ -65,6 +65,16 @@ ViewmodelRoot
     wrist_l
       palm_l
       fingers_l...
+      wristband_root
+        wristband_screen
+        wristband_emitter
+        wristband_holo_mount
+          hologram_inventory
+          hologram_reload
+          hologram_shop
+        holo_ray_inventory
+        holo_ray_reload
+        holo_ray_idle
 ```
 
 Required hand clips for rifles:
@@ -79,11 +89,19 @@ fireRifle
 inspect
 weaponSwap
 tacticalLean
+wristbandIdle
+holoInventoryDeploy
+holoReloadDeploy
+holoShopDeploy
 ```
 
 Both hands share the same rig asset, but the right and left wrist/palm/finger chains must be individually controllable and keyed independently. Runtime may blend, scrub, or override one hand without forcing the other hand into the same pose.
 
 Hands must be retargetable to `gripRight`, `gripLeft`, and `magazine` sockets. Sleeve or wrist geometry must stay outside the crosshair region in hipfire and ADS.
+
+The left wristband is part of the shared 3D viewmodel, not a flat HUD replacement. It must always exist on the left arm while authored hands are active. Its screen can receive the live arm-band canvas texture, and its hologram/ray meshes must be authored in 3D so inventory, reload, and shop projections can deploy from the wrist computer. The procedural wristband and procedural holograms are fallback only.
+
+The hand rig material budget is 10 materials by default so gloves, sleeves, skin, wrist hardware, emissive glass, and hologram/ray materials can remain separate without becoming a validation warning.
 
 ## Export And Validation
 
@@ -120,6 +138,7 @@ At runtime:
 - Weapon `reload` is time-scrubbed from `P.reloadTimer / P.RELOAD_TIME`; the animation follows gameplay, not the other way around.
 - `idle` loops, `fire` triggers on shot, `ads` blends with ADS amount, and `inspect` triggers from inspect input.
 - Debug status must expose authored/fallback source, validation result, active clip names, socket readiness, visible authored mesh counts, and budget stats.
+- Debug status must expose whether the authored wristband is configured, visible, and driving its screen, idle ray, inventory hologram, reload hologram, and shop hologram.
 - The default High quality profile must remain stable without requiring SSR, DoF, volumetrics, TAA, or heavy scope/PIP settings. Those cinematic passes are opt-in after the weapon view is readable and performant.
 
 ## Acceptance Checklist

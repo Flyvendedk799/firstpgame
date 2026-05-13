@@ -213,7 +213,7 @@ for (const mode of modes) {
   if (mode === 'webgpu' && renderer.webgpuSupported && renderer.backend !== 'webgpu') {
     assert(renderer.fallbackReason, 'webgpu mode fell back without recording a fallback reason');
   }
-  if (mode === 'auto' && renderer.webgpuSupported && renderer.backend !== 'webgpu') {
+  if (mode === 'auto' && renderer.requestedMode !== 'webgl' && renderer.webgpuSupported && renderer.backend !== 'webgpu') {
     assert(renderer.fallbackReason, 'auto mode fell back without recording a fallback reason');
   }
   if (renderer.backend === 'webgpu') {
@@ -253,11 +253,16 @@ for (const mode of modes) {
     assert(fp.restored && fp.restored.ok, `${mode}: WebGPU node post could not be restored after kill-switch test`);
   }
 
-  assert(screenPost && screenPost.enabled, `${mode}: screen post overlay inactive`);
-  assert(pip.enabled && pip.visible && pip.rendered && !pip.error, `${mode}: scope PIP did not render: ${JSON.stringify(pip)}`);
-  const minPipTarget = Math.max(384, pip.effectivePipSize || 512);
-  assert(pip.target && pip.target.width >= minPipTarget && pip.target.height >= minPipTarget, `${mode}: scope target too small`);
-  assert(pip.materialOpacity > 0, `${mode}: scope material opacity did not rise during ADS`);
+  if (pip.stableRenderingMode || screenPost?.stable) {
+    assert(screenPost && screenPost.enabled === false && screenPost.stable, `${mode}: stable renderer screen-post metadata missing`);
+    assert(!pip.enabled && !pip.visible, `${mode}: stable renderer should keep scope PIP disabled: ${JSON.stringify(pip)}`);
+  } else {
+    assert(screenPost && screenPost.enabled, `${mode}: screen post overlay inactive`);
+    assert(pip.enabled && pip.visible && pip.rendered && !pip.error, `${mode}: scope PIP did not render: ${JSON.stringify(pip)}`);
+    const minPipTarget = Math.max(384, pip.effectivePipSize || 512);
+    assert(pip.target && pip.target.width >= minPipTarget && pip.target.height >= minPipTarget, `${mode}: scope target too small`);
+    assert(pip.materialOpacity > 0, `${mode}: scope material opacity did not rise during ADS`);
+  }
   assert(mats.scene.pbr > 0 && mats.scene.aa > 0, `${mode}: scene PBR/AA materials missing`);
   assert(mats.viewmodel.aa > 0, `${mode}: viewmodel AA materials missing`);
   assert(result.characterPhase.materials.aa > 0, `${mode}: character AA materials missing`);

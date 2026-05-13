@@ -90,6 +90,10 @@ assert(setup.authoredM4VisibleMeshes > 0, `M4 authored mesh not visible: ${JSON.
 assert(['authored', 'fallback-procedural'].includes(setup.authoredHandSource), `authored hands did not resolve: ${JSON.stringify(setup)}`);
 if (setup.authoredHandSource === 'authored') {
   assert(setup.authoredHandVisibleMeshes > 0, `authored hand meshes not visible: ${JSON.stringify(setup)}`);
+  assert(setup.authoredWristband?.configured, `authored wristband not configured: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(setup.authoredWristband?.rootVisible, `authored wristband root not visible: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(setup.authoredWristband?.screenVisible, `authored wristband screen not visible: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(setup.authoredWristband?.idleRayVisible, `authored wristband idle ray not visible: ${JSON.stringify(setup.authoredWristband)}`);
 } else {
   assert(setup.leftHandVisible && setup.rightHandVisible, `procedural hands fallback not visible: ${JSON.stringify(setup)}`);
 }
@@ -142,9 +146,22 @@ await page.evaluate(() => {
 await page.waitForTimeout(300);
 const reloadEarly = await page.evaluate(() => window.__game.debug.weaponVisualStatus());
 assert(reloadEarly.activeWeaponClip === 'reload', `reload clip did not scrub: ${JSON.stringify(reloadEarly)}`);
+if (reloadEarly.authoredHandSource === 'authored') {
+  assert(reloadEarly.authoredWristband?.reloadVisible, `authored reload hologram did not deploy: ${JSON.stringify(reloadEarly.authoredWristband)}`);
+}
 await page.screenshot({ path: path.join(OUT_DIR, 'm4-reload.png') });
 console.log('[m4] reload captured');
-await page.waitForTimeout(3000);
+await page.waitForTimeout(650);
+const reloadDrop = await page.evaluate(() => {
+  const dbg = window.__game.debug;
+  const G = dbg.G();
+  return {
+    weapon: dbg.weaponVisualStatus(),
+    droppedMags: G.trails.filter(t => t && t.isDroppedMag).length
+  };
+});
+assert(reloadDrop.droppedMags > 0, `dropped mag did not spawn during reload: ${JSON.stringify(reloadDrop)}`);
+await page.waitForTimeout(1700);
 const reload = await page.evaluate(() => {
   const dbg = window.__game.debug;
   const G = dbg.G();
@@ -154,7 +171,6 @@ const reload = await page.evaluate(() => {
   };
 });
 console.log('[m4] reload checked');
-assert(reload.droppedMags > 0, `dropped mag did not spawn: ${JSON.stringify(reload)}`);
 
 const inspect = await page.evaluate(() => {
   const dbg = window.__game.debug;

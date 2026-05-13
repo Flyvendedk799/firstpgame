@@ -58,10 +58,16 @@ def material(name: str, color, roughness=0.7, metallic=0.0, image: Path | None =
         bsdf.inputs["Base Color"].default_value = color
         bsdf.inputs["Roughness"].default_value = roughness
         bsdf.inputs["Metallic"].default_value = metallic
+        if "Alpha" in bsdf.inputs:
+            bsdf.inputs["Alpha"].default_value = color[3] if len(color) > 3 else 1.0
         if image and image.exists():
             tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
             tex.image = bpy.data.images.load(str(image), check_existing=True)
             mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    if len(color) > 3 and color[3] < 1:
+        mat.blend_method = "BLEND"
+        mat.use_screen_refraction = True
+        mat.show_transparent_back = True
     return mat
 
 
@@ -119,6 +125,19 @@ def cylinder(name: str, loc, radius, depth, mat, col, parent=None, axis="Y", ver
     if mat:
         obj.data.materials.append(mat)
     obj.modifiers.new("weighted_normals", "WEIGHTED_NORMAL")
+    obj.parent = parent
+    move_to_collection(obj, col)
+    return obj
+
+
+def plane(name: str, loc, scale, mat, col, parent=None, rot=(0, 0, 0)):
+    bpy.ops.mesh.primitive_plane_add(size=1, location=loc, rotation=rot)
+    obj = active_obj()
+    obj.name = name
+    obj.dimensions = scale
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    if mat:
+        obj.data.materials.append(mat)
     obj.parent = parent
     move_to_collection(obj, col)
     return obj
@@ -302,6 +321,12 @@ def build_hands() -> None:
     glove = material("VM_black_glove", (0.012, 0.014, 0.018, 1), 0.88, 0)
     fabric = material("VM_sleeve_fabric", (0.045, 0.052, 0.060, 1), 0.76, 0)
     rubber = material("VM_knuckle_rubber", (0.02, 0.022, 0.025, 1), 0.70, 0)
+    armor = material("VM_wristband_anodized_metal", (0.018, 0.024, 0.030, 1), 0.42, 0.65)
+    strap = material("VM_wristband_rubber_strap", (0.008, 0.010, 0.012, 1), 0.84, 0.02)
+    glass = material("VM_wristband_live_glass", (0.020, 0.120, 0.160, 0.86), 0.18, 0.0)
+    cyan = material("VM_holo_cyan", (0.060, 0.720, 1.000, 0.34), 0.16, 0.0)
+    cyan_ray = material("VM_holo_ray_cyan", (0.260, 0.900, 1.000, 0.24), 0.12, 0.0)
+    amber = material("VM_holo_amber", (1.000, 0.650, 0.140, 0.30), 0.18, 0.0)
 
     nodes = {}
 
@@ -312,7 +337,17 @@ def build_hands() -> None:
     rw = node("wrist_r", (0.13, -0.42, -0.10), camera_root)
     rp = node("palm_r", (0.13, -0.48, -0.08), rw)
     lw = node("wrist_l", (-0.16, 0.34, 0.08), camera_root)
-    lp = node("palm_l", (-0.18, 0.48, 0.12), lw)
+    lp = node("palm_l", (-0.18, 0.26, 0.12), lw)
+    wband = node("wristband_root", (-0.300, 0.300, 0.160), lw)
+    wscreen = node("wristband_screen", (0.0, 0.026, 0.072), wband)
+    wemitter = node("wristband_emitter", (0.0, 0.054, 0.074), wband)
+    wholo_mount = node("wristband_holo_mount", (0.0, 0.098, 0.082), wband)
+    holo_inventory = node("hologram_inventory", (-0.018, 0.138, 0.058), wholo_mount)
+    holo_reload = node("hologram_reload", (0.020, 0.128, 0.055), wholo_mount)
+    holo_shop = node("hologram_shop", (0.040, 0.118, 0.050), wholo_mount)
+    ray_inventory = node("holo_ray_inventory", (-0.018, 0.090, 0.046), wband)
+    ray_reload = node("holo_ray_reload", (0.020, 0.090, 0.046), wband)
+    ray_idle = node("holo_ray_idle", (0.0, 0.066, 0.078), wband)
     for side, palm, sx in (("r", rp, 1), ("l", lp, -1)):
         node(f"thumb_{side}_01", (0.028 * sx, -0.010, 0.008), palm)
         node(f"thumb_{side}_02", (0.044 * sx, -0.020, 0.004), nodes[f"thumb_{side}_01"])
@@ -334,7 +369,38 @@ def build_hands() -> None:
     hand_mesh("right", rw, rp, 1)
     hand_mesh("left", lw, lp, -1)
 
-    anim_objs = [camera_root, weapon_socket, rw, rp, lw, lp]
+    # Authored forearm mass. These stay narrow and low in the camera so the
+    # weapon remains the first-read silhouette while still feeling like arms.
+    cylinder("right_forearm_sleeve_round", (0.0, 0.090, 0.006), 0.043, 0.22, fabric, col, rw, "Y", 18)
+    cylinder("left_forearm_sleeve_round", (-0.170, 0.260, 0.120), 0.052, 0.26, fabric, col, lw, "Y", 18)
+    cube("right_forearm_armor_plate", (0.0, 0.115, 0.052), (0.084, 0.090, 0.012), rubber, col, rw, bevel=0.006)
+    cube("left_forearm_armor_plate", (-0.215, 0.305, 0.166), (0.098, 0.110, 0.018), rubber, col, lw, bevel=0.006)
+
+    # Always-on left wrist computer. Meshes are authored here; runtime swaps
+    # the screen/panel materials to live CanvasTextures.
+    cube("wristband_body", (0, 0, 0), (0.112, 0.035, 0.078), armor, col, wband, bevel=0.008)
+    cube("wristband_inner_strap", (0, -0.026, 0), (0.124, 0.018, 0.088), strap, col, wband, bevel=0.009)
+    cube("wristband_outer_lug_l", (-0.063, 0.000, 0), (0.012, 0.048, 0.090), armor, col, wband, bevel=0.004)
+    cube("wristband_outer_lug_r", (0.063, 0.000, 0), (0.012, 0.048, 0.090), armor, col, wband, bevel=0.004)
+    cube("wristband_screen_bezel", (0.0, 0.025, 0.048), (0.098, 0.010, 0.060), armor, col, wband, bevel=0.003)
+    plane("wristband_screen_mesh", (0.0, 0.031, 0.082), (0.088, 0.046, 1), glass, col, wband, rot=(0, 0, 0))
+    cube("wristband_emitter_pad", (0.0, 0.052, 0.078), (0.034, 0.006, 0.030), cyan, col, wband, bevel=0.002)
+    cube("wristband_led_left", (-0.052, 0.020, 0.076), (0.004, 0.034, 0.052), cyan, col, wband, bevel=0.002)
+    cube("wristband_led_right", (0.052, 0.020, 0.076), (0.004, 0.034, 0.052), cyan, col, wband, bevel=0.002)
+
+    plane("hologram_inventory_panel_mesh", (0, 0.020, 0.000), (0.190, 0.118, 1), cyan, col, holo_inventory, rot=(math.radians(80), 0, 0))
+    plane("hologram_reload_panel_mesh", (0, 0.016, 0.000), (0.080, 0.128, 1), cyan, col, holo_reload, rot=(math.radians(80), 0, math.radians(-5)))
+    plane("hologram_shop_panel_mesh", (0, 0.018, 0.000), (0.220, 0.132, 1), amber, col, holo_shop, rot=(math.radians(78), 0, math.radians(8)))
+    plane("holo_ray_inventory_mesh", (0, 0.018, 0.000), (0.020, 0.116, 1), cyan_ray, col, ray_inventory, rot=(math.radians(86), 0, math.radians(-12)))
+    plane("holo_ray_reload_mesh", (0, 0.018, 0.000), (0.014, 0.112, 1), cyan_ray, col, ray_reload, rot=(math.radians(86), 0, math.radians(10)))
+    plane("holo_ray_idle_mesh", (0, 0.014, 0.000), (0.010, 0.052, 1), cyan_ray, col, ray_idle, rot=(math.radians(86), 0, 0))
+
+    anim_objs = [
+        camera_root, weapon_socket, rw, rp, lw, lp,
+        wband, wscreen, wemitter, wholo_mount,
+        holo_inventory, holo_reload, holo_shop,
+        ray_inventory, ray_reload, ray_idle
+    ]
 
     def hand_clip(name, frames):
         clear_active_actions(anim_objs)
@@ -392,6 +458,43 @@ def build_hands() -> None:
         "wrist_r": {"loc": (0.15, -0.42, -0.10), "rot": (math.radians(8), 0, math.radians(-13)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.14, 0.34, 0.08), "rot": (math.radians(6), 0, math.radians(3)), "scale": (1, 1, 1)},
     }), (40, rest)])
+    wrist_rest = {
+        "wristband_root": {"loc": (-0.300, 0.300, 0.160), "rot": (0, 0, 0), "scale": (1, 1, 1)},
+        "wristband_screen": {"loc": (0.0, 0.026, 0.072), "rot": (0, 0, 0), "scale": (1, 1, 1)},
+        "wristband_emitter": {"loc": (0.0, 0.054, 0.074), "rot": (0, 0, 0), "scale": (1, 1, 1)},
+        "holo_ray_idle": {"loc": (0.0, 0.066, 0.078), "rot": (0, 0, 0), "scale": (0.45, 0.45, 0.45)},
+        "hologram_inventory": {"loc": (-0.018, 0.138, 0.058), "rot": (math.radians(-8), 0, math.radians(-4)), "scale": (0.001, 0.001, 0.001)},
+        "hologram_reload": {"loc": (0.020, 0.128, 0.055), "rot": (math.radians(-10), 0, math.radians(2)), "scale": (0.001, 0.001, 0.001)},
+        "hologram_shop": {"loc": (0.040, 0.118, 0.050), "rot": (math.radians(-8), 0, math.radians(6)), "scale": (0.001, 0.001, 0.001)},
+        "holo_ray_inventory": {"loc": (-0.018, 0.090, 0.046), "rot": (0, 0, math.radians(-10)), "scale": (0.001, 0.001, 0.001)},
+        "holo_ray_reload": {"loc": (0.020, 0.090, 0.046), "rot": (0, 0, math.radians(10)), "scale": (0.001, 0.001, 0.001)},
+    }
+    hand_clip("wristbandIdle", [(1, wrist_rest), (48, {
+        "wristband_screen": {"loc": (0.0, 0.026, 0.073), "rot": (0, 0, 0), "scale": (1.02, 1.0, 1.02)},
+        "wristband_emitter": {"loc": (0.0, 0.055, 0.075), "rot": (0, 0, 0), "scale": (1.10, 1.0, 1.10)},
+        "holo_ray_idle": {"loc": (0.0, 0.070, 0.082), "rot": (0, 0, math.radians(3)), "scale": (0.70, 0.70, 0.70)},
+    }), (96, wrist_rest)])
+    hand_clip("holoInventoryDeploy", [(1, wrist_rest), (18, {
+        "hologram_inventory": {"loc": (-0.018, 0.150, 0.086), "rot": (math.radians(-16), 0, math.radians(-5)), "scale": (1, 1, 1)},
+        "holo_ray_inventory": {"loc": (-0.018, 0.102, 0.060), "rot": (0, 0, math.radians(-10)), "scale": (1, 1, 1)},
+    }), (56, {
+        "hologram_inventory": {"loc": (-0.018, 0.146, 0.084), "rot": (math.radians(-13), 0, math.radians(-3)), "scale": (1, 1, 1)},
+        "holo_ray_inventory": {"loc": (-0.018, 0.102, 0.060), "rot": (0, 0, math.radians(-7)), "scale": (0.92, 1.08, 1)},
+    })])
+    hand_clip("holoReloadDeploy", [(1, wrist_rest), (14, {
+        "hologram_reload": {"loc": (0.020, 0.148, 0.088), "rot": (math.radians(-18), 0, math.radians(2)), "scale": (1, 1, 1)},
+        "holo_ray_reload": {"loc": (0.020, 0.103, 0.060), "rot": (0, 0, math.radians(10)), "scale": (1, 1, 1)},
+    }), (50, {
+        "hologram_reload": {"loc": (0.018, 0.146, 0.086), "rot": (math.radians(-14), 0, math.radians(-1)), "scale": (0.94, 1.08, 1)},
+        "holo_ray_reload": {"loc": (0.020, 0.103, 0.060), "rot": (0, 0, math.radians(13)), "scale": (0.86, 1.12, 1)},
+    })])
+    hand_clip("holoShopDeploy", [(1, wrist_rest), (18, {
+        "hologram_shop": {"loc": (0.040, 0.142, 0.082), "rot": (math.radians(-16), 0, math.radians(8)), "scale": (1, 1, 1)},
+        "holo_ray_inventory": {"loc": (0.000, 0.102, 0.060), "rot": (0, 0, math.radians(-2)), "scale": (0.78, 1, 1)},
+        "holo_ray_reload": {"loc": (0.030, 0.103, 0.060), "rot": (0, 0, math.radians(12)), "scale": (0.70, 1, 1)},
+    }), (56, {
+        "hologram_shop": {"loc": (0.042, 0.138, 0.080), "rot": (math.radians(-13), 0, math.radians(5)), "scale": (1, 1, 1)},
+    })])
 
     bpy.ops.wm.save_as_mainfile(filepath=str(HANDS_SRC))
     export_selected_glb(HANDS_GLB, col)

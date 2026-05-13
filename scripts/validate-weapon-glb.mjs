@@ -18,8 +18,40 @@ const REQUIRED_WEAPON_SOCKETS = [
 ];
 const REQUIRED_WEAPON_NODES = ['WeaponRoot', 'visual', 'sockets', 'mag', 'trigger', 'chargingHandle'];
 const REQUIRED_WEAPON_CLIPS = ['idle', 'fire', 'reload', 'ads', 'inspect'];
-const REQUIRED_HAND_NODES = ['ViewmodelRoot', 'cameraRoot', 'wrist_r', 'palm_r', 'wrist_l', 'palm_l', 'weapon_socket'];
-const REQUIRED_HAND_CLIPS = ['idle', 'walkSway', 'sprint', 'ads', 'reloadRifle', 'fireRifle', 'inspect', 'weaponSwap', 'tacticalLean'];
+const REQUIRED_HAND_NODES = [
+  'ViewmodelRoot',
+  'cameraRoot',
+  'wrist_r',
+  'palm_r',
+  'wrist_l',
+  'palm_l',
+  'weapon_socket',
+  'wristband_root',
+  'wristband_screen',
+  'wristband_emitter',
+  'wristband_holo_mount',
+  'hologram_inventory',
+  'hologram_reload',
+  'hologram_shop',
+  'holo_ray_inventory',
+  'holo_ray_reload',
+  'holo_ray_idle'
+];
+const REQUIRED_HAND_CLIPS = [
+  'idle',
+  'walkSway',
+  'sprint',
+  'ads',
+  'reloadRifle',
+  'fireRifle',
+  'inspect',
+  'weaponSwap',
+  'tacticalLean',
+  'wristbandIdle',
+  'holoInventoryDeploy',
+  'holoReloadDeploy',
+  'holoShopDeploy'
+];
 
 function usage() {
   console.error('Usage: node scripts/validate-weapon-glb.mjs <file.glb> [--type weapon|hands]');

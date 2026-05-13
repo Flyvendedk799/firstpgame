@@ -41,7 +41,10 @@ export const SHARED_HAND_SKELETON = [
   'middle_l_01', 'middle_l_02', 'middle_l_03',
   'ring_l_01', 'ring_l_02', 'ring_l_03',
   'pinky_l_01', 'pinky_l_02', 'pinky_l_03',
-  'weapon_socket'
+  'weapon_socket',
+  'wristband_root', 'wristband_screen', 'wristband_emitter', 'wristband_holo_mount',
+  'hologram_inventory', 'hologram_reload', 'hologram_shop',
+  'holo_ray_inventory', 'holo_ray_reload', 'holo_ray_idle'
 ];
 
 export const CHARACTER_LODS = [
@@ -64,7 +67,8 @@ export const ANIMATION_CLIPS = {
     'idle', 'walkSway', 'sprint', 'ads',
     'reloadPistol', 'reloadRifle', 'reloadShotgun', 'reloadSmg', 'reloadMarksman', 'reloadHeavy',
     'inspect', 'melee', 'grenadeThrow', 'weaponSwap',
-    'damageFlinch', 'focusMode', 'tacticalLean'
+    'damageFlinch', 'focusMode', 'tacticalLean',
+    'wristbandIdle', 'holoInventoryDeploy', 'holoReloadDeploy', 'holoShopDeploy'
   ]
 };
 
@@ -162,8 +166,14 @@ export const VIEWMODEL_MANIFEST = {
     label: 'Operative First-Person Hands',
     src: 'assets/viewmodels/operative_hands.glb',
     skeleton: SHARED_HAND_SKELETON,
-    requiredBones: ['cameraRoot', 'wrist_r', 'palm_r', 'wrist_l', 'palm_l', 'weapon_socket'],
-    materials: ['skin', 'glove', 'fabric', 'rubber'],
+    requiredBones: [
+      'cameraRoot', 'wrist_r', 'palm_r', 'wrist_l', 'palm_l', 'weapon_socket',
+      'wristband_root', 'wristband_screen', 'wristband_emitter', 'wristband_holo_mount',
+      'hologram_inventory', 'hologram_reload', 'hologram_shop',
+      'holo_ray_inventory', 'holo_ray_reload', 'holo_ray_idle'
+    ],
+    materials: ['skin', 'glove', 'fabric', 'rubber', 'metal', 'emissivePanel'],
+    materialBudget: 10,
     clips: vmClips,
     fallback: 'viewmodel.procedural.hands'
   },

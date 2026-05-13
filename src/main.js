@@ -10502,7 +10502,9 @@ const gButtPad  = _m4(.040,.078,.012,m4PadM,    0, .010, .220);
 const M4_MESHES=[gLower,gBody,gRail,gCharge,gHand,gHandTop,gHandBot,gFsight,gBarrel,gMuzzle1,gMuzzle2,gMagwell,gMag1,gMag2,gGrip,gTrigGd,gTrig,gBuffer,gStock,gCheek,gButt,gEject,gFwdAsst,gFwdAsstP,gBrassDef,gChLatch,gFsWingL,gFsWingR,gFsPost,gFhSlot1,gFhSlot2,gRailT1,gRailT2,gRailT3,gHvL1,gHvL2,gHvR1,gHvR2,gSelector,gMagRel,gMagCurve,gGripBT,gSling,gButtPad];
 let m4AuthoredWeapon=null;
 let m4AuthoredHands=null;
-const M4_AUTHORED_HANDS_RUNTIME_ENABLED=false;
+const M4_AUTHORED_HANDS_RUNTIME_ENABLED=true;
+const AUTHORED_WRIST_CLIPS=['wristbandIdle','holoInventoryDeploy','holoReloadDeploy','holoShopDeploy'];
+const AUTHORED_HAND_RUNTIME_CLIPS=Array.from(new Set(AUTHORED_HAND_CLIPS.concat(AUTHORED_WRIST_CLIPS)));
 const M4_AUTHORED_STATUS={
   weaponId:'weapon.rifle',
   handsId:'viewmodel.operative.hands',
@@ -11399,8 +11401,8 @@ function _vmHandTouchDepthBias(grp){
 _vmHandTouchDepthBias(rGrp);
 _vmHandTouchDepthBias(lGrp);
 // ── TECH ARM-BAND on left forearm ──────────────────────────────────────────
-// Contextual band: it appears for inventory/shop/reload readouts, but stays out
-// of the weapon silhouette during normal hipfire/ADS.
+// Always-on procedural fallback. The authored 3D hand GLB owns the production
+// wrist computer when it validates for M4.
 const armBandGrp=new THREE.Group();
 const _bandX=-.008,_bandY=.003,_bandZ=.040;
 const _bandM   =new THREE.MeshPhongMaterial({color:0x14181f,shininess:80,specular:0x303848});
@@ -11432,20 +11434,12 @@ armScreen.position.set(_bandX,_bandY+.0512,_bandZ);
 armScreen.rotation.x=-Math.PI/2;
 armBandGrp.add(armScreen);
 lGrp.add(armBandGrp);
-armBandGrp.visible=false;
+armBandGrp.visible=true;
 function _syncArmBandVisibility(){
-  let show=false;
-  try{
-    show=!!(
-      (G&&(G.invOpen||G.shopOpen))||
-      (P&&P.reloading)||
-      (wristTarget>.015)||
-      (shopTarget>.015)||
-      (reloadHoloTarget>.015)||
-      (reloadHoloDeployed>.015)
-    );
-  }catch(_){}
+  let show=true;
+  try{show=!_isAuthoredHandRuntimeActive();}catch(_){show=true;}
   armBandGrp.visible=show;
+  try{if(typeof reloadHoloGrp!=='undefined')reloadHoloGrp.visible=show;}catch(_){}
   return show;
 }
 function _drawArmBandCanvas(){
@@ -11724,6 +11718,10 @@ function _isAuthoredM4RuntimeActive(){
   try{return !!(m4AuthoredWeapon&&m4AuthoredWeapon.ok&&P&&P.weaponIdx===0&&!(G&&G.splitScreenActive));}
   catch(_){return false;}
 }
+function _isAuthoredHandRuntimeActive(){
+  try{return !!(M4_AUTHORED_HANDS_RUNTIME_ENABLED&&_isAuthoredM4RuntimeActive()&&m4AuthoredHands&&m4AuthoredHands.ok);}
+  catch(_){return false;}
+}
 function _countAuthoredVisibleMeshes(root){
   let n=0;
   if(root&&root.traverse)root.traverse(o=>{if(o.isMesh&&_meshVisibleInHierarchy(o))n++;});
@@ -11780,6 +11778,149 @@ function _alignAuthoredHandsToM4Sockets(){
   _retargetAuthoredHandPalm('r',right,new THREE.Vector3(.030,-.050,.020));
   _retargetAuthoredHandPalm('l',leftDefault,new THREE.Vector3(.035,-.055,.010));
 }
+function _authoredWristMat(map,color=0xffffff,opacity=1,additive=false){
+  const mat=new THREE.MeshBasicMaterial({
+    map:map||null,
+    color,
+    transparent:opacity<1||!!map,
+    opacity,
+    depthWrite:false,
+    depthTest:false,
+    side:THREE.DoubleSide
+  });
+  if(additive)mat.blending=THREE.AdditiveBlending;
+  return mat;
+}
+function _setAuthoredNodeOpacity(node,opacity){
+  if(!node)return;
+  node.traverse?node.traverse(o=>{
+    if(!o.isMesh||!o.material)return;
+    const mats=Array.isArray(o.material)?o.material:[o.material];
+    mats.forEach(m=>{if(m){m.transparent=true;m.opacity=opacity;m.needsUpdate=true;}});
+  }):null;
+}
+const _authoredWristDeployState={inventory:false,reload:false,shop:false};
+function _tryConfigureAuthoredWristbandRuntime(){
+  if(!m4AuthoredHands||!m4AuthoredHands.ok||m4AuthoredHands.techConfigured)return !!(m4AuthoredHands&&m4AuthoredHands.techConfigured);
+  let textures=null;
+  try{
+    textures={arm:_armTex,wrist:_wristTex,shop:_shopTex,reload:_reloadTex};
+    if(!textures.arm||!textures.wrist||!textures.shop||!textures.reload)return false;
+  }catch(_){return false;}
+  const nodes=m4AuthoredHands.nodes;
+  if(!nodes)return false;
+  const tech={
+    root:nodes.get('wristband_root'),
+    screen:nodes.get('wristband_screen_mesh')||nodes.get('wristband_screen'),
+    emitter:nodes.get('wristband_emitter_pad')||nodes.get('wristband_emitter'),
+    ledLeft:nodes.get('wristband_led_left'),
+    ledRight:nodes.get('wristband_led_right'),
+    inventory:nodes.get('hologram_inventory'),
+    reload:nodes.get('hologram_reload'),
+    shop:nodes.get('hologram_shop'),
+    inventoryPanel:nodes.get('hologram_inventory_panel_mesh'),
+    reloadPanel:nodes.get('hologram_reload_panel_mesh'),
+    shopPanel:nodes.get('hologram_shop_panel_mesh'),
+    rayInventory:nodes.get('holo_ray_inventory'),
+    rayReload:nodes.get('holo_ray_reload'),
+    rayIdle:nodes.get('holo_ray_idle'),
+    rayInventoryMesh:nodes.get('holo_ray_inventory_mesh'),
+    rayReloadMesh:nodes.get('holo_ray_reload_mesh'),
+    rayIdleMesh:nodes.get('holo_ray_idle_mesh')
+  };
+  const assign=(obj,mat,order=20)=>{
+    if(!obj||!obj.isMesh)return;
+    obj.material=mat;
+    obj.renderOrder=order;
+    obj.frustumCulled=false;
+  };
+  assign(tech.screen,_authoredWristMat(textures.arm,0xffffff,.96,false),28);
+  assign(tech.inventoryPanel,_authoredWristMat(textures.wrist,0xffffff,0,false),31);
+  assign(tech.reloadPanel,_authoredWristMat(textures.reload,0xffffff,0,false),31);
+  assign(tech.shopPanel,_authoredWristMat(textures.shop,0xffffff,0,false),31);
+  assign(tech.rayInventoryMesh,_authoredWristMat(null,0x80e0ff,0,true),30);
+  assign(tech.rayReloadMesh,_authoredWristMat(null,0xa0eaff,0,true),30);
+  assign(tech.rayIdleMesh,_authoredWristMat(null,0x40c8ff,.18,true),29);
+  [tech.inventory,tech.reload,tech.shop,tech.rayInventory,tech.rayReload].forEach(o=>{if(o){o.visible=false;o.scale.setScalar(.001);}});
+  if(tech.rayIdle){tech.rayIdle.visible=true;tech.rayIdle.scale.setScalar(.45);}
+  m4AuthoredHands.tech=tech;
+  m4AuthoredHands.techConfigured=true;
+  try{_drawArmBandCanvas();}catch(_){}
+  return true;
+}
+function _syncAuthoredWristbandRuntime(now=performance.now()){
+  if(!_tryConfigureAuthoredWristbandRuntime())return false;
+  const tech=m4AuthoredHands&&m4AuthoredHands.tech;
+  if(!tech)return false;
+  const active=_isAuthoredHandRuntimeActive();
+  if(tech.root)tech.root.visible=active;
+  if(!active){
+    [tech.inventory,tech.reload,tech.shop,tech.rayInventory,tech.rayReload].forEach(o=>{if(o)o.visible=false;});
+    _authoredWristDeployState.inventory=false;
+    _authoredWristDeployState.reload=false;
+    _authoredWristDeployState.shop=false;
+    return false;
+  }
+  const pulse=.5+.5*Math.sin(now*.0065);
+  _setAuthoredNodeOpacity(tech.emitter,.62+pulse*.30);
+  _setAuthoredNodeOpacity(tech.ledLeft,.72+pulse*.18);
+  _setAuthoredNodeOpacity(tech.ledRight,.72+(1-pulse)*.18);
+  if(tech.rayIdle){
+    tech.rayIdle.visible=true;
+    tech.rayIdle.scale.setScalar(.42+pulse*.18);
+  }
+  const setHolo=(node,panel,ray,rayMesh,t)=>{
+    const v=THREE.MathUtils.clamp(t||0,0,1);
+    if(node){
+      node.visible=v>.012;
+      node.scale.setScalar(Math.max(.001,v*(1+Math.max(0,.8-v)*.10)));
+      node.rotation.z=Math.sin(now*.004)*.018*v;
+    }
+    if(panel&&panel.material)panel.material.opacity=Math.min(.94,v*.94);
+    if(ray){
+      ray.visible=v>.012;
+      ray.scale.setScalar(Math.max(.001,v*(.9+pulse*.22)));
+    }
+    if(rayMesh&&rayMesh.material)rayMesh.material.opacity=(.20+.22*pulse)*v;
+  };
+  setHolo(tech.inventory,tech.inventoryPanel,tech.rayInventory,tech.rayInventoryMesh,wristDeployed);
+  setHolo(tech.reload,tech.reloadPanel,tech.rayReload,tech.rayReloadMesh,reloadHoloDeployed);
+  setHolo(tech.shop,tech.shopPanel,tech.rayInventory,tech.rayInventoryMesh,shopDeployed);
+  const deployClip=(key,clip,t)=>{
+    const on=(t||0)>.04;
+    if(on&&!_authoredWristDeployState[key])_playAuthoredM4Action(m4AuthoredHands,'hand',clip);
+    _authoredWristDeployState[key]=on;
+  };
+  deployClip('inventory','holoInventoryDeploy',wristDeployed);
+  deployClip('reload','holoReloadDeploy',reloadHoloDeployed);
+  deployClip('shop','holoShopDeploy',shopDeployed);
+  return true;
+}
+function _authoredWristbandDebugStatus(){
+  const tech=m4AuthoredHands&&m4AuthoredHands.tech;
+  const vis=o=>!!(o&&_meshVisibleInHierarchy(o));
+  const nodeVis=o=>!!(o&&o.visible!==false&&(!o.parent||_meshVisibleInHierarchy(o.parent)));
+  const ndc=o=>{
+    if(!o||!camera)return null;
+    try{
+      o.updateMatrixWorld(true);
+      const p=o.getWorldPosition(new THREE.Vector3()).project(camera);
+      return {x:Number(p.x.toFixed(3)),y:Number(p.y.toFixed(3)),z:Number(p.z.toFixed(3))};
+    }catch(_){return null;}
+  };
+  return {
+    active:_isAuthoredHandRuntimeActive(),
+    configured:!!(m4AuthoredHands&&m4AuthoredHands.techConfigured),
+    rootVisible:nodeVis(tech&&tech.root),
+    screenVisible:vis(tech&&tech.screen),
+    rootNdc:ndc(tech&&tech.root),
+    screenNdc:ndc(tech&&tech.screen),
+    inventoryVisible:nodeVis(tech&&tech.inventory),
+    reloadVisible:nodeVis(tech&&tech.reload),
+    shopVisible:nodeVis(tech&&tech.shop),
+    idleRayVisible:nodeVis(tech&&tech.rayIdle)
+  };
+}
 function _fitAuthoredM4RuntimeParts(rig){
   if(!rig||!rig.traverse)return;
   const hidden=new Set(['stock','buttPad','bufferTube']);
@@ -11802,6 +11943,7 @@ function _syncAuthoredM4Visibility(){
   if(useHands){
     rGrp.visible=false;
     lGrp.visible=false;
+    M4_AUTHORED_STATUS.handSource='authored';
   }else if(m4Active&&!split){
     rGrp.visible=true;
     lGrp.visible=true;
@@ -11831,7 +11973,7 @@ function _prepareAuthoredActionBucket(kind,rig,animations,names){
       action.fadeOut(.08);
       action.paused=false;
       if(actions.idle)actions.idle.fadeIn(.08).play();
-      if(kind==='weapon')M4_AUTHORED_STATUS.activeWeaponClip='idle';
+      if(kind==='weapon')M4_AUTHORED_STATUS.activeWeaponClip=(P&&P.reloading)?'reload':'idle';
       else M4_AUTHORED_STATUS.activeHandClip='idle';
     }
   });
@@ -11895,6 +12037,7 @@ function _tickAuthoredM4Viewmodel(dt){
     else M4_AUTHORED_STATUS.activeHandClip=sprint?'sprint':moving?'walkSway':(P.adsVis>.12?'ads':'idle');
     m4AuthoredHands.mixer.update(dt);
     _alignAuthoredHandsToM4Sockets();
+    _syncAuthoredWristbandRuntime(now);
   }else{
     M4_AUTHORED_STATUS.activeHandClip='procedural';
   }
@@ -11946,13 +12089,19 @@ function _loadAuthoredM4Viewmodels(){
       rig.visible=false;
       rig.scale.setScalar(1);
       gunGrp.add(rig);
-      const validation=validateHandsViewmodel({scene:rig,animations:gltf.animations},handsEntry,{requiredClips:AUTHORED_HAND_CLIPS});
-      const bucket=_prepareAuthoredActionBucket('hand',rig,gltf.animations,AUTHORED_HAND_CLIPS);
+      const validation=validateHandsViewmodel({scene:rig,animations:gltf.animations},handsEntry,{requiredClips:AUTHORED_HAND_RUNTIME_CLIPS});
+      const bucket=_prepareAuthoredActionBucket('hand',rig,gltf.animations,AUTHORED_HAND_RUNTIME_CLIPS);
+      if(bucket.actions.wristbandIdle){
+        bucket.actions.wristbandIdle.enabled=true;
+        bucket.actions.wristbandIdle.setEffectiveWeight(1);
+        bucket.actions.wristbandIdle.play();
+      }
       m4AuthoredHands=Object.assign(bucket,{ok:validation.ok,rig,nodes:validation.nodes,validation,clips:validation.clips,stats:validation.stats});
       M4_AUTHORED_STATUS.handSource=validation.ok?(M4_AUTHORED_HANDS_RUNTIME_ENABLED?'authored':'fallback-procedural'):'fallback';
       M4_AUTHORED_STATUS.handValidation={ok:validation.ok,errors:validation.errors,warnings:validation.warnings};
       M4_AUTHORED_STATUS.budget.hands=validation.stats;
       if(!validation.ok)M4_AUTHORED_STATUS.fallbackReason=`hands validation failed: ${validation.errors.join(', ')}`;
+      _tryConfigureAuthoredWristbandRuntime();
       _syncAuthoredM4Visibility();
     }).catch(err=>{
       M4_AUTHORED_STATUS.handSource='fallback';
@@ -24254,8 +24403,9 @@ function _weaponVisualStatus(){
     authoredHandVisibleMeshes:authoredHandMeshes,
     authoredM4SocketValidation:M4_AUTHORED_STATUS.socketValidation,
     authoredM4HandValidation:M4_AUTHORED_STATUS.handValidation,
-    activeWeaponClip:M4_AUTHORED_STATUS.activeWeaponClip,
+    activeWeaponClip:P.reloading?'reload':M4_AUTHORED_STATUS.activeWeaponClip,
     activeHandClip:M4_AUTHORED_STATUS.activeHandClip,
+    authoredWristband:_authoredWristbandDebugStatus(),
     authoredM4Budget:M4_AUTHORED_STATUS.budget,
     authoredM4FallbackReason:M4_AUTHORED_STATUS.fallbackReason,
     visibleThrowMeshes:throwMeshes,
@@ -25862,6 +26012,7 @@ renderer.setAnimationLoop(()=>{
       reloadBeam2.scale.y=Math.max(.001,_beamT);
       _reloadHoloPanelW.copy(_reloadHoloSmW);
       _placeReloadTether(_reloadHoloAnchorW,_reloadHoloPanelW,(.32+.14*Math.sin(now*10))*_beamT);
+      _syncAuthoredWristbandRuntime(now*1000);
       // Pulse band emitter brighter while reloading
       _emitM.opacity=.55+(P.reloading?.40+.20*Math.sin(now*9):0);
       _ledM_R.opacity=.85+(P.reloading?.10*Math.sin(now*6):.05*Math.sin(now*1.4));
