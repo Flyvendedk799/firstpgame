@@ -10466,6 +10466,7 @@ const gButtPad  = _m4(.040,.078,.012,m4PadM,    0, .010, .220);
 const M4_MESHES=[gLower,gBody,gRail,gCharge,gHand,gHandTop,gHandBot,gFsight,gBarrel,gMuzzle1,gMuzzle2,gMagwell,gMag1,gMag2,gGrip,gTrigGd,gTrig,gBuffer,gStock,gCheek,gButt,gEject,gFwdAsst,gFwdAsstP,gBrassDef,gChLatch,gFsWingL,gFsWingR,gFsPost,gFhSlot1,gFhSlot2,gRailT1,gRailT2,gRailT3,gHvL1,gHvL2,gHvR1,gHvR2,gSelector,gMagRel,gMagCurve,gGripBT,gSling,gButtPad];
 let m4AuthoredWeapon=null;
 let m4AuthoredHands=null;
+const M4_AUTHORED_HANDS_RUNTIME_ENABLED=false;
 const M4_AUTHORED_STATUS={
   weaponId:'weapon.rifle',
   handsId:'viewmodel.operative.hands',
@@ -11551,9 +11552,9 @@ let scopeViewM_active=null;
 let _scopePipStressDown=0;
 function _baseScopePipPixelSize(){
   const q=SETTINGS.quality||'high';
-  const map={low:256,medium:400,high:576,ultra:1536};
+  const map={low:256,medium:320,high:400,ultra:1536};
   if(SETTINGS.scopePipResolution>0)return SETTINGS.scopePipResolution|0;
-  return map[q]||576;
+  return map[q]||400;
 }
 function _scopePipRenderStride(){
   const q=SETTINGS.quality||'high';
@@ -11563,9 +11564,9 @@ function _scopePipRenderStride(){
   const p95=typeof PERF!=='undefined'?PERF.lastP95ms||0:0;
   const p99=typeof PERF!=='undefined'?PERF.lastP99ms||0:0;
   const fps=typeof PERF!=='undefined'?PERF.emaFps||60:60;
-  if(p95>24||p99>34||fps<46)return 3;
+  if(p95>24||p99>34||fps<46)return 4;
   if(p95>18||p99>26||fps<54)return 2;
-  return 1;
+  return 2;
 }
 function _effectiveScopePipPixelSize(){
   let w=_baseScopePipPixelSize();
@@ -11604,6 +11605,7 @@ function _currentOpticProfile(){
   if(typeof P==='undefined')return null;
   const att=P.attachments&&P.attachments.scope;
   if(P.weaponIdx===0&&att&&m4ScopeViewM&&m4ScopeView){
+    const authoredM4=_isAuthoredM4RuntimeActive();
     return {
       name:att.name||'scope',
       tier:att.tier||1,
@@ -11611,9 +11613,9 @@ function _currentOpticProfile(){
       pipOpacityMax:Number.isFinite(att.pipOpacityMax)?att.pipOpacityMax:.97,
       vignetteColor:att.vignetteColor||'rgba(80,180,255,.12)',
       lensLocal:_scopeLensLocalM4,
-      lensY:.078,
-      adsGunZ:-.12,
-      adsFovDelta:36+(att.tier||1)*3,
+      lensY:authoredM4?.24:.078,
+      adsGunZ:authoredM4?-.44:-.12,
+      adsFovDelta:authoredM4?20+(att.tier||1)*2:36+(att.tier||1)*3,
       view:m4ScopeView,
       viewM:m4ScopeViewM
     };
@@ -11687,9 +11689,11 @@ function _m4SocketLocal(name,fallback=null){
 }
 const _M4_SCOPE_LENS_GROUP_LOCAL=new THREE.Vector3(0,.078,-.0578);
 const _m4ScopeSocketOffset=new THREE.Vector3();
+const _m4ScopeSocketLocal=new THREE.Vector3(0,.078,-.0578);
 function _syncAuthoredM4Sockets(){
   if(!_isAuthoredM4RuntimeActive()){
     _m4ScopeSocketOffset.set(0,0,0);
+    _m4ScopeSocketLocal.copy(_M4_SCOPE_LENS_GROUP_LOCAL);
     return;
   }
   const muzzle=_m4SocketLocal('muzzleFlash',_m4SocketLocal('muzzle',new THREE.Vector3(0,.030,-.49)));
@@ -11697,6 +11701,7 @@ function _syncAuthoredM4Sockets(){
   const scope=_m4SocketLocal('scopeCamera',_m4SocketLocal('optic',_scopeLensLocalM4));
   if(scope){
     _scopeLensLocalM4.copy(scope);
+    _m4ScopeSocketLocal.copy(scope);
     _m4ScopeSocketOffset.copy(scope).sub(_M4_SCOPE_LENS_GROUP_LOCAL);
   }
 }
@@ -11717,7 +11722,7 @@ function _retargetAuthoredHandPalm(side,targetLocal,extra=null){
   return true;
 }
 function _alignAuthoredHandsToM4Sockets(){
-  if(!_isAuthoredM4RuntimeActive()||!m4AuthoredHands||!m4AuthoredHands.ok)return;
+  if(!M4_AUTHORED_HANDS_RUNTIME_ENABLED||!_isAuthoredM4RuntimeActive()||!m4AuthoredHands||!m4AuthoredHands.ok)return;
   const right=_m4SocketLocal('gripRight',new THREE.Vector3(0,-.052,-.012));
   const leftDefault=P&&P.reloading?_m4SocketLocal('magazine',new THREE.Vector3(-.035,-.080,-.060)):_m4SocketLocal('gripLeft',new THREE.Vector3(-.040,-.044,-.190));
   _retargetAuthoredHandPalm('r',right,new THREE.Vector3(.030,-.050,.020));
@@ -11740,16 +11745,24 @@ function _syncAuthoredM4Visibility(){
   const useWeapon=!!(m4Active&&!split&&m4AuthoredWeapon&&m4AuthoredWeapon.ok);
   if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=useWeapon;
   M4_MESHES.forEach(m=>{m.visible=m4Active&&!useWeapon;});
-  const useHands=!!(useWeapon&&m4AuthoredHands&&m4AuthoredHands.ok);
+  const useHands=!!(M4_AUTHORED_HANDS_RUNTIME_ENABLED&&useWeapon&&m4AuthoredHands&&m4AuthoredHands.ok);
   if(m4AuthoredHands&&m4AuthoredHands.rig)m4AuthoredHands.rig.visible=useHands;
   if(useHands){
     rGrp.visible=false;
     lGrp.visible=false;
+  }else if(m4Active&&!split){
+    rGrp.visible=true;
+    lGrp.visible=true;
+    M4_AUTHORED_STATUS.activeHandClip='procedural';
+    if(m4AuthoredHands&&m4AuthoredHands.validation&&m4AuthoredHands.validation.ok)M4_AUTHORED_STATUS.handSource='fallback-procedural';
   }else if(!m4Active||split){
     rGrp.visible=true;
   }
   if(useWeapon)_syncAuthoredM4Sockets();
-  else _m4ScopeSocketOffset.set(0,0,0);
+  else{
+    _m4ScopeSocketOffset.set(0,0,0);
+    _m4ScopeSocketLocal.copy(_M4_SCOPE_LENS_GROUP_LOCAL);
+  }
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
 }
 function _prepareAuthoredActionBucket(kind,rig,animations,names){
@@ -11811,7 +11824,7 @@ function _tickAuthoredM4Viewmodel(dt){
     m4AuthoredWeapon.mixer.update(dt);
     _syncAuthoredM4Sockets();
   }
-  if(m4AuthoredHands&&m4AuthoredHands.mixer){
+  if(M4_AUTHORED_HANDS_RUNTIME_ENABLED&&m4AuthoredHands&&m4AuthoredHands.mixer){
     const moving=!!(K.KeyW||K.KeyA||K.KeyS||K.KeyD);
     const sprint=!!(P.running||P.sprintAmt>.25);
     for(const name of ['idle','walkSway','sprint']){
@@ -11830,18 +11843,20 @@ function _tickAuthoredM4Viewmodel(dt){
     else M4_AUTHORED_STATUS.activeHandClip=sprint?'sprint':moving?'walkSway':(P.adsVis>.12?'ads':'idle');
     m4AuthoredHands.mixer.update(dt);
     _alignAuthoredHandsToM4Sockets();
+  }else{
+    M4_AUTHORED_STATUS.activeHandClip='procedural';
   }
   _syncAuthoredM4Sockets();
 }
 function _playAuthoredM4Fire(){
   if(!_isAuthoredM4RuntimeActive())return;
   _playAuthoredM4Action(m4AuthoredWeapon,'weapon','fire');
-  _playAuthoredM4Action(m4AuthoredHands,'hand','fireRifle');
+  if(M4_AUTHORED_HANDS_RUNTIME_ENABLED)_playAuthoredM4Action(m4AuthoredHands,'hand','fireRifle');
 }
 function _playAuthoredM4Inspect(){
   if(!_isAuthoredM4RuntimeActive())return;
   _playAuthoredM4Action(m4AuthoredWeapon,'weapon','inspect');
-  _playAuthoredM4Action(m4AuthoredHands,'hand','inspect');
+  if(M4_AUTHORED_HANDS_RUNTIME_ENABLED)_playAuthoredM4Action(m4AuthoredHands,'hand','inspect');
 }
 function _loadAuthoredM4Viewmodels(){
   const weaponEntry=WEAPON_MANIFEST['weapon.rifle'];
@@ -11882,7 +11897,7 @@ function _loadAuthoredM4Viewmodels(){
       const validation=validateHandsViewmodel({scene:rig,animations:gltf.animations},handsEntry,{requiredClips:AUTHORED_HAND_CLIPS});
       const bucket=_prepareAuthoredActionBucket('hand',rig,gltf.animations,AUTHORED_HAND_CLIPS);
       m4AuthoredHands=Object.assign(bucket,{ok:validation.ok,rig,nodes:validation.nodes,validation,clips:validation.clips,stats:validation.stats});
-      M4_AUTHORED_STATUS.handSource=validation.ok?'authored':'fallback';
+      M4_AUTHORED_STATUS.handSource=validation.ok?(M4_AUTHORED_HANDS_RUNTIME_ENABLED?'authored':'fallback-procedural'):'fallback';
       M4_AUTHORED_STATUS.handValidation={ok:validation.ok,errors:validation.errors,warnings:validation.warnings};
       M4_AUTHORED_STATUS.budget.hands=validation.stats;
       if(!validation.ok)M4_AUTHORED_STATUS.fallbackReason=`hands validation failed: ${validation.errors.join(', ')}`;
@@ -13090,7 +13105,7 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const VISUAL_PATCH_SETTINGS_VERSION=10;
+const VISUAL_PATCH_SETTINGS_VERSION=11;
 const SETTINGS=(()=>{
   // Defaults FIRST — then merge the saved values on top. Phase 6: new tactical
   // and lean fields default to enabled; loading an older settings JSON simply
@@ -13099,11 +13114,11 @@ const SETTINGS=(()=>{
   let s={
     sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,mouseDpi:800,lastSensRefGame:'valorant',invY:false,radar:true,dmgNum:true,
     scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
-    pixelRatioCap:1.18,maxPointLightsEffective:24,perfHud:false,
+    pixelRatioCap:1.0,maxPointLightsEffective:24,perfHud:false,
     aiSkipFramesModulo:3,raycastSpatialIndex:true,
     maxParticlesBlood:120,maxParticlesSmoke:80,
     cheapMaterials:false,reducedBloomish:false,
-    rendererMode:'auto',postEnabled:true,aoQuality:'medium',bloomQuality:'high',
+    rendererMode:'auto',postEnabled:true,aoQuality:'medium',bloomQuality:'medium',
     shadowQuality:'high',atmosphereQuality:'high',textureQuality:'high',
     characterQuality:'high',weaponQuality:'high',renderScale:'auto',
     vfxQuality:'high',particleQuality:'high',decalQuality:'high',
@@ -13117,9 +13132,9 @@ const SETTINGS=(()=>{
     playerLeanAntiClip:true,
     playerLeanBodyRig:true,
     authoredCampaignEncounters:true,
-    // Phase 2 — cinematic realism (default on; perf adaptive can gate individually)
-    phase2SSR:true,phase2LUT:true,phase2DoF:true,phase2Volumetrics:true,phase2PlanarReflections:true,phase2Adaptive:true,
-    phase2Sharpen:0.34,phase2TAA:true,ssrIntensityMul:1,
+    // Phase 2 — expensive cinematic passes stay opt-in; high should be stable by default.
+    phase2SSR:false,phase2LUT:false,phase2DoF:false,phase2Volumetrics:false,phase2PlanarReflections:false,phase2Adaptive:true,
+    phase2Sharpen:0.16,phase2TAA:false,ssrIntensityMul:0,
   };
   try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}
   if(s.visualPatchSettingsVersion!==VISUAL_PATCH_SETTINGS_VERSION){
@@ -13128,22 +13143,22 @@ const SETTINGS=(()=>{
       chromaticAberration:false,
       vignette:false,
       gradeIntensity:.9,
-      bloomQuality:s.bloomQuality==='ultra'?'high':(s.bloomQuality||'high'),
+      bloomQuality:s.bloomQuality==='ultra'||s.bloomQuality==='high'?'medium':(s.bloomQuality||'medium'),
       aoQuality:'medium',
-      pixelRatioCap:typeof s.pixelRatioCap==='number'&&s.pixelRatioCap>1.34?1.18:(typeof s.pixelRatioCap==='number'?Math.min(s.pixelRatioCap,1.35):1.18),
+      pixelRatioCap:1.0,
       scopePipResolution:0,
       lightingQuality:s.lightingQuality||(s.quality||'high'),
       shadowQuality:s.shadowQuality==='off'||s.shadowQuality==='medium'?'high':(s.shadowQuality||'high'),
       textureQuality:s.textureQuality==='low'?'high':(s.textureQuality||'high'),
-      phase2SSR:true,
-      phase2LUT:true,
-      phase2DoF:true,
-      phase2Volumetrics:true,
-      phase2PlanarReflections:true,
+      phase2SSR:false,
+      phase2LUT:false,
+      phase2DoF:false,
+      phase2Volumetrics:false,
+      phase2PlanarReflections:false,
       phase2Adaptive:s.phase2Adaptive!=null?s.phase2Adaptive:true,
-      phase2Sharpen:Number.isFinite(s.phase2Sharpen)?s.phase2Sharpen:0.34,
-      phase2TAA:true,
-      ssrIntensityMul:Number.isFinite(s.ssrIntensityMul)?s.ssrIntensityMul:1,
+      phase2Sharpen:.16,
+      phase2TAA:false,
+      ssrIntensityMul:0,
       visualPatchSettingsVersion:VISUAL_PATCH_SETTINGS_VERSION
     });
     if((s.quality||'')==='medium'&&s.aoQuality==='high')s.aoQuality='medium';
@@ -13152,18 +13167,18 @@ const SETTINGS=(()=>{
   if(s.aiTacticalEnabled==null)s.aiTacticalEnabled=true;
   if(s.playerLeanAntiClip==null)s.playerLeanAntiClip=true;
   if(s.playerLeanBodyRig==null)s.playerLeanBodyRig=true;
-  if(s.phase2SSR==null)s.phase2SSR=true;
-  if(s.phase2LUT==null)s.phase2LUT=true;
-  if(s.phase2DoF==null)s.phase2DoF=true;
-  if(s.phase2Volumetrics==null)s.phase2Volumetrics=true;
-  if(s.phase2PlanarReflections==null)s.phase2PlanarReflections=true;
+  if(s.phase2SSR==null)s.phase2SSR=false;
+  if(s.phase2LUT==null)s.phase2LUT=false;
+  if(s.phase2DoF==null)s.phase2DoF=false;
+  if(s.phase2Volumetrics==null)s.phase2Volumetrics=false;
+  if(s.phase2PlanarReflections==null)s.phase2PlanarReflections=false;
   if(s.phase2Adaptive==null)s.phase2Adaptive=true;
-  if(s.phase2Sharpen==null)s.phase2Sharpen=0.34;
-  if(s.phase2TAA==null)s.phase2TAA=true;
-  if(s.ssrIntensityMul==null||!Number.isFinite(s.ssrIntensityMul))s.ssrIntensityMul=1;
+  if(s.phase2Sharpen==null)s.phase2Sharpen=0.16;
+  if(s.phase2TAA==null)s.phase2TAA=false;
+  if(s.ssrIntensityMul==null||!Number.isFinite(s.ssrIntensityMul))s.ssrIntensityMul=0;
   if(s.postEnabled==null)s.postEnabled=true;
   if(s.aoQuality==null)s.aoQuality='medium';
-  if(s.bloomQuality==null)s.bloomQuality='high';
+  if(s.bloomQuality==null)s.bloomQuality='medium';
   if(s.shadowQuality==null)s.shadowQuality='high';
   if(s.atmosphereQuality==null)s.atmosphereQuality='high';
   if(s.textureQuality==null)s.textureQuality='high';
@@ -13225,7 +13240,7 @@ function applyQuality(){
   const rs=SETTINGS.renderScale||'auto';
   if(rs!=='auto')_perfPixelScale=1;
   // Pixel ratio — aggressive Retina cap on high + optional adaptive scale multiplier
-  const autoPx=Math.min(({low:1.0,medium:1.06,high:Math.min(devicePixelRatio,1.11),ultra:Math.min(devicePixelRatio,2)}[q]),SETTINGS.pixelRatioCap||1.18);
+  const autoPx=Math.min(({low:1.0,medium:1.0,high:Math.min(devicePixelRatio,1.0),ultra:Math.min(devicePixelRatio,2)}[q]),SETTINGS.pixelRatioCap||1.0);
   const basePx=rs==='auto'?autoPx:Math.min(Math.max(.55,parseFloat(rs)||1)*Math.min(devicePixelRatio,1.78),2.1);
   const px=THREE.MathUtils.clamp(basePx*(_perfPixelScale||1),Math.max(.65,PERF_GOVERNOR_PIXEL_FLOOR),2.1);
   if(_renderStack)_renderStack.setPixelRatio(px);else renderer.setPixelRatio(px);
@@ -14962,7 +14977,7 @@ function switchWeapon(idx){
   const _useAuthoredM4=!!(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!(G&&G.splitScreenActive));
   M4_MESHES.forEach(m=>m.visible=(idx===0)&&!_useAuthoredM4);
   if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=_useAuthoredM4;
-  if(idx===0&&m4AuthoredHands&&m4AuthoredHands.ok)_playAuthoredM4Action(m4AuthoredHands,'hand','weaponSwap');
+  if(idx===0&&M4_AUTHORED_HANDS_RUNTIME_ENABLED&&m4AuthoredHands&&m4AuthoredHands.ok)_playAuthoredM4Action(m4AuthoredHands,'hand','weaponSwap');
   // GLB Deagle takes over visuals when it's attached; hide procedural mesh
   // pieces so they don't peek through.
   const _useGlbDeagle=!!deagleGlbRig;
@@ -23769,14 +23784,24 @@ function updateHands(dt){
     const _att=(P.attachments&&P.attachments.scope)?P.attachments.scope:null;
     const _scopeAds=P.adsVis||P.ads||0;
     const _authScope=_isAuthoredM4RuntimeActive();
-    const _adsScaleMul=_authScope?.16:((_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70);
-    const _s=1+_scopeAds*_adsScaleMul;
-    m4ScopeGrp.scale.setScalar(_s);
-    m4ScopeGrp.position.set(
-      _m4ScopeSocketOffset.x,
-      _m4ScopeSocketOffset.y+(_authScope?.018:.078)*(1-_s),
-      _m4ScopeSocketOffset.z-(_authScope?.012:.05)*(1-_s)-_scopeAds*(_authScope?.002:.008)
-    );
+    if(_authScope){
+      const _s=Math.max(.04,.16-_scopeAds*.12);
+      m4ScopeGrp.scale.setScalar(_s);
+      m4ScopeGrp.position.set(
+        _m4ScopeSocketLocal.x-_M4_SCOPE_LENS_GROUP_LOCAL.x*_s,
+        _m4ScopeSocketLocal.y-_M4_SCOPE_LENS_GROUP_LOCAL.y*_s+_scopeAds*.001,
+        _m4ScopeSocketLocal.z-_M4_SCOPE_LENS_GROUP_LOCAL.z*_s-_scopeAds*.001
+      );
+    }else{
+      const _adsScaleMul=(_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70;
+      const _s=1+_scopeAds*_adsScaleMul;
+      m4ScopeGrp.scale.setScalar(_s);
+      m4ScopeGrp.position.set(
+        _m4ScopeSocketOffset.x,
+        _m4ScopeSocketOffset.y+.078*(1-_s),
+        _m4ScopeSocketOffset.z-.05*(1-_s)-_scopeAds*.008
+      );
+    }
   }
   _syncAuthoredM4Visibility();
 }

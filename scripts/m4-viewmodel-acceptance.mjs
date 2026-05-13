@@ -38,6 +38,21 @@ const url = new URL(BASE_URL);
 url.searchParams.set('perf', '1');
 url.searchParams.set('renderer', 'webgl');
 await page.goto(url.toString(), { waitUntil: 'load', timeout: 30000 });
+await page.addStyleTag({
+  content: `
+    #overlay,
+    #story-card,
+    #dossier-card,
+    #briefing-card,
+    #deploy-loading,
+    #pause-menu,
+    #onboard-card {
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+  `
+});
 console.log('[m4] page loaded');
 await page.waitForFunction(() => window.__game?.debug?.weaponVisualStatus, null, { timeout: 45000 });
 console.log('[m4] debug ready');
@@ -55,6 +70,7 @@ await page.evaluate(() => {
   G.menuOpen = false;
   G.invOpen = false;
   G.shopOpen = false;
+  G.paused = false;
   G.splitScreenActive = false;
   P.dead = false;
   P.pos.set(0, 0.2, 18);
@@ -71,7 +87,12 @@ console.log('[m4] setup checked');
 assert(setup.authoredWeaponSource === 'authored', `M4 did not load authored source: ${JSON.stringify(setup)}`);
 assert(setup.authoredM4Active === true, `M4 authored viewmodel inactive: ${JSON.stringify(setup)}`);
 assert(setup.authoredM4VisibleMeshes > 0, `M4 authored mesh not visible: ${JSON.stringify(setup)}`);
-assert(setup.authoredHandSource === 'authored', `authored hands did not load: ${JSON.stringify(setup)}`);
+assert(['authored', 'fallback-procedural'].includes(setup.authoredHandSource), `authored hands did not resolve: ${JSON.stringify(setup)}`);
+if (setup.authoredHandSource === 'authored') {
+  assert(setup.authoredHandVisibleMeshes > 0, `authored hand meshes not visible: ${JSON.stringify(setup)}`);
+} else {
+  assert(setup.leftHandVisible && setup.rightHandVisible, `procedural hands fallback not visible: ${JSON.stringify(setup)}`);
+}
 assert(setup.authoredM4SocketValidation?.ok, `M4 socket validation failed: ${JSON.stringify(setup.authoredM4SocketValidation)}`);
 assert(setup.authoredM4HandValidation?.ok, `hand validation failed: ${JSON.stringify(setup.authoredM4HandValidation)}`);
 

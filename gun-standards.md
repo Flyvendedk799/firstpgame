@@ -115,11 +115,12 @@ At runtime:
 
 - Authored M4 is used for singleplayer `weaponIdx === 0`.
 - Procedural M4 remains the fallback and remains available for unsupported split-screen paths.
-- Procedural hands remain the fallback if the shared authored hands fail validation.
+- Procedural hands remain the fallback if the shared authored hands fail validation or fail visual acceptance. Structural validation alone is not enough to render a generated hand asset in first-person.
 - Gameplay stats, recoil, ammo, fire rate, reload authority, attachments, and scope/PIP logic stay gameplay-owned.
 - Weapon `reload` is time-scrubbed from `P.reloadTimer / P.RELOAD_TIME`; the animation follows gameplay, not the other way around.
 - `idle` loops, `fire` triggers on shot, `ads` blends with ADS amount, and `inspect` triggers from inspect input.
 - Debug status must expose authored/fallback source, validation result, active clip names, socket readiness, visible authored mesh counts, and budget stats.
+- The default High quality profile must remain stable without requiring SSR, DoF, volumetrics, TAA, or heavy scope/PIP settings. Those cinematic passes are opt-in after the weapon view is readable and performant.
 
 ## Acceptance Checklist
 
