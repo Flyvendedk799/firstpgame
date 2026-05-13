@@ -28,7 +28,9 @@
     "validate:encounter-graph": "node scripts/validate-campaign.mjs",
     "validate:geometry": "node scripts/validate-level-geometry.mjs",
     "test:doorway:b01": "node scripts/b01-doorway-screenshot.mjs",
-    "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs"
+    "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs",
+    "test:m4:viewmodel": "node scripts/m4-viewmodel-acceptance.mjs",
+    "validate:weapons": "node scripts/validate-weapon-glb.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon && node scripts/validate-weapon-glb.mjs public/assets/viewmodels/operative_hands.glb --type hands"
   },
   "dependencies": {
     "three": "0.170.0"

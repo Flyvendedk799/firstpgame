@@ -54,7 +54,7 @@ export function reloadShouldDropMag(rt, weaponIdx, wasBelow) {
   const s = getReloadTimelineSpec(weaponIdx);
   if (!s) return false;
   const thr = s.magDropAt;
-  return !wasBelow && rt >= thr;
+  return wasBelow && rt >= thr;
 }
 
 export function reloadHoloVisualProgress(rt, weaponIdx) {

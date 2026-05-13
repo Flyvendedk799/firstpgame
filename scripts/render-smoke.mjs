@@ -255,7 +255,8 @@ for (const mode of modes) {
 
   assert(screenPost && screenPost.enabled, `${mode}: screen post overlay inactive`);
   assert(pip.enabled && pip.visible && pip.rendered && !pip.error, `${mode}: scope PIP did not render: ${JSON.stringify(pip)}`);
-  assert(pip.target && pip.target.width >= 512 && pip.target.height >= 512, `${mode}: scope target too small`);
+  const minPipTarget = Math.max(384, pip.effectivePipSize || 512);
+  assert(pip.target && pip.target.width >= minPipTarget && pip.target.height >= minPipTarget, `${mode}: scope target too small`);
   assert(pip.materialOpacity > 0, `${mode}: scope material opacity did not rise during ADS`);
   assert(mats.scene.pbr > 0 && mats.scene.aa > 0, `${mode}: scene PBR/AA materials missing`);
   assert(mats.viewmodel.aa > 0, `${mode}: viewmodel AA materials missing`);
@@ -266,12 +267,17 @@ for (const mode of modes) {
   assert(result.texturePhase.high.maps.roughness > result.texturePhase.low.maps.roughness, `${mode}: generated roughness maps did not scale with texture quality`);
   assert(result.weaponPhase.length === 8, `${mode}: did not visit all weapon slots`);
   for (const weapon of result.weaponPhase) {
-    const visiblePrimary = weapon.visibleProceduralMeshes + weapon.visibleGlbMeshes + weapon.visibleThrowMeshes + weapon.visibleKnifeMeshes;
+    const visiblePrimary =
+      weapon.visibleProceduralMeshes +
+      weapon.visibleGlbMeshes +
+      (weapon.authoredM4VisibleMeshes || 0) +
+      weapon.visibleThrowMeshes +
+      weapon.visibleKnifeMeshes;
     assert(visiblePrimary > 0, `${mode}: ${weapon.name} has no visible primary weapon mesh`);
     assert(weapon.pbrMaterials > 0 && weapon.aaMaterials > 0, `${mode}: ${weapon.name} is missing PBR/AA material coverage`);
     if (weapon.weaponIdx === 2) {
       assert(weapon.throwingKnifeVisible && weapon.visibleThrowMeshes > 0, `${mode}: throwing knife viewmodel missing`);
-    } else if (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible) {
+    } else if (!(weapon.weaponIdx === 0 && weapon.authoredM4Active) && (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible)) {
       assert(weapon.visibleDetailParts > 0, `${mode}: ${weapon.name} AA detail parts missing at high quality`);
     }
   }

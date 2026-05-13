@@ -160,7 +160,7 @@ export const VIEWMODEL_MANIFEST = {
     id: 'viewmodel.operative.hands',
     kind: 'viewmodel',
     label: 'Operative First-Person Hands',
-    src: null,
+    src: 'assets/viewmodels/operative_hands.glb',
     skeleton: SHARED_HAND_SKELETON,
     requiredBones: ['cameraRoot', 'wrist_r', 'palm_r', 'wrist_l', 'palm_l', 'weapon_socket'],
     materials: ['skin', 'glove', 'fabric', 'rubber'],
@@ -198,7 +198,10 @@ function weaponEntry(id, type, label, options = {}) {
 
 export const WEAPON_MANIFEST = {
   'weapon.pistol': weaponEntry('weapon.pistol', 'pistol', 'Sidearm', { triangleBudget: 4200 }),
-  'weapon.rifle': weaponEntry('weapon.rifle', 'rifle', 'Service Rifle', { triangleBudget: 8200 }),
+  'weapon.rifle': weaponEntry('weapon.rifle', 'rifle', 'Service Rifle', {
+    src: 'assets/weapons/m4/m4_viewmodel.glb',
+    triangleBudget: 12000
+  }),
   'weapon.shotgun': weaponEntry('weapon.shotgun', 'shotgun', 'Combat Shotgun', { triangleBudget: 7600 }),
   'weapon.smg': weaponEntry('weapon.smg', 'smg', 'SMG', { triangleBudget: 6800 }),
   'weapon.marksman': weaponEntry('weapon.marksman', 'marksman', 'Marksman Rifle', { triangleBudget: 9200 }),
@@ -494,6 +497,14 @@ export function createAssetRegistry(options = {}) {
   };
   const fallbackLog = [];
 
+  function resolveManifestUrl(src) {
+    if (!src || /^(https?:)?\/\//.test(src) || src.startsWith('data:') || src.startsWith('blob:')) return src;
+    const base = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL != null)
+      ? String(import.meta.env.BASE_URL)
+      : '/';
+    return `${base.endsWith('/') ? base : `${base}/`}${String(src).replace(/^\/+/, '')}`;
+  }
+
   function lookup(id) {
     for (const manifest of Object.values(ALL_MANIFESTS)) {
       if (manifest[id]) return manifest[id];
@@ -525,7 +536,7 @@ export function createAssetRegistry(options = {}) {
       try {
         if (entry.kind === 'character' || entry.kind === 'viewmodel' || entry.kind === 'weapon' || entry.kind === 'environment-kit' || entry.kind === 'attachment') {
           if (!gltfLoader) throw new Error('no GLTFLoader');
-          const gltf = await new Promise((res, rej) => gltfLoader.load(entry.src, res, undefined, rej));
+          const gltf = await new Promise((res, rej) => gltfLoader.load(resolveManifestUrl(entry.src), res, undefined, rej));
           const out = { id, entry, status: 'loaded', source: 'authored', gltf };
           cache.set(id, out);
           usage.loaded++;
@@ -533,7 +544,7 @@ export function createAssetRegistry(options = {}) {
         }
         if (entry.kind === 'material' || entry.kind === 'decal-atlas' || entry.kind === 'vfx') {
           if (!textureLoader) throw new Error('no TextureLoader');
-          const tex = await new Promise((res, rej) => textureLoader.load(entry.src, res, undefined, rej));
+          const tex = await new Promise((res, rej) => textureLoader.load(resolveManifestUrl(entry.src), res, undefined, rej));
           const out = { id, entry, status: 'loaded', source: 'authored', texture: tex };
           cache.set(id, out);
           usage.loaded++;

@@ -525,8 +525,10 @@ export function createRenderSubsystem({
 
   if (metadata.backend !== 'webgpu' && typeof EffectComposer === 'function' && typeof RenderPass === 'function') {
     composer = new EffectComposer(renderer);
-    const useTaaBase =
-      renderer.capabilities && renderer.capabilities.isWebGL2 && typeof TAARenderPass === 'function';
+    // TAARenderPass replays the whole dynamic scene several times and can trip
+    // Three r170 missing-uniform edge cases on transient VFX materials. SMAA
+    // remains the stable anti-aliasing layer for this runtime path.
+    const useTaaBase = false;
     if (useTaaBase) {
       passes.render = new TAARenderPass(scene, camera);
       passes.scenePassKind = 'taa';
@@ -547,7 +549,7 @@ export function createRenderSubsystem({
           selects: [],
           // Defer: main's getter closes over `G`, which is not initialized until
           // later in the module — tickPhotography assigns groundReflector each frame.
-          groundReflector: undefined,
+          groundReflector: null,
           bouncing: false
         });
         passes.ssr.maxDistance = 12;
@@ -753,7 +755,7 @@ export function createRenderSubsystem({
       passes.ssr.groundReflector =
         groundReflector && typeof groundReflector.doRender === 'function'
           ? groundReflector
-          : undefined;
+          : null;
       const rescanPeriod = extras.ssrScanMs ?? 340;
       if (nowMs - lastSsrRescanMs > rescanPeriod) {
         lastSsrRescanMs = nowMs;
