@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "preview:share": "vite preview --host 0.0.0.0 --port 4173 --strictPort",
+    "tunnel:preview": "node scripts/preview-tunnel-10m.mjs",
     "capture:baseline": "node scripts/aa-baseline-pack.mjs",
     "test:acceptance": "npm run build && npm run test:campaign && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render && npm run test:assets:budget && npm run test:visual:regression",
     "test:acceptance:full": "VISUAL_FULL=1 RENDER_FULL=1 npm run test:acceptance",
@@ -20,7 +22,13 @@
     "test:perf:stress": "node scripts/perf-stress.mjs",
     "test:visual": "node scripts/visual-regression.mjs",
     "gen:textures": "node scripts/gen-procedural-materials.mjs",
-    "test:sens:crosscheck": "node scripts/sens-gamingsmart-crosscheck.mjs"
+    "test:sens:crosscheck": "node scripts/sens-gamingsmart-crosscheck.mjs",
+    "audit:sequence-def": "node scripts/sequence-def-density-audit.mjs",
+    "validate:campaign": "node scripts/validate-campaign.mjs",
+    "validate:encounter-graph": "node scripts/validate-campaign.mjs",
+    "validate:geometry": "node scripts/validate-level-geometry.mjs",
+    "test:doorway:b01": "node scripts/b01-doorway-screenshot.mjs",
+    "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs"
   },
   "dependencies": {
     "three": "0.170.0"

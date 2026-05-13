@@ -5,6 +5,13 @@ export default defineConfig({
     port: 5173,
     open: true,
   },
+  preview: {
+    allowedHosts: [
+      'execute-livestock-statewide-elegant.trycloudflare.com',
+      // Any Cloudflare Quick Tunnel hostname (*.trycloudflare.com)
+      '.trycloudflare.com',
+    ],
+  },
   build: {
     target: 'esnext',
     sourcemap: true,

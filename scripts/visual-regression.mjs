@@ -10,7 +10,7 @@
 //   - invisible-weapon detection (active weapon slot with no visible mesh)
 //   - broken scope PIP (PIP active but no opacity/no render-target output)
 //   - extreme overexposure (avg luma > 235 + low color variance)
-//   - black-screen fallback metadata (renderer health monitor signals)
+//   - optional public textures: __game.debug.snapshot().optionalPubAssets (ok|miss per /assets/decals|vfx slug)
 //
 // First run: produces screenshots/visual-baseline/B01..B12.png + per-state
 // captures. On subsequent runs the structured report is enough to fail CI
@@ -80,7 +80,9 @@ for (const mode of modes) {
       chromaticAberration: true, sharpen: true, vignette: true, smaa: true,
       aoQuality: 'high', bloomQuality: 'high', shadowQuality: 'medium',
       textureQuality: 'high', characterQuality: 'high', weaponQuality: 'high',
-      atmosphereQuality: 'high', scopePipEnabled: true, scopePipResolution: 768
+      atmosphereQuality: 'high', scopePipEnabled: true, scopePipResolution: 768,
+      phase2SSR: true, phase2LUT: true, phase2DoF: true, phase2Volumetrics: true,
+      phase2TAA: true, phase2Adaptive: true, ssrIntensityMul: 1
     });
   });
 
@@ -178,6 +180,13 @@ for (const mode of modes) {
       assert(row.runtime.visualStats?.dressingObjects > 0, `B${bn} ${state} ${mode}: procedural dressing missing`);
       if (state !== 'menu' && state !== 'blackout') {
         assert(row.runtime.shadowCasters >= 1, `B${bn} ${state} ${mode}: shadow casters missing`);
+      }
+      if (state === 'normal' && row.renderer) {
+        assert(row.renderer.csmCascadeCount >= 1, `B${bn} ${mode}: csmCascadeCount missing (${row.renderer.csmCascadeCount})`);
+        const p2 = row.renderer.phase2Passes;
+        if (p2) {
+          assert(typeof p2.cinematic === 'boolean', `B${bn} ${mode}: phase2Passes.cinematic missing`);
+        }
       }
     }
     modeResult.buildings.push(buildingRow);

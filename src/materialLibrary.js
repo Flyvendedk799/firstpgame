@@ -7,6 +7,25 @@
 // Public helper: consistent filtering for all PBR maps (authored PNG, procedural canvas,
 // or runtime clones). Prevents grazing-angle / motion “shimmer” from nearest-level mip
 // hopping and undersampled anisotropy.
+function _textureHasRenderableImage(tex) {
+  if (!tex || !tex.image) return false;
+  const im = tex.image;
+  if (tex.isDataTexture || tex.isCompressedTexture) return true;
+  if (typeof HTMLCanvasElement !== 'undefined' && im instanceof HTMLCanvasElement) {
+    return (im.width || 0) > 0 && (im.height || 0) > 0;
+  }
+  if (typeof OffscreenCanvas !== 'undefined' && im instanceof OffscreenCanvas) {
+    return (im.width || 0) > 0 && (im.height || 0) > 0;
+  }
+  if (typeof HTMLImageElement !== 'undefined' && im instanceof HTMLImageElement) {
+    return !!(im.complete && im.naturalWidth > 0);
+  }
+  if (typeof ImageBitmap !== 'undefined' && im instanceof ImageBitmap) {
+    return (im.width || 0) > 0;
+  }
+  return !!(im.width && im.height);
+}
+
 export function finalizePbrSurfaceTexture(THREE, tex, isColor = false) {
   if (!tex || !tex.isTexture) return tex;
   tex.generateMipmaps = true;
@@ -14,7 +33,15 @@ export function finalizePbrSurfaceTexture(THREE, tex, isColor = false) {
   tex.magFilter = THREE.LinearFilter;
   tex.anisotropy = Math.max(tex.anisotropy || 0, 12);
   if ('colorSpace' in tex) tex.colorSpace = isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  tex.needsUpdate = true;
+  if (_textureHasRenderableImage(tex)) {
+    tex.needsUpdate = true;
+  } else if (tex.image && typeof tex.image.addEventListener === 'function') {
+    const bump = () => {
+      tex.needsUpdate = true;
+    };
+    tex.image.addEventListener('load', bump, { once: true });
+    tex.image.addEventListener('error', () => {}, { once: true });
+  }
   return tex;
 }
 

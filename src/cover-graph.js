@@ -21,6 +21,7 @@ export function losClear(ax, az, bx, bz, walls) {
     const t = i * inv, cx = ax + dx * t, cz = az + dz * t;
     for (let wi = 0, wn = walls.length; wi < wn; wi++) {
       const w = walls[wi];
+      if (w.broken) continue;
       if (w.isWindow) continue;
       if (cx >= w.x0 - PAD && cx <= w.x1 + PAD && cz >= w.z0 - PAD && cz <= w.z1 + PAD) return false;
     }

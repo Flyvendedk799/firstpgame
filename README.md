@@ -12,6 +12,10 @@ npm run dev
 
 Vite opens http://localhost:5173 automatically.
 
+## Renderer note (visual fidelity)
+
+For the **full HDR + screen-post stack** (GTAO, bloom, SMAA, color grade), **WebGL** is the reference path. **WebGPU** uses a lighter node-based post chain; for “cinematic” parity prefer `?renderer=webgl` or set **Renderer: WebGL** in settings until WebGPU post catches up.
+
 ## Build
 
 ```
@@ -78,6 +82,9 @@ Visual systems added in this branch include:
 - Per-building visual profiles, post profiles, atmosphere/fog/grade controls, and screen post overlays.
 - PBR material library with quality-scaled generated normal, roughness, and metalness maps.
 - Modular AA environment dressing, trim/decal density, authored shadow/fog/light profiles, and visual runtime metadata.
+
+Phase 2 cinematic backlog (when present under `public/assets/`): authored decal sheets (`decals/*.png`), VFX atlases (`vfx/*_atlas.png`), SSR mesh list refresh on enemy spawn/remove (includes alive enemy meshes for reflective picks), centralized perf governor thresholds in `src/perfGovernor.js`, adaptive TAA sample easing before full Phase‑2 holds, irradiance peek via multi-sample probe RT (`src/lightProbeWalker.js`), and thinner geometric grade when LUT is active (`src/rendering.js`). Runtime maps optional loads into `window.__OPTIONAL_PUB_ASSET_STATE` — exposed on `__game.debug.snapshot()` / `visualRuntime.optionalPubAssets` for QA.
+
 - Human-like enemy archetype rigs with readable silhouettes, LODs, damage overlays, weak-point markers, and hitbox metadata.
 - Upgraded first-person hands/viewmodel, player proxy body, weapon surface detail pass, and scope PIP diagnostics.
 

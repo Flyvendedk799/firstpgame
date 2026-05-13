@@ -828,9 +828,18 @@ function polishVisualProfile(profile) {
   };
 }
 
-export function getVisualProfile(building) {
+export function getVisualProfile(building, opts) {
   const profile = VISUAL_TARGETS[building] || VISUAL_TARGETS[((building - 1) % 8) + 1] || VISUAL_TARGETS[1];
-  return polishVisualProfile(profile);
+  const polished = polishVisualProfile(profile);
+  const sk = opts && opts.spaceKind;
+  if (polished && polished.atmosphere && (sk === 'connector' || sk === 'service_hall' || sk === 'transit_wedge')) {
+    const h = polished.atmosphere.haze != null ? polished.atmosphere.haze : 0.2;
+    return polishVisualProfile({
+      ...polished,
+      atmosphere: { ...polished.atmosphere, haze: Math.min(0.55, h + 0.04) },
+    });
+  }
+  return polished;
 }
 
 export function getLightingProfile(building) {

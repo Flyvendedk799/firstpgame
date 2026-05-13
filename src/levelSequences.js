@@ -1,5 +1,5 @@
 // ─── LEVEL SEQUENCES ────────────────────────────────────────────────────────
-// Layered on top of the existing buildLevel() pipeline. Each of the 8 deploy
+// Layered on top of the existing buildLevel() pipeline. Each of the 12 campaign
 // buildings is partitioned into 8 named sub-areas ("sequences") that subdivide
 // the room into a hand-crafted single-player flow:
 //
@@ -29,6 +29,15 @@ function pushFakeAccent(ctx, x, y, z, color, baseIntensity, extra) {
   });
 }
 
+function _tagFloorplanMesh(mesh, e) {
+  if (!mesh || !mesh.userData || !e) return;
+  if (e.roomId) mesh.userData.roomId = e.roomId;
+  if (e.floorplanRole) mesh.userData.floorplanRole = e.floorplanRole;
+  if (e.sightlineId) mesh.userData.sightlineId = e.sightlineId;
+  if (e.geometryId) mesh.userData.geometryId = e.geometryId;
+  if (e.objectiveId) mesh.userData.objectiveId = e.objectiveId;
+}
+
 function addAccentGlowOrb(ctx, x, y, z, color, radius = 0.12) {
   const { THREE, scene, ob } = ctx;
   const m = new THREE.MeshBasicMaterial({
@@ -52,6 +61,9 @@ export function applySequenceLayout(ctx) {
 
   // Build the cell skeleton — partition walls + door frames around the doorway gaps.
   buildCellSkeleton(ctx);
+
+  const skeletonPost = BUILDING_SKELETON_POST[bn];
+  if (typeof skeletonPost === 'function') skeletonPost(ctx);
 
   // Decorate each cell.
   for (const cellKey of Object.keys(def.cells)) {
@@ -112,6 +124,31 @@ const CELL_REGIONS = {
   BC: { x0:-8.0, x1: 8.0, z0:-25.5, z1: -7.5, midX:  0,   midZ:-17 },
 };
 
+function _cellRegionArea(b) {
+  if (!b || !Number.isFinite(b.x0)) return Infinity;
+  return (b.x1 - b.x0) * (b.z1 - b.z0);
+}
+
+/**
+ * Map world XZ to coarse sequence cell (FW..BC). Smallest AABB wins on overlaps.
+ * @param {number} x
+ * @param {number} z
+ * @param {typeof CELL_REGIONS} [cellRegions]
+ * @returns {keyof typeof CELL_REGIONS|null}
+ */
+export function pickSequenceCellId(x, z, cellRegions = CELL_REGIONS) {
+  if (!cellRegions || typeof cellRegions !== 'object') return null;
+  const ids = Object.keys(cellRegions).sort(
+    (a, c) => _cellRegionArea(cellRegions[a]) - _cellRegionArea(cellRegions[c])
+  );
+  for (const id of ids) {
+    const b = cellRegions[id];
+    if (!b || !Number.isFinite(b.x0)) continue;
+    if (x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1) return id;
+  }
+  return null;
+}
+
 const SEQUENCE_IDENTITY = {
   1: { routeX:-11.5, heroX:-12, heroZ:19, bossCol:0xff9d40, railZ:7.2 },
   2: { routeX: 11.5, heroX:  0, heroZ:19, bossCol:0xd4b06a, railZ:5.6 },
@@ -127,6 +164,14 @@ const SEQUENCE_IDENTITY = {
   11: { routeX:-9.0,  heroX:  0, heroZ:17, bossCol:0x6890b8, railZ: 0.5 },    // Karelia — central deck spine
   12: { routeX: 12.0, heroX:  0, heroZ:-15,bossCol:0xc8e0ff, railZ:-7.4 },    // The Spire — boss arena at back
 };
+
+/**
+ * Macro interior shell per campaign building (must match `buildLevel` in main.js).
+ * `0` = dock-style (B01-classic thresholds and zone-door columns).
+ * `1` = lobby-style (mirrored interior walls + opposite zone-door handedness; spawn sets flip in main).
+ * Sequence identity paint below mirrors on `1` so the floor read matches door geometry.
+ */
+export const CAMPAIGN_LAYOUT_BY_BN = Object.freeze([0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0]);
 
 // ── PARTITION SKELETON ─────────────────────────────────────────────────────
 function buildCellSkeleton(ctx) {
@@ -176,31 +221,45 @@ function partitionAlongX(ctx, z, x0, x1, gap0, gap1) {
   if (x1 - gap1 > 0.4) addWallSegmentX(ctx, z, gap1, x1, t, dM);
   doorwayFrameX(ctx, z, gap0, gap1);
 }
-function addWallSegmentZ(ctx, x, z0, z1, t, mat) {
+function addWallSegmentZ(ctx, x, z0, z1, t, mat, tag) {
   const { THREE, scene, ob, wl, dims, materials } = ctx;
   const { RH, WT } = dims;
   const cz = (z0 + z1) * 0.5;
   const len = z1 - z0;
   const m = new THREE.Mesh(new THREE.BoxGeometry(t, RH, len), mat);
   m.position.set(x, RH/2 + WT/2, cz);
+  if (tag && typeof tag === 'object') {
+    m.userData = m.userData || {};
+    if (tag.geometryId) m.userData.geometryId = tag.geometryId;
+    if (tag.roomId) m.userData.roomId = tag.roomId;
+    if (tag.floorplanRole) m.userData.floorplanRole = tag.floorplanRole;
+  }
   scene.add(m); ob.push(m);
   wl.push({ x0: x - t/2, x1: x + t/2, z0, z1 });
   // Top trim line
   const tm = new THREE.Mesh(new THREE.BoxGeometry(t*0.95, 0.05, len*0.96), materials.trimM);
   tm.position.set(x, RH + WT - 0.045, cz);
+  tm.userData = tm.userData || {}; tm.userData.noBlock = true;
   scene.add(tm); ob.push(tm);
 }
-function addWallSegmentX(ctx, z, x0, x1, t, mat) {
+function addWallSegmentX(ctx, z, x0, x1, t, mat, tag) {
   const { THREE, scene, ob, wl, dims, materials } = ctx;
   const { RH, WT } = dims;
   const cx = (x0 + x1) * 0.5;
   const len = x1 - x0;
   const m = new THREE.Mesh(new THREE.BoxGeometry(len, RH, t), mat);
   m.position.set(cx, RH/2 + WT/2, z);
+  if (tag && typeof tag === 'object') {
+    m.userData = m.userData || {};
+    if (tag.geometryId) m.userData.geometryId = tag.geometryId;
+    if (tag.roomId) m.userData.roomId = tag.roomId;
+    if (tag.floorplanRole) m.userData.floorplanRole = tag.floorplanRole;
+  }
   scene.add(m); ob.push(m);
   wl.push({ x0, x1, z0: z - t/2, z1: z + t/2 });
   const tm = new THREE.Mesh(new THREE.BoxGeometry(len*0.96, 0.05, t*0.95), materials.trimM);
   tm.position.set(cx, RH + WT - 0.045, z);
+  tm.userData = tm.userData || {}; tm.userData.noBlock = true;
   scene.add(tm); ob.push(tm);
 }
 function doorwayFrameZ(ctx, x, gap0, gap1) {
@@ -251,21 +310,24 @@ function addSequencePlacard(ctx) {
 }
 
 function addSequenceIdentityLayer(ctx, def) {
-  const { THREE, scene, ob, dims, bn } = ctx;
+  const { THREE, scene, ob, dims, bn, layout } = ctx;
   const { WT, RH } = dims;
   const id = SEQUENCE_IDENTITY[bn] || SEQUENCE_IDENTITY[1];
+  const mx = (layout | 0) === 1 ? -1 : 1;
+  const routeX = id.routeX * mx;
+  const heroX = id.heroX * mx;
   const accent = id.bossCol || def.accent || 0xffd060;
   const floorM = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.26, depthWrite: false });
   const route = new THREE.Mesh(new THREE.PlaneGeometry(0.56, 34), floorM);
   route.rotation.x = -Math.PI / 2;
-  route.position.set(id.routeX, WT + 0.018, 1.5);
+  route.position.set(routeX, WT + 0.018, 1.5);
   route.userData.noBlock = true;
   scene.add(route); ob.push(route);
 
   const sightM = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.34 });
   const sight = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.045, 24), sightM);
-  sight.position.set(-id.routeX * 0.52, WT + 0.05, -3.5);
-  sight.rotation.y = 0.13 * Math.sign(id.routeX || 1);
+  sight.position.set(-routeX * 0.52, WT + 0.05, -3.5);
+  sight.rotation.y = 0.13 * Math.sign(routeX || 1);
   sight.userData.noBlock = true;
   scene.add(sight); ob.push(sight);
 
@@ -285,7 +347,7 @@ function addSequenceIdentityLayer(ctx, def) {
 
   const heroM = new THREE.MeshLambertMaterial({ color: 0x0f1218, emissive: accent, emissiveIntensity: 0.55 });
   const hero = new THREE.Mesh(new THREE.BoxGeometry(0.58, 2.2, 0.58), heroM);
-  hero.position.set(id.heroX, WT + 1.1, id.heroZ);
+  hero.position.set(heroX, WT + 1.1, id.heroZ);
   hero.userData.noBlock = true;
   scene.add(hero); ob.push(hero);
 }
@@ -540,6 +602,7 @@ const ELEMENT_BUILDERS = {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), baseM);
     m.position.set(e.x, WT + h/2, e.z);
     if (e.rotY) m.rotation.y = e.rotY;
+    _tagFloorplanMesh(m, e);
     scene.add(m); ob.push(m);
     // Tilted screen
     const scM = new THREE.MeshLambertMaterial({ color: 0x101418, emissive: e.glow || 0x40c8ff, emissiveIntensity: 0.95 });
@@ -547,6 +610,7 @@ const ELEMENT_BUILDERS = {
     sc.rotation.x = -Math.PI*0.18;
     sc.position.set(e.x, WT + h + 0.10, e.z + (e.rotY ? 0 : 0));
     if (e.rotY) sc.rotation.y = e.rotY;
+    _tagFloorplanMesh(sc, e);
     scene.add(sc); ob.push(sc);
     const aabb = { x0: e.x - w/2, x1: e.x + w/2, z0: e.z - d/2, z1: e.z + d/2, height: WT + h };
     vl.push(aabb); wl.push({ x0: aabb.x0, x1: aabb.x1, z0: aabb.z0, z1: aabb.z1 });
@@ -587,6 +651,7 @@ const ELEMENT_BUILDERS = {
     m.rotation.x = -Math.PI/2;
     m.position.set(e.x, WT + 0.012, e.z);
     m.userData.noBlock = true;
+    _tagFloorplanMesh(m, e);
     scene.add(m); ob.push(m);
     if (e.glow) {
       const gM = new THREE.MeshBasicMaterial({ color: e.glow, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -594,6 +659,7 @@ const ELEMENT_BUILDERS = {
       g.rotation.x = -Math.PI/2;
       g.position.set(e.x, WT + 0.018, e.z);
       g.userData.noBlock = true;
+      _tagFloorplanMesh(g, e);
       scene.add(g); ob.push(g);
     }
   },
@@ -816,9 +882,15 @@ const ELEMENT_BUILDERS = {
     const { THREE, scene, ob, wl, dims } = ctx;
     const { RH, WT } = dims;
     const len = e.len || 3.0;
-    const m = new THREE.MeshPhysicalMaterial ?
-      new THREE.MeshPhongMaterial({ color: 0xa8c8e0, transparent: true, opacity: 0.30, shininess: 200, specular: 0xffffff }) :
-      new THREE.MeshPhongMaterial({ color: 0xa8c8e0, transparent: true, opacity: 0.30, shininess: 200, specular: 0xffffff });
+    let q = 'high';
+    try { q = (ctx.settings && ctx.settings.quality) || q; } catch (_) {}
+    const usePhys = (q === 'high' || q === 'ultra') && typeof ctx.aaPhysicalGlass === 'function';
+    const m = usePhys
+      ? ctx.aaPhysicalGlass(
+          { color: e.col || 0xa8c8e0, shininess: 200, specular: 0xffffff, transparent: true, opacity: 0.30 },
+          { transmission: 0.42, thickness: 0.11, roughness: 0.14 }
+        )
+      : new THREE.MeshPhongMaterial({ color: 0xa8c8e0, transparent: true, opacity: 0.30, shininess: 200, specular: 0xffffff });
     const pane = new THREE.Mesh(new THREE.BoxGeometry(len, RH - 0.4, 0.06), m);
     pane.position.set(e.x, RH/2 + WT/2, e.z);
     if (e.rotY) pane.rotation.y = e.rotY;
@@ -1326,6 +1398,7 @@ const ELEMENT_BUILDERS = {
     pane.userData.glassPane = true;
     pane.userData.breakable = true;
     pane.userData.breakSound = 'glass';
+    _tagFloorplanMesh(pane, e);
     scene.add(pane); ob.push(pane);
     // Subtle highlight band across the glass (animated reflection feel)
     const hi = new THREE.Mesh(
@@ -1408,6 +1481,7 @@ const ELEMENT_BUILDERS = {
       const worldZ = e.z - sinR * localCx;
       m.position.set(worldX, RH/2 + WT/2, worldZ);
       m.rotation.y = rotY;
+      _tagFloorplanMesh(m, e);
       scene.add(m); ob.push(m);
       // AABB conservative: bound by oriented box endpoints
       const ax = Math.abs(cosR) * segLen/2 + Math.abs(sinR) * t/2;
@@ -1435,6 +1509,7 @@ const ELEMENT_BUILDERS = {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, RH, 0.14), postM);
         post.position.set(wx, RH/2 + WT/2, wz);
         post.rotation.y = rotY;
+        _tagFloorplanMesh(post, e);
         scene.add(post); ob.push(post);
       }
       const lintWX = e.x + cosR * gapPos;
@@ -1442,10 +1517,73 @@ const ELEMENT_BUILDERS = {
       const lint = new THREE.Mesh(new THREE.BoxGeometry(gap + 0.28, 0.14, 0.14), postM);
       lint.position.set(lintWX, RH - 0.18, lintWZ);
       lint.rotation.y = rotY;
+      _tagFloorplanMesh(lint, e);
       scene.add(lint); ob.push(lint);
     } else {
       placeSeg(-len/2, len/2);
     }
+  },
+
+  /** Parallel walls + shared doorway gap (clearance vs PR — see levelAuthoringValidate.AUTHORING_PLAYER_R). */
+  corridor(ctx, e) {
+    const len = e.len || 5;
+    const rotY = e.rotY || 0;
+    const halfW = ((e.width != null ? e.width : 1.35) * 0.5) - 0.2;
+    const perp = rotY + Math.PI / 2;
+    const px = Math.cos(perp) * halfW;
+    const pz = -Math.sin(perp) * halfW;
+    const g = e.gap != null ? e.gap : 1.35;
+    const gp = e.gapPos != null ? e.gapPos : 0;
+    ELEMENT_BUILDERS.divider(ctx, { ...e, x: e.x + px, z: e.z + pz, len, rotY, gap: g, gapPos: gp });
+    ELEMENT_BUILDERS.divider(ctx, { ...e, x: e.x - px, z: e.z - pz, len, rotY, gap: g, gapPos: gp });
+  },
+
+  /** Two short dividers with aligned doorway math (vestibule / airlock read). */
+  vestibule(ctx, e) {
+    const w = e.w || 2.2;
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      x: e.x,
+      z: e.z,
+      len: w,
+      rotY: e.rotY || 0,
+      gap: e.gap || 1.2,
+      gapPos: e.gapPos || 0,
+    });
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      x: e.x + (e.dx || 0),
+      z: e.z + (e.dz || -1.35),
+      len: e.len2 || 2.5,
+      rotY: e.rotY2 != null ? e.rotY2 : Math.PI / 2,
+      gap: e.gap2 || 0,
+      gapPos: e.gapPos2 || 0,
+      geometryId: e.geometryId2,
+    });
+  },
+
+  /** Two-segment threshold with independent gaps (avoids hand-tuned pair drift). */
+  dogleg(ctx, e) {
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      x: e.x,
+      z: e.z,
+      len: e.len1 || 3.0,
+      rotY: e.rotY1 || 0,
+      gap: e.gap1 || 1.1,
+      gapPos: e.gapPos1 || 0,
+      geometryId: e.geometryId && `${e.geometryId}_a`,
+    });
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      x: e.x2 != null ? e.x2 : e.x,
+      z: e.z2 != null ? e.z2 : e.z,
+      len: e.len2 || 2.8,
+      rotY: e.rotY2 != null ? e.rotY2 : Math.PI / 2,
+      gap: e.gap2 || 1.1,
+      gapPos: e.gapPos2 || 0,
+      geometryId: e.geometryId && `${e.geometryId}_b`,
+    });
   },
 
   // Statue / centerpiece (B11 Skycourt — recycled for boss arena flair on B4/B2).
@@ -1475,49 +1613,61 @@ const SEQUENCE_DEFS = {
   1: {
     accent: 0xff7a30, accentSoft: 0xff9a40,
     cells: {
-      FW: { name: 'Receiving Bay', elements: [
+      FW: { name: 'West Service Lane', elements: [
         { t: 'container', x: -14, z: 21, w: 4.2, d: 1.9, col: 0x8a3a2a },
         { t: 'container', x: -10, z: 14.5, w: 4.2, d: 1.9, col: 0x335066, rotY: Math.PI/2 },
         { t: 'forklift', x: -13, z: 17, rotY: -0.6 },
         { t: 'cov', x: -16, z: 19, w: 1.4, h: 0.85, d: 0.8, col: 0x4a4a52, top: 0xfff0c8 },
+        { t: 'cov', x: -17.2, z: 13.5, w: 1.2, h: 0.88, d: 0.75, col: 0x3a3c44, top: 0xfff0c8 },
         { t: 'pend', x: -12.5, z: 18, col: 0xff7a30, int: 1.6, r: 7.5 },
         { t: 'haz', x: -11, z: 20.5, w: 2.2, d: 1.4, col: 0x101010, alpha: 0.85 },
       ]},
-      FC: { name: 'Gate Court', elements: [
+      FC: { name: 'Intake Court', elements: [
         { t: 'cov', x: -3, z: 22, w: 2.0, h: 0.9, d: 0.9, col: 0x42342a, top: 0xfff0d0 },
         { t: 'cov', x: 3, z: 22, w: 2.0, h: 0.9, d: 0.9, col: 0x42342a, top: 0xfff0d0 },
+        { t: 'cov', x: -5.5, z: 10.5, w: 1.6, h: 0.88, d: 0.85, col: 0x4a4238, top: 0xfff0d0 },
+        { t: 'cov', x: 5.5, z: 10.5, w: 1.6, h: 0.88, d: 0.85, col: 0x4a4238, top: 0xfff0d0 },
         { t: 'drum', x: -2, z: 16, n: 3, col: 0xc04830, stripe: 0xfff0d0 },
         { t: 'drum', x: 3, z: 13, n: 3, col: 0xc04830, stripe: 0xfff0d0 },
+        { t: 'cov', x: 0, z: 11.5, w: 1.5, h: 0.88, d: 0.82, col: 0x3a3c44, top: 0xfff0c8, geometryId: 'b01_fc_spine_chip' },
+        { t: 'cov', x: -6.5, z: 14.2, w: 1.35, h: 0.86, d: 0.78, col: 0x42342a, top: 0xfff0d0, rotY: 0.22 },
+        { t: 'cov', x: 6.5, z: 14.2, w: 1.35, h: 0.86, d: 0.78, col: 0x42342a, top: 0xfff0d0, rotY: -0.22 },
         { t: 'pend', x: 0, z: 17, col: 0xff7a30, int: 1.6, r: 8 },
         { t: 'pipes', x: 0, z: 23.5, len: 7 },
       ]},
-      FE: { name: 'Forklift Garage', elements: [
+      FE: { name: 'East Flank Bay', elements: [
         { t: 'forklift', x: 12, z: 17.5, rotY: 0.4 },
         { t: 'cart', x: 14.5, z: 19, col: 0xc83020 },
         { t: 'cart', x: 10, z: 21, col: 0xc8a020, rotY: 0.5 },
         { t: 'stack', x: 13.5, z: 14, w: 2.6, d: 1.4, h: 1.2, cols: [0x6a4830, 0x6a4830, 0x6a4830] },
+        { t: 'cov', x: 11.2, z: 11.8, w: 1.5, h: 0.85, d: 0.82, col: 0x4a4036, top: 0xfff0c8 },
         { t: 'pend', x: 12.5, z: 18, col: 0xff7a30 },
         { t: 'hotaisle', x: 14, z: 22 },
       ]},
-      MW: { name: 'Manifest Office', elements: [
+      MW: { name: 'Alarm Relay Office', elements: [
         { t: 'desk', x: -14, z: 0, lx: 1.55, lz: 1.20 },
         { t: 'tall', x: -16, z: -4, w: 0.85, h: 2.0, d: 0.55, col: 0x14161a, stripes: 3, stripe: 0xc8a040 },
         { t: 'tall', x: -16, z: 4, w: 0.85, h: 2.0, d: 0.55, col: 0x14161a, stripes: 3, stripe: 0xc8a040 },
-        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14161a, glow: 0x40c8ff },
+        { t: 'cov', x: -12.2, z: -3.8, w: 1.5, h: 0.9, d: 0.82, col: 0x3a3e48, top: 0xfff0c8 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14161a, glow: 0x40c8ff,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'pend', x: -14, z: 0, col: 0xa8c8ff, int: 1.4, r: 6 },
       ]},
-      ME: { name: 'Drum Cache', elements: [
+      ME: { name: 'East Drum Lane', elements: [
         { t: 'drum', x: 14, z: -2, n: 4, col: 0xb84020, stripe: 0xfff0d0 },
         { t: 'drum', x: 16, z: 3, n: 3, col: 0xb84020, stripe: 0xfff0d0 },
         { t: 'cov', x: 13, z: 4, w: 2.2, h: 0.85, d: 0.8, col: 0x6a5e3a, top: 0xfff0c8 },
+        { t: 'cov', x: 12.4, z: -4.2, w: 1.5, h: 0.85, d: 0.78, col: 0x5a5240, top: 0xfff0c8 },
         { t: 'haz', x: 14.5, z: 0, w: 2.0, d: 1.4, col: 0x14140a, alpha: 0.85, glow: 0xff5040 },
         { t: 'pend', x: 14.5, z: 1, col: 0xff5040, int: 1.5 },
       ]},
-      BW: { name: 'Service Vent Loop', elements: [
+      BW: { name: 'Vent Loop', elements: [
         { t: 'tall', x: -16, z: -14, w: 0.85, h: 2.4, d: 0.4, col: 0x202428 },
         { t: 'tall', x: -16, z: -19, w: 0.85, h: 2.4, d: 0.4, col: 0x202428 },
         { t: 'pipes', x: -13, z: -17, len: 7 },
         { t: 'cov', x: -13, z: -20, w: 2.0, h: 0.85, d: 0.8, col: 0x42342a, top: 0xfff0d0 },
+        { t: 'cov', x: -10.5, z: -17, w: 1.5, h: 0.88, d: 0.8, col: 0x383c42, top: 0xfff0d0 },
         { t: 'pend', x: -13, z: -16, col: 0x80f0c8, int: 1.4 },
       ]},
       BE: { name: 'Catwalk Spine', elements: [
@@ -1525,6 +1675,7 @@ const SEQUENCE_DEFS = {
         { t: 'rail', x: 14, z: -16.7, len: 4.0, col: 0xa0a8b0 },
         { t: 'catwalk', x: 13, z: -22, len: 8, rotY: Math.PI/2 },
         { t: 'crate2', x: 16, z: -14, col: 0x6a4830 },
+        { t: 'crate2', x: 11.2, z: -20.5, col: 0x5a4838 },
         { t: 'pend', x: 13.5, z: -14, col: 0xff7a30 },
       ]},
       BC: { name: 'Relay Cage', elements: [
@@ -1533,6 +1684,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x202428, stripes: 4, stripe: 0xff7a30 },
         { t: 'cov', x: -4, z: -14, w: 1.8, h: 0.9, d: 0.9, col: 0x6c5e3a, top: 0xfff0c8 },
         { t: 'cov', x: 4, z: -14, w: 1.8, h: 0.9, d: 0.9, col: 0x6c5e3a, top: 0xfff0c8 },
+        { t: 'stack', x: -5.5, z: -11.5, w: 2.0, d: 1.2, h: 1.0, cols: [0x5a4838, 0x5a4838, 0x4a3828] },
+        { t: 'stack', x: 5.5, z: -11.5, w: 2.0, d: 1.2, h: 1.0, cols: [0x5a4838, 0x5a4838, 0x4a3828] },
         { t: 'pend', x: 0, z: -17, col: 0xff7a30, int: 2.4, r: 12 },
         { t: 'haz', x: 0, z: -22, w: 4.0, d: 1.6, col: 0x06060a, alpha: 0.9, glow: 0xff7a30 },
       ]},
@@ -1553,12 +1706,16 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: 22, w: 1.0, h: 2.0, d: 0.6, col: 0x282018, stripes: 5, stripe: 0xc8a040 },
         { t: 'bar', x: -13, z: 22, w: 4.2, d: 0.7, h: 1.05, col: 0x402818, top: 0xc8a040, glow: 0xffd070 },
         { t: 'bench', x: -10, z: 19, w: 2.4, d: 0.55, h: 0.55, col: 0x4a2a1c, back: true, rotY: 0 },
+        { t: 'cov', x: -11.2, z: 15.5, w: 1.45, h: 0.88, d: 0.82, col: 0x4a4034, top: 0xffe8c8, rotY: Math.PI / 2 },
+        { t: 'cov', x: -15, z: 18.5, w: 1.2, h: 0.86, d: 0.75, col: 0x3a3428, top: 0xffe8c8 },
         { t: 'lamp', x: -16, z: 14, col: 0xffd070 },
         { t: 'pend', x: -13, z: 18, col: 0xffd070, int: 1.8 },
       ]},
       FC: { name: 'Concierge Court', elements: [
         { t: 'desk', x: -2, z: 22, lx: 1.55, lz: 1.20 },
         { t: 'rope', x: -3, z: 14, x2: 3, z2: 14, col: 0x802020 },
+        { t: 'cov', x: -5.5, z: 16.5, w: 1.4, h: 0.88, d: 0.8, col: 0x4a4034, top: 0xffe8c8 },
+        { t: 'cov', x: 5.5, z: 16.5, w: 1.4, h: 0.88, d: 0.8, col: 0x4a4034, top: 0xffe8c8 },
         { t: 'lamp', x: -5, z: 17 },
         { t: 'lamp', x: 5, z: 17 },
         { t: 'plinth', x: 0, z: 19 },
@@ -1569,11 +1726,17 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: 16, z: 22, w: 0.7, d: 2.4, h: 0.55, col: 0x4a2a1c, back: true, rotY: Math.PI/2 },
         { t: 'lamp', x: 13, z: 14 },
         { t: 'plinth', x: 11, z: 22 },
+        { t: 'cov', x: 12.4, z: 15.5, w: 1.3, h: 0.85, d: 0.76, col: 0x4a4034, top: 0xffe8c8 },
+        { t: 'cov', x: 15.2, z: 17, w: 1.22, h: 0.82, d: 0.72, col: 0x4a4034, top: 0xffd070 },
+        { t: 'drum', x: 14, z: 12, n: 2, col: 0x6a4838, stripe: 0xffe8c8 },
         { t: 'pend', x: 13, z: 18, col: 0xffd070 },
       ]},
       MW: { name: 'Library Wing', elements: [
         { t: 'shelfrow', x: -14, z: 0, col: 0x3a2412 },
         { t: 'bench', x: -16, z: -4, w: 1.8, d: 0.5, h: 0.5, col: 0x4a2a1c, back: true, rotY: Math.PI/2 },
+        { t: 'cov', x: -12.5, z: -3.2, w: 1.5, h: 0.9, d: 0.82, col: 0x3a3428, top: 0xffe8c8 },
+        { t: 'cov', x: -12.5, z: 3.2, w: 1.5, h: 0.9, d: 0.82, col: 0x3a3428, top: 0xffe8c8 },
+        { t: 'drum', x: -15.2, z: 0, n: 2, col: 0x8a6040, stripe: 0xffd070 },
         { t: 'lamp', x: -14, z: 4 },
         { t: 'pend', x: -14, z: 0, col: 0xffe0a0, int: 1.6 },
       ]},
@@ -1581,6 +1744,8 @@ const SEQUENCE_DEFS = {
         { t: 'plinthrow', x: 14.5, z: 0 },
         { t: 'banner', x: 17.8, z: -3, w: 0.9, h: 2.6, col: 0x6a1212, trim: 0xc8a040, rotY: -Math.PI/2 },
         { t: 'banner', x: 17.8, z: 3, w: 0.9, h: 2.6, col: 0x6a1212, trim: 0xc8a040, rotY: -Math.PI/2 },
+        { t: 'cov', x: 13.2, z: -2.5, w: 1.45, h: 0.88, d: 0.8, col: 0x4a4034, top: 0xffe8c8 },
+        { t: 'cov', x: 13.2, z: 2.5, w: 1.45, h: 0.88, d: 0.8, col: 0x4a4034, top: 0xffe8c8 },
         { t: 'pend', x: 14.5, z: -4, col: 0xffd070 },
         { t: 'pend', x: 14.5, z: 4, col: 0xffd070 },
       ]},
@@ -1589,6 +1754,9 @@ const SEQUENCE_DEFS = {
         { t: 'vend', x: -16, z: -20, col: 0x282018 },
         { t: 'tall', x: -10, z: -20, w: 1.0, h: 2.0, d: 0.6, col: 0x282018, stripes: 4, stripe: 0xc8a040 },
         { t: 'cart', x: -13, z: -19, col: 0xc8a040 },
+        { t: 'cov', x: -11.5, z: -18, w: 1.3, h: 0.86, d: 0.78, col: 0x4a4034, top: 0xffe8c8 },
+        { t: 'cov', x: -15.5, z: -14, w: 1.22, h: 0.82, d: 0.72, col: 0x4a4034, top: 0xffd070 },
+        { t: 'pipes', x: -14, z: -22, len: 5 },
         { t: 'pend', x: -13, z: -16, col: 0xffd070 },
       ]},
       BE: { name: 'Grand Stair Landing', elements: [
@@ -1596,12 +1764,18 @@ const SEQUENCE_DEFS = {
         { t: 'rail', x: 13, z: -16.4, len: 5.0, col: 0xc8a040 },
         { t: 'plinth', x: 16, z: -14 },
         { t: 'plinth', x: 16, z: -22 },
+        { t: 'cov', x: 11.5, z: -16.5, w: 1.3, h: 0.85, d: 0.76, col: 0x4a4034, top: 0xffe8c8 },
+        { t: 'cov', x: 14.5, z: -20, w: 1.25, h: 0.82, d: 0.74, col: 0x4a4034, top: 0xffd070 },
+        { t: 'crate2', x: 15.2, z: -18, col: 0x5a4838 },
+        { t: 'haz', x: 13, z: -12, w: 2.0, d: 1.0, col: 0x141008, alpha: 0.42, glow: 0xffd070 },
         { t: 'pend', x: 13, z: -18, col: 0xffd070, int: 2.0 },
       ]},
       BC: { name: 'Manager Suite', elements: [
         { t: 'arch', x: 0, z: -10.5, w: 4.6, h: 2.7, col: 0x282018, accent: 0xffd070 },
         { t: 'desk', x: -2, z: -16, lx: 1.55, lz: 1.20 },
         { t: 'bench', x: 4, z: -19, w: 2.6, d: 0.55, h: 0.55, col: 0x4a2a1c, back: true },
+        { t: 'cov', x: -5.5, z: -14.5, w: 1.6, h: 0.9, d: 0.85, col: 0x3a3428, top: 0xffe8c8 },
+        { t: 'cov', x: 5.5, z: -14.5, w: 1.6, h: 0.9, d: 0.85, col: 0x3a3428, top: 0xffe8c8 },
         { t: 'shelf', x: -5, z: -22, w: 2.0, h: 2.6, d: 0.45, col: 0x3a2412 },
         { t: 'shelf', x: 5, z: -22, w: 2.0, h: 2.6, d: 0.45, col: 0x3a2412 },
         { t: 'plinth', x: 0, z: -22 },
@@ -1625,6 +1799,11 @@ const SEQUENCE_DEFS = {
         { t: 'rope', x: -16, z: 18, x2: -10, z2: 18, col: 0x202020 },
         { t: 'rope', x: -16, z: 14, x2: -10, z2: 14, col: 0x202020 },
         { t: 'speaker', x: -15, z: 12, col: 0xff40c8 },
+        { t: 'cov', x: -14, z: 20, w: 1.32, h: 0.82, d: 0.76, col: 0x201020, top: 0xff60c8 },
+        { t: 'cov', x: -10.5, z: 16, w: 1.25, h: 0.8, d: 0.72, col: 0x201020, top: 0x40e0ff },
+        { t: 'stack', x: -12, z: 22, w: 2.0, d: 1.35, h: 1.15, cols: [0x301028, 0x401838, 0x201018] },
+        { t: 'tall', x: -16.5, z: 16, w: 0.65, h: 2.0, d: 0.48, col: 0x100016, stripes: 5, stripe: 0xff40c8 },
+        { t: 'haz', x: -12, z: 14, w: 2.0, d: 1.0, col: 0x100818, alpha: 0.48, glow: 0xff40c8 },
         { t: 'pend', x: -13, z: 18, col: 0xff40c8, int: 2.0 },
       ]},
       FC: { name: 'Coat Check Pit', elements: [
@@ -1632,6 +1811,11 @@ const SEQUENCE_DEFS = {
         { t: 'speaker', x: -5, z: 13, col: 0x40e0ff },
         { t: 'speaker', x: 5, z: 13, col: 0x40e0ff },
         { t: 'rope', x: -3, z: 16, x2: 3, z2: 16, col: 0xa040ff },
+        { t: 'cov', x: -5, z: 14.5, w: 1.34, h: 0.84, d: 0.77, col: 0x181020, top: 0xff40c8 },
+        { t: 'cov', x: 5, z: 14.5, w: 1.34, h: 0.84, d: 0.77, col: 0x181020, top: 0x40e0ff },
+        { t: 'tall', x: -7, z: 23, w: 0.62, h: 2.0, d: 0.48, col: 0x100016, stripes: 4, stripe: 0x40e0ff },
+        { t: 'tall', x: 7, z: 23, w: 0.62, h: 2.0, d: 0.48, col: 0x100016, stripes: 4, stripe: 0xff40c8 },
+        { t: 'drum', x: 0, z: 11.5, n: 2, col: 0x5a1838, stripe: 0xff80c8 },
         { t: 'pend', x: 0, z: 18, col: 0xff40c8, int: 2.4, r: 11 },
       ]},
       FE: { name: 'West Bar', elements: [
@@ -1639,18 +1823,27 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 16.5, z: 14, w: 0.7, h: 2.2, d: 0.5, col: 0x100016, stripes: 6, stripe: 0xff40c8 },
         { t: 'tall', x: 16.5, z: 22, w: 0.7, h: 2.2, d: 0.5, col: 0x100016, stripes: 6, stripe: 0x40e0ff },
         { t: 'mirror', x: 16.5, z: 18, w: 1.6, h: 2.2, rotY: Math.PI/2, col: 0xff80c8 },
+        { t: 'cov', x: 12.5, z: 21, w: 1.28, h: 0.82, d: 0.75, col: 0x181020, top: 0xff60c8 },
+        { t: 'cov', x: 11.5, z: 15, w: 1.22, h: 0.8, d: 0.72, col: 0x181020, top: 0x40e0ff },
+        { t: 'drum', x: 14, z: 12.5, n: 2, col: 0x4a1838, stripe: 0x40e0ff },
         { t: 'pend', x: 14, z: 18, col: 0x40e0ff, int: 2.0 },
       ]},
       MW: { name: 'Dance Floor Pit', elements: [
         { t: 'dancefloor', x: -14, z: 0, w: 5.0, d: 8.0 },
         { t: 'speaker', x: -16.5, z: -3, col: 0xff40c8 },
         { t: 'speaker', x: -16.5, z: 3, col: 0x40e0ff },
+        { t: 'cov', x: -11.5, z: -2.8, w: 1.35, h: 0.82, d: 0.78, col: 0x1a1020, top: 0xff60c8, rotY: 0.15 },
+        { t: 'cov', x: -11.5, z: 2.8, w: 1.35, h: 0.82, d: 0.78, col: 0x1a1020, top: 0x40e0ff, rotY: -0.15 },
+        { t: 'cov', x: -13.5, z: 0, w: 1.2, h: 0.8, d: 0.72, col: 0x201028, top: 0xff80e8 },
+        { t: 'drum', x: -13.2, z: -4.2, n: 2, col: 0x5a2048, stripe: 0xff40c8 },
         { t: 'pend', x: -14, z: 0, col: 0xff40c8, int: 2.6, r: 9 },
       ]},
       ME: { name: 'DJ Booth Tier', elements: [
         { t: 'plat', x: 14, z: 0, w: 4.5, d: 4.5, h: 0.85, col: 0x100018, top: 0x202028, rim: 0xff40c8 },
         { t: 'console', x: 14, z: 0.5, w: 2.4, h: 0.95, d: 0.7, col: 0x100018, glow: 0xff40c8 },
         { t: 'rail', x: 14, z: -1.7, len: 4.0, col: 0xff40c8 },
+        { t: 'cov', x: 12.8, z: -3.2, w: 1.3, h: 0.82, d: 0.76, col: 0x181020, top: 0x40e0ff },
+        { t: 'cov', x: 12.8, z: 3.2, w: 1.3, h: 0.82, d: 0.76, col: 0x181020, top: 0xff40c8 },
         { t: 'speaker', x: 16, z: 4, col: 0x40e0ff },
         { t: 'pend', x: 14, z: 0, col: 0xff40c8, int: 2.6, r: 8 },
       ]},
@@ -1658,14 +1851,21 @@ const SEQUENCE_DEFS = {
         { t: 'booth', x: -14, z: -14, col: 0x6a1838 },
         { t: 'booth', x: -14, z: -19, col: 0x6a1838 },
         { t: 'rope', x: -10, z: -16, x2: -10, z2: -22, col: 0xa040ff },
-        { t: 'pend', x: -13, z: -16, col: 0xa040ff, int: 1.8 },
+        { t: 'cov', x: -12, z: -17, w: 1.3, h: 0.82, d: 0.76, col: 0x201020, top: 0xff60c8 },
+        { t: 'cov', x: -15.5, z: -20, w: 1.25, h: 0.8, d: 0.72, col: 0x201020, top: 0x40e0ff },
+        { t: 'tall', x: -16.5, z: -16, w: 0.65, h: 2.1, d: 0.48, col: 0x100016, stripes: 5, stripe: 0xa040ff },
+        { t: 'stack', x: -11, z: -22, w: 1.8, d: 1.2, h: 1.0, cols: [0x401030, 0x301828, 0x201020] },
         { t: 'mirror', x: -17.8, z: -18, w: 2.0, h: 2.4, rotY: -Math.PI/2, col: 0x40e0ff },
+        { t: 'pend', x: -13, z: -16, col: 0xa040ff, int: 1.8 },
       ]},
       BE: { name: 'Mezzanine Lounge', elements: [
         { t: 'plat', x: 13, z: -18, w: 5.0, d: 3.4, h: 0.85, col: 0x100018, top: 0x202028, rim: 0xff40c8 },
         { t: 'rail', x: 13, z: -16.3, len: 5.0, col: 0xff40c8 },
         { t: 'booth', x: 13, z: -19, col: 0x281030 },
         { t: 'speaker', x: 16.5, z: -22, col: 0xff40c8 },
+        { t: 'cov', x: 11.5, z: -17, w: 1.28, h: 0.82, d: 0.75, col: 0x181020, top: 0xff40c8 },
+        { t: 'cov', x: 14.5, z: -21, w: 1.22, h: 0.8, d: 0.72, col: 0x181020, top: 0x40e0ff },
+        { t: 'tall', x: 16.5, z: -14, w: 0.7, h: 2.0, d: 0.5, col: 0x100016, stripes: 5, stripe: 0x40e0ff },
         { t: 'pend', x: 13, z: -19, col: 0x40e0ff, int: 2.0 },
       ]},
       BC: { name: 'Mirrored Lounge', elements: [
@@ -1674,6 +1874,8 @@ const SEQUENCE_DEFS = {
         { t: 'speaker', x: -5, z: -14, col: 0xff40c8 },
         { t: 'speaker', x: 5, z: -14, col: 0x40e0ff },
         { t: 'booth', x: 0, z: -19, col: 0x6a1838 },
+        { t: 'cov', x: -4.2, z: -16.2, w: 1.4, h: 0.84, d: 0.78, col: 0x201020, top: 0xff60c8 },
+        { t: 'cov', x: 4.2, z: -16.2, w: 1.4, h: 0.84, d: 0.78, col: 0x201020, top: 0x40e0ff },
         { t: 'pend', x: 0, z: -16, col: 0xff40c8, int: 3.0, r: 14 },
         { t: 'haz', x: 0, z: -21, w: 5.0, d: 1.4, col: 0x10041a, alpha: 0.7, glow: 0xff40c8 },
       ]},
@@ -1681,6 +1883,7 @@ const SEQUENCE_DEFS = {
     lights: [
       { x: -14, y: 3.4, z: 0, col: 0xff40c8, int: 1.4, r: 10 },
       { x:  14, y: 3.4, z: 0, col: 0x40e0ff, int: 1.6, r: 10 },
+      { x: 0, y: 3.2, z: 0, col: 0xff80d8, int: 1.1, r: 9 },
       { x: -14, y: 3.4, z: -18, col: 0xa040ff, int: 1.6, r: 10 },
       { x:  14, y: 3.4, z: -18, col: 0xff40c8, int: 1.4, r: 10 },
     ],
@@ -1694,6 +1897,10 @@ const SEQUENCE_DEFS = {
         { t: 'plinth', x: -14, z: 22 },
         { t: 'plinth', x: -10, z: 22 },
         { t: 'glass', x: -13, z: 17, len: 3.6 },
+        { t: 'cov', x: -15.2, z: 18.5, w: 1.35, h: 0.88, d: 0.8, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: -12, z: 14.5, w: 1.28, h: 0.85, d: 0.76, col: 0x2a2c38, top: 0xa0c8ff },
+        { t: 'tall', x: -16.5, z: 20, w: 0.75, h: 2.1, d: 0.52, col: 0x1a1a24, stripes: 4, stripe: 0xffd060 },
+        { t: 'cart', x: -10, z: 16, col: 0x806040 },
         { t: 'lamp', x: -16, z: 14, col: 0xffd060 },
         { t: 'pend', x: -13, z: 19, col: 0xffd060, int: 1.8 },
       ]},
@@ -1702,6 +1909,9 @@ const SEQUENCE_DEFS = {
         { t: 'rope', x: -3, z: 14, x2: 3, z2: 14, col: 0xc8a040 },
         { t: 'plinth', x: -5, z: 18 },
         { t: 'plinth', x: 5, z: 18 },
+        { t: 'cov', x: -6, z: 16.2, w: 1.32, h: 0.86, d: 0.78, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: 6, z: 16.2, w: 1.32, h: 0.86, d: 0.78, col: 0x2a2c38, top: 0xa0c8ff },
+        { t: 'bench', x: -2, z: 11.8, w: 2.2, d: 0.55, h: 0.52, col: 0x202028, back: true, rotY: 0 },
         { t: 'pend', x: 0, z: 19, col: 0xffd060, int: 2.4, r: 12 },
       ]},
       FE: { name: 'Conversation Pit', elements: [
@@ -1709,12 +1919,17 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: 12, z: 22, w: 0.7, d: 2.4, h: 0.55, col: 0x202028, back: true, rotY: Math.PI/2 },
         { t: 'bench', x: 16, z: 22, w: 0.7, d: 2.4, h: 0.55, col: 0x202028, back: true, rotY: Math.PI/2 },
         { t: 'plinth', x: 14, z: 22 },
+        { t: 'cov', x: 12.5, z: 16, w: 1.3, h: 0.85, d: 0.76, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: 15.5, z: 14.5, w: 1.25, h: 0.84, d: 0.74, col: 0x2a2c38, top: 0xa0c8ff },
+        { t: 'lamp', x: 11, z: 18, col: 0xffd060 },
         { t: 'pend', x: 14, z: 20, col: 0xffd060 },
       ]},
       MW: { name: 'Art Gallery Wall', elements: [
         { t: 'plinthrow', x: -14.5, z: 0 },
         { t: 'banner', x: -17.8, z: -3, w: 1.0, h: 2.6, col: 0x081830, trim: 0xc8a040, rotY: Math.PI/2 },
         { t: 'banner', x: -17.8, z: 3, w: 1.0, h: 2.6, col: 0x081830, trim: 0xc8a040, rotY: Math.PI/2 },
+        { t: 'cov', x: -12.8, z: -2.5, w: 1.45, h: 0.88, d: 0.82, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: -12.8, z: 2.5, w: 1.45, h: 0.88, d: 0.82, col: 0x2a2c38, top: 0xa0c8ff },
         { t: 'pend', x: -14, z: 0, col: 0xffd060 },
       ]},
       ME: { name: 'Glass Office Annex', elements: [
@@ -1722,17 +1937,28 @@ const SEQUENCE_DEFS = {
         { t: 'glass', x: 14, z: 3, len: 4.0, rotY: Math.PI/2 },
         { t: 'console', x: 16, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x080812, glow: 0xa0c8ff },
         { t: 'bench', x: 13, z: 0, w: 2.0, d: 0.55, h: 0.55, col: 0x202028, back: true },
+        { t: 'cov', x: 12.6, z: -4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: 12.6, z: 4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x2a2c38, top: 0xa0c8ff },
+        { t: 'drum', x: 15, z: -5.5, n: 2, col: 0x4a3a28, stripe: 0xffd060 },
         { t: 'pend', x: 14, z: 0, col: 0xa0c8ff, int: 1.6 },
       ]},
       BW: { name: 'Wine Vault', elements: [
         { t: 'shelfrow', x: -14, z: -16, col: 0x14101a },
         { t: 'shelfrow', x: -14, z: -20, col: 0x14101a },
+        { t: 'cov', x: -12, z: -18, w: 1.35, h: 0.86, d: 0.78, col: 0x2a2c38, top: 0xc8a040 },
+        { t: 'cov', x: -15.5, z: -14, w: 1.28, h: 0.84, d: 0.75, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'pipes', x: -10, z: -18, len: 5 },
+        { t: 'tall', x: -16.5, z: -22, w: 0.7, h: 2.2, d: 0.5, col: 0x14101a, stripes: 4, stripe: 0x802020 },
+        { t: 'cart', x: -11, z: -22, col: 0x806040 },
         { t: 'pend', x: -14, z: -18, col: 0x802020, int: 1.4 },
       ]},
       BE: { name: 'Master Study Approach', elements: [
         { t: 'desk', x: 13, z: -16, lx: 1.55, lz: 1.20 },
         { t: 'shelf', x: 17, z: -19, w: 2.0, h: 2.6, d: 0.45, col: 0x14101a, rotY: Math.PI/2 },
         { t: 'plat', x: 13, z: -22, w: 4.5, d: 2.6, h: 0.6, col: 0x14101a, top: 0xc8a040, rim: 0xffd060 },
+        { t: 'cov', x: 11.8, z: -18, w: 1.28, h: 0.84, d: 0.75, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: 15.2, z: -21, w: 1.25, h: 0.82, d: 0.73, col: 0x2a2c38, top: 0xa0c8ff },
+        { t: 'crate2', x: 16, z: -14, col: 0x202028 },
         { t: 'lamp', x: 13, z: -16, col: 0xffd060 },
         { t: 'pend', x: 13, z: -19, col: 0xffd060 },
       ]},
@@ -1742,6 +1968,8 @@ const SEQUENCE_DEFS = {
         { t: 'statue', x: 5, z: -22 },
         { t: 'glass', x: 0, z: -25, len: 5.0 },
         { t: 'desk', x: -2, z: -16, lx: 1.55, lz: 1.20 },
+        { t: 'cov', x: 3.5, z: -14.2, w: 1.5, h: 0.9, d: 0.84, col: 0x2a2c38, top: 0xffd060 },
+        { t: 'cov', x: -4.5, z: -18.5, w: 1.45, h: 0.88, d: 0.8, col: 0x2a2c38, top: 0xa0c8ff },
         { t: 'pend', x: 0, z: -18, col: 0xffd060, int: 3.0, r: 14 },
         { t: 'plinth', x: 0, z: -19 },
       ]},
@@ -1763,6 +1991,10 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: -10, z: 18, w: 2.4, d: 0.55, h: 0.55, col: 0x3a4248, back: true },
         { t: 'cart', x: -16, z: 16, col: 0xb83020 },
         { t: 'tall', x: -16, z: 22, w: 0.85, h: 2.0, d: 0.55, col: 0x282c34, stripes: 3, stripe: 0xff5040 },
+        { t: 'cov', x: -11.5, z: 21, w: 1.25, h: 0.84, d: 0.74, col: 0x3a4248, top: 0x40ff80 },
+        { t: 'cov', x: -15.2, z: 15.5, w: 1.22, h: 0.82, d: 0.72, col: 0x3a4248, top: 0x40c8e0 },
+        { t: 'pipes', x: -13, z: 14, len: 5 },
+        { t: 'lamp', x: -10, z: 14, col: 0xc8d0d8 },
         { t: 'pend', x: -13, z: 19, col: 0xffe0c0, int: 1.0, flicker: true },
       ]},
       FC: { name: 'Pharmacy Cabinet Row', elements: [
@@ -1779,6 +2011,9 @@ const SEQUENCE_DEFS = {
         { t: 'bed', x: 12, z: 19, rotY: 0 },
         { t: 'bed', x: 16, z: 19, rotY: 0 },
         { t: 'curtainrow', x: 14, z: 16.5, rotY: Math.PI/2 },
+        { t: 'cov', x: 13, z: 16.8, w: 1.3, h: 0.85, d: 0.76, col: 0x3a4248, top: 0xc8e0e8 },
+        { t: 'cov', x: 15, z: 21.5, w: 1.25, h: 0.84, d: 0.74, col: 0x3a4248, top: 0x40ff80 },
+        { t: 'cart', x: 11.5, z: 22, col: 0xa0a8b0 },
         { t: 'pend', x: 14, z: 22, col: 0x40c8e0, int: 1.0 },
       ]},
       MW: { name: 'Patient Bay B', elements: [
@@ -1786,6 +2021,8 @@ const SEQUENCE_DEFS = {
         { t: 'bed', x: -14, z: 2, rotY: 0 },
         { t: 'curtain', x: -16, z: 0, w: 1.4, h: 2.0, rotY: Math.PI/2, col: 0xc8d0d8 },
         { t: 'cart', x: -17, z: -4, col: 0xb83020 },
+        { t: 'cov', x: -12.5, z: -2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a4248, top: 0xc8e0e8 },
+        { t: 'cov', x: -12.5, z: 2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a4248, top: 0x40c8e0 },
         { t: 'pend', x: -14, z: 0, col: 0xc8d0d8, int: 1.0, flicker: true },
       ]},
       ME: { name: 'Nurse Station Ring', elements: [
@@ -1793,6 +2030,8 @@ const SEQUENCE_DEFS = {
         { t: 'console', x: 13, z: -2, w: 1.6, h: 0.95, d: 0.7, col: 0x282c34, glow: 0x40c8e0 },
         { t: 'console', x: 13, z: 2, w: 1.6, h: 0.95, d: 0.7, col: 0x282c34, glow: 0x40c8e0 },
         { t: 'cart', x: 16, z: -3, col: 0xa0a8b0 },
+        { t: 'cov', x: 12.8, z: -0.5, w: 1.35, h: 0.88, d: 0.78, col: 0x3a4248, top: 0xc8e0e8 },
+        { t: 'cov', x: 15.2, z: 3.5, w: 1.2, h: 0.85, d: 0.75, col: 0x3a4248, top: 0x40ff80 },
         { t: 'pend', x: 14, z: 0, col: 0x40c8e0, int: 1.4 },
       ]},
       BW: { name: 'MRI Lab', elements: [
@@ -1800,6 +2039,9 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: -22, w: 1.4, h: 2.4, d: 0.6, col: 0xc8d0d8, stripes: 4, stripe: 0x40c8e0 },
         { t: 'tall', x: -10, z: -22, w: 1.4, h: 2.4, d: 0.6, col: 0xc8d0d8, stripes: 4, stripe: 0x40c8e0 },
         { t: 'console', x: -14, z: -22, w: 1.6, h: 0.95, d: 0.7, col: 0x282c34, glow: 0x40c8e0 },
+        { t: 'cov', x: -11.5, z: -20, w: 1.3, h: 0.85, d: 0.78, col: 0x3a4248, top: 0x40c8e0 },
+        { t: 'cov', x: -16.5, z: -15, w: 1.22, h: 0.82, d: 0.72, col: 0x3a4248, top: 0xff5040 },
+        { t: 'crate2', x: -10, z: -14, col: 0x282c34 },
         { t: 'pend', x: -14, z: -18, col: 0x40c8e0, int: 2.0 },
       ]},
       BE: { name: 'Surgical Prep', elements: [
@@ -1807,6 +2049,9 @@ const SEQUENCE_DEFS = {
         { t: 'curtainrow', x: 16, z: -16, rotY: 0 },
         { t: 'cart', x: 14, z: -22, col: 0xa0a8b0 },
         { t: 'tall', x: 16.5, z: -19, w: 0.9, h: 2.0, d: 0.55, col: 0x282c34, stripes: 4, stripe: 0xff5040 },
+        { t: 'cov', x: 14.5, z: -21, w: 1.28, h: 0.84, d: 0.75, col: 0x3a4248, top: 0x40c8e0 },
+        { t: 'cov', x: 11.8, z: -18.5, w: 1.22, h: 0.82, d: 0.72, col: 0x3a4248, top: 0x40ff80 },
+        { t: 'bench', x: 14, z: -14, w: 2.0, d: 0.55, h: 0.55, col: 0x3a4248, back: true },
         { t: 'pend', x: 14, z: -19, col: 0xc8d0d8, int: 1.0, flicker: true },
       ]},
       BC: { name: 'Operating Theater', elements: [
@@ -1836,6 +2081,9 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: 18, w: 0.9, h: 2.0, d: 0.55, col: 0x282830, stripes: 3, stripe: 0xfff060 },
         { t: 'pipes', x: -13, z: 16, len: 7 },
         { t: 'haz', x: -13, z: 14, w: 2.4, d: 1.4, col: 0x14140a, alpha: 0.85, glow: 0xfff060 },
+        { t: 'cov', x: -11, z: 21, w: 1.3, h: 0.86, d: 0.78, col: 0x383c44, top: 0xfff060 },
+        { t: 'cov', x: -15.5, z: 17, w: 1.25, h: 0.84, d: 0.74, col: 0x383c44, top: 0xff5040 },
+        { t: 'cart', x: -16, z: 20, col: 0xa0a8b0 },
         { t: 'pend', x: -13, z: 18, col: 0xfff060, int: 1.4, flicker: true },
       ]},
       FC: { name: 'Mezzanine Hall', elements: [
@@ -1843,6 +2091,8 @@ const SEQUENCE_DEFS = {
         { t: 'turnstiles', x: 3, z: 22 },
         { t: 'benchrow', x: -3, z: 16 },
         { t: 'benchrow', x: 3, z: 16 },
+        { t: 'cov', x: -5.5, z: 19, w: 1.3, h: 0.86, d: 0.78, col: 0x383c44, top: 0xfff060 },
+        { t: 'cov', x: 5.5, z: 19, w: 1.3, h: 0.86, d: 0.78, col: 0x383c44, top: 0xff5040 },
         { t: 'pend', x: 0, z: 18, col: 0xfff060, int: 1.6 },
       ]},
       FE: { name: 'Maintenance Locker Bay', elements: [
@@ -1856,12 +2106,17 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Track Bed Bypass', elements: [
         { t: 'track', x: -14, z: 0, len: 12, rotY: Math.PI/2, live: true },
         { t: 'pipes', x: -14, z: -5, len: 7 },
+        { t: 'cov', x: -12.8, z: -2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a3c44, top: 0xfff060 },
+        { t: 'cov', x: -12.8, z: 2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a3c44, top: 0xff5040 },
+        { t: 'crate2', x: -16, z: -4, col: 0x383c44 },
         { t: 'pend', x: -14, z: 0, col: 0xff5040, int: 1.6 },
       ]},
       ME: { name: 'Power Panel Annex', elements: [
         { t: 'tall', x: 17, z: -3, w: 0.9, h: 2.4, d: 0.5, col: 0x14161c, stripes: 4, stripe: 0xff5040, rotY: Math.PI/2 },
         { t: 'tall', x: 17, z: 3, w: 0.9, h: 2.4, d: 0.5, col: 0x14161c, stripes: 4, stripe: 0xff5040, rotY: Math.PI/2 },
         { t: 'console', x: 14, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x14161c, glow: 0xff5040 },
+        { t: 'cov', x: 12.8, z: -2.4, w: 1.3, h: 0.86, d: 0.78, col: 0x383c44, top: 0xfff060 },
+        { t: 'cov', x: 12.8, z: 2.4, w: 1.3, h: 0.86, d: 0.78, col: 0x383c44, top: 0xff5040 },
         { t: 'haz', x: 14, z: -4, w: 2.0, d: 1.4, col: 0x14140a, alpha: 0.85, glow: 0xff5040 },
         { t: 'pend', x: 14, z: 0, col: 0xff5040, int: 1.6, flicker: true },
       ]},
@@ -1869,12 +2124,17 @@ const SEQUENCE_DEFS = {
         { t: 'track', x: -14, z: -16, len: 12, rotY: Math.PI/2, live: false },
         { t: 'pipes', x: -14, z: -22, len: 7 },
         { t: 'cart', x: -16, z: -19, col: 0xa0a8b0 },
+        { t: 'cov', x: -12, z: -18, w: 1.35, h: 0.86, d: 0.78, col: 0x383c44, top: 0xfff060 },
+        { t: 'cov', x: -15.5, z: -14.5, w: 1.28, h: 0.84, d: 0.75, col: 0x383c44, top: 0xff5040 },
+        { t: 'tall', x: -10.5, z: -20, w: 0.85, h: 2.0, d: 0.52, col: 0x14161c, stripes: 4, stripe: 0xfff060 },
         { t: 'pend', x: -14, z: -16, col: 0xfff060, int: 1.2, flicker: true },
       ]},
       BE: { name: 'Dispatch Office', elements: [
         { t: 'desk', x: 13, z: -16, lx: 1.55, lz: 1.20 },
         { t: 'console', x: 16, z: -19, w: 1.6, h: 0.95, d: 0.7, col: 0x14161c, glow: 0xfff060 },
         { t: 'tall', x: 12, z: -22, w: 0.9, h: 2.0, d: 0.55, col: 0x14161c, stripes: 3, stripe: 0xfff060 },
+        { t: 'cov', x: 14.5, z: -14, w: 1.28, h: 0.84, d: 0.75, col: 0x383c44, top: 0xfff060 },
+        { t: 'cov', x: 11.8, z: -20, w: 1.22, h: 0.82, d: 0.72, col: 0x383c44, top: 0xff5040 },
         { t: 'pend', x: 13, z: -18, col: 0xfff060 },
       ]},
       BC: { name: 'Switch Chamber', elements: [
@@ -1904,12 +2164,18 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: -16, z: 18, w: 0.7, d: 2.6, h: 0.55, col: 0x4a3a20, back: true, rotY: Math.PI/2 },
         { t: 'plinth', x: -10, z: 22 },
         { t: 'lamp', x: -10, z: 14 },
+        { t: 'cov', x: -12.5, z: 21, w: 1.28, h: 0.84, d: 0.75, col: 0x3a3428, top: 0xa0c8ff },
+        { t: 'cov', x: -15, z: 16.5, w: 1.22, h: 0.82, d: 0.73, col: 0x3a3428, top: 0xffe0a0 },
+        { t: 'tall', x: -16.5, z: 14, w: 0.7, h: 2.0, d: 0.5, col: 0x282028, stripes: 3, stripe: 0xa0c8ff },
+        { t: 'pipes', x: -12, z: 14, len: 4 },
         { t: 'pend', x: -13, z: 19, col: 0xffe0a0, int: 1.6 },
       ]},
       FC: { name: 'Salon Cabin', elements: [
         { t: 'bar', x: 0, z: 22, w: 5.0, d: 0.7, h: 1.05, col: 0x202028, top: 0xc8a070, glow: 0xa0c8ff },
         { t: 'bench', x: -3, z: 16, w: 2.4, d: 0.7, h: 0.55, col: 0x4a3a20, back: true },
         { t: 'bench', x: 3, z: 16, w: 2.4, d: 0.7, h: 0.55, col: 0x4a3a20, back: true },
+        { t: 'cov', x: -5.5, z: 19, w: 1.35, h: 0.86, d: 0.78, col: 0x3a3428, top: 0xffe0a0 },
+        { t: 'cov', x: 5.5, z: 19, w: 1.35, h: 0.86, d: 0.78, col: 0x3a3428, top: 0xa0c8ff },
         { t: 'lamp', x: -5, z: 19, col: 0xffe0a0 },
         { t: 'lamp', x: 5, z: 19, col: 0xffe0a0 },
         { t: 'pend', x: 0, z: 18, col: 0xffe0a0, int: 2.0 },
@@ -1919,6 +2185,9 @@ const SEQUENCE_DEFS = {
         { t: 'vend', x: 16, z: 14, col: 0x282028 },
         { t: 'vend', x: 16, z: 22, col: 0x282028 },
         { t: 'cart', x: 12, z: 22, col: 0xa0a8b0 },
+        { t: 'cov', x: 13.5, z: 21.5, w: 1.28, h: 0.84, d: 0.75, col: 0x3a3428, top: 0xffe0a0 },
+        { t: 'cov', x: 11.8, z: 16.5, w: 1.22, h: 0.82, d: 0.72, col: 0x3a3428, top: 0xa0c8ff },
+        { t: 'crate2', x: 12, z: 17, col: 0x4a3a20 },
         { t: 'pend', x: 14, z: 18, col: 0xffe0a0, int: 1.6 },
       ]},
       MW: { name: 'Crew Hatch Bypass', elements: [
@@ -1933,6 +2202,8 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: 13, z: 0, w: 3.4, d: 0.55, h: 0.55, col: 0x4a3a20, back: true, rotY: Math.PI/2 },
         { t: 'plinth', x: 16, z: -3 },
         { t: 'plinth', x: 16, z: 3 },
+        { t: 'cov', x: 13.5, z: -2.8, w: 1.3, h: 0.85, d: 0.76, col: 0x3a3428, top: 0xffe0a0 },
+        { t: 'cov', x: 13.5, z: 2.8, w: 1.3, h: 0.85, d: 0.76, col: 0x3a3428, top: 0xa0c8ff },
         { t: 'lamp', x: 13, z: -5, col: 0xffe0a0 },
         { t: 'lamp', x: 13, z: 5, col: 0xffe0a0 },
         { t: 'pend', x: 14, z: 0, col: 0xffe0a0 },
@@ -1942,6 +2213,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -14, z: -20, w: 1.4, h: 2.2, d: 0.6, col: 0x282028, stripes: 4, stripe: 0xff5040 },
         { t: 'pipes', x: -14, z: -18, len: 6 },
         { t: 'haz', x: -14, z: -22, w: 2.6, d: 1.4, col: 0x101010, alpha: 0.85, glow: 0xff5040 },
+        { t: 'cov', x: -11.5, z: -18, w: 1.3, h: 0.84, d: 0.76, col: 0x3a3428, top: 0xa0c8ff },
+        { t: 'cov', x: -16.5, z: -14, w: 1.22, h: 0.82, d: 0.72, col: 0x3a3428, top: 0xffe0a0 },
         { t: 'pend', x: -14, z: -18, col: 0xff5040, int: 1.4, flicker: true },
       ]},
       BE: { name: 'Bridge Approach', elements: [
@@ -1949,6 +2222,8 @@ const SEQUENCE_DEFS = {
         { t: 'console', x: 13, z: -22, w: 2.0, h: 0.95, d: 0.7, col: 0x14161c, glow: 0xa0c8ff },
         { t: 'plat', x: 16, z: -19, w: 2.4, d: 4.5, h: 0.5, col: 0x282028, top: 0xc8a070, rim: 0xa0c8ff },
         { t: 'rail', x: 14.5, z: -19, len: 4.5, col: 0xa0c8ff, rotY: Math.PI/2 },
+        { t: 'cov', x: 11.5, z: -17, w: 1.28, h: 0.84, d: 0.75, col: 0x3a3428, top: 0xffe0a0 },
+        { t: 'cov', x: 14.5, z: -21, w: 1.25, h: 0.82, d: 0.73, col: 0x3a3428, top: 0xa0c8ff },
         { t: 'pend', x: 13, z: -19, col: 0xa0c8ff, int: 1.6 },
       ]},
       BC: { name: 'Owner’s Suite', elements: [
@@ -1979,16 +2254,26 @@ const SEQUENCE_DEFS = {
         { t: 'glass', x: -13, z: 14, len: 4.0 },
         { t: 'console', x: -16, z: 18, w: 1.6, h: 0.95, d: 0.7, col: 0x080a14, glow: 0x40e0ff },
         { t: 'tall', x: -10, z: 18, w: 0.85, h: 2.4, d: 0.45, col: 0x080a14, stripes: 6, stripe: 0x40e0ff },
+        { t: 'cov', x: -15.5, z: 20.5, w: 1.26, h: 0.83, d: 0.74, col: 0x101820, top: 0x40e0ff },
+        { t: 'cov', x: -11, z: 15.5, w: 1.24, h: 0.82, d: 0.72, col: 0x101820, top: 0x60a0ff },
+        { t: 'pipes', x: -16, z: 14, len: 4 },
         { t: 'pend', x: -13, z: 18, col: 0x40e0ff, int: 1.6 },
       ]},
       FC: { name: 'Cold Aisle North', elements: [
         { t: 'rackaisle', x: -3, z: 18, accent: 0x40e0ff },
         { t: 'rackaisle', x: 3, z: 18, accent: 0x60a0ff },
+        { t: 'cov', x: 0, z: 15.5, w: 1.4, h: 0.88, d: 0.8, col: 0x101820, top: 0x40e0ff },
+        { t: 'cov', x: -5, z: 20, w: 1.25, h: 0.85, d: 0.75, col: 0x101820, top: 0x60a0ff },
+        { t: 'cov', x: 5, z: 20, w: 1.25, h: 0.85, d: 0.75, col: 0x101820, top: 0x40e0ff },
         { t: 'pend', x: 0, z: 22, col: 0x40e0ff, int: 1.6 },
       ]},
       FE: { name: 'Cold Aisle South', elements: [
         { t: 'rackaisle', x: 13, z: 18, accent: 0x60a0ff },
         { t: 'ac', x: 16, z: 22 },
+        { t: 'cov', x: 14, z: 15.5, w: 1.3, h: 0.86, d: 0.78, col: 0x101820, top: 0x40e0ff },
+        { t: 'cov', x: 12.5, z: 20.5, w: 1.2, h: 0.84, d: 0.74, col: 0x101820, top: 0xff5040 },
+        { t: 'pipes', x: 11, z: 14, len: 5 },
+        { t: 'tall', x: 16, z: 15, w: 0.75, h: 2.2, d: 0.45, col: 0x080a14, stripes: 5, stripe: 0xff5040 },
         { t: 'pend', x: 14, z: 18, col: 0x40e0ff, int: 1.4 },
       ]},
       MW: { name: 'Patch Panel Crawl', elements: [
@@ -1996,11 +2281,17 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: 3, w: 0.9, h: 2.4, d: 0.45, col: 0x080a14, stripes: 5, stripe: 0x60a0ff, rotY: Math.PI/2 },
         { t: 'console', x: -13, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x080a14, glow: 0x40e0ff },
         { t: 'pipes', x: -13, z: 4, len: 5, col: 0x282830 },
+        { t: 'cov', x: -12.5, z: -5, w: 1.26, h: 0.83, d: 0.74, col: 0x101820, top: 0x60a0ff },
+        { t: 'cov', x: -12.5, z: 5, w: 1.26, h: 0.83, d: 0.74, col: 0x101820, top: 0x40e0ff },
         { t: 'pend', x: -14, z: 0, col: 0x40e0ff, int: 1.4 },
       ]},
       ME: { name: 'Hot Aisle Spine', elements: [
         { t: 'rackaisle', x: 14, z: 0, accent: 0xff5040 },
         { t: 'hotaisle', x: 16, z: -2 },
+        { t: 'cov', x: 12.8, z: 3.5, w: 1.28, h: 0.84, d: 0.75, col: 0x101820, top: 0x40e0ff },
+        { t: 'cov', x: 15.2, z: -4, w: 1.25, h: 0.82, d: 0.73, col: 0x101820, top: 0xff5040 },
+        { t: 'tall', x: 16.5, z: 4, w: 0.85, h: 2.2, d: 0.48, col: 0x080a14, stripes: 5, stripe: 0xff5040 },
+        { t: 'pipes', x: 13, z: 1, len: 4 },
         { t: 'pend', x: 14, z: 0, col: 0xff5040, int: 1.4 },
       ]},
       BW: { name: 'Battery Backup Bay', elements: [
@@ -2010,6 +2301,9 @@ const SEQUENCE_DEFS = {
         { t: 'battery', x: -13, z: -18 },
         { t: 'battery', x: -16, z: -22 },
         { t: 'battery', x: -13, z: -22 },
+        { t: 'cov', x: -11.2, z: -18.5, w: 1.4, h: 0.88, d: 0.8, col: 0x101820, top: 0x40e0ff },
+        { t: 'cov', x: -15.8, z: -21, w: 1.3, h: 0.86, d: 0.78, col: 0x101820, top: 0x60a0ff },
+        { t: 'crate2', x: -11, z: -22, col: 0x202830 },
         { t: 'pend', x: -14, z: -18, col: 0x40e0ff, int: 1.4 },
       ]},
       BE: { name: 'Network Operations Office', elements: [
@@ -2028,6 +2322,8 @@ const SEQUENCE_DEFS = {
         { t: 'rack', x: 5, z: -22, accent: 0x40e0ff, rotY: 0 },
         { t: 'plat', x: 0, z: -16, w: 4.5, d: 2.4, h: 0.5, col: 0x080a14, top: 0x202830, rim: 0x40e0ff },
         { t: 'console', x: 0, z: -16.5, w: 2.0, h: 0.95, d: 0.7, col: 0x080a14, glow: 0x40e0ff },
+        { t: 'cov', x: -3.5, z: -13.8, w: 1.35, h: 0.86, d: 0.78, col: 0x101820, top: 0x60a0ff },
+        { t: 'cov', x: 3.5, z: -13.8, w: 1.35, h: 0.86, d: 0.78, col: 0x101820, top: 0xff5040 },
         { t: 'pend', x: 0, z: -18, col: 0x40e0ff, int: 3.0, r: 14 },
         { t: 'haz', x: 0, z: -25, w: 5.0, d: 1.6, col: 0x040810, alpha: 0.85, glow: 0x40e0ff },
       ]},
@@ -2049,6 +2345,9 @@ const SEQUENCE_DEFS = {
         { t: 'cart', x: -10, z: 18, col: 0x806040 },
         { t: 'drum', x: -12, z: 14, n: 3, col: 0xb8783c, stripe: 0xffd090 },
         { t: 'cov', x: -16, z: 17, w: 1.4, h: 0.85, d: 0.8, col: 0x4a3820, top: 0xffd090 },
+        { t: 'cov', x: -11.5, z: 21.5, w: 1.25, h: 0.83, d: 0.74, col: 0x4a3820, top: 0xffb060 },
+        { t: 'stack', x: -15, z: 14, w: 1.8, d: 1.2, h: 1.0, cols: [0x6a4828, 0x6a4828, 0x6a4828] },
+        { t: 'lamp', x: -10, z: 22, col: 0xffd090 },
         { t: 'pend', x: -13, z: 19, col: 0xffb060, int: 1.7, r: 8 },
       ]},
       FC: { name: 'Customs Gate', elements: [
@@ -2056,12 +2355,17 @@ const SEQUENCE_DEFS = {
         { t: 'cov', x: 3, z: 22, w: 2.4, h: 0.9, d: 0.9, col: 0x6a4830, top: 0xffd090 },
         { t: 'arch', x: 0, z: 19, w: 4.6, h: 2.8, col: 0x282018, accent: 0xffb060 },
         { t: 'pipes', x: 0, z: 23.5, len: 7 },
+        { t: 'cov', x: -6, z: 16, w: 1.3, h: 0.86, d: 0.78, col: 0x4a3820, top: 0xffb060 },
+        { t: 'cov', x: 6, z: 16, w: 1.3, h: 0.86, d: 0.78, col: 0x4a3820, top: 0xffd090 },
+        { t: 'cart', x: 0, z: 14, col: 0x806040 },
         { t: 'pend', x: 0, z: 17, col: 0xffd090, int: 1.8, r: 9 },
       ]},
       FE: { name: 'Truck Bay', elements: [
         { t: 'container', x: 14, z: 21, w: 4.6, d: 1.9, col: 0x583820, rotY: Math.PI/2 },
         { t: 'forklift', x: 12, z: 17, rotY: -0.4 },
         { t: 'stack', x: 15, z: 15, w: 2.4, d: 1.4, h: 1.2, cols: [0x6a4828, 0x6a4828, 0x6a4828] },
+        { t: 'cov', x: 11.5, z: 21, w: 1.28, h: 0.84, d: 0.75, col: 0x4a3420, top: 0xffd090 },
+        { t: 'cov', x: 15.5, z: 16.5, w: 1.22, h: 0.82, d: 0.72, col: 0x4a3420, top: 0xffb060 },
         { t: 'pend', x: 13, z: 18, col: 0xffb060, int: 1.5, r: 7 },
         { t: 'haz', x: 14, z: 22, w: 2.0, d: 1.4, col: 0x141008, alpha: 0.8, glow: 0xff7030 },
       ]},
@@ -2070,6 +2374,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: -4, w: 0.85, h: 2.0, d: 0.55, col: 0x282018, stripes: 3, stripe: 0xffb060 },
         { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14100a, glow: 0xffd090 },
         { t: 'bench', x: -16, z: 2, w: 0.6, d: 2.0, h: 0.55, col: 0x4a3820, rotY: Math.PI/2 },
+        { t: 'cov', x: -12.5, z: -2.2, w: 1.4, h: 0.88, d: 0.8, col: 0x4a3820, top: 0xffd090 },
+        { t: 'cov', x: -12.5, z: 2.2, w: 1.4, h: 0.88, d: 0.8, col: 0x4a3820, top: 0xffb060 },
         { t: 'pend', x: -14, z: 0, col: 0xffd090, int: 1.4, r: 6 },
       ]},
       ME: { name: 'Vehicle Search', elements: [
@@ -2077,6 +2383,9 @@ const SEQUENCE_DEFS = {
         { t: 'cart', x: 16, z: 3, col: 0x806020, rotY: 0.3 },
         { t: 'drum', x: 14, z: 4, n: 4, col: 0xb8783c, stripe: 0xffd090 },
         { t: 'cov', x: 13, z: -4, w: 2.2, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+        { t: 'cov', x: 12.5, z: 3, w: 1.35, h: 0.86, d: 0.78, col: 0x4a3420, top: 0xffb060 },
+        { t: 'console', x: 16, z: -4, w: 1.5, h: 0.95, d: 0.7, col: 0x14100a, glow: 0xffb060 },
+        { t: 'pipes', x: 13, z: 0, len: 5 },
         { t: 'pend', x: 14.5, z: 1, col: 0xffb060, int: 1.5 },
       ]},
       BW: { name: 'Watchtower Base', elements: [
@@ -2084,12 +2393,17 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -14, z: -19, w: 1.0, h: 2.4, d: 0.5, col: 0x202018 },
         { t: 'plat', x: -14, z: -17, w: 3.6, d: 2.0, h: 0.85, col: 0x3a2818, top: 0x6a4830, rim: 0xffb060 },
         { t: 'rail', x: -14, z: -16.0, len: 3.6, col: 0xa0a8b0 },
+        { t: 'cov', x: -11.5, z: -18, w: 1.35, h: 0.86, d: 0.78, col: 0x4a3820, top: 0xffd090 },
+        { t: 'cov', x: -16.5, z: -21, w: 1.25, h: 0.82, d: 0.73, col: 0x4a3820, top: 0xffb060 },
+        { t: 'crate2', x: -11, z: -22, col: 0x6a4828 },
         { t: 'pend', x: -14, z: -14, col: 0xffb060, int: 1.4 },
       ]},
       BE: { name: 'Sand Vent Bypass', elements: [
         { t: 'pipes', x: 14, z: -17, len: 8 },
         { t: 'cov', x: 14, z: -20, w: 2.0, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
         { t: 'crate2', x: 16, z: -14, col: 0x6a4828 },
+        { t: 'tall', x: 12, z: -19, w: 0.85, h: 2.2, d: 0.5, col: 0x282018, stripes: 3, stripe: 0xffb060 },
+        { t: 'cov', x: 11.8, z: -16.5, w: 1.22, h: 0.82, d: 0.72, col: 0x4a3420, top: 0xffb060 },
         { t: 'pend', x: 13.5, z: -14, col: 0xffd090 },
       ]},
       BC: { name: 'Customs Office', elements: [
@@ -2098,6 +2412,10 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.4, d: 0.6, col: 0x282018, stripes: 4, stripe: 0xffb060 },
         { t: 'desk', x: 0, z: -16, lx: 1.6, lz: 1.2 },
         { t: 'console', x: -4, z: -14, w: 1.6, h: 0.95, d: 0.7, col: 0x140a06, glow: 0xffd090 },
+        { t: 'cov', x: -5.5, z: -14.2, w: 1.35, h: 0.86, d: 0.78, col: 0x4a3420, top: 0xffd090 },
+        { t: 'cov', x: 5.5, z: -14.2, w: 1.35, h: 0.86, d: 0.78, col: 0x4a3420, top: 0xffb060 },
+        { t: 'drum', x: 0, z: -21, n: 2, col: 0xb8783c, stripe: 0xffd090 },
+        { t: 'pipes', x: -14, z: -18, len: 5 },
         { t: 'pend', x: 0, z: -17, col: 0xffb060, int: 2.4, r: 12 },
       ]},
     },
@@ -2118,6 +2436,7 @@ const SEQUENCE_DEFS = {
         { t: 'lamp', x: -16, z: 18, col: 0xffe8b0 },
         { t: 'bench', x: -13, z: 17, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
         { t: 'bench', x: -13, z: 21, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'cov', x: -15.2, z: 19, w: 1.25, h: 0.86, d: 0.76, col: 0x281810, top: 0xffe8b0 },
         { t: 'pend', x: -13, z: 19, col: 0xffe8b0, int: 1.6 },
       ]},
       FC: { name: 'Nave', elements: [
@@ -2134,6 +2453,7 @@ const SEQUENCE_DEFS = {
         { t: 'lamp', x: 16, z: 18, col: 0xffe8b0 },
         { t: 'bench', x: 13, z: 17, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
         { t: 'bench', x: 13, z: 21, w: 3.0, d: 0.55, h: 0.55, col: 0x281810 },
+        { t: 'cov', x: 15.2, z: 19, w: 1.25, h: 0.86, d: 0.76, col: 0x281810, top: 0xffe8b0 },
         { t: 'pend', x: 13, z: 19, col: 0xffe8b0, int: 1.6 },
       ]},
       MW: { name: 'Confessionals', elements: [
@@ -2141,6 +2461,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -15, z: 3, w: 1.6, h: 2.4, d: 1.2, col: 0x281810, stripes: 2, stripe: 0xffe8b0 },
         { t: 'lamp', x: -13, z: 0, col: 0xffe8b0 },
         { t: 'cov', x: -12, z: 4, w: 1.6, h: 0.9, d: 0.7, col: 0x281810, top: 0xffe8b0 },
+        { t: 'cov', x: -12, z: -4, w: 1.5, h: 0.88, d: 0.72, col: 0x281810, top: 0xffd090 },
+        { t: 'bench', x: -16.5, z: 0, w: 0.65, d: 2.2, h: 0.55, col: 0x281810, rotY: Math.PI/2 },
         { t: 'pend', x: -13, z: -2, col: 0xffe8b0, int: 1.4 },
       ]},
       ME: { name: 'Choir Loft Stair', elements: [
@@ -2148,6 +2470,9 @@ const SEQUENCE_DEFS = {
         { t: 'rail', x: 14, z: 3.0, len: 3.6, col: 0xa08c60 },
         { t: 'tall', x: 16, z: -2, w: 1.0, h: 2.4, d: 0.6, col: 0x281810, stripes: 4, stripe: 0xffe8b0 },
         { t: 'lamp', x: 14, z: -2, col: 0xffe8b0 },
+        { t: 'cov', x: 12.5, z: -4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x281810, top: 0xffe8b0 },
+        { t: 'cov', x: 12.5, z: 4.2, w: 1.25, h: 0.82, d: 0.73, col: 0x281810, top: 0xffd090 },
+        { t: 'crate2', x: 13, z: 5, col: 0x382418 },
         { t: 'pend', x: 14, z: 1, col: 0xffe8b0, int: 1.6 },
       ]},
       BW: { name: 'Reliquary Vault', elements: [
@@ -2155,6 +2480,9 @@ const SEQUENCE_DEFS = {
         { t: 'plinth', x: -12, z: -14 },
         { t: 'tall', x: -16, z: -16, w: 1.0, h: 2.4, d: 0.6, col: 0x281810, stripes: 4, stripe: 0xffd090 },
         { t: 'lamp', x: -14, z: -20, col: 0xffe8b0 },
+        { t: 'cov', x: -11.5, z: -18, w: 1.35, h: 0.86, d: 0.78, col: 0x281810, top: 0xffe8b0 },
+        { t: 'cov', x: -15.5, z: -21, w: 1.28, h: 0.84, d: 0.75, col: 0x281810, top: 0xffd090 },
+        { t: 'bench', x: -13, z: -22, w: 2.4, d: 0.55, h: 0.55, col: 0x281810, back: true },
         { t: 'pend', x: -13, z: -16, col: 0xffd090, int: 1.4 },
       ]},
       BE: { name: 'Bell Stair', elements: [
@@ -2162,6 +2490,8 @@ const SEQUENCE_DEFS = {
         { t: 'rail', x: 14, z: -16.7, len: 4.0, col: 0xa08c60 },
         { t: 'tall', x: 16, z: -14, w: 1.0, h: 2.6, d: 0.6, col: 0x281810, stripes: 5, stripe: 0xffd090 },
         { t: 'lamp', x: 14, z: -14, col: 0xffe8b0 },
+        { t: 'cov', x: 12.5, z: -17, w: 1.28, h: 0.84, d: 0.75, col: 0x281810, top: 0xffe8b0 },
+        { t: 'cov', x: 15.2, z: -20.5, w: 1.22, h: 0.82, d: 0.72, col: 0x281810, top: 0xffd090 },
         { t: 'pend', x: 13.5, z: -14, col: 0xffe8b0 },
       ]},
       BC: { name: 'High Altar', elements: [
@@ -2171,6 +2501,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 3, z: -19, w: 1.0, h: 2.6, d: 0.6, col: 0x281810, stripes: 5, stripe: 0xffd090 },
         { t: 'lamp', x: -4, z: -14, col: 0xffe8b0 },
         { t: 'lamp', x: 4, z: -14, col: 0xffe8b0 },
+        { t: 'cov', x: -4.5, z: -15.5, w: 1.4, h: 0.88, d: 0.8, col: 0x281810, top: 0xffe8b0 },
+        { t: 'cov', x: 4.5, z: -15.5, w: 1.4, h: 0.88, d: 0.8, col: 0x281810, top: 0xffd090 },
         { t: 'pend', x: 0, z: -17, col: 0xffe8b0, int: 2.8, r: 14 },
       ]},
     },
@@ -2190,6 +2522,8 @@ const SEQUENCE_DEFS = {
         { t: 'container', x: -13, z: 22, w: 4.6, d: 1.9, col: 0x405060 },
         { t: 'container', x: -10, z: 18, w: 4.0, d: 1.8, col: 0x6a4830, rotY: Math.PI/2 },
         { t: 'cov', x: -16, z: 19, w: 1.4, h: 0.85, d: 0.8, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: -11.5, z: 21, w: 1.25, h: 0.83, d: 0.74, col: 0x2a323a, top: 0xff8040 },
+        { t: 'cart', x: -15, z: 14, col: 0x6a4830 },
         { t: 'pend', x: -12, z: 20, col: 0x80b0d0, int: 1.4 },
         { t: 'pipes', x: -16, z: 14, len: 6 },
       ]},
@@ -2197,6 +2531,8 @@ const SEQUENCE_DEFS = {
         { t: 'container', x: -3, z: 22, w: 4.0, d: 1.8, col: 0x405060, rotY: Math.PI/2 },
         { t: 'container', x: 3, z: 22, w: 4.0, d: 1.8, col: 0x6a4830, rotY: Math.PI/2 },
         { t: 'drum', x: 0, z: 16, n: 3, col: 0xb8783c, stripe: 0x80b0d0 },
+        { t: 'cov', x: -5.5, z: 18.5, w: 1.35, h: 0.86, d: 0.78, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: 5.5, z: 18.5, w: 1.35, h: 0.86, d: 0.78, col: 0x2a323a, top: 0xa0c0e0 },
         { t: 'pend', x: 0, z: 19, col: 0xa0c0e0, int: 1.8, r: 9 },
         { t: 'pipes', x: 0, z: 23.5, len: 7 },
       ]},
@@ -2204,12 +2540,16 @@ const SEQUENCE_DEFS = {
         { t: 'container', x: 13, z: 22, w: 4.6, d: 1.9, col: 0x483a28 },
         { t: 'container', x: 10, z: 18, w: 4.0, d: 1.8, col: 0x405060, rotY: Math.PI/2 },
         { t: 'cart', x: 14, z: 14, col: 0x6a4830 },
+        { t: 'cov', x: 12.5, z: 17, w: 1.3, h: 0.85, d: 0.76, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: 15.5, z: 19.5, w: 1.25, h: 0.83, d: 0.74, col: 0x2a323a, top: 0xff8040 },
+        { t: 'drum', x: 11.5, z: 21, n: 2, col: 0x6a5030, stripe: 0xa0c0e0 },
         { t: 'pend', x: 12.5, z: 20, col: 0x80b0d0, int: 1.4 },
       ]},
       MW: { name: 'Engine Companionway', elements: [
         { t: 'tall', x: -16, z: -2, w: 0.85, h: 2.4, d: 0.4, col: 0x1a2028, stripes: 3, stripe: 0xff8040 },
         { t: 'pipes', x: -13, z: 0, len: 7 },
         { t: 'cov', x: -13, z: 4, w: 2.0, h: 0.85, d: 0.8, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: -12.5, z: -4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x2a323a, top: 0xff8040 },
         { t: 'console', x: -14, z: -4, w: 1.6, h: 0.95, d: 0.7, col: 0x10141c, glow: 0xff8040 },
         { t: 'pend', x: -14, z: -2, col: 0xff8040, int: 1.6 },
       ]},
@@ -2217,6 +2557,8 @@ const SEQUENCE_DEFS = {
         { t: 'plat', x: 14, z: -2, w: 3.6, d: 2.4, h: 0.85, col: 0x2a323a, top: 0x405060, rim: 0x80b0d0 },
         { t: 'rail', x: 14, z: -0.8, len: 3.6, col: 0xa0a8b0 },
         { t: 'drum', x: 16, z: 4, n: 3, col: 0xb8783c, stripe: 0x80b0d0 },
+        { t: 'cov', x: 12.8, z: -3.2, w: 1.3, h: 0.84, d: 0.76, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: 12.8, z: 3.2, w: 1.3, h: 0.84, d: 0.76, col: 0x2a323a, top: 0xff8040 },
         { t: 'pend', x: 14.5, z: 1, col: 0x80b0d0 },
       ]},
       BW: { name: 'Aft Engine Hood', elements: [
@@ -2224,12 +2566,17 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: -16, z: -19, w: 1.0, h: 2.4, d: 0.5, col: 0x1a2028 },
         { t: 'haz', x: -14, z: -17, w: 2.4, d: 1.6, col: 0x14080a, alpha: 0.85, glow: 0xff5040 },
         { t: 'pipes', x: -13, z: -20, len: 7 },
+        { t: 'cov', x: -11.5, z: -18, w: 1.35, h: 0.86, d: 0.78, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: -15.5, z: -21, w: 1.25, h: 0.82, d: 0.73, col: 0x2a323a, top: 0xff8040 },
         { t: 'pend', x: -13, z: -14, col: 0xff8040, int: 1.6 },
       ]},
       BE: { name: 'Crew Companionway', elements: [
         { t: 'plat', x: 14, z: -18, w: 3.6, d: 2.4, h: 0.85, col: 0x2a323a, top: 0x60686e, rim: 0x80b0d0 },
         { t: 'rail', x: 14, z: -16.7, len: 3.6, col: 0xa0a8b0 },
         { t: 'tall', x: 16, z: -14, w: 1.0, h: 2.4, d: 0.6, col: 0x1a2028, stripes: 4, stripe: 0x80b0d0 },
+        { t: 'cov', x: 12.5, z: -17, w: 1.28, h: 0.84, d: 0.75, col: 0x2a323a, top: 0x80b0d0 },
+        { t: 'cov', x: 15.2, z: -20.5, w: 1.22, h: 0.82, d: 0.72, col: 0x2a323a, top: 0xff8040 },
+        { t: 'cart', x: 12, z: -22, col: 0x6a4830 },
         { t: 'pend', x: 13.5, z: -14, col: 0x80b0d0 },
       ]},
       BC: { name: 'Bridge Approach', elements: [
@@ -2257,12 +2604,18 @@ const SEQUENCE_DEFS = {
         { t: 'plinth', x: -14, z: 22 },
         { t: 'bench', x: -13, z: 17, w: 3.0, d: 0.7, h: 0.55, col: 0x10141c, back: true },
         { t: 'lamp', x: -16, z: 19, col: 0xc8e0ff },
+        { t: 'cov', x: -15.5, z: 16.5, w: 1.3, h: 0.84, d: 0.76, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: -11.5, z: 21, w: 1.25, h: 0.82, d: 0.74, col: 0x10141c, top: 0xffd060 },
+        { t: 'tall', x: -16.5, z: 14, w: 0.7, h: 2.0, d: 0.5, col: 0x06070a, stripes: 4, stripe: 0xc8e0ff },
+        { t: 'pipes', x: -12, z: 14, len: 5 },
         { t: 'pend', x: -13, z: 19, col: 0xc8e0ff, int: 1.6, r: 9 },
       ]},
       FC: { name: 'Reception Court', elements: [
         { t: 'desk', x: 0, z: 22, lx: 1.8, lz: 1.4 },
         { t: 'plinth', x: -5, z: 18 },
         { t: 'plinth', x: 5, z: 18 },
+        { t: 'cov', x: -4.5, z: 15.5, w: 1.35, h: 0.88, d: 0.78, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: 4.5, z: 15.5, w: 1.35, h: 0.88, d: 0.78, col: 0x10141c, top: 0xffd060 },
         { t: 'lamp', x: -4, z: 14, col: 0xc8e0ff },
         { t: 'lamp', x: 4, z: 14, col: 0xc8e0ff },
         { t: 'pend', x: 0, z: 17, col: 0xc8e0ff, int: 2.4, r: 12 },
@@ -2271,6 +2624,10 @@ const SEQUENCE_DEFS = {
         { t: 'plinth', x: 14, z: 22 },
         { t: 'bench', x: 13, z: 17, w: 3.0, d: 0.7, h: 0.55, col: 0x10141c, back: true },
         { t: 'lamp', x: 16, z: 19, col: 0xc8e0ff },
+        { t: 'cov', x: 15.5, z: 16.5, w: 1.3, h: 0.84, d: 0.76, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: 11.5, z: 21, w: 1.25, h: 0.82, d: 0.74, col: 0x10141c, top: 0xffd060 },
+        { t: 'tall', x: 16.5, z: 14, w: 0.7, h: 2.0, d: 0.5, col: 0x06070a, stripes: 4, stripe: 0xffd060 },
+        { t: 'cart', x: 12, z: 14, col: 0x303840 },
         { t: 'pend', x: 13, z: 19, col: 0xc8e0ff, int: 1.6, r: 9 },
       ]},
       MW: { name: 'Boardroom', elements: [
@@ -2278,6 +2635,8 @@ const SEQUENCE_DEFS = {
         { t: 'bench', x: -16, z: -3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
         { t: 'bench', x: -16, z: 3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
         { t: 'console', x: -12, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x06070a, glow: 0xffd060 },
+        { t: 'cov', x: -12.8, z: -2.5, w: 1.25, h: 0.85, d: 0.74, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: -12.8, z: 2.5, w: 1.25, h: 0.85, d: 0.74, col: 0x10141c, top: 0xffd060 },
         { t: 'pend', x: -14, z: 0, col: 0xffd060, int: 1.8, r: 9 },
       ]},
       ME: { name: 'Executive Vault', elements: [
@@ -2285,12 +2644,16 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 16, z: 3, w: 1.4, h: 2.4, d: 0.8, col: 0x06070a, stripes: 3, stripe: 0xffd060 },
         { t: 'console', x: 14, z: 0, w: 1.8, h: 1.0, d: 0.8, col: 0x06070a, glow: 0xffd060 },
         { t: 'haz', x: 14.5, z: 4, w: 2.2, d: 1.4, col: 0x040608, alpha: 0.85, glow: 0xffd060 },
+        { t: 'cov', x: 12.8, z: -4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: 12.8, z: 4.5, w: 1.25, h: 0.82, d: 0.73, col: 0x10141c, top: 0xffd060 },
         { t: 'pend', x: 14, z: 0, col: 0xffd060, int: 1.6, r: 9 },
       ]},
       BW: { name: 'Maintenance Spine', elements: [
         { t: 'tall', x: -16, z: -14, w: 1.0, h: 2.6, d: 0.6, col: 0x06070a, stripes: 4, stripe: 0xc8e0ff },
         { t: 'pipes', x: -13, z: -17, len: 7 },
         { t: 'cov', x: -13, z: -20, w: 2.0, h: 0.85, d: 0.8, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: -15.5, z: -16, w: 1.28, h: 0.83, d: 0.75, col: 0x10141c, top: 0xffd060 },
+        { t: 'crate2', x: -11, z: -18, col: 0x202830 },
         { t: 'pend', x: -13, z: -16, col: 0xc8e0ff, int: 1.4 },
       ]},
       BE: { name: 'Helipad Stair', elements: [
@@ -2298,6 +2661,8 @@ const SEQUENCE_DEFS = {
         { t: 'rail', x: 14, z: -16.7, len: 4.2, col: 0xa0c0e0 },
         { t: 'catwalk', x: 13, z: -22, len: 8, rotY: Math.PI/2 },
         { t: 'crate2', x: 16, z: -14, col: 0x10141c },
+        { t: 'cov', x: 12.5, z: -16.5, w: 1.28, h: 0.84, d: 0.75, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: 15.2, z: -20.5, w: 1.22, h: 0.82, d: 0.72, col: 0x10141c, top: 0xffd060 },
         { t: 'pend', x: 13.5, z: -14, col: 0xc8e0ff },
       ]},
       BC: { name: 'Helipad Apex', elements: [
@@ -2306,6 +2671,8 @@ const SEQUENCE_DEFS = {
         { t: 'tall', x: 3, z: -19, w: 1.2, h: 2.6, d: 0.6, col: 0x06070a, stripes: 5, stripe: 0xc8e0ff },
         { t: 'console', x: -4, z: -15, w: 1.6, h: 0.95, d: 0.7, col: 0x040608, glow: 0xc8e0ff },
         { t: 'console', x: 4, z: -15, w: 1.6, h: 0.95, d: 0.7, col: 0x040608, glow: 0xffd060 },
+        { t: 'cov', x: -4.5, z: -17.2, w: 1.35, h: 0.88, d: 0.8, col: 0x10141c, top: 0xc8e0ff },
+        { t: 'cov', x: 4.5, z: -17.2, w: 1.35, h: 0.88, d: 0.8, col: 0x10141c, top: 0xffd060 },
         { t: 'pend', x: 0, z: -17, col: 0xc8e0ff, int: 3.0, r: 14 },
         { t: 'haz', x: 0, z: -22, w: 4.6, d: 1.8, col: 0x06080c, alpha: 0.92, glow: 0xc8e0ff },
       ]},
@@ -2318,6 +2685,9 @@ const SEQUENCE_DEFS = {
     ],
   },
 };
+
+/** Exported for `scripts/sequence-def-density-audit.mjs` and tooling. */
+export { SEQUENCE_DEFS };
 
 
 const ENCOUNTER_BEATS = {
@@ -2379,7 +2749,7 @@ const BUILDING_ZONE_ROLES = {
   // ── ACT III — The Apparatus ───────────────────────────────────────────
   9: [
     { tag: 'snipe', verb: 'enter', reinforce: 'marksman', telegraph: 'watchtower beam' },
-    { tag: 'read', verb: 'intercept', reinforce: 'soldier', telegraph: 'customs siren' },
+    { tag: 'brawl', verb: 'intercept', reinforce: 'soldier', telegraph: 'customs crush' },
     { tag: 'boss', verb: 'hold', reinforce: 'demolitions', telegraph: 'border office shutter' },
   ],
   10: [
@@ -2399,6 +2769,100 @@ const BUILDING_ZONE_ROLES = {
   ],
 };
 
+/** Per-building bone pass after shared `buildCellSkeleton`. Adds tagged arena slices so nav + `requiredGeometry` audits diverge per deploy. */
+function _skBcSlice(ctx, z, x0, x1, geometryId) {
+  addWallSegmentX(ctx, z, x0, x1, 0.52, ctx.materials.dM, {
+    geometryId,
+    roomId: 'relay_cage',
+    floorplanRole: 'skeleton_return_slice',
+  });
+}
+/** Short Z-run in `mid_lane_center` (stays clear of the mid_spine_pinch band near z≈+5.5). */
+function _skMlRipple(ctx, x, z0, z1, geometryId) {
+  addWallSegmentZ(ctx, x, z0, z1, 0.52, ctx.materials.dM, {
+    geometryId,
+    roomId: 'mid_lane_center',
+    floorplanRole: 'skeleton_spine_ripple',
+  });
+}
+/** Shallow dock bulkhead stub — side-biased so the center breach column stays open. */
+function _skDkStub(ctx, z, x0, x1, geometryId) {
+  addWallSegmentX(ctx, z, x0, x1, 0.48, ctx.materials.dM, {
+    geometryId,
+    roomId: 'dock_intake',
+    floorplanRole: 'skeleton_intake_stub',
+  });
+}
+function _skPost02(ctx) {
+  _skBcSlice(ctx, -13.1, 4.05, 7.38, 'skel_b02_bc_slice');
+  _skMlRipple(ctx, -5.85, -5.4, -0.55, 'skel_b02_ml_ripple');
+  _skDkStub(ctx, 15.1, -6.95, -3.95, 'skel_b02_dk_stub');
+}
+function _skPost03(ctx) {
+  _skBcSlice(ctx, -14.2, -7.38, -4.05, 'skel_b03_bc_slice');
+  _skMlRipple(ctx, 5.35, -5.1, 0.65, 'skel_b03_ml_ripple');
+  _skDkStub(ctx, 15.3, 4.15, 6.98, 'skel_b03_dk_stub');
+}
+function _skPost04(ctx) {
+  _skBcSlice(ctx, -12.4, 4.0, 7.35, 'skel_b04_bc_slice');
+  _skMlRipple(ctx, -5.55, -4.2, 1.1, 'skel_b04_ml_ripple');
+  _skDkStub(ctx, 14.85, -7.05, -3.88, 'skel_b04_dk_stub');
+}
+function _skPost05(ctx) {
+  _skBcSlice(ctx, -15.0, -7.35, -4.1, 'skel_b05_bc_slice');
+  _skMlRipple(ctx, 5.55, -5.8, -0.4, 'skel_b05_ml_ripple');
+  _skDkStub(ctx, 15.5, 3.92, 6.92, 'skel_b05_dk_stub');
+}
+function _skPost06(ctx) {
+  _skBcSlice(ctx, -11.6, 4.08, 7.32, 'skel_b06_bc_slice');
+  _skMlRipple(ctx, -5.25, -3.8, 2.0, 'skel_b06_ml_ripple');
+  _skDkStub(ctx, 14.7, -6.82, -4.05, 'skel_b06_dk_stub');
+}
+function _skPost07(ctx) {
+  _skBcSlice(ctx, -13.6, -7.34, -4.12, 'skel_b07_bc_slice');
+  _skMlRipple(ctx, 5.15, -4.5, 1.35, 'skel_b07_ml_ripple');
+  _skDkStub(ctx, 15.0, 4.02, 7.02, 'skel_b07_dk_stub');
+}
+function _skPost08(ctx) {
+  _skBcSlice(ctx, -14.4, 4.02, 7.36, 'skel_b08_bc_slice');
+  _skMlRipple(ctx, -5.95, -5.6, -0.2, 'skel_b08_ml_ripple');
+  _skDkStub(ctx, 15.35, -6.98, -3.82, 'skel_b08_dk_stub');
+}
+function _skPost09(ctx) {
+  _skBcSlice(ctx, -12.7, -7.36, -4.02, 'skel_b09_bc_slice');
+  _skMlRipple(ctx, 5.45, -3.2, 2.45, 'skel_b09_ml_ripple');
+  _skDkStub(ctx, 14.9, 4.08, 6.9, 'skel_b09_dk_stub');
+}
+function _skPost10(ctx) {
+  _skBcSlice(ctx, -15.2, 4.06, 7.34, 'skel_b10_bc_slice');
+  _skMlRipple(ctx, -5.4, -4.9, 0.9, 'skel_b10_ml_ripple');
+  _skDkStub(ctx, 15.25, -6.92, -3.92, 'skel_b10_dk_stub');
+}
+function _skPost11(ctx) {
+  _skBcSlice(ctx, -11.2, -7.3, -4.15, 'skel_b11_bc_slice');
+  _skMlRipple(ctx, 5.25, -5.3, 0.15, 'skel_b11_ml_ripple');
+  _skDkStub(ctx, 15.15, 3.88, 6.88, 'skel_b11_dk_stub');
+}
+function _skPost12(ctx) {
+  _skBcSlice(ctx, -16.1, 4.1, 7.3, 'skel_b12_bc_slice');
+  _skMlRipple(ctx, -5.7, -4.4, 1.8, 'skel_b12_ml_ripple');
+  _skDkStub(ctx, 14.95, -6.88, -4.02, 'skel_b12_dk_stub');
+}
+
+export const BUILDING_SKELETON_POST = {
+  2: _skPost02,
+  3: _skPost03,
+  4: _skPost04,
+  5: _skPost05,
+  6: _skPost06,
+  7: _skPost07,
+  8: _skPost08,
+  9: _skPost09,
+  10: _skPost10,
+  11: _skPost11,
+  12: _skPost12,
+};
+
 // ── EXTRA_ELEMENTS — per-building post-pass placements ───────────────────
 // Dividers create closed-off interior sub-rooms (with optional doorways).
 // Windows are tactical glass — see-through, shoot-through, vault-through —
@@ -2409,18 +2873,59 @@ const BUILDING_ZONE_ROLES = {
 // z roughly -22..22, where +z is "front" (player spawn side) and -z is "back"
 // (boss-arena side). rotY=0 → wall runs along X; rotY=π/2 → wall runs along Z.
 const EXTRA_ELEMENTS = {
-  // ── 1: LOADING DOCK — manifest office + cargo office windows ──────────
+  // ── 1: LOADING DOCK — B01 floorplan: intake lanes, service run, relay cage reads
   1: [
-    // Manifest sub-room (MW): a small office walled off, doorway facing east
-    { t: 'divider', x: -12, z: 4, len: 5.5, rotY: 0, gap: 1.4, gapPos: 1.5 },
-    { t: 'divider', x: -10, z: 1, len: 5.0, rotY: Math.PI/2, gap: 0 },
-    // Tactical glass — front face of the office (peek from main floor into MW)
-    { t: 'window', x: -8.5, z: 4, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, frameCol: 0x1a1a20 },
-    // Foreman's catwalk lookout window (BE side, looking down on relay cage)
-    { t: 'window', x: 15.5, z: -12, len: 2.8, rotY: Math.PI/2, sill: 1.1, head: 2.2 },
-    // Extra cover density
+    // Dock intake — readable threshold before the open court compresses
+    { t: 'divider', x: 0, z: 20.2, len: 11.5, rotY: 0, gap: 2.0, gapPos: 3.8,
+      roomId: 'dock_intake', floorplanRole: 'threshold', geometryId: 'dock_threshold_strip' },
+    // West-side compressed service run (not the center breach lane)
+    { t: 'divider', x: -15.5, z: 18, len: 10.5, rotY: Math.PI/2, gap: 1.35, gapPos: 2.0,
+      roomId: 'dock_intake', floorplanRole: 'connector', geometryId: 'west_service_run' },
+    // Alarm relay shell + offset internal entry
+    { t: 'divider', x: -12, z: 4, len: 5.5, rotY: 0, gap: 1.4, gapPos: 1.5,
+      roomId: 'alarm_relay_room', geometryId: 'relay_partition_north' },
+    { t: 'divider', x: -10, z: 1, len: 5.0, rotY: Math.PI/2, gap: 0,
+      roomId: 'alarm_relay_room', geometryId: 'relay_partition_west' },
+    { t: 'divider', x: -14.5, z: -2.2, len: 4.2, rotY: 0, gap: 1.15, gapPos: -1.35,
+      roomId: 'alarm_relay_room', floorplanRole: 'threshold', geometryId: 'relay_offset_door' },
+    // Tactical glass — manifest read into mid floor
+    { t: 'window', x: -8.5, z: 4, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, frameCol: 0x1a1a20,
+      geometryId: 'manifest_office_window', roomId: 'alarm_relay_room', sightlineId: 'office_to_mid_floor' },
+    // East flank approach — narrows FE before the mid door, rewards side routing
+    { t: 'divider', x: 14.2, z: 16, len: 8, rotY: Math.PI/2, gap: 1.5, gapPos: -2.0,
+      roomId: 'dock_intake', floorplanRole: 'connector', geometryId: 'east_compression_corridor' },
+    // Foreman / office cage — partial glass read into relay cage (BC)
+    { t: 'divider', x: 14, z: -16.5, len: 3.8, rotY: 0, gap: 1.15, gapPos: 0.55,
+      roomId: 'foreman_cage', floorplanRole: 'threshold', geometryId: 'foreman_cage_wall' },
+    { t: 'divider', x: 11.8, z: -14.5, len: 3.0, rotY: Math.PI/2, gap: 0,
+      roomId: 'foreman_cage', geometryId: 'foreman_cage_return' },
+    { t: 'window', x: 12.0, z: -12.8, len: 2.2, rotY: 0, sill: 0.92, head: 2.05, frameCol: 0x222830,
+      geometryId: 'foreman_glass', roomId: 'foreman_cage', sightlineId: 'foreman_to_relay_cage', floorplanRole: 'sightline' },
+    // Catwalk overlook — existing read, now tagged for floorplan debug
+    { t: 'window', x: 15.5, z: -12, len: 2.8, rotY: Math.PI/2, sill: 1.1, head: 2.2,
+      geometryId: 'catwalk_to_cage_window', roomId: 'foreman_cage', sightlineId: 'catwalk_over_bc' },
+    // Intake → zone-door apron — must leave the x≈5 breach lane clear down to z=zSplit
+    // (east zone door). A 10.5m bar centered at 0 left a solid segment to x=5.25 at z≈8.85,
+    // which blocked the door column for PR=0.35 (read as “door stuck in a wall”).
+    { t: 'divider', x: 0, z: 8.85, len: 12.5, rotY: 0, gap: 2.2, gapPos: 5.0,
+      roomId: 'dock_intake', floorplanRole: 'threshold', geometryId: 'intake_apron_divider' },
+    // Mid spine pinch — short segment breaks long FC center line toward MW/ME doors
+    { t: 'divider', x: -2.5, z: 5.5, len: 4.2, rotY: Math.PI/2, gap: 1.25, gapPos: 0.4,
+      roomId: 'mid_lane_center', floorplanRole: 'connector', geometryId: 'mid_spine_pinch' },
+    // Relay cage vestibule — shallow funnel in front of arch read
+    { t: 'divider', x: 0, z: -11.9, len: 5.5, rotY: 0, gap: 2.0, gapPos: 0.35,
+      roomId: 'relay_cage', floorplanRole: 'threshold', geometryId: 'cage_vestibule' },
+    // Narrow service read from MW toward drum lane (tactical glass, high sill)
+    { t: 'window', x: -11.35, z: -0.5, len: 1.35, rotY: 0, sill: 1.15, head: 2.15, frameCol: 0x1c2028,
+      geometryId: 'relay_side_slit', roomId: 'alarm_relay_room', sightlineId: 'relay_peek_me', floorplanRole: 'sightline' },
+    // Relay console approach — non-blocking cyan read for alarm interact lane
+    { t: 'haz', x: -14, z: 3.15, w: 1.7, d: 1.0, col: 0x060a10, alpha: 0.38, glow: 0x40ffc8,
+      roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor', geometryId: 'alarm_interact_lane' },
     { t: 'crate2', x: -6, z: 6, col: 0x6a4830 },
     { t: 'drum', x: 16, z: -6, n: 2, col: 0xc04830, stripe: 0xfff0d0 },
+    { t: 'dogleg', x: 4, z: 16, len1: 4.0, rotY1: Math.PI / 2, gap1: 1.25, gapPos1: 0.3, x2: 0.5, z2: 13.5, len2: 5.0, rotY2: 0, gap2: 1.4, gapPos2: 0.2, geometryId: 'b01_fe_flank_dog', roomId: 'east_flank_connector' },
+    { t: 'corridor', x: -14, z: -8, len: 5.0, rotY: 0, width: 1.15, gap: 1.2, gapPos: 0, roomId: 'mid_lane_west', geometryId: 'b01_service_corridor' },
+    { t: 'vestibule', x: 0, z: -14, rotY: 0, w: 4.5, gap: 1.35, gapPos: 0, dx: 0, dz: -1.4, len2: 3.8, rotY2: Math.PI / 2, gap2: 1.15, geometryId: 'b01_cage_vest', geometryId2: 'b01_cage_vest_s', roomId: 'relay_cage' },
   ],
   // ── 2: CONTINENTAL — coat check booth + lobby glass ───────────────────
   2: [
@@ -2431,10 +2936,22 @@ const EXTRA_ELEMENTS = {
     { t: 'window', x: 7.5, z: 14, len: 3.4, rotY: Math.PI/2, sill: 0.0, head: 2.2, col: 0xffe0a0, frameCol: 0x281810 },
     // Concierge desk window (FC) — peek view into office
     { t: 'window', x: -3, z: 18, len: 2.8, rotY: 0, sill: 0.95, head: 2.05, col: 0xffd070 },
+    // Sub-room kit: ticket lane compression (corridor kit — clearance vs PR in validate:geometry)
+    { t: 'corridor', x: -3.5, z: 16.8, len: 4.2, rotY: 0, width: 1.22, gap: 1.15, gapPos: -0.4 },
     // Salon partition (FE)
     { t: 'divider', x: 12, z: 14, len: 3.6, rotY: 0, gap: 1.3, gapPos: 0 },
     { t: 'plinth', x: -6, z: 8 },
     { t: 'lamp', x: 11, z: 8 },
+    { t: 'vestibule', x: 12, z: -14, rotY: 0, w: 3.4, gap: 1.25, gapPos: 0.2, dx: 0.9, dz: -1.5, len2: 2.8, rotY2: Math.PI / 2, gap2: 0, geometryId: 'b02_bw_vest', geometryId2: 'b02_bw_vest_return' },
+    { t: 'dogleg', x: 0, z: 5.5, len1: 4.5, rotY1: 0, gap1: 1.35, gapPos1: -0.6, x2: 2.8, z2: 3.2, len2: 3.4, rotY2: Math.PI / 2, gap2: 1.2, gapPos2: 0, geometryId: 'b02_mid_spine_dog', roomId: 'mid_lane_center', floorplanRole: 'connector' },
+    { t: 'window', x: -14, z: 0, len: 2.8, rotY: Math.PI / 2, sill: 0.85, head: 2.1, col: 0xffe8c8, frameCol: 0x281810, roomId: 'alarm_relay_room', geometryId: 'b02_library_peek' },
+    { t: 'corridor', x: 14, z: -4, len: 5.5, rotY: Math.PI / 2, width: 1.2, gap: 1.25, gapPos: 0.5, roomId: 'drum_lane', geometryId: 'b02_gallery_corridor' },
+    { t: 'divider', x: -4, z: 20, len: 5.0, rotY: Math.PI / 2, gap: 1.4, gapPos: 0.8, roomId: 'dock_intake', geometryId: 'b02_intake_kink' },
+    { t: 'plinth', x: 4, z: 22 },
+    { t: 'lamp', x: -8, z: 22, col: 0xffd070 },
+    { t: 'cov', x: -5.2, z: 19.2, w: 1.35, h: 0.86, d: 0.78, col: 0x3a3428, top: 0xffe8c8, roomId: 'dock_intake' },
+    { t: 'cov', x: 9.4, z: 18.3, w: 1.28, h: 0.85, d: 0.75, col: 0x3a3428, top: 0xffd070, roomId: 'dock_intake' },
+    { t: 'haz', x: -14.2, z: 11.7, w: 1.55, d: 0.95, col: 0x0a0806, alpha: 0.4, glow: 0xffd070, roomId: 'dock_intake' },
   ],
   // ── 3: NIGHTCLUB — VIP booths + mirror lounge glass ───────────────────
   3: [
@@ -2448,6 +2965,15 @@ const EXTRA_ELEMENTS = {
     // Bottle service partition (FE)
     { t: 'divider', x: 12, z: 18, len: 3.0, rotY: Math.PI/2, gap: 1.2, gapPos: 0 },
     { t: 'speaker', x: -10, z: 22, col: 0xff40c8 },
+    { t: 'dogleg', x: 0, z: 10, len1: 5.0, rotY1: 0, gap1: 1.5, gapPos1: 0.4, x2: -3.2, z2: 7.5, len2: 4.0, rotY2: Math.PI / 2, gap2: 1.25, gapPos2: 0, geometryId: 'b03_fc_pit_dog', roomId: 'dock_intake' },
+    { t: 'corridor', x: -14, z: -16, len: 4.5, rotY: 0, width: 1.15, gap: 1.2, gapPos: -0.3, roomId: 'west_service_connector', geometryId: 'b03_vip_corridor' },
+    { t: 'divider', x: 0, z: -8, len: 6.0, rotY: 0, gap: 1.6, gapPos: 0, roomId: 'relay_cage', geometryId: 'b03_mirror_split' },
+    { t: 'window', x: -6, z: -14, len: 2.4, rotY: 0, sill: 0.7, head: 2.0, col: 0xff60d0, frameCol: 0x180818, roomId: 'relay_cage', geometryId: 'b03_side_glass' },
+    { t: 'vestibule', x: -12, z: 2, rotY: Math.PI / 2, w: 2.8, gap: 1.15, gapPos: 0, dx: -1.2, dz: 0, len2: 3.2, rotY2: 0, gap2: 1.1, gapPos2: 0.2, geometryId: 'b03_mw_vest', geometryId2: 'b03_mw_vest_n' },
+    { t: 'cov', x: -4.2, z: 18.5, w: 1.32, h: 0.84, d: 0.76, col: 0x201020, top: 0xff60c8, roomId: 'dock_intake' },
+    { t: 'cov', x: 8.6, z: 17.8, w: 1.28, h: 0.83, d: 0.74, col: 0x201020, top: 0x40e0ff, roomId: 'dock_intake' },
+    { t: 'crate2', x: 2.5, z: 12.2, col: 0x4a2048, roomId: 'mid_lane_center' },
+    { t: 'haz', x: 0, z: 8.2, w: 2.2, d: 1.1, col: 0x120818, alpha: 0.35, glow: 0xff40c8, roomId: 'mid_lane_center' },
   ],
   // ── 4: PENTHOUSE — wine vault corridor + study + executive glass ──────
   4: [
@@ -2461,6 +2987,15 @@ const EXTRA_ELEMENTS = {
     // Bedroom partition
     { t: 'divider', x: 12, z: -14, len: 4.4, rotY: 0, gap: 1.4, gapPos: 0.8 },
     { t: 'plinth', x: 5, z: 8 },
+    { t: 'dogleg', x: 0, z: 6, len1: 4.2, rotY1: Math.PI / 2, gap1: 1.3, gapPos1: 0.5, x2: -3.5, z2: 3.5, len2: 4.5, rotY2: 0, gap2: 1.4, gapPos2: -0.4, geometryId: 'b04_spine_dog', roomId: 'mid_lane_center' },
+    { t: 'divider', x: -6, z: 16, len: 4.0, rotY: 0, gap: 1.35, gapPos: 0.6, roomId: 'dock_intake', geometryId: 'b04_fc_bar_kink' },
+    { t: 'window', x: 12, z: 8, len: 2.8, rotY: Math.PI / 2, sill: 0.4, head: 2.2, col: 0xa0c8ff, frameCol: 0x0a0814, roomId: 'east_flank_connector', geometryId: 'b04_pit_glass' },
+    { t: 'corridor', x: -14, z: -6, len: 5.0, rotY: Math.PI / 2, width: 1.18, gap: 1.2, gapPos: 0, roomId: 'mid_lane_west', geometryId: 'b04_art_corridor' },
+    { t: 'divider', x: 0, z: -12, len: 5.5, rotY: 0, gap: 1.5, gapPos: 0, roomId: 'relay_cage', geometryId: 'b04_suite_threshold' },
+    { t: 'cov', x: -6.2, z: 17.4, w: 1.34, h: 0.86, d: 0.78, col: 0x2a2c38, top: 0xffd060, roomId: 'dock_intake' },
+    { t: 'cov', x: 6.4, z: 16.9, w: 1.3, h: 0.85, d: 0.76, col: 0x2a2c38, top: 0xa0c8ff, roomId: 'dock_intake' },
+    { t: 'plinth', x: 0, z: 21 },
+    { t: 'haz', x: -14, z: 20, w: 1.8, d: 1.0, col: 0x0a0c12, alpha: 0.38, glow: 0xa0c8ff, roomId: 'dock_intake' },
   ],
   // ── 5: STERLING MEDICAL — ICU partition + observation glass ───────────
   5: [
@@ -2474,6 +3009,14 @@ const EXTRA_ELEMENTS = {
     // Triage cubicle (FC) — soft sub-room
     { t: 'divider', x: 0, z: 14, len: 4.2, rotY: 0, gap: 1.5, gapPos: 0 },
     { t: 'console', x: 4, z: -16, w: 1.4, h: 0.95, d: 0.7, col: 0x141820, glow: 0x40ff80 },
+    { t: 'corridor', x: 0, z: 0, len: 6.5, rotY: 0, width: 1.16, gap: 1.22, gapPos: 0.3, roomId: 'mid_lane_center', geometryId: 'b05_mid_clinical_corridor' },
+    { t: 'dogleg', x: -14, z: 2, len1: 3.8, rotY1: 0, gap1: 1.2, gapPos1: 0, x2: -12.5, z2: -1.5, len2: 3.6, rotY2: Math.PI / 2, gap2: 1.1, gapPos2: 0.2, geometryId: 'b05_mw_dog', roomId: 'alarm_relay_room' },
+    { t: 'divider', x: 12, z: 16, len: 4.5, rotY: Math.PI / 2, gap: 1.3, gapPos: -0.5, roomId: 'dock_intake', geometryId: 'b05_triage_lane' },
+    { t: 'window', x: 8, z: 0, len: 3.0, rotY: 0, sill: 1.0, head: 2.05, col: 0xc8e8ff, frameCol: 0x202830, roomId: 'drum_lane', geometryId: 'b05_nurse_glass' },
+    { t: 'vestibule', x: 0, z: -14, rotY: 0, w: 4.2, gap: 1.4, gapPos: 0, dx: 0, dz: -1.8, len2: 3.4, rotY2: Math.PI / 2, gap2: 1.15, gapPos2: 0, geometryId: 'b05_bc_vest', geometryId2: 'b05_bc_vest_e', roomId: 'relay_cage' },
+    { t: 'cov', x: -4.8, z: 18.8, w: 1.36, h: 0.87, d: 0.79, col: 0x3a4248, top: 0xc8e8ff, roomId: 'dock_intake' },
+    { t: 'cov', x: 4.9, z: 18.2, w: 1.32, h: 0.86, d: 0.77, col: 0x3a4248, top: 0x40ff80, roomId: 'dock_intake' },
+    { t: 'cov', x: 0, z: 16.2, w: 1.25, h: 0.84, d: 0.74, col: 0x384248, top: 0xe8f8ff, roomId: 'dock_intake' },
   ],
   // ── 6: SUBWAY LINE 7 — ticket booth + maintenance corridor ────────────
   6: [
@@ -2487,6 +3030,15 @@ const EXTRA_ELEMENTS = {
     // Operator booth window (BE) — overlooking switch chamber
     { t: 'window', x: 13, z: -12, len: 2.6, rotY: 0, sill: 1.0, head: 2.0, col: 0xff5040 },
     { t: 'pipes', x: 5, z: -20, len: 6 },
+    { t: 'corridor', x: -13.5, z: -15, len: 5.5, rotY: Math.PI / 2, width: 1.18, gap: 1.3, gapPos: 0.2 },
+    { t: 'dogleg', x: 0, z: 4, len1: 5.5, rotY1: 0, gap1: 1.45, gapPos1: -0.5, x2: 3.2, z2: 1.5, len2: 4.2, rotY2: Math.PI / 2, gap2: 1.2, gapPos2: 0, geometryId: 'b06_fc_turnstile_dog', roomId: 'mid_lane_center' },
+    { t: 'divider', x: 14, z: -6, len: 5.0, rotY: 0, gap: 1.35, gapPos: 0.4, roomId: 'drum_lane', geometryId: 'b06_me_panel_row' },
+    { t: 'window', x: -10, z: -8, len: 2.6, rotY: 0, sill: 0.9, head: 1.9, col: 0xfff060, frameCol: 0x202020, roomId: 'alarm_relay_room', geometryId: 'b06_tunnel_window' },
+    { t: 'corridor', x: 0, z: -18, len: 6.0, rotY: Math.PI / 2, width: 1.2, gap: 1.25, gapPos: 0, roomId: 'relay_cage', geometryId: 'b06_switch_corridor' },
+    { t: 'divider', x: -4, z: 20, len: 4.0, rotY: Math.PI / 2, gap: 1.25, gapPos: 0, roomId: 'dock_intake', geometryId: 'b06_vendor_kink' },
+    { t: 'cov', x: -5.5, z: 19.5, w: 1.33, h: 0.86, d: 0.78, col: 0x383c44, top: 0xfff060, roomId: 'dock_intake' },
+    { t: 'cov', x: 5.6, z: 19.0, w: 1.3, h: 0.85, d: 0.76, col: 0x383c44, top: 0xff5040, roomId: 'dock_intake' },
+    { t: 'haz', x: 0, z: 6.5, w: 2.4, d: 1.0, col: 0x101418, alpha: 0.36, glow: 0xfff060, roomId: 'mid_lane_center' },
   ],
   // ── 7: AZURE YACHT — stateroom corridor + bridge glass ─────────────────
   7: [
@@ -2499,6 +3051,14 @@ const EXTRA_ELEMENTS = {
     { t: 'window', x: 0, z: -10, len: 4.0, rotY: 0, sill: 1.0, head: 2.2, col: 0xa0c8ff, frameCol: 0x281408 },
     // Galley partition (FW)
     { t: 'divider', x: -11, z: 14, len: 4.0, rotY: 0, gap: 1.3, gapPos: 0 },
+    { t: 'dogleg', x: 0, z: 16, len1: 4.8, rotY1: 0, gap1: 1.35, gapPos1: 0.5, x2: -2.8, z2: 13.5, len2: 3.6, rotY2: Math.PI / 2, gap2: 1.15, gapPos2: 0, geometryId: 'b07_salon_dog', roomId: 'dock_intake' },
+    { t: 'window', x: -6, z: 8, len: 3.2, rotY: Math.PI / 2, sill: 0.35, head: 2.1, col: 0xa0c8ff, frameCol: 0x281408, roomId: 'mid_lane_center', geometryId: 'b07_salon_bulkhead' },
+    { t: 'corridor', x: 14, z: 4, len: 5.0, rotY: 0, width: 1.14, gap: 1.2, gapPos: -0.2, roomId: 'drum_lane', geometryId: 'b07_stateroom_corridor' },
+    { t: 'divider', x: 0, z: -6, len: 5.0, rotY: 0, gap: 1.5, gapPos: 0, roomId: 'relay_cage', geometryId: 'b07_engine_read' },
+    { t: 'vestibule', x: -12, z: -18, rotY: Math.PI / 2, w: 3.0, gap: 1.1, gapPos: 0, dx: -1.0, dz: 1.2, len2: 2.8, rotY2: 0, gap2: 1.0, geometryId: 'b07_bw_vest', geometryId2: 'b07_bw_vest_s' },
+    { t: 'cov', x: -6.0, z: 18.6, w: 1.34, h: 0.86, d: 0.78, col: 0x281408, top: 0xa0c8ff, roomId: 'dock_intake' },
+    { t: 'cov', x: 6.2, z: 18.1, w: 1.3, h: 0.85, d: 0.76, col: 0x281408, top: 0xffe8c8, roomId: 'dock_intake' },
+    { t: 'lamp', x: 0, z: 20.5, col: 0xa0c8ff },
   ],
   // ── 8: SERVER FARM Δ — hot/cold aisle glass + control booth ──────────
   8: [
@@ -2511,6 +3071,14 @@ const EXTRA_ELEMENTS = {
     { t: 'window', x: 11, z: -14, len: 2.6, rotY: 0, sill: 0.9, head: 2.0, col: 0x40e0ff, frameCol: 0x10141c },
     // Cold-aisle dividers — short sub-room walls between racks
     { t: 'divider', x: -12, z: -2, len: 5.0, rotY: 0, gap: 1.6, gapPos: 1.0 },
+    { t: 'corridor', x: -14, z: 4, len: 5.5, rotY: Math.PI / 2, width: 1.17, gap: 1.22, gapPos: 0.4, roomId: 'alarm_relay_room', geometryId: 'b08_cold_corridor' },
+    { t: 'dogleg', x: 0, z: 0, len1: 5.0, rotY1: Math.PI / 2, gap1: 1.3, gapPos1: 0, x2: 4.0, z2: -2.5, len2: 4.5, rotY2: 0, gap2: 1.25, gapPos2: 0.3, geometryId: 'b08_spine_dog', roomId: 'mid_lane_center' },
+    { t: 'divider', x: 14, z: 6, len: 4.2, rotY: Math.PI / 2, gap: 1.2, gapPos: 0.5, roomId: 'dock_intake', geometryId: 'b08_rack_kink' },
+    { t: 'window', x: -14, z: -4, len: 2.4, rotY: 0, sill: 1.0, head: 2.0, col: 0x80c8ff, frameCol: 0x10141c, roomId: 'west_service_connector', geometryId: 'b08_ops_peek' },
+    { t: 'vestibule', x: 0, z: -16, rotY: 0, w: 4.5, gap: 1.35, gapPos: 0, dx: 0, dz: -1.6, len2: 3.6, rotY2: Math.PI / 2, gap2: 1.1, geometryId: 'b08_core_vest', geometryId2: 'b08_core_vest_w' },
+    { t: 'cov', x: -5.8, z: 18.4, w: 1.33, h: 0.86, d: 0.78, col: 0x10141c, top: 0x40e0ff, roomId: 'dock_intake' },
+    { t: 'cov', x: 5.9, z: 17.9, w: 1.3, h: 0.85, d: 0.76, col: 0x10141c, top: 0x80c8ff, roomId: 'dock_intake' },
+    { t: 'haz', x: -14, z: 16, w: 1.7, d: 1.0, col: 0x080a10, alpha: 0.4, glow: 0x40e0ff, roomId: 'dock_intake' },
   ],
   // ── 9: BORDER CROSSING — customs booth + watchtower windows ──────────
   9: [
@@ -2529,6 +3097,13 @@ const EXTRA_ELEMENTS = {
     { t: 'drum', x: 5, z: 10, n: 3, col: 0xb8783c, stripe: 0xffd090 },
     { t: 'cov', x: -6, z: 5, w: 1.6, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
     { t: 'cov', x: 6, z: -4, w: 1.6, h: 0.85, d: 0.8, col: 0x4a3420, top: 0xffd090 },
+    { t: 'dogleg', x: -8, z: 16, len1: 4.0, rotY1: Math.PI / 2, gap1: 1.25, gapPos1: 0.3, x2: -5.5, z2: 13.0, len2: 4.2, rotY2: 0, gap2: 1.3, gapPos2: -0.4, geometryId: 'b9_inspection_dog', roomId: 'dock_intake' },
+    { t: 'corridor', x: 12, z: -8, len: 5.0, rotY: Math.PI / 2, width: 1.15, gap: 1.2, gapPos: 0, roomId: 'foreman_cage', geometryId: 'b9_tower_corridor' },
+    { t: 'divider', x: 0, z: 10, len: 6.0, rotY: 0, gap: 1.5, gapPos: 0, roomId: 'mid_lane_center', geometryId: 'b9_customs_spine' },
+    { t: 'window', x: 14, z: -18, len: 2.8, rotY: 0, sill: 1.2, head: 2.2, col: 0xffb060, frameCol: 0x282018, roomId: 'drum_lane', geometryId: 'b9_lane_glass' },
+    { t: 'cov', x: -7.2, z: 18.5, w: 1.35, h: 0.86, d: 0.78, col: 0x4a3420, top: 0xffd090, roomId: 'dock_intake' },
+    { t: 'cov', x: 7.4, z: 18.0, w: 1.32, h: 0.85, d: 0.76, col: 0x4a3420, top: 0xffb060, roomId: 'dock_intake' },
+    { t: 'cov', x: 0, z: 20.8, w: 1.2, h: 0.82, d: 0.72, col: 0x5a4838, top: 0xffd090, roomId: 'dock_intake' },
   ],
   // ── 10: CATHEDRAL — confessionals + stained-glass partition ──────────
   10: [
@@ -2551,6 +3126,13 @@ const EXTRA_ELEMENTS = {
     { t: 'lamp', x: 4, z: 4, col: 0xffe8b0 },
     { t: 'plinth', x: -8, z: 16 },
     { t: 'plinth', x: 8, z: 16 },
+    { t: 'dogleg', x: 0, z: 18, len1: 5.5, rotY1: 0, gap1: 1.4, gapPos1: 0.5, x2: -3.0, z2: 15.0, len2: 4.0, rotY2: Math.PI / 2, gap2: 1.2, gapPos2: 0, geometryId: 'b10_nave_dog', roomId: 'dock_intake' },
+    { t: 'corridor', x: -14, z: 4, len: 4.8, rotY: 0, width: 1.12, gap: 1.15, gapPos: 0, roomId: 'mid_lane_west', geometryId: 'b10_transept_corridor' },
+    { t: 'divider', x: 8, z: 0, len: 5.0, rotY: Math.PI / 2, gap: 1.3, gapPos: -0.4, roomId: 'drum_lane', geometryId: 'b10_choir_kink' },
+    { t: 'window', x: 0, z: -14, len: 4.0, rotY: Math.PI / 2, sill: 0.5, head: 2.0, col: 0xffe8b0, frameCol: 0x281810, roomId: 'relay_cage', geometryId: 'b10_crossing_glass' },
+    { t: 'cov', x: -5.5, z: 19.0, w: 1.34, h: 0.86, d: 0.78, col: 0x3a3428, top: 0xffe8b0, roomId: 'dock_intake' },
+    { t: 'cov', x: 5.6, z: 18.5, w: 1.3, h: 0.85, d: 0.76, col: 0x3a3428, top: 0xffe8b0, roomId: 'dock_intake' },
+    { t: 'lamp', x: 0, z: 22, col: 0xffe8b0 },
   ],
   // ── 11: KARELIA FREIGHTER — engine companionway + bridge glass ──────
   11: [
@@ -2571,7 +3153,15 @@ const EXTRA_ELEMENTS = {
     // Crew quarters (BE) — small sub-room
     { t: 'divider', x: 12, z: -14, len: 4.0, rotY: 0, gap: 1.3, gapPos: -0.8 },
     { t: 'pipes', x: -14, z: -18, len: 5 },
-    { t: 'drum', x: 5, z: 5, n: 2, col: 0x603020, stripe: 0xff8040 },
+    // Companionway dogleg — engine room threshold read (kit)
+    { t: 'dogleg', x: -11.5, z: 0.5, len1: 3.2, rotY1: Math.PI / 2, gap1: 1.25, gapPos1: 0.5, x2: -12.2, z2: -2.2, len2: 2.6, rotY2: 0, gap2: 0, geometryId: 'b11_engine_dogleg' },
+    { t: 'corridor', x: 0, z: 16, len: 6.0, rotY: 0, width: 1.16, gap: 1.22, gapPos: 0.3, roomId: 'mid_lane_center', geometryId: 'b11_deck_corridor' },
+    { t: 'divider', x: 14, z: 14, len: 4.5, rotY: Math.PI / 2, gap: 1.25, gapPos: 0.2, roomId: 'dock_intake', geometryId: 'b11_starboard_kink' },
+    { t: 'window', x: -8, z: -18, len: 2.6, rotY: 0, sill: 0.95, head: 2.0, col: 0xff8040, frameCol: 0x14181c, roomId: 'relay_cage', geometryId: 'b11_hold_peek' },
+    { t: 'vestibule', x: 12, z: -6, rotY: 0, w: 3.2, gap: 1.1, gapPos: 0, dx: 0.8, dz: 1.4, len2: 3.0, rotY2: Math.PI / 2, gap2: 1.0, geometryId: 'b11_be_vest', geometryId2: 'b11_be_vest_p' },
+    { t: 'cov', x: -6.4, z: 18.3, w: 1.33, h: 0.86, d: 0.78, col: 0x2a2420, top: 0xff8040, roomId: 'dock_intake' },
+    { t: 'cov', x: 6.5, z: 17.7, w: 1.3, h: 0.85, d: 0.76, col: 0x2a2420, top: 0x80b0d0, roomId: 'dock_intake' },
+    { t: 'crate2', x: -2.5, z: 15.5, col: 0x5a4838, roomId: 'dock_intake' },
   ],
   // ── 12: THE SPIRE — apex glass everywhere ────────────────────────────
   12: [
@@ -2596,14 +3186,28 @@ const EXTRA_ELEMENTS = {
     { t: 'plinth', x: 8, z: 4 },
     { t: 'lamp', x: -6, z: -16, col: 0xc8e0ff },
     { t: 'lamp', x: 6, z: -16, col: 0xc8e0ff },
+    { t: 'dogleg', x: 0, z: 8, len1: 5.0, rotY1: 0, gap1: 1.4, gapPos1: 0.6, x2: 3.5, z2: 5.0, len2: 4.5, rotY2: Math.PI / 2, gap2: 1.25, gapPos2: 0, geometryId: 'b12_skylobby_dog', roomId: 'dock_intake' },
+    { t: 'corridor', x: -14, z: 0, len: 5.5, rotY: Math.PI / 2, width: 1.14, gap: 1.2, gapPos: 0, roomId: 'alarm_relay_room', geometryId: 'b12_board_corridor' },
+    { t: 'divider', x: 0, z: -4, len: 6.0, rotY: Math.PI / 2, gap: 1.45, gapPos: 0, roomId: 'mid_lane_center', geometryId: 'b12_glass_spine' },
+    { t: 'window', x: -4, z: 12, len: 3.0, rotY: 0, sill: 0.2, head: 2.5, col: 0xc8e0ff, frameCol: 0x06070a, roomId: 'dock_intake', geometryId: 'b12_atrium_curtain' },
+    { t: 'vestibule', x: 0, z: -18, rotY: 0, w: 4.8, gap: 1.4, gapPos: 0, dx: 0, dz: -1.5, len2: 4.0, rotY2: Math.PI / 2, gap2: 1.2, geometryId: 'b12_helipad_vest', geometryId2: 'b12_helipad_vest_n', roomId: 'relay_cage' },
+    { t: 'cov', x: -5.8, z: 18.6, w: 1.32, h: 0.85, d: 0.77, col: 0x0a0c10, top: 0xc8e0ff, roomId: 'dock_intake' },
+    { t: 'cov', x: 5.9, z: 18.1, w: 1.3, h: 0.84, d: 0.75, col: 0x0a0c10, top: 0xffd060, roomId: 'dock_intake' },
+    { t: 'haz', x: 0, z: 16.5, w: 2.0, d: 1.0, col: 0x040608, alpha: 0.33, glow: 0xc8e0ff, roomId: 'dock_intake' },
   ],
 };
 
 export function getSequenceGameplayProfile(bn){
   const zoneRoles = BUILDING_ZONE_ROLES[bn] || DEFAULT_ZONE_ROLES;
+  const layout = CAMPAIGN_LAYOUT_BY_BN[Math.min(Math.max(bn | 0, 1), 12) - 1] ?? 0;
   return {
     zoneRoles,
     beats: zoneRoles.map(r => ENCOUNTER_BEATS[r.tag] || ENCOUNTER_BEATS.read),
     signature: zoneRoles.map(r => r.telegraph).join(' / '),
+    layout,
+    layoutMode: layout === 0 ? 'dock' : 'lobby',
   };
 }
+
+/** Cell AABBs shared with campaign floorplan / encounter authoring. */
+export { CELL_REGIONS as CAMPAIGN_CELL_REGIONS };

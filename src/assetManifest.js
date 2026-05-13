@@ -317,7 +317,16 @@ export const ANIMATION_MANIFEST = {
     skeleton: SHARED_HAND_SKELETON,
     clips: ANIMATION_CLIPS.viewmodel,
     layers: ['locomotion', 'weaponPose', 'damageFlinch', 'tacticalLean'],
-    fallback: 'animation.procedural.viewmodel'
+    fallback: 'animation.procedural.viewmodel',
+    rootMotionPolicy: 'ignore',
+    clipMeta: [
+      { id: 'idle', playback: 'loop', additive: false, fallbackProcedure: 'procedural.idle' },
+      { id: 'reloadRifle', playback: 'oneshot', additive: false, fallbackProcedure: 'reloadTimelines.rifle' },
+      { id: 'reloadPistol', playback: 'oneshot', additive: false, fallbackProcedure: 'reloadTimelines.pistol' },
+      { id: 'ads', playback: 'loop', additive: false, fallbackProcedure: 'procedural.ads' },
+      { id: 'inspect', playback: 'oneshot', additive: false, markers: [{ t: 0.5, name: 'inspectFocusPoint' }] }
+    ],
+    gripValidationSockets: ['gripLeft', 'gripRight', 'magazine']
   }
 };
 
@@ -424,6 +433,20 @@ export function validateManifestEntry(entry) {
     if (entry.requiredSockets && Array.isArray(entry.sockets)) {
       for (const socket of entry.requiredSockets) {
         if (!entry.sockets.includes(socket)) issues.push({ code: `missing-required-socket:${socket}`, level: 'error' });
+      }
+    }
+  }
+  if (entry.kind === 'animation-set' && Array.isArray(entry.clipMeta)) {
+    for (const c of entry.clipMeta) {
+      if (!c || typeof c !== 'object' || !c.id) {
+        issues.push({ code: 'clipMeta-missing-id', level: 'error' });
+        continue;
+      }
+      if (c.playback && !['loop', 'oneshot', 'additive'].includes(c.playback)) {
+        issues.push({ code: `clipMeta-bad-playback:${c.id}`, level: 'warning' });
+      }
+      if (c.rootMotion && !['ignore', 'proxyOnly'].includes(c.rootMotion)) {
+        issues.push({ code: `clipMeta-bad-rootMotion:${c.id}`, level: 'warning' });
       }
     }
   }
@@ -586,11 +609,20 @@ export function createAssetRegistry(options = {}) {
         if (!entry.src) procedural.push({ id: entry.id, kind: entry.kind, fallback: entry.fallback });
       }
     }
+    const vmAnim = ALL_MANIFESTS.animations && ALL_MANIFESTS.animations['animation.viewmodel'];
     return {
       summary,
       validation,
       procedural: procedural.length,
-      proceduralSample: procedural.slice(0, 16)
+      proceduralSample: procedural.slice(0, 16),
+      viewmodelAnimations: vmAnim
+        ? {
+            id: vmAnim.id,
+            clipCount: (vmAnim.clips && vmAnim.clips.length) || 0,
+            clipMetaCount: (vmAnim.clipMeta && vmAnim.clipMeta.length) || 0,
+            rootMotionPolicy: vmAnim.rootMotionPolicy || 'ignore'
+          }
+        : null
     };
   }
 

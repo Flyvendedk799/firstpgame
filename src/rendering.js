@@ -4,7 +4,7 @@
 //   - createBaseRenderer: select WebGPU or WebGL based on requested mode,
 //     health record, and session fallback flag.
 //   - createRenderSubsystem: build a backend-neutral pipeline with a WebGL
-//     composer (RenderPass, GTAO, UnrealBloom, color grade, SMAA, OutputPass)
+//     composer (RenderPass, optional SSR/GTAO/Radial-god-rays/Bloom/Bokeh/grade/LUT/sharpen/SMAA)
 //     or a WebGPU node-post chain (highlight bloom + film + FXAA).
 //   - blackFrameSelfTest: render a calibration scene and read pixels back,
 //     detecting renderers that initialise but never produce visible output.
@@ -15,6 +15,9 @@
 // All work here is backend-neutral. Scope PIP rendering, level draw,
 // and screenshots all route through this subsystem so WebGL/WebGPU/fallback
 // produce comparable output.
+
+import { makePostSharpenPass } from './postSharpenPass.js';
+import { makeGodRayRadialPass } from './postGodRayPass.js';
 
 const RENDERER_HEALTH_KEY = 'aa_renderer_health';
 const SESSION_FALLBACK_KEY = 'aa_force_webgl_fallback';
@@ -329,6 +332,9 @@ export async function blackFrameSelfTest(THREE, renderer, options = {}) {
     result.error = String(err && err.message || err);
     result.reason = result.reason || `selftest-error:${result.error}`;
   } finally {
+    try {
+      if (typeof renderer.setRenderTarget === 'function') renderer.setRenderTarget(prevTarget || null);
+    } catch (_) {}
     try { target.dispose(); } catch (_) {}
     try { cubeGeom.dispose(); } catch (_) {}
     try { cubeMat.dispose(); } catch (_) {}
@@ -434,11 +440,19 @@ export function createRenderSubsystem({
   camera,
   EffectComposer,
   RenderPass,
+  TAARenderPass,
   UnrealBloomPass,
   ShaderPass,
   GTAOPass,
   SMAAPass,
   OutputPass,
+  SSRPass,
+  LUTPass,
+  BokehPass,
+  getSolids,
+  getReflectionCandidates,
+  getGroundReflector,
+  getKeyLight,
   settings,
   visualProfile,
   baseRendererInfo
@@ -462,15 +476,90 @@ export function createRenderSubsystem({
   };
 
   let composer = null;
-  const passes = { render: null, gtao: null, bloom: null, grade: null, smaa: null, output: null };
+  const passes = {
+    render: null,
+    scenePassKind: 'render',
+    ssr: null,
+    gtao: null,
+    godRay: null,
+    bloom: null,
+    bokeh: null,
+    grade: null,
+    lut: null,
+    sharpen: null,
+    smaa: null,
+    output: null
+  };
   let webgpuPost = null;
   let webgpuPostKillSwitch = false;
   const baseToneMappingExposure = Number.isFinite(renderer.toneMappingExposure) ? renderer.toneMappingExposure : 1;
+  let godRayRuntime = null;
+  let sharpenRuntime = null;
+  let lut3dTexture = null;
+  const raycasterSSR = new THREE.Raycaster();
+  const rayNdcCenter = new THREE.Vector2();
+  const resolveSSRTargets = typeof getSolids === 'function' ? getSolids : () => [];
+  const resolveReflectionTargets =
+    typeof getReflectionCandidates === 'function'
+      ? getReflectionCandidates
+      : resolveSSRTargets;
+  const resolveGroundReflectorFn = typeof getGroundReflector === 'function' ? getGroundReflector : () => null;
+  const resolveKeyLightFn = typeof getKeyLight === 'function' ? getKeyLight : () => null;
+  let lastDofProbeMs = 0;
+  let lastDofFocusHit = null;
+
+  /** @param {import('three').Data3DTexture|null} tex */
+  function setLUT3D(tex) {
+    const nextTex = tex && tex.texture3D ? tex.texture3D : tex;
+    try {
+      if (lut3dTexture && lut3dTexture.dispose) lut3dTexture.dispose();
+    } catch (_) {}
+    lut3dTexture = nextTex || null;
+    if (passes.lut) passes.lut.lut = lut3dTexture || null;
+  }
+
+  let lastComposerTimeSec =
+    typeof performance !== 'undefined' && performance.now
+      ? performance.now() / 1000
+      : 0;
 
   if (metadata.backend !== 'webgpu' && typeof EffectComposer === 'function' && typeof RenderPass === 'function') {
     composer = new EffectComposer(renderer);
-    passes.render = new RenderPass(scene, camera);
+    const useTaaBase =
+      renderer.capabilities && renderer.capabilities.isWebGL2 && typeof TAARenderPass === 'function';
+    if (useTaaBase) {
+      passes.render = new TAARenderPass(scene, camera);
+      passes.scenePassKind = 'taa';
+    } else {
+      passes.render = new RenderPass(scene, camera);
+      passes.scenePassKind = 'render';
+    }
     composer.addPass(passes.render);
+
+    if (typeof SSRPass === 'function') {
+      try {
+        passes.ssr = new SSRPass({
+          renderer,
+          scene,
+          camera,
+          width: innerWidth,
+          height: innerHeight,
+          selects: [],
+          // Defer: main's getter closes over `G`, which is not initialized until
+          // later in the module — tickPhotography assigns groundReflector each frame.
+          groundReflector: undefined,
+          bouncing: false
+        });
+        passes.ssr.maxDistance = 12;
+        passes.ssr.thickness = 0.08;
+        passes.ssr.opacity = 0.55;
+        passes.ssr.enabled = false;
+        composer.addPass(passes.ssr);
+      } catch (err) {
+        console.warn('[render] SSR disabled:', err);
+        metadata.ssrError = String(err && err.message || err);
+      }
+    }
 
     if (typeof GTAOPass === 'function') {
       try {
@@ -494,14 +583,59 @@ export function createRenderSubsystem({
       }
     }
 
+    if (typeof ShaderPass === 'function') {
+      try {
+        godRayRuntime = makeGodRayRadialPass(THREE);
+        passes.godRay = new ShaderPass(godRayRuntime.material);
+        passes.godRay.enabled = false;
+        composer.addPass(passes.godRay);
+      } catch (err) {
+        console.warn('[render] volumetric-shaft pass disabled:', err);
+      }
+    }
+
     if (typeof UnrealBloomPass === 'function') {
       passes.bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.28, 0.30, 0.95);
       composer.addPass(passes.bloom);
     }
 
+    if (typeof BokehPass === 'function') {
+      try {
+        passes.bokeh = new BokehPass(scene, camera, {
+          focus: 14,
+          aperture: 0.00012,
+          maxblur: 0.008
+        });
+        passes.bokeh.enabled = false;
+        composer.addPass(passes.bokeh);
+      } catch (err) {
+        console.warn('[render] DoF/Bokeh disabled:', err);
+      }
+    }
+
     if (typeof ShaderPass === 'function') {
       passes.grade = new ShaderPass(makeColorGradeShader(THREE));
       composer.addPass(passes.grade);
+    }
+
+    if (LUTPass && typeof LUTPass === 'function') {
+      try {
+        passes.lut = new LUTPass();
+        passes.lut.enabled = false;
+        composer.addPass(passes.lut);
+      } catch (err) {
+        console.warn('[render] LUT pass disabled:', err);
+      }
+    }
+
+    if (typeof ShaderPass === 'function') {
+      try {
+        sharpenRuntime = makePostSharpenPass(THREE, 0.34);
+        passes.sharpen = new ShaderPass(sharpenRuntime.material);
+        composer.addPass(passes.sharpen);
+      } catch (err) {
+        console.warn('[render] sharpen pass disabled:', err);
+      }
     }
 
     if (typeof SMAAPass === 'function') {
@@ -601,7 +735,85 @@ export function createRenderSubsystem({
     camera.updateProjectionMatrix();
     if (composer) composer.setSize(width, height);
     if (passes.grade) passes.grade.uniforms.resolution.value.set(width, height);
+    if (passes.ssr && typeof passes.ssr.setSize === 'function') passes.ssr.setSize(width, height);
+    if (passes.bokeh && typeof passes.bokeh.setSize === 'function') passes.bokeh.setSize(width, height);
     if (passes.smaa && typeof passes.smaa.setSize === 'function') passes.smaa.setSize(width, height);
+    if (godRayRuntime && godRayRuntime.resize) godRayRuntime.resize(width, height);
+    if (sharpenRuntime && sharpenRuntime.resize) sharpenRuntime.resize(width, height);
+  }
+
+  let lastSsrRescanMs = 0;
+
+  /** Call each frame before composer.render — SSR selects / DoF / volumetric shafts. */
+  function tickPhotography(nowMs, extras = {}) {
+    const player = extras.player;
+    if (extras.forceSsrRescan) lastSsrRescanMs = 0;
+    if (passes.ssr && passes.ssr.enabled) {
+      const groundReflector = resolveGroundReflectorFn();
+      passes.ssr.groundReflector =
+        groundReflector && typeof groundReflector.doRender === 'function'
+          ? groundReflector
+          : undefined;
+      const rescanPeriod = extras.ssrScanMs ?? 340;
+      if (nowMs - lastSsrRescanMs > rescanPeriod) {
+        lastSsrRescanMs = nowMs;
+        const maxMeshes = extras.ssrMaxMeshes ?? (extras.quality === 'ultra' ? 140 : 84);
+        const authored = extras.ssrTargets || resolveReflectionTargets() || [];
+        const targets = [];
+        for (let i = 0; authored && i < authored.length && targets.length < maxMeshes; i++) {
+          const obj = authored[i];
+          if (!obj || !obj.isMesh || obj.visible === false) continue;
+          if (obj.userData && (obj.userData.noSsr || obj.userData.noReflect)) continue;
+          targets.push(obj);
+        }
+        passes.ssr.selects = targets.length ? targets : null;
+      }
+    }
+    if (passes.bokeh && passes.bokeh.enabled && passes.bokeh.uniforms) {
+      const uni = passes.bokeh.uniforms;
+      let focusHit = THREE.MathUtils.clamp((camera.near + camera.far) * 0.12, camera.near + 0.12, camera.far * 0.6);
+      try {
+        const probeEvery = Math.max(80, extras.dofProbeMs ?? 180);
+        if (extras.forceDofProbe || lastDofFocusHit == null || nowMs - lastDofProbeMs > probeEvery) {
+          lastDofProbeMs = nowMs;
+          rayNdcCenter.set(0, 0);
+          raycasterSSR.setFromCamera(rayNdcCenter, camera);
+          const source = extras.dofTargets || extras.ssrTargets || resolveReflectionTargets() || resolveSSRTargets() || [];
+          const hits = raycasterSSR.intersectObjects(source, false);
+          const h = hits.find(x => x && x.distance != null && x.distance > camera.near);
+          lastDofFocusHit = h
+            ? THREE.MathUtils.clamp(h.distance, camera.near + 0.04, camera.far * 0.72)
+            : null;
+        }
+        if (lastDofFocusHit != null) focusHit = lastDofFocusHit;
+      } catch (_) {}
+      const ads = extras.ads != null ? extras.ads : player && player.ads ? player.ads : 0;
+      const dofMul =
+        extras.dofStrengthMul != null ? extras.dofStrengthMul : extras.quality === 'ultra' ? 1 : 0.55;
+      uni.focus.value += (focusHit - uni.focus.value) * 0.18;
+      uni.aperture.value = THREE.MathUtils.lerp(
+        uni.aperture.value || 1e-4,
+        THREE.MathUtils.lerp(0.0001, 0.00105, Math.pow(THREE.MathUtils.clamp(ads, 0, 1), 1.1)) * dofMul,
+        0.44
+      );
+      uni.maxblur.value = THREE.MathUtils.lerp(
+        uni.maxblur.value || 0.006,
+        THREE.MathUtils.lerp(
+          0.0045,
+          0.012 * dofMul,
+          Math.pow(THREE.MathUtils.clamp(ads, 0, 1), 1.08)
+        ),
+        0.42
+      );
+    }
+    if (passes.godRay && passes.godRay.enabled && godRayRuntime) {
+      const kl = extras.keyLight || resolveKeyLightFn();
+      godRayRuntime.setFromDirectional(kl, camera);
+      if (extras.godRayDensity != null) godRayRuntime.uniforms.density.value = extras.godRayDensity;
+      if (extras.godRayWeight != null) godRayRuntime.uniforms.weight.value = extras.godRayWeight;
+      if (extras.godRaySamples != null) godRayRuntime.uniforms.samples.value = extras.godRaySamples;
+      if (extras.fogColor && godRayRuntime.uniforms.fgColor) godRayRuntime.uniforms.fgColor.value.copy(extras.fogColor);
+    }
   }
 
   function setPixelRatio(px) {
@@ -615,7 +827,7 @@ export function createRenderSubsystem({
     const grade = context.grade || profile.grade || {};
     const postProfile = context.postProfile || 'normal';
     const postEnabled = nextSettings.postEnabled !== false && q !== 'low';
-    const aoQuality = nextSettings.aoQuality || 'high';
+    const aoQuality = nextSettings.aoQuality || 'medium';
     const bloomQuality = nextSettings.bloomQuality || 'high';
     const bloomMul = context.bloomMultiplier ?? grade.bloomMultiplier ?? 1;
     const aoMul = context.aoMultiplier ?? grade.aoMultiplier ?? 1;
@@ -717,6 +929,63 @@ export function createRenderSubsystem({
         ({ low: 0.78, medium: 0.90, high: 0.92, ultra: 1.12 }[bloomQuality] ?? 0.92));
       passes.bloom.threshold = grade.bloomThreshold ?? 0.92;
     }
+    const cinema = q === 'high' || q === 'ultra';
+
+    if (passes.ssr) {
+      const userOn = cinema && nextSettings.phase2SSR !== false;
+      passes.ssr.enabled = !!(postEnabled && userOn && !context.phase2SSRHeldOff);
+      const opBase = cinema ? ({ high: 0.52, ultra: 0.75 }[q] ?? 0.52) : 0;
+      passes.ssr.opacity = opBase * (nextSettings.ssrIntensityMul ?? 1);
+    }
+
+    if (passes.godRay) {
+      const volTier =
+        cinema
+        && nextSettings.phase2Volumetrics !== false
+        && (nextSettings.atmosphereQuality || 'high') !== 'low'
+        && (q === 'high' || q === 'ultra');
+      passes.godRay.enabled = !!(postEnabled && volTier && godRayRuntime && !context.phase2VolumetricsHeldOff);
+      if (passes.godRay.enabled && godRayRuntime && context.godRay) {
+        if (typeof context.godRay.density === 'number') godRayRuntime.uniforms.density.value = context.godRay.density;
+        if (typeof context.godRay.weight === 'number') godRayRuntime.uniforms.weight.value = context.godRay.weight;
+      }
+    }
+
+    if (passes.bokeh) {
+      const dofWant = cinema && nextSettings.phase2DoF !== false;
+      passes.bokeh.enabled = !!(postEnabled && dofWant && !context.phase2DoFHeldOff);
+      if (!passes.bokeh.enabled) {
+        passes.bokeh.uniforms.aspect.value = camera.aspect || 16 / 9;
+      }
+    }
+
+    if (passes.sharpen) {
+      const shOn = !(nextSettings.sharpen === false) && !(context.phase2SharpenHeldOff);
+      passes.sharpen.enabled = !!(postEnabled && shOn && sharpenRuntime != null);
+      if (passes.sharpen.enabled && sharpenRuntime) {
+        sharpenRuntime.uniforms.sharpen.value = THREE.MathUtils.clamp(nextSettings.phase2Sharpen ?? 0.34, 0, 1);
+      }
+    }
+
+    if (passes.lut) {
+      const lutWant = cinema && nextSettings.phase2LUT !== false;
+      passes.lut.enabled = !!(lut3dTexture && postEnabled && lutWant && !context.phase2LUTHeldOff);
+      if (passes.lut.enabled) {
+        passes.lut.lut = lut3dTexture;
+        passes.lut.intensity = THREE.MathUtils.clamp(nextSettings.gradeIntensity ?? 1, 0.35, 1.42);
+      } else passes.lut.lut = null;
+    }
+
+    metadata.phase2Passes = {
+      cinematic: cinema,
+      ssrActive: !!(passes.ssr && passes.ssr.enabled),
+      dofActive: !!(passes.bokeh && passes.bokeh.enabled),
+      lutActive: !!(passes.lut && passes.lut.enabled),
+      volumetricGodRayActive: !!(passes.godRay && passes.godRay.enabled),
+      sharpenActive: !!(passes.sharpen && passes.sharpen.enabled),
+      lutAvailable: !!lut3dTexture
+    };
+
     if (passes.grade) {
       passes.grade.enabled = nextSettings.colorGrade !== false && postEnabled;
       passes.grade.uniforms.exposure.value = THREE.MathUtils.clamp(grade.exposure ?? 1.04, 0.78, 1.24);
@@ -728,8 +997,38 @@ export function createRenderSubsystem({
       passes.grade.uniforms.grain.value = nextSettings.filmGrain === false ? 0 : THREE.MathUtils.clamp(grade.grain ?? 0.0, 0, 0.012);
       passes.grade.uniforms.aberration.value = nextSettings.chromaticAberration === false ? 0 : THREE.MathUtils.clamp(grade.aberration ?? ({ medium: 0.00014, high: 0.00022, ultra: 0.00038 }[q] ?? 0.00020), 0, 0.0007);
       passes.grade.uniforms.sharpen.value = nextSettings.sharpen === false ? 0 : THREE.MathUtils.clamp(grade.sharpen ?? ({ medium: 0.024, high: 0.034, ultra: 0.050 }[q] ?? 0.032), 0, 0.10);
+      const lutHeavy = !!(passes.lut && passes.lut.enabled && cinema && postEnabled);
+      if (lutHeavy) {
+        passes.grade.uniforms.sharpen.value *= 0.78;
+        passes.grade.uniforms.aberration.value *= 0.72;
+      }
     }
-    if (passes.smaa) passes.smaa.enabled = postEnabled && nextSettings.smaa !== false;
+    const taaDesired =
+      !!(
+        cinema
+        && nextSettings.phase2TAA !== false
+        && !context.phase2TAAHeldOff
+        && renderer.capabilities
+        && renderer.capabilities.isWebGL2
+        && passes.scenePassKind === 'taa'
+      );
+    if (passes.render && passes.scenePassKind === 'taa') {
+      const taa = passes.render;
+      if (taaDesired) {
+        taa.accumulate = true;
+        let sl = q === 'ultra' ? 2 : 1;
+        if (context.taaSampleCap != null) sl = Math.min(sl, THREE.MathUtils.clamp(context.taaSampleCap | 0, 0, 4));
+        taa.sampleLevel = sl;
+        taa.enabled = true;
+      } else {
+        taa.accumulate = false;
+        taa.sampleLevel = 0;
+        taa.enabled = true;
+      }
+    }
+    if (passes.smaa)
+      passes.smaa.enabled =
+        postEnabled && nextSettings.smaa !== false && !taaDesired;
     if (passes.output) passes.output.enabled = true;
     if (metadata.backend === 'webgpu') {
       const exposure = nextSettings.colorGrade === false || !postEnabled ? 1 : (grade.exposure ?? 1.08);
@@ -760,10 +1059,17 @@ export function createRenderSubsystem({
     }
 
     const activePasses = [];
-    if (composer && passes.render && postEnabled !== false && q !== 'low') activePasses.push('render');
+    if (composer && passes.render && postEnabled !== false && q !== 'low') {
+      activePasses.push(passes.scenePassKind === 'taa' && taaDesired ? 'taa' : 'render');
+    }
+    if (passes.ssr && passes.ssr.enabled) activePasses.push('ssr');
     if (passes.gtao && passes.gtao.enabled) activePasses.push('gtao');
+    if (passes.godRay && passes.godRay.enabled) activePasses.push('godRay');
     if (passes.bloom && passes.bloom.enabled) activePasses.push('bloom');
+    if (passes.bokeh && passes.bokeh.enabled) activePasses.push('dof');
     if (passes.grade && passes.grade.enabled) activePasses.push('grade');
+    if (passes.lut && passes.lut.enabled) activePasses.push('lut');
+    if (passes.sharpen && passes.sharpen.enabled) activePasses.push('sharpen');
     if (passes.smaa && passes.smaa.enabled) activePasses.push('smaa');
     if (passes.output && passes.output.enabled) activePasses.push('output');
     metadata.activePostPasses = activePasses;
@@ -773,6 +1079,9 @@ export function createRenderSubsystem({
     metadata.bloomQuality = bloomQuality;
     metadata.profile = profile.id || 'default';
     metadata.postProfile = postProfile;
+    if (context && context.csmCascadeCount != null) {
+      metadata.csmCascadeCount = context.csmCascadeCount;
+    }
     metadata.grade = {
       exposure: grade.exposure ?? 1.04,
       contrast: grade.contrast ?? 1.06,
@@ -785,8 +1094,15 @@ export function createRenderSubsystem({
 
   function render(timeSeconds = 0) {
     if (passes.grade) passes.grade.uniforms.time.value = timeSeconds;
-    if (composer) composer.render();
-    else {
+    if (composer) {
+      let dt = 1 / 60;
+      if (typeof performance !== 'undefined' && performance.now) {
+        const nowS = performance.now() / 1000;
+        dt = Math.max(1 / 480, Math.min(0.5, nowS - lastComposerTimeSec));
+        lastComposerTimeSec = nowS;
+      }
+      composer.render(Number.isFinite(dt) ? dt : 1 / 60);
+    } else {
       renderer.render(scene, camera);
       if (webgpuPost && metadata.postEnabled) webgpuPost.processing.render();
     }
@@ -861,6 +1177,8 @@ export function createRenderSubsystem({
     enableWebgpuPost,
     recordRuntimeFrame,
     setBlackFrameReport,
+    setLUT3D,
+    tickPhotography,
     get webgpuPostActive() { return !!webgpuPost; }
   };
 }
