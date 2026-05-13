@@ -208,9 +208,13 @@ for (const mode of modes) {
     }
     return { pip: dbg.scopePip(), renderer: dbg.rendererInfo() };
   });
-  assert(modeResult.scope.pip.rendered, `${mode}: scope PIP not rendering`);
-  assert(modeResult.scope.pip.error == null, `${mode}: scope PIP error: ${modeResult.scope.pip.error}`);
-  assert(modeResult.scope.pip.materialOpacity > 0, `${mode}: scope PIP opacity stuck at 0`);
+  if (modeResult.scope.pip.stableRenderingMode) {
+    assert(!modeResult.scope.pip.enabled && !modeResult.scope.pip.visible, `${mode}: stable renderer should keep scope PIP disabled`);
+  } else {
+    assert(modeResult.scope.pip.rendered, `${mode}: scope PIP not rendering`);
+    assert(modeResult.scope.pip.error == null, `${mode}: scope PIP error: ${modeResult.scope.pip.error}`);
+    assert(modeResult.scope.pip.materialOpacity > 0, `${mode}: scope PIP opacity stuck at 0`);
+  }
 
   // Invisible-weapon threshold — every slot must produce at least one visible mesh.
   modeResult.weapons = await page.evaluate(async () => {
@@ -224,7 +228,7 @@ for (const mode of modes) {
     return out;
   });
   for (const w of modeResult.weapons) {
-    const visible = (w.visibleProceduralMeshes||0) + (w.visibleGlbMeshes||0) + (w.visibleThrowMeshes||0) + (w.visibleKnifeMeshes||0);
+    const visible = (w.visibleProceduralMeshes||0) + (w.visibleGlbMeshes||0) + (w.authoredM4VisibleMeshes||0) + (w.visibleThrowMeshes||0) + (w.visibleKnifeMeshes||0);
     assert(visible > 0, `${mode}: weapon ${w.name} has no visible viewmodel mesh (invisible-weapon)`);
   }
 

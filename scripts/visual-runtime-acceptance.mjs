@@ -166,9 +166,17 @@ for (const mode of modes) {
   for (const row of result.rows) {
     assert(row.profile?.id, `${mode} B${row.bn} ${row.state}: missing visual profile`);
     assert(row.renderer.profile === row.profile.id, `${mode} B${row.bn} ${row.state}: renderer profile mismatch`);
-    assert(row.screenPost?.enabled, `${mode} B${row.bn} ${row.state}: screen post disabled`);
-    assert(row.screenPost.visual === row.profile.id, `${mode} B${row.bn} ${row.state}: screen post visual mismatch`);
-    assert(row.forced?.active?.includes(row.state === 'normal' ? 'normal' : row.state), `${mode} B${row.bn}: post state ${row.state} did not activate (${row.forced?.active})`);
+    if (row.screenPost?.stable) {
+      assert(row.screenPost && row.screenPost.enabled === false && row.screenPost.stable, `${mode} B${row.bn} ${row.state}: stable screen-post metadata missing`);
+    } else {
+      assert(row.screenPost?.enabled, `${mode} B${row.bn} ${row.state}: screen post disabled`);
+      assert(row.screenPost.visual === row.profile.id, `${mode} B${row.bn} ${row.state}: screen post visual mismatch`);
+    }
+    if (row.screenPost?.stable) {
+      assert(row.forced?.active === 'stable-direct', `${mode} B${row.bn}: stable post state did not activate (${row.forced?.active})`);
+    } else {
+      assert(row.forced?.active?.includes(row.state === 'normal' ? 'normal' : row.state), `${mode} B${row.bn}: post state ${row.state} did not activate (${row.forced?.active})`);
+    }
     assert(row.materials.scene.pbr > 0 && row.materials.scene.aa > 0, `${mode} B${row.bn}: scene PBR/AA materials missing`);
     assert(row.materials.scene.maps.normal > 0, `${mode} B${row.bn}: normal maps missing at high texture quality`);
     assert(row.materials.scene.maps.roughness > 0, `${mode} B${row.bn}: roughness maps missing at high texture quality`);

@@ -209,6 +209,101 @@ export function configureViewmodelScene(THREE, root) {
   });
 }
 
+export function setViewmodelLayer(root, layer = 1) {
+  if (!root || typeof root.traverse !== 'function') return;
+  root.traverse(obj => {
+    if (obj.layers && typeof obj.layers.set === 'function') obj.layers.set(layer);
+  });
+}
+
+export function countRenderableMeshes(root, visibleOnly = false) {
+  let count = 0;
+  if (!root || typeof root.traverse !== 'function') return count;
+  root.traverse(obj => {
+    if (!obj || (!obj.isMesh && !obj.isSkinnedMesh)) return;
+    if (visibleOnly) {
+      let p = obj;
+      while (p) {
+        if (p.visible === false) return;
+        p = p.parent;
+      }
+    }
+    count++;
+  });
+  return count;
+}
+
+export function collectSocketReadiness(nodes, names = REQUIRED_WEAPON_SOCKETS) {
+  const readiness = {};
+  let ready = 0;
+  for (const name of names) {
+    const ok = !!(nodes && typeof nodes.has === 'function' && nodes.has(name));
+    readiness[name] = ok;
+    if (ok) ready++;
+  }
+  return {
+    ok: ready === names.length,
+    ready,
+    total: names.length,
+    sockets: readiness,
+    missing: names.filter(name => !readiness[name])
+  };
+}
+
+export function validateWeaponSocketSanity(THREE, root, nodes, options = {}) {
+  const warnings = [];
+  const errors = [];
+  if (!THREE || !root || !nodes || typeof nodes.get !== 'function') {
+    return { ok: true, errors, warnings };
+  }
+  root.updateMatrixWorld(true);
+  const pos = name => {
+    const node = nodes.get(name);
+    if (!node || typeof node.getWorldPosition !== 'function') return null;
+    return node.getWorldPosition(new THREE.Vector3());
+  };
+  const muzzle = pos('muzzle') || pos('muzzleFlash');
+  const gripRight = pos('gripRight');
+  const gripLeft = pos('gripLeft');
+  const magazine = pos('magazine');
+  const optic = pos('optic');
+  const scopeCamera = pos('scopeCamera');
+  if (muzzle && gripRight && muzzle.distanceTo(gripRight) < (options.minMuzzleGripDistance ?? 0.08)) {
+    warnings.push('muzzle too close to gripRight');
+  }
+  if (gripLeft && gripRight && gripLeft.distanceTo(gripRight) < (options.minGripSeparation ?? 0.025)) {
+    warnings.push('gripLeft too close to gripRight');
+  }
+  if (magazine && gripRight && magazine.distanceTo(gripRight) < (options.minMagazineGripDistance ?? 0.015)) {
+    warnings.push('magazine socket overlaps gripRight');
+  }
+  if (optic && scopeCamera && optic.distanceTo(scopeCamera) > (options.maxOpticCameraDistance ?? 0.35)) {
+    warnings.push('scopeCamera far from optic');
+  }
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+export function buildAuthoredViewmodelReport(kind, id, bucket = null, extra = {}) {
+  const validation = bucket && bucket.validation ? bucket.validation : null;
+  const socketReadiness = bucket && bucket.socketReadiness ? bucket.socketReadiness : null;
+  return {
+    id,
+    kind,
+    source: extra.source || 'pending',
+    active: !!extra.active,
+    visibleMeshes: extra.visibleMeshes || 0,
+    renderableMeshes: bucket && bucket.rig ? countRenderableMeshes(bucket.rig, false) : 0,
+    validation: validation
+      ? { ok: !!validation.ok, errors: validation.errors || [], warnings: validation.warnings || [] }
+      : null,
+    socketReadiness,
+    clips: bucket && bucket.clips ? bucket.clips : [],
+    activeClip: extra.activeClip || null,
+    stats: bucket && bucket.stats ? bucket.stats : null,
+    fallbackReason: extra.fallbackReason || null
+  };
+}
+
 export function scaleViewmodelToLength(THREE, root, targetLength = 0.68) {
   if (!THREE || !root) return 1;
   root.updateMatrixWorld(true);

@@ -144,13 +144,17 @@ import {
   REQUIRED_WEAPON_CLIPS as AUTHORED_WEAPON_CLIPS,
   REQUIRED_HAND_CLIPS as AUTHORED_HAND_CLIPS,
   cloneGltfScene,
-  loadGltfAsset,
   validateWeaponViewmodel,
   validateHandsViewmodel,
   configureViewmodelScene,
   scaleViewmodelToLength,
   alignSocketToLocal,
-  createClipActions
+  createClipActions,
+  setViewmodelLayer,
+  countRenderableMeshes,
+  collectSocketReadiness,
+  validateWeaponSocketSanity,
+  buildAuthoredViewmodelReport
 } from './weaponViewmodelLoader.js';
 // Phase G: small audio module — first piece of main.js modularization.
 import { getAC, sfxHit as _sfxHit, sfxReload as _sfxReload, sfxDamage as _sfxDamage, sfxWaveClear as _sfxWaveClear } from './audio.js';
@@ -10515,7 +10519,23 @@ const M4_AUTHORED_STATUS={
   handValidation:{ok:false,errors:['not-loaded'],warnings:[]},
   activeWeaponClip:null,
   activeHandClip:null,
-  budget:{weapon:null,hands:null}
+  budget:{weapon:null,hands:null},
+  socketReadiness:null,
+  materialStats:{weapon:null,hands:null},
+  registry:{weapon:null,hands:null}
+};
+const AUTHORED_VIEWMODEL_FORCED_FALLBACKS=new Set();
+const LEGACY_PISTOL_GLB_STATUS={
+  id:'legacy.weapon.pistol.usp',
+  manifestId:'weapon.pistol',
+  source:'legacy-direct',
+  quarantineReason:'usp_viewmodel.glb does not satisfy gun-standards weapon hierarchy/socket contract',
+  loadStatus:'pending',
+  validation:{ok:false,errors:['legacy-direct-path'],warnings:['not manifest-backed']},
+  visibleMeshes:0,
+  renderableMeshes:0,
+  activeClip:null,
+  fallbackReason:null
 };
 // ── HK USP Tactical + can — compact pistol silhouette (short slide + K-length
 //   can): long slides / fat cans read as PDW in first-person view.
@@ -10667,10 +10687,8 @@ const _DEAGLE_VIEW_OFFSET = new THREE.Vector3(0, -0.04, -0.10);
 // usp_viewmodel.glb is re-centered to bbox so magwell sits differently — nudge
 // the procedural left hand during insert (weight peaks mid-reload).
 const _USP_GLB_LHAND_RELOAD_DELTA={x:.055,y:.026,z:-.042,rx:.085,ry:-.058,rz:.045};
-/** TEMP: filter DevTools console with `[USP-VM-DEBUG]` — remove when pistol GLB shows */
 function _debugUspVm(tag, payload){
-  try{console.warn('[USP-VM-DEBUG]', tag, payload);}
-  catch(_){}
+  LEGACY_PISTOL_GLB_STATUS.lastEvent={tag,payload,at:Math.round(performance.now())};
 }
 function attachDeagleStaticModel(gltfScene, animations){
   if(deagleGlbRig){_debugUspVm('attach_skip_already', {hasRig:true});return;}
@@ -10785,59 +10803,13 @@ function attachDeagleStaticModel(gltfScene, animations){
     _setLayer(rig,1);
     if(deagleGlbRigP2)_setLayer(deagleGlbRigP2,1);
   }
-  // ── TEMP visibility / bounds dump (remove after debug) ─────────────────
-  (function _uspVmDebugDump(){
-    const meshes=[];
-    let skinned=0;
-    rig.traverse(o=>{
-      if(o.isSkinnedMesh){skinned++;meshes.push({n:o.name,t:'SkinnedMesh',v:o.visible,verts:o.geometry?.attributes?.position?.count|0});}
-      else if(o.isMesh)meshes.push({n:o.name,t:'Mesh',v:o.visible,verts:o.geometry?.attributes?.position?.count|0});
-    });
-    let anc=[];let p=rig;while(p){anc.push({n:p.name||'(anon)',t:p.type,vis:p.visible,lay:p.layers?.mask});p=p.parent;}
-    const bbW=new THREE.Box3().setFromObject(rig);
-    const cW=new THREE.Vector3();bbW.getCenter(cW);
-    const matInfo=[];
-    rig.traverse(o=>{
-      if(!o.isMesh&&!o.isSkinnedMesh)return;
-      const mats=Array.isArray(o.material)?o.material:[o.material];
-      for(const m of mats){
-        if(!m)continue;
-        matInfo.push({
-          on:o.name,
-          type:m.type,
-          op:m.opacity,
-          tr:!!m.transparent,
-          vis:!!m.visible,
-          depthTest:m.depthTest!==false,
-          side:m.side,
-          em:m.emissiveIntensity,
-          col:m.color?.getHex?.(),
-        });
-      }
-    });
-    _debugUspVm('attach_done',{
-      uspSkinnedNoClone:_uspHasSkinned,
-      widx,
-      hideProc,
-      rigVis:rig.visible,
-      gunGrpVis:gunGrp.visible,
-      gunGrpInCam:gunGrp.parent?.type,
-      deagleVis:deagleGlbRig?.visible,
-      skinned,
-      meshList:meshes.slice(0,12),
-      rigPos:rig.position.toArray(),
-      rigScl:rig.scale.toArray(),
-      rigRot:rig.rotation.toArray(),
-      bbWorldMin:bbW.min.toArray(),
-      bbWorldMax:bbW.max.toArray(),
-      bbWorldCenter:cW.toArray(),
-      ancestors:anc,
-      materialsSample:matInfo.slice(0,8),
-      anims:(animations||[]).map(a=>({n:a.name,d:a.duration})),
-      hasMixer:!!deagleMixer,
-      fireClip:((animations||[]).find(a=>a.name==='fire'))?.name||'(fallback first clip)',
-    });
-  })();
+  LEGACY_PISTOL_GLB_STATUS.loadStatus='loaded';
+  LEGACY_PISTOL_GLB_STATUS.visibleMeshes=_countVisibleMeshes(rig);
+  LEGACY_PISTOL_GLB_STATUS.renderableMeshes=countRenderableMeshes(rig,false);
+  LEGACY_PISTOL_GLB_STATUS.clips=(animations||[]).map(a=>a.name);
+  LEGACY_PISTOL_GLB_STATUS.activeClip=deagleIdleAction?'idle':null;
+  LEGACY_PISTOL_GLB_STATUS.materialStats=_collectMaterialStats(rig);
+  _debugUspVm('attach_done',{widx,visible:rig.visible,renderableMeshes:LEGACY_PISTOL_GLB_STATUS.renderableMeshes,hasMixer:!!deagleMixer});
 }
 function _onDeagleMixerFinished(e){
   if(e.action===deagleFireAction&&deagleIdleAction){
@@ -11059,7 +11031,7 @@ function _aaWeaponDetail(list,visible,w,h,d,mat,x,y,z,rx=0,ry=0,rz=0){
   return mesh;
 }
 function _selectedWeaponMeshList(){
-  if(P.weaponIdx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!(G&&G.splitScreenActive))return null;
+  if(P.weaponIdx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive))return null;
   if(P.weaponIdx===1&&deagleGlbRig)return null;
   return ({0:M4_MESHES,1:DE_MESHES,3:SG_MESHES,4:SM_MESHES,5:DMR_MESHES,6:SPP_MESHES,7:SNI_MESHES})[P.weaponIdx]||null;
 }
@@ -11131,12 +11103,15 @@ const _gunVMClonePairs=[];
   const n=Math.min(am.length,bm.length);
   for(let i=0;i<n;i++)_gunVMClonePairs.push([am[i],bm[i]]);
 })();
-// Authored USP viewmodel (glTF): replaces procedural pistol meshes when load succeeds.
+// Legacy USP viewmodel (glTF): runtime-only compatibility path. It is
+// intentionally not declared as `weapon.pistol` because it lacks the standard
+// weapon hierarchy/sockets required by gun-standards.md.
 (function _loadUspViewmodelGlb(){
   const base=(typeof import.meta!=='undefined'&&import.meta.env&&import.meta.env.BASE_URL!=null)
     ? String(import.meta.env.BASE_URL)
     :'/';
   const url=(base.endsWith('/')?base:base+'/')+'assets/weapons/usp_viewmodel.glb';
+  LEGACY_PISTOL_GLB_STATUS.loadStatus='loading';
   _debugUspVm('load_start', {url, base});
   _ASSET_GLTF_LOADER.load(url,(gltf)=>{
     _debugUspVm('load_ok', {
@@ -11145,8 +11120,17 @@ const _gunVMClonePairs=[];
       userAgent:typeof navigator!=='undefined'?navigator.userAgent.slice(0,80):'',
     });
     try{attachDeagleStaticModel(gltf.scene,gltf.animations);}
-    catch(e){console.warn('[USP viewmodel] attach failed',e);}
-  },undefined,(err)=>{_debugUspVm('load_error',{url,err:String(err)});console.warn('[USP viewmodel] GLB load failed',url,err);});
+    catch(e){
+      LEGACY_PISTOL_GLB_STATUS.loadStatus='fallback';
+      LEGACY_PISTOL_GLB_STATUS.fallbackReason=String(e&&e.message||e);
+      console.warn('[USP viewmodel] attach failed',e);
+    }
+  },undefined,(err)=>{
+    LEGACY_PISTOL_GLB_STATUS.loadStatus='fallback';
+    LEGACY_PISTOL_GLB_STATUS.fallbackReason=String(err&&err.message||err);
+    _debugUspVm('load_error',{url,err:String(err)});
+    console.warn('[USP viewmodel] GLB load failed',url,err);
+  });
 })();
 const _p2MeshBySrc=new WeakMap();
 for(const [s,d] of _gunVMClonePairs)_p2MeshBySrc.set(s,d);
@@ -11715,7 +11699,7 @@ function _setScopePipView(profile,alpha){
 // Tag viewmodel groups onto layer 1 so scope camera can ignore them
 function _setLayer(grp,n){grp.traverse(o=>o.layers.set(n));}
 function _isAuthoredM4RuntimeActive(){
-  try{return !!(m4AuthoredWeapon&&m4AuthoredWeapon.ok&&P&&P.weaponIdx===0&&!(G&&G.splitScreenActive));}
+  try{return !!(m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&P&&P.weaponIdx===0&&!(G&&G.splitScreenActive));}
   catch(_){return false;}
 }
 function _isAuthoredHandRuntimeActive(){
@@ -11819,7 +11803,9 @@ function _tryConfigureAuthoredWristbandRuntime(){
     reload:nodes.get('hologram_reload'),
     shop:nodes.get('hologram_shop'),
     inventoryPanel:nodes.get('hologram_inventory_panel_mesh'),
+    reloadGlowPanel:nodes.get('hologram_reload_glow_mesh'),
     reloadPanel:nodes.get('hologram_reload_panel_mesh'),
+    reloadParallaxPanel:nodes.get('hologram_reload_parallax_mesh'),
     shopPanel:nodes.get('hologram_shop_panel_mesh'),
     rayInventory:nodes.get('holo_ray_inventory'),
     rayReload:nodes.get('holo_ray_reload'),
@@ -11836,13 +11822,15 @@ function _tryConfigureAuthoredWristbandRuntime(){
   };
   assign(tech.screen,_authoredWristMat(textures.arm,0xffffff,.96,false),28);
   assign(tech.inventoryPanel,_authoredWristMat(textures.wrist,0xffffff,0,false),31);
+  assign(tech.reloadGlowPanel,_authoredWristMat(_softRadialTex,0x5ee8ff,0,true),30);
   assign(tech.reloadPanel,_authoredWristMat(textures.reload,0xffffff,0,false),31);
+  assign(tech.reloadParallaxPanel,_authoredWristMat(null,0x9cefff,0,true),32);
   assign(tech.shopPanel,_authoredWristMat(textures.shop,0xffffff,0,false),31);
   assign(tech.rayInventoryMesh,_authoredWristMat(null,0x80e0ff,0,true),30);
   assign(tech.rayReloadMesh,_authoredWristMat(null,0xa0eaff,0,true),30);
   assign(tech.rayIdleMesh,_authoredWristMat(null,0x40c8ff,.18,true),29);
   [tech.inventory,tech.reload,tech.shop,tech.rayInventory,tech.rayReload].forEach(o=>{if(o){o.visible=false;o.scale.setScalar(.001);}});
-  if(tech.rayIdle){tech.rayIdle.visible=true;tech.rayIdle.scale.setScalar(.45);}
+  if(tech.rayIdle){tech.rayIdle.visible=true;tech.rayIdle.scale.setScalar(.32);}
   m4AuthoredHands.tech=tech;
   m4AuthoredHands.techConfigured=true;
   try{_drawArmBandCanvas();}catch(_){}
@@ -11867,39 +11855,155 @@ function _syncAuthoredWristbandRuntime(now=performance.now()){
   _setAuthoredNodeOpacity(tech.ledRight,.72+(1-pulse)*.18);
   if(tech.rayIdle){
     tech.rayIdle.visible=true;
-    tech.rayIdle.scale.setScalar(.42+pulse*.18);
+    tech.rayIdle.scale.setScalar(.28+pulse*.12);
   }
   const setHolo=(node,panel,ray,rayMesh,t)=>{
     const v=THREE.MathUtils.clamp(t||0,0,1);
     if(node){
       node.visible=v>.012;
-      node.scale.setScalar(Math.max(.001,v*(1+Math.max(0,.8-v)*.10)));
-      node.rotation.z=Math.sin(now*.004)*.018*v;
+      node.scale.setScalar(Math.max(.001,v*(.74+Math.max(0,.8-v)*.08)));
+      node.rotation.z=Math.sin(now*.004)*.012*v;
     }
-    if(panel&&panel.material)panel.material.opacity=Math.min(.94,v*.94);
+    if(panel&&panel.material)panel.material.opacity=Math.min(.76,v*.76);
     if(ray){
       ray.visible=v>.012;
-      ray.scale.setScalar(Math.max(.001,v*(.9+pulse*.22)));
+      ray.scale.setScalar(Math.max(.001,v*(.62+pulse*.14)));
     }
-    if(rayMesh&&rayMesh.material)rayMesh.material.opacity=(.20+.22*pulse)*v;
+    if(rayMesh&&rayMesh.material)rayMesh.material.opacity=(.12+.16*pulse)*v;
+  };
+  const facePanelToPlayer=(panel,tilt=null)=>{
+    if(!panel||!camera)return;
+    camera.updateMatrixWorld(true);
+    panel.updateMatrixWorld(true);
+    const q=camera.getWorldQuaternion(new THREE.Quaternion());
+    const xAxis=new THREE.Vector3(1,0,0).applyQuaternion(q).normalize();
+    const zAxis=new THREE.Vector3(0,1,0).applyQuaternion(q).normalize();
+    const yAxis=new THREE.Vector3().crossVectors(zAxis,xAxis).normalize();
+    const mtx=new THREE.Matrix4().makeBasis(xAxis,yAxis,zAxis);
+    q.setFromRotationMatrix(mtx);
+    if(tilt){
+      q.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt.x||0,0,tilt.z||0)));
+    }
+    const parent=panel.parent;
+    if(parent){
+      const pq=parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      q.premultiply(pq);
+    }
+    panel.quaternion.copy(q);
+    panel.frustumCulled=false;
+  };
+  const stabilizeReloadReadout=()=>{
+    if(!tech.reload||reloadHoloDeployed<=.012||!camera)return;
+    camera.updateMatrixWorld(true);
+    tech.reload.updateMatrixWorld(true);
+    const world=tech.reload.getWorldPosition(new THREE.Vector3());
+    const camLocal=world.clone();
+    camera.worldToLocal(camLocal);
+    camLocal.x=THREE.MathUtils.clamp(camLocal.x,.045,.125);
+    camLocal.y=THREE.MathUtils.clamp(camLocal.y,-.065,.035);
+    camLocal.z=THREE.MathUtils.clamp(camLocal.z,-.48,-.36);
+    camera.localToWorld(camLocal);
+    if(tech.reload.parent){
+      tech.reload.parent.worldToLocal(camLocal);
+      tech.reload.position.lerp(camLocal,.88);
+      tech.reload.updateMatrixWorld(true);
+    }
+  };
+  const syncReloadProjectionBeam=()=>{
+    if(!tech.rayReload||!tech.reloadPanel||reloadHoloDeployed<=.012||!camera){
+      if(tech.rayReload)tech.rayReload.visible=false;
+      return;
+    }
+    const fromNode=tech.emitter||tech.screen||tech.root;
+    if(!fromNode){
+      tech.rayReload.visible=false;
+      return;
+    }
+    camera.updateMatrixWorld(true);
+    fromNode.updateMatrixWorld(true);
+    tech.reloadPanel.updateMatrixWorld(true);
+    const from=fromNode.getWorldPosition(new THREE.Vector3());
+    const fromCam=from.clone();
+    camera.worldToLocal(fromCam);
+    fromCam.x=THREE.MathUtils.clamp(fromCam.x,.105,.215);
+    fromCam.y=THREE.MathUtils.clamp(fromCam.y,-.220,-.085);
+    fromCam.z=THREE.MathUtils.clamp(fromCam.z,-.520,-.340);
+    camera.localToWorld(fromCam);
+    const to=tech.reloadPanel.getWorldPosition(new THREE.Vector3());
+    const d=fromCam.distanceTo(to);
+    if(d<.018){
+      tech.rayReload.visible=false;
+      return;
+    }
+    const mid=fromCam.clone().add(to).multiplyScalar(.5);
+    const zAxis=to.clone().sub(fromCam).normalize();
+    const yAxis=camera.position.clone().sub(mid).normalize();
+    const xAxis=new THREE.Vector3().crossVectors(yAxis,zAxis).normalize();
+    if(xAxis.lengthSq()<.0001)xAxis.set(1,0,0);
+    yAxis.crossVectors(zAxis,xAxis).normalize();
+    const mtx=new THREE.Matrix4().makeBasis(xAxis,yAxis,zAxis);
+    const q=new THREE.Quaternion().setFromRotationMatrix(mtx);
+    if(tech.rayReload.parent){
+      const parent=tech.rayReload.parent;
+      parent.worldToLocal(mid);
+      const pq=parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      q.premultiply(pq);
+    }
+    tech.rayReload.position.copy(mid);
+    tech.rayReload.quaternion.copy(q);
+    tech.rayReload.scale.set(.9+.22*pulse,1,Math.max(.001,d/.096));
+    tech.rayReload.visible=true;
+    tech.rayReload.frustumCulled=false;
+    if(tech.rayReloadMesh){
+      tech.rayReloadMesh.frustumCulled=false;
+      if(tech.rayReloadMesh.material)tech.rayReloadMesh.material.opacity=(.26+.24*pulse)*reloadHoloDeployed;
+    }
   };
   setHolo(tech.inventory,tech.inventoryPanel,tech.rayInventory,tech.rayInventoryMesh,wristDeployed);
   setHolo(tech.reload,tech.reloadPanel,tech.rayReload,tech.rayReloadMesh,reloadHoloDeployed);
   setHolo(tech.shop,tech.shopPanel,tech.rayInventory,tech.rayInventoryMesh,shopDeployed);
-  const deployClip=(key,clip,t)=>{
-    const on=(t||0)>.04;
-    if(on&&!_authoredWristDeployState[key])_playAuthoredM4Action(m4AuthoredHands,'hand',clip);
-    _authoredWristDeployState[key]=on;
+  if(tech.reload){
+    tech.reload.scale.setScalar(Math.max(.001,reloadHoloDeployed*(.64+.04*pulse)));
+  }
+  if(tech.reloadGlowPanel&&tech.reloadGlowPanel.material){
+    tech.reloadGlowPanel.material.opacity=(.16+.10*pulse)*reloadHoloDeployed;
+  }
+  if(tech.reloadParallaxPanel&&tech.reloadParallaxPanel.material){
+    tech.reloadParallaxPanel.material.opacity=(.16+.06*pulse)*reloadHoloDeployed;
+  }
+  if(tech.rayReloadMesh&&tech.rayReloadMesh.material){
+    tech.rayReloadMesh.material.opacity=(.22+.22*pulse)*reloadHoloDeployed;
+  }
+  stabilizeReloadReadout();
+  facePanelToPlayer(tech.inventoryPanel,{x:.05,z:-.08});
+  facePanelToPlayer(tech.reloadGlowPanel,{x:-.20,z:-.40});
+  facePanelToPlayer(tech.reloadPanel,{x:-.24,z:-.48});
+  facePanelToPlayer(tech.reloadParallaxPanel,{x:-.34,z:-.60});
+  syncReloadProjectionBeam();
+  facePanelToPlayer(tech.shopPanel,{x:.06,z:.10});
+  const deployClip=(key,clip,target,value)=>{
+    const targetOn=(target||0)>.04;
+    const visible=(value||0)>.04;
+    if(targetOn&&!_authoredWristDeployState[key])_playAuthoredM4Action(m4AuthoredHands,'hand',clip);
+    if(targetOn)_authoredWristDeployState[key]=true;
+    else if(!visible)_authoredWristDeployState[key]=false;
   };
-  deployClip('inventory','holoInventoryDeploy',wristDeployed);
-  deployClip('reload','holoReloadDeploy',reloadHoloDeployed);
-  deployClip('shop','holoShopDeploy',shopDeployed);
+  deployClip('inventory','holoInventoryDeploy',wristTarget,wristDeployed);
+  deployClip('reload','holoReloadDeploy',reloadHoloTarget,reloadHoloDeployed);
+  deployClip('shop','holoShopDeploy',shopTarget,shopDeployed);
   return true;
 }
 function _authoredWristbandDebugStatus(){
   const tech=m4AuthoredHands&&m4AuthoredHands.tech;
   const vis=o=>!!(o&&_meshVisibleInHierarchy(o));
   const nodeVis=o=>!!(o&&o.visible!==false&&(!o.parent||_meshVisibleInHierarchy(o.parent)));
+  const scl=o=>o&&o.scale?Number(Math.max(o.scale.x,o.scale.y,o.scale.z).toFixed(3)):0;
+  const op=o=>{
+    const mat=o&&o.material;
+    if(!mat)return null;
+    const m=Array.isArray(mat)?mat[0]:mat;
+    return m&&typeof m.opacity==='number'?Number(m.opacity.toFixed(3)):null;
+  };
   const ndc=o=>{
     if(!o||!camera)return null;
     try{
@@ -11915,17 +12019,42 @@ function _authoredWristbandDebugStatus(){
     screenVisible:vis(tech&&tech.screen),
     rootNdc:ndc(tech&&tech.root),
     screenNdc:ndc(tech&&tech.screen),
+    reloadNdc:ndc(tech&&tech.reloadPanel),
+    deployTargets:{
+      inventory:Number((wristTarget||0).toFixed(3)),
+      reload:Number((reloadHoloTarget||0).toFixed(3)),
+      shop:Number((shopTarget||0).toFixed(3))
+    },
+    deployValues:{
+      inventory:Number((wristDeployed||0).toFixed(3)),
+      reload:Number((reloadHoloDeployed||0).toFixed(3)),
+      shop:Number((shopDeployed||0).toFixed(3))
+    },
     inventoryVisible:nodeVis(tech&&tech.inventory),
+    inventoryScale:scl(tech&&tech.inventory),
+    inventoryOpacity:op(tech&&tech.inventoryPanel),
+    inventoryRayVisible:nodeVis(tech&&tech.rayInventory),
+    inventoryRayOpacity:op(tech&&tech.rayInventoryMesh),
     reloadVisible:nodeVis(tech&&tech.reload),
+    reloadScale:scl(tech&&tech.reload),
+    reloadOpacity:op(tech&&tech.reloadPanel),
+    reloadRayVisible:nodeVis(tech&&tech.rayReload),
+    reloadRayOpacity:op(tech&&tech.rayReloadMesh),
     shopVisible:nodeVis(tech&&tech.shop),
+    shopScale:scl(tech&&tech.shop),
+    shopOpacity:op(tech&&tech.shopPanel),
     idleRayVisible:nodeVis(tech&&tech.rayIdle)
   };
 }
 function _fitAuthoredM4RuntimeParts(rig){
   if(!rig||!rig.traverse)return;
-  const hidden=new Set(['stock','buttPad','bufferTube']);
+  const hidden=new Set(['stock','buttPad','bufferTube','frontSight','rearSight','opticMountGuide','topRail']);
   rig.traverse(o=>{
     if(hidden.has(o.name)){
+      o.visible=false;
+      o.userData.firstPersonCropped=true;
+    }
+    if(/^railTooth_/.test(o.name)){
       o.visible=false;
       o.userData.firstPersonCropped=true;
     }
@@ -11935,7 +12064,7 @@ function _syncAuthoredM4Visibility(){
   let m4Active=false,split=false;
   try{m4Active=P.weaponIdx===0;split=!!(G&&G.splitScreenActive);}
   catch(_){}
-  const useWeapon=!!(m4Active&&!split&&m4AuthoredWeapon&&m4AuthoredWeapon.ok);
+  const useWeapon=!!(m4Active&&!split&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId));
   if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=useWeapon;
   M4_MESHES.forEach(m=>{m.visible=m4Active&&!useWeapon;});
   const useHands=!!(M4_AUTHORED_HANDS_RUNTIME_ENABLED&&useWeapon&&m4AuthoredHands&&m4AuthoredHands.ok);
@@ -12057,22 +12186,33 @@ function _loadAuthoredM4Viewmodels(){
   const weaponEntry=WEAPON_MANIFEST['weapon.rifle'];
   const handsEntry=VIEWMODEL_MANIFEST['viewmodel.operative.hands'];
   if(weaponEntry&&weaponEntry.src){
-    loadGltfAsset(_ASSET_GLTF_LOADER,weaponEntry.src).then(gltf=>{
+    _ASSET_REGISTRY.load(weaponEntry.id).then(slot=>{
+      M4_AUTHORED_STATUS.registry.weapon={status:slot.status,source:slot.source,reason:slot.reason||null};
+      if(slot.status!=='loaded'||!slot.gltf)throw new Error(slot.reason||`registry returned ${slot.status}`);
+      const gltf=slot.gltf;
       const rig=cloneGltfScene(THREE,SkeletonUtils,gltf.scene);
       if(!rig)throw new Error('empty M4 scene');
       configureViewmodelScene(THREE,rig);
+      setViewmodelLayer(rig,1);
       gunGrp.add(rig);
       rig.visible=false;
       const validation=validateWeaponViewmodel({scene:rig,animations:gltf.animations},weaponEntry,{requiredSockets:AUTHORED_WEAPON_SOCKETS,requiredClips:AUTHORED_WEAPON_CLIPS,triangleBudget:weaponEntry.triangleBudget});
-      scaleViewmodelToLength(THREE,rig,.68);
+      const sanity=validateWeaponSocketSanity(THREE,rig,validation.nodes);
+      validation.errors.push(...sanity.errors);
+      validation.warnings.push(...sanity.warnings);
+      validation.ok=validation.errors.length===0;
+      scaleViewmodelToLength(THREE,rig,.64);
       const nodes=validation.nodes;
-      alignSocketToLocal(THREE,rig,nodes.get('muzzle'),gunGrp,new THREE.Vector3(0,.030,-.49));
+      alignSocketToLocal(THREE,rig,nodes.get('muzzle'),gunGrp,new THREE.Vector3(.006,.026,-.520));
       _fitAuthoredM4RuntimeParts(rig);
       const bucket=_prepareAuthoredActionBucket('weapon',rig,gltf.animations,AUTHORED_WEAPON_CLIPS);
-      m4AuthoredWeapon=Object.assign(bucket,{ok:validation.ok,rig,nodes,validation,clips:validation.clips,stats:validation.stats});
+      const socketReadiness=collectSocketReadiness(nodes,AUTHORED_WEAPON_SOCKETS);
+      m4AuthoredWeapon=Object.assign(bucket,{ok:validation.ok,rig,nodes,validation,clips:validation.clips,stats:validation.stats,socketReadiness});
       M4_AUTHORED_STATUS.weaponSource=validation.ok?'authored':'fallback';
       M4_AUTHORED_STATUS.socketValidation={ok:validation.ok,errors:validation.errors,warnings:validation.warnings};
+      M4_AUTHORED_STATUS.socketReadiness=socketReadiness;
       M4_AUTHORED_STATUS.budget.weapon=validation.stats;
+      M4_AUTHORED_STATUS.materialStats.weapon=_collectMaterialStats(rig);
       if(!validation.ok)M4_AUTHORED_STATUS.fallbackReason=`M4 validation failed: ${validation.errors.join(', ')}`;
       _syncAuthoredM4Visibility();
     }).catch(err=>{
@@ -12082,10 +12222,14 @@ function _loadAuthoredM4Viewmodels(){
     });
   }
   if(handsEntry&&handsEntry.src){
-    loadGltfAsset(_ASSET_GLTF_LOADER,handsEntry.src).then(gltf=>{
+    _ASSET_REGISTRY.load(handsEntry.id).then(slot=>{
+      M4_AUTHORED_STATUS.registry.hands={status:slot.status,source:slot.source,reason:slot.reason||null};
+      if(slot.status!=='loaded'||!slot.gltf)throw new Error(slot.reason||`registry returned ${slot.status}`);
+      const gltf=slot.gltf;
       const rig=cloneGltfScene(THREE,SkeletonUtils,gltf.scene);
       if(!rig)throw new Error('empty hand scene');
       configureViewmodelScene(THREE,rig);
+      setViewmodelLayer(rig,1);
       rig.visible=false;
       rig.scale.setScalar(1);
       gunGrp.add(rig);
@@ -12100,6 +12244,7 @@ function _loadAuthoredM4Viewmodels(){
       M4_AUTHORED_STATUS.handSource=validation.ok?(M4_AUTHORED_HANDS_RUNTIME_ENABLED?'authored':'fallback-procedural'):'fallback';
       M4_AUTHORED_STATUS.handValidation={ok:validation.ok,errors:validation.errors,warnings:validation.warnings};
       M4_AUTHORED_STATUS.budget.hands=validation.stats;
+      M4_AUTHORED_STATUS.materialStats.hands=_collectMaterialStats(rig);
       if(!validation.ok)M4_AUTHORED_STATUS.fallbackReason=`hands validation failed: ${validation.errors.join(', ')}`;
       _tryConfigureAuthoredWristbandRuntime();
       _syncAuthoredM4Visibility();
@@ -15197,17 +15342,17 @@ function switchWeapon(idx){
     $e('reload-bar').style.display='none';
   }
   const W=WEAPONS[idx];P.weaponIdx=idx;
-  const _useAuthoredM4=!!(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!(G&&G.splitScreenActive));
+  const _useAuthoredM4=!!(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive));
   M4_MESHES.forEach(m=>m.visible=(idx===0)&&!_useAuthoredM4);
   if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=_useAuthoredM4;
-  if(idx===0&&M4_AUTHORED_HANDS_RUNTIME_ENABLED&&m4AuthoredHands&&m4AuthoredHands.ok)_playAuthoredM4Action(m4AuthoredHands,'hand','weaponSwap');
+  if(_useAuthoredM4&&M4_AUTHORED_HANDS_RUNTIME_ENABLED&&m4AuthoredHands&&m4AuthoredHands.ok)_playAuthoredM4Action(m4AuthoredHands,'hand','weaponSwap');
   // GLB Deagle takes over visuals when it's attached; hide procedural mesh
   // pieces so they don't peek through.
   const _useGlbDeagle=!!deagleGlbRig;
   DE_MESHES.forEach(m=>m.visible=(idx===1)&&!_useGlbDeagle);
   if(deagleGlbRig)deagleGlbRig.visible=(idx===1);
   if(deagleGlbRigP2)deagleGlbRigP2.visible=(idx===1);
-  if(idx===1&&typeof _debugUspVm==='function')_debugUspVm('switchWeapon_pistol',{_useGlbDeagle:!!deagleGlbRig,glbVis:deagleGlbRig?.visible,procFirstVis:DE_MESHES[0]?.visible});
+  if(idx===1)LEGACY_PISTOL_GLB_STATUS.lastSwitch={usingLegacyGlb:!!deagleGlbRig,glbVisible:!!deagleGlbRig?.visible,proceduralVisible:!!DE_MESHES[0]?.visible,at:Math.round(performance.now())};
   SG_MESHES.forEach(m=>m.visible=idx===3);
   SM_MESHES.forEach(m=>m.visible=idx===4);
   DMR_MESHES.forEach(m=>m.visible=idx===5);
@@ -24058,13 +24203,7 @@ function updateHands(dt){
     const _scopeAds=P.adsVis||P.ads||0;
     const _authScope=_isAuthoredM4RuntimeActive();
     if(_authScope){
-      const _s=Math.max(.04,.16-_scopeAds*.12);
-      m4ScopeGrp.scale.setScalar(_s);
-      m4ScopeGrp.position.set(
-        _m4ScopeSocketLocal.x-_M4_SCOPE_LENS_GROUP_LOCAL.x*_s,
-        _m4ScopeSocketLocal.y-_M4_SCOPE_LENS_GROUP_LOCAL.y*_s+_scopeAds*.001,
-        _m4ScopeSocketLocal.z-_M4_SCOPE_LENS_GROUP_LOCAL.z*_s-_scopeAds*.001
-      );
+      m4ScopeGrp.visible=false;
     }else{
       const _adsScaleMul=(_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70;
       const _s=1+_scopeAds*_adsScaleMul;
@@ -24379,9 +24518,32 @@ function _weaponVisualStatus(){
   const knifeStats=(typeof knifGrp!=='undefined')?_collectMaterialStats(knifGrp):{aa:0,pbr:0,total:0,byFamily:{},quality:{},maps:{}};
   const combined=_mergeMaterialStats(_mergeMaterialStats(gunStats,throwStats),knifeStats);
   const _gripDbg=typeof getGripDebug==='function'?getGripDebug(playerAnimState0):null;
+  const authoredWeaponReport=buildAuthoredViewmodelReport('weapon',M4_AUTHORED_STATUS.weaponId,m4AuthoredWeapon,{
+    source:M4_AUTHORED_STATUS.weaponSource,
+    active:_isAuthoredM4RuntimeActive(),
+    visibleMeshes:authoredM4Meshes,
+    activeClip:P.reloading?'reload':M4_AUTHORED_STATUS.activeWeaponClip,
+    fallbackReason:M4_AUTHORED_STATUS.fallbackReason
+  });
+  const authoredHandsReport=buildAuthoredViewmodelReport('viewmodel',M4_AUTHORED_STATUS.handsId,m4AuthoredHands,{
+    source:M4_AUTHORED_STATUS.handSource,
+    active:_isAuthoredHandRuntimeActive(),
+    visibleMeshes:authoredHandMeshes,
+    activeClip:M4_AUTHORED_STATUS.activeHandClip,
+    fallbackReason:M4_AUTHORED_STATUS.fallbackReason
+  });
+  authoredWeaponReport.materialStats=M4_AUTHORED_STATUS.materialStats.weapon;
+  authoredHandsReport.materialStats=M4_AUTHORED_STATUS.materialStats.hands;
+  authoredWeaponReport.registry=M4_AUTHORED_STATUS.registry.weapon;
+  authoredHandsReport.registry=M4_AUTHORED_STATUS.registry.hands;
+  const activeManifestId=P.weaponIdx===0?M4_AUTHORED_STATUS.weaponId:(P.weaponIdx===1?LEGACY_PISTOL_GLB_STATUS.manifestId:null);
+  LEGACY_PISTOL_GLB_STATUS.visibleMeshes=(deagleGlbRig&&deagleGlbRig.visible)?_countVisibleMeshes(deagleGlbRig):0;
+  LEGACY_PISTOL_GLB_STATUS.renderableMeshes=deagleGlbRig?countRenderableMeshes(deagleGlbRig,false):0;
+  LEGACY_PISTOL_GLB_STATUS.materialStats=deagleGlbRig?_collectMaterialStats(deagleGlbRig):LEGACY_PISTOL_GLB_STATUS.materialStats;
   return {
     weaponIdx:P.weaponIdx,
     name:WEAPONS[P.weaponIdx]?WEAPONS[P.weaponIdx].name:'unknown',
+    activeManifestId,
     quality:SETTINGS.weaponQuality||'high',
     stableRenderingMode:!!STABLE_RENDERING_MODE,
     rendererMode:SETTINGS.rendererMode||'auto',
@@ -24398,11 +24560,17 @@ function _weaponVisualStatus(){
     authoredWeaponId:M4_AUTHORED_STATUS.weaponId,
     authoredWeaponSource:M4_AUTHORED_STATUS.weaponSource,
     authoredHandSource:M4_AUTHORED_STATUS.handSource,
+    authoredViewmodels:{
+      weapon:authoredWeaponReport,
+      hands:authoredHandsReport,
+      legacyPistol:Object.assign({},LEGACY_PISTOL_GLB_STATUS)
+    },
     authoredM4Active:_isAuthoredM4RuntimeActive(),
     authoredM4VisibleMeshes:authoredM4Meshes,
     authoredHandVisibleMeshes:authoredHandMeshes,
     authoredM4SocketValidation:M4_AUTHORED_STATUS.socketValidation,
     authoredM4HandValidation:M4_AUTHORED_STATUS.handValidation,
+    authoredM4SocketReadiness:M4_AUTHORED_STATUS.socketReadiness,
     activeWeaponClip:P.reloading?'reload':M4_AUTHORED_STATUS.activeWeaponClip,
     activeHandClip:M4_AUTHORED_STATUS.activeHandClip,
     authoredWristband:_authoredWristbandDebugStatus(),
@@ -26012,6 +26180,14 @@ renderer.setAnimationLoop(()=>{
       reloadBeam2.scale.y=Math.max(.001,_beamT);
       _reloadHoloPanelW.copy(_reloadHoloSmW);
       _placeReloadTether(_reloadHoloAnchorW,_reloadHoloPanelW,(.32+.14*Math.sin(now*10))*_beamT);
+      if(_isAuthoredHandRuntimeActive()){
+        reloadHoloGrp.visible=false;
+        reloadTether.visible=false;
+        reloadHoloM.opacity=0;
+        reloadGlowM.opacity=0;
+        reloadBeamM.opacity=0;
+        reloadBeam2M.opacity=0;
+      }
       _syncAuthoredWristbandRuntime(now*1000);
       // Pulse band emitter brighter while reloading
       _emitM.opacity=.55+(P.reloading?.40+.20*Math.sin(now*9):0);
@@ -26601,6 +26777,41 @@ window.__game={
     setAnimDebugOverlay:(on)=>{_animDebugHud=!!on;const el=document.getElementById('anim-debug-hud');if(el&&!_animDebugHud)el.remove();return _animDebugHud;},
     forcePlayerAnimEvent:(name,options)=>{playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,String(name||'pulse'),options||{});return getPlayerAnimDebug(playerAnimState0).recentNotifies;},
     viewmodelPose:()=>({rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray()},lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray()},gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray()},fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null}),
+    setWristbandHologram:(kind,on=true)=>{
+      const k=String(kind||'inventory');
+      const enabled=!!on;
+      if(k==='inventory'){
+        if(enabled)_authoredWristDeployState.inventory=false;
+        if(enabled)openInventory();
+        else { closeInventory(); wristDeployed=0; _authoredWristDeployState.inventory=false; }
+        if(enabled)_playAuthoredM4Action(m4AuthoredHands,'hand','holoInventoryDeploy');
+      }else if(k==='shop'){
+        if(enabled)_authoredWristDeployState.shop=false;
+        if(enabled)openShop();
+        else { closeShop(); shopDeployed=0; _authoredWristDeployState.shop=false; }
+        if(enabled)_playAuthoredM4Action(m4AuthoredHands,'hand','holoShopDeploy');
+      }else if(k==='reload'){
+        if(enabled)_authoredWristDeployState.reload=false;
+        reloadHoloTarget=enabled?1:0;
+        if(enabled){
+          _reloadHoloNeedsSnap=true;
+          if(!P.reloading){
+            P.reloading=true;
+            P.reloadTimer=P.RELOAD_TIME||WEAPONS[P.weaponIdx]?.reloadTime||1.8;
+            P.RELOAD_TIME=P.reloadTimer;
+          }
+          _drawReloadHolo(P.ammo,WEAPONS[P.weaponIdx]?.mag||30,0);
+          _playAuthoredM4Action(m4AuthoredHands,'hand','holoReloadDeploy');
+        }else{
+          reloadHoloDeployed=0;
+          _authoredWristDeployState.reload=false;
+          if(P.reloading)P.reloading=false;
+        }
+      }
+      _syncAuthoredWristbandRuntime(performance.now());
+      return _weaponVisualStatus().authoredWristband;
+    },
+    wristbandHologramStatus:()=>_weaponVisualStatus().authoredWristband,
     reloadTimeline:()=>({phase:playerAnimState0.reload.phase,visualProgress:playerAnimState0.reload.visualProgress,class:playerAnimState0.reload.timelineClass}),
     movementAnimState:()=>getMovementAnimState(playerAnimState0),
     getCampaignLevel:(bn)=>getCampaignLevel(bn),
@@ -26747,12 +26958,20 @@ window.__game={
     },
     startInspectCurrentWeapon:()=>{startInspect();return _weaponVisualStatus();},
     endInspectCurrentWeapon:()=>{endInspect();return _weaponVisualStatus();},
-    forceM4AuthoredFallback:(on=true)=>{
-      if(m4AuthoredWeapon){
-        m4AuthoredWeapon._debugForcedFallback=!!on;
-        m4AuthoredWeapon.ok=on?false:(m4AuthoredWeapon.validation?!!m4AuthoredWeapon.validation.ok:m4AuthoredWeapon.ok);
-        M4_AUTHORED_STATUS.weaponSource=on?'fallback-forced':(m4AuthoredWeapon.ok?'authored':'fallback');
+    forceAuthoredFallback:(id=M4_AUTHORED_STATUS.weaponId,on=true)=>{
+      const key=String(id||M4_AUTHORED_STATUS.weaponId);
+      if(on)AUTHORED_VIEWMODEL_FORCED_FALLBACKS.add(key);
+      else AUTHORED_VIEWMODEL_FORCED_FALLBACKS.delete(key);
+      if(key===M4_AUTHORED_STATUS.weaponId&&m4AuthoredWeapon){
+        M4_AUTHORED_STATUS.weaponSource=on?'fallback-forced':(m4AuthoredWeapon.validation&&m4AuthoredWeapon.validation.ok?'authored':'fallback');
       }
+      _syncAuthoredM4Visibility();
+      return {forced:Array.from(AUTHORED_VIEWMODEL_FORCED_FALLBACKS),weapon:_weaponVisualStatus()};
+    },
+    forceM4AuthoredFallback:(on=true)=>{
+      if(on)AUTHORED_VIEWMODEL_FORCED_FALLBACKS.add(M4_AUTHORED_STATUS.weaponId);
+      else AUTHORED_VIEWMODEL_FORCED_FALLBACKS.delete(M4_AUTHORED_STATUS.weaponId);
+      if(m4AuthoredWeapon)M4_AUTHORED_STATUS.weaponSource=on?'fallback-forced':(m4AuthoredWeapon.validation&&m4AuthoredWeapon.validation.ok?'authored':'fallback');
       _syncAuthoredM4Visibility();
       return _weaponVisualStatus();
     },

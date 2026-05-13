@@ -30,10 +30,12 @@ npm run test:campaign            # campaign regression
 npm run test:ai                  # tactical AI probe
 npm run test:perf                # perf snapshot
 npm run test:perf:stress         # perf stress matrix
+npm run test:asset-registry      # non-browser asset registry cache/fallback/dispose probe
 npm run test:visual:runtime      # 12 buildings × 9 post states
 npm run test:render              # auto/webgl/webgpu smoke + post + scope PIP
 npm run test:assets:budget       # asset manifest validation + budget enforcement
 npm run test:visual:regression   # baseline regression + missing-asset detection
+npm run validate:assets:authored # static manifest-linked GLB validation
 npm run test:acceptance          # CI-quick: ~4.5 min (5 buildings × 5 post states, auto only)
 npm run test:acceptance:full     # Release-grade: full 12 × 9 matrix + all renderer modes
 npm run capture:baseline         # capture screenshots/aa-baseline-pack/
@@ -162,7 +164,8 @@ The in-page debug surface is under `window.__game.debug`:
 - `assetManifests()`, `assetManifest('characters')`, `assetPreflight()`, `assetRegistryStatus()`, `assetBudgets()`, `loadAsset(kind,id)`, and `disposeAsset(kind,id)` expose the asset manifest module from Section 11.
 - `enemyStateMachine()`, `viewmodelStateMachine()`, `weaponSocketSpec()`, `vfxProfiles()` expose Sections 4/6/9 data tables.
 - `materialLibrary()` and `materialStats()` expose PBR family, quality, and texture-map coverage.
-- `weaponVisualStatus()` reports the active weapon viewmodel, AA detail parts, PBR/AA materials, and scope visibility.
+- `weaponVisualStatus()` reports the active weapon viewmodel, manifest ID, authored/fallback source, socket readiness, validation, visible meshes, active clips, legacy pistol quarantine status, AA detail parts, PBR/AA materials, and scope visibility.
+- `forceAuthoredFallback(id, on)` forces manifest-backed authored viewmodels back to procedural visuals for fallback QA.
 - `characterVisualStatus()` reports live archetypes, human shells, hitbox ownership, weak-point markers, LOD, weapon silhouettes, player proxy, and viewmodel profile.
 - `scopePip()` reports scope render-target status, material opacity, and backend render-target metadata.
 - `vfxStress()` spawns procedural impacts, smoke, dust, flashes, decals, and shell casings, then returns budgeted runtime stats.

@@ -30,7 +30,9 @@
     "test:doorway:b01": "node scripts/b01-doorway-screenshot.mjs",
     "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs",
     "test:m4:viewmodel": "node scripts/m4-viewmodel-acceptance.mjs",
-    "validate:weapons": "node scripts/validate-weapon-glb.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon && node scripts/validate-weapon-glb.mjs public/assets/viewmodels/operative_hands.glb --type hands"
+    "test:asset-registry": "node scripts/asset-registry-probe.mjs",
+    "validate:assets:authored": "node scripts/validate-authored-assets.mjs",
+    "validate:weapons": "node scripts/validate-weapon-glb.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon && node scripts/validate-weapon-glb.mjs public/assets/viewmodels/operative_hands.glb --type hands && npm run validate:assets:authored"
   },
   "dependencies": {
     "three": "0.170.0"
