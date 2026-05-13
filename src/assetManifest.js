@@ -207,7 +207,10 @@ function weaponEntry(id, type, label, options = {}) {
 }
 
 export const WEAPON_MANIFEST = {
-  'weapon.pistol': weaponEntry('weapon.pistol', 'pistol', 'Sidearm', { triangleBudget: 4200 }),
+  'weapon.pistol': weaponEntry('weapon.pistol', 'pistol', 'Sidearm', {
+    src: 'assets/weapons/usp_viewmodel.glb',
+    triangleBudget: 4200
+  }),
   'weapon.rifle': weaponEntry('weapon.rifle', 'rifle', 'Service Rifle', {
     src: 'assets/weapons/m4/m4_viewmodel.glb',
     triangleBudget: 12000

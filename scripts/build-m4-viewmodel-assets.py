@@ -23,12 +23,14 @@ REPO = Path(__file__).resolve().parents[1]
 WEAPON_SRC = REPO / "art_src/weapons/m4/m4_viewmodel.blend"
 WEAPON_GLB = REPO / "public/assets/weapons/m4/m4_viewmodel.glb"
 WEAPON_TEX = REPO / "public/assets/weapons/m4/textures/m4_albedo_2k.png"
+USP_SRC = REPO / "art_src/weapons/usp/usp_viewmodel.blend"
+USP_GLB = REPO / "public/assets/weapons/usp_viewmodel.glb"
 HANDS_SRC = REPO / "art_src/viewmodels/operative_hands.blend"
 HANDS_GLB = REPO / "public/assets/viewmodels/operative_hands.glb"
 
 
 def ensure_dirs() -> None:
-    for path in (WEAPON_SRC, WEAPON_GLB, WEAPON_TEX, HANDS_SRC, HANDS_GLB):
+    for path in (WEAPON_SRC, WEAPON_GLB, WEAPON_TEX, USP_SRC, USP_GLB, HANDS_SRC, HANDS_GLB):
         path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -309,6 +311,114 @@ def build_m4() -> None:
     export_selected_glb(WEAPON_GLB, col)
 
 
+def build_usp() -> None:
+    reset_scene()
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.frame_end = 88
+    col = collection("USP_VIEWMODEL_ASSET")
+    root = empty("WeaponRoot", (0, 0, 0), col, None, 0.10, "ARROWS")
+    visual = empty("visual", (0, 0, 0), col, root, 0.045)
+    sockets = empty("sockets", (0, 0, 0), col, root, 0.045)
+
+    slide_mat = material("USP_burnished_slide", (0.065, 0.068, 0.074, 1), 0.52, 0.72)
+    frame_mat = material("USP_graphite_polymer", (0.011, 0.012, 0.014, 1), 0.86, 0.02)
+    grip_mat = material("USP_ribbed_grip_rubber", (0.006, 0.007, 0.009, 1), 0.90, 0.0)
+    accent_mat = material("USP_oiled_controls", (0.020, 0.021, 0.024, 1), 0.44, 0.55)
+    wear_mat = material("USP_worn_edges", (0.42, 0.40, 0.35, 1), 0.58, 0.25)
+
+    # Author +Y forward in Blender. glTF export maps that to game-forward -Z.
+    slide = cube("chargingHandle", (0, 0.22, 0.19), (0.22, 0.76, 0.15), slide_mat, col, visual, bevel=0.018)
+    cube("slide_top_flat", (0, 0.22, 0.29), (0.17, 0.66, 0.026), accent_mat, col, visual, bevel=0.004)
+    cube("rear_sight", (0, -0.18, 0.32), (0.15, 0.045, 0.055), accent_mat, col, visual, bevel=0.004)
+    cube("front_sight", (0, 0.58, 0.32), (0.075, 0.030, 0.045), accent_mat, col, visual, bevel=0.004)
+    cube("ejection_port_cut", (-0.113, 0.18, 0.225), (0.010, 0.19, 0.060), wear_mat, col, visual, bevel=0.002)
+
+    cube("frame", (0, 0.03, 0.045), (0.235, 0.62, 0.20), frame_mat, col, visual, bevel=0.020)
+    cube("dust_cover", (0, 0.34, 0.015), (0.205, 0.34, 0.10), frame_mat, col, visual, bevel=0.012)
+    for i in range(4):
+        cube(f"accessory_rail_notch_{i}", (0, 0.20 + i * 0.075, -0.050), (0.175, 0.018, 0.020), accent_mat, col, visual, bevel=0.002)
+
+    cylinder("barrel", (0, 0.58, 0.19), 0.043, 0.30, accent_mat, col, visual, "Y", 32)
+    cylinder("suppressor", (0, 0.91, 0.19), 0.070, 0.58, accent_mat, col, visual, "Y", 32)
+    cylinder("suppressor_front_cap", (0, 1.22, 0.19), 0.074, 0.024, wear_mat, col, visual, "Y", 32)
+
+    grip = cube("pistolGrip", (0, -0.20, -0.22), (0.215, 0.24, 0.56), grip_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.026)
+    for i in range(6):
+        cube(f"grip_rib_{i}", (0, -0.305 + i * 0.042, -0.185), (0.225, 0.010, 0.030), frame_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.0015)
+    mag = cube("mag", (0, -0.26, -0.47), (0.185, 0.19, 0.32), accent_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.012)
+    cube("mag_plate", (0, -0.305, -0.65), (0.225, 0.12, 0.065), wear_mat, col, visual, bevel=0.012)
+    cube("triggerGuard", (0, -0.080, -0.075), (0.225, 0.14, 0.13), frame_mat, col, visual, bevel=0.009)
+    trigger = cube("trigger", (0, -0.105, -0.060), (0.045, 0.045, 0.13), accent_mat, col, visual, rot=(math.radians(-8), 0, 0), bevel=0.004)
+    cube("slide_release", (-0.123, -0.02, 0.095), (0.016, 0.17, 0.030), accent_mat, col, visual, bevel=0.003)
+    cube("safety_decocker", (-0.128, -0.16, 0.125), (0.020, 0.11, 0.040), accent_mat, col, visual, bevel=0.003)
+    cube("beavertail", (0, -0.31, 0.095), (0.205, 0.14, 0.055), frame_mat, col, visual, bevel=0.012)
+
+    socket_positions = {
+        "muzzle": (0, 1.25, 0.19),
+        "muzzleFlash": (0, 1.31, 0.19),
+        "gripRight": (0, -0.17, -0.20),
+        "gripLeft": (-0.075, 0.22, 0.01),
+        "magazine": (0, -0.25, -0.46),
+        "ejectionPort": (-0.13, 0.18, 0.23),
+        "optic": (0, 0.14, 0.33),
+        "scopeCamera": (0, 0.15, 0.35),
+        "attachmentMuzzle": (0, 1.18, 0.19),
+        "attachmentMag": (0, -0.27, -0.56),
+        "attachmentForegrip": (-0.080, 0.28, -0.04),
+        "attachmentLaser": (-0.145, 0.44, 0.045),
+    }
+    for name, loc in socket_positions.items():
+        empty(name, loc, col, sockets, 0.036, "SPHERE")
+
+    anim_objs = [root, visual, slide, mag, trigger]
+    key_data = {
+        "root": (root, (0, 0, 0), (0, 0, 0), (1, 1, 1)),
+        "visual": (visual, (0, 0, 0), (0, 0, 0), (1, 1, 1)),
+        "slide": (slide, slide.location.copy(), slide.rotation_euler.copy(), slide.scale.copy()),
+        "mag": (mag, mag.location.copy(), mag.rotation_euler.copy(), mag.scale.copy()),
+        "trigger": (trigger, trigger.location.copy(), trigger.rotation_euler.copy(), trigger.scale.copy()),
+    }
+
+    def set_key(name, frame, loc=None, rot=None, scale=None):
+        obj, base_loc, base_rot, base_scale = key_data[name]
+        key(obj, frame, loc if loc is not None else base_loc, rot if rot is not None else base_rot, scale if scale is not None else base_scale)
+
+    def clip(name, frames):
+        clear_active_actions(anim_objs)
+        for frame, data in frames:
+            for obj_name, vals in data.items():
+                set_key(obj_name, frame, vals.get("loc"), vals.get("rot"), vals.get("scale"))
+        push_clip(anim_objs, name, min(frame for frame, _ in frames), max(frame for frame, _ in frames))
+
+    rest = {k: {} for k in key_data.keys()}
+    clip("idle", [(1, rest), (40, {
+        "visual": {"loc": (0.0, 0.004, 0.002), "rot": (math.radians(0.7), 0, math.radians(-0.6))},
+    }), (80, rest)])
+    clip("fire", [(1, rest), (4, {
+        "root": {"loc": (0, -0.016, -0.006), "rot": (math.radians(-2.2), 0, math.radians(-1.4))},
+        "slide": {"loc": (0, 0.115, 0.19)},
+        "trigger": {"rot": (math.radians(-22), 0, 0)},
+    }), (13, rest)])
+    clip("reload", [(1, rest), (20, {
+        "root": {"loc": (0.018, -0.030, -0.024), "rot": (math.radians(8), 0, math.radians(-8))},
+        "mag": {"loc": (0, -0.30, -0.72), "rot": (math.radians(-16), 0, math.radians(3))},
+    }), (54, {
+        "root": {"loc": (-0.010, -0.018, -0.010), "rot": (math.radians(4), 0, math.radians(5))},
+        "mag": {"loc": (0, -0.25, -0.46)},
+    }), (78, rest)])
+    clip("ads", [(1, rest), (34, {
+        "root": {"loc": (-0.020, 0.010, 0.036), "rot": (math.radians(-2), 0, math.radians(1.2))},
+    })])
+    clip("inspect", [(1, rest), (32, {
+        "root": {"loc": (0.035, -0.022, 0.020), "rot": (math.radians(12), math.radians(-10), math.radians(-18))},
+        "visual": {"rot": (math.radians(0), math.radians(-4), math.radians(0))},
+    }), (72, rest)])
+
+    bpy.ops.wm.save_as_mainfile(filepath=str(USP_SRC))
+    export_selected_glb(USP_GLB, col)
+
+
 def build_hands() -> None:
     reset_scene()
     scene = bpy.context.scene
@@ -338,7 +448,7 @@ def build_hands() -> None:
     rp = node("palm_r", (0.0, -0.060, 0.020), rw)
     lw = node("wrist_l", (-0.145, 0.315, 0.055), camera_root)
     lp = node("palm_l", (-0.020, -0.070, 0.040), lw)
-    wband = node("wristband_root", (-0.018, 0.074, 0.060), lw)
+    wband = node("wristband_root", (-0.070, 0.020, 0.096), lw)
     wscreen = node("wristband_screen", (0.0, 0.020, 0.047), wband)
     wemitter = node("wristband_emitter", (0.0, 0.042, 0.050), wband)
     wholo_mount = node("wristband_holo_mount", (0.0, 0.064, 0.055), wband)
@@ -359,7 +469,9 @@ def build_hands() -> None:
             node(f"{fname}_{side}_03", (xo, -0.070, -0.004), nodes[f"{fname}_{side}_02"])
 
     def hand_mesh(prefix, wrist, palm, sx):
-        cube(f"{prefix}_sleeve", (0, 0.050, 0), (0.095, 0.18, 0.10), fabric, col, wrist, bevel=0.02)
+        sleeve_loc = (0, 0.064, -0.010) if prefix == "right" else (-0.006, 0.058, 0.006)
+        sleeve_size = (0.078, 0.145, 0.076) if prefix == "right" else (0.088, 0.170, 0.088)
+        cube(f"{prefix}_sleeve", sleeve_loc, sleeve_size, fabric, col, wrist, bevel=0.018)
         cube(f"{prefix}_palm_mesh", (0, 0, 0), (0.095, 0.085, 0.045), glove, col, palm, bevel=0.016)
         cube(f"{prefix}_knuckle_pad", (0, -0.036, 0.028), (0.090, 0.020, 0.014), rubber, col, palm, bevel=0.005)
         for i, x in enumerate((-0.030, -0.010, 0.010, 0.030)):
@@ -371,22 +483,22 @@ def build_hands() -> None:
 
     # Authored forearm mass. These stay narrow and low in the camera so the
     # weapon remains the first-read silhouette while still feeling like arms.
-    cylinder("right_forearm_sleeve_round", (0.0, 0.086, 0.004), 0.040, 0.20, fabric, col, rw, "Y", 24)
+    cylinder("right_forearm_sleeve_round", (0.0, 0.100, -0.008), 0.034, 0.16, fabric, col, rw, "Y", 24)
     cylinder("left_forearm_sleeve_round", (-0.010, 0.090, 0.020), 0.042, 0.22, fabric, col, lw, "Y", 24)
-    cube("right_forearm_armor_plate", (0.0, 0.112, 0.046), (0.076, 0.078, 0.010), rubber, col, rw, bevel=0.006)
+    cube("right_forearm_armor_plate", (0.0, 0.120, 0.030), (0.060, 0.064, 0.010), rubber, col, rw, bevel=0.006)
     cube("left_forearm_armor_plate", (-0.010, 0.108, 0.064), (0.074, 0.082, 0.012), rubber, col, lw, bevel=0.006)
 
     # Always-on left wrist computer. Meshes are authored here; runtime swaps
     # the screen/panel materials to live CanvasTextures.
-    cube("wristband_body", (0, 0, 0), (0.080, 0.026, 0.052), armor, col, wband, bevel=0.007)
-    cube("wristband_inner_strap", (0, -0.020, 0), (0.092, 0.015, 0.058), strap, col, wband, bevel=0.008)
-    cube("wristband_outer_lug_l", (-0.045, 0.000, 0), (0.009, 0.036, 0.060), armor, col, wband, bevel=0.003)
-    cube("wristband_outer_lug_r", (0.045, 0.000, 0), (0.009, 0.036, 0.060), armor, col, wband, bevel=0.003)
-    cube("wristband_screen_bezel", (0.0, 0.019, 0.032), (0.070, 0.008, 0.040), armor, col, wband, bevel=0.0025)
-    plane("wristband_screen_mesh", (0.0, 0.024, 0.054), (0.062, 0.031, 1), glass, col, wband, rot=(0, 0, 0))
-    cube("wristband_emitter_pad", (0.0, 0.040, 0.052), (0.024, 0.005, 0.020), cyan, col, wband, bevel=0.002)
-    cube("wristband_led_left", (-0.037, 0.016, 0.050), (0.003, 0.024, 0.032), cyan, col, wband, bevel=0.0015)
-    cube("wristband_led_right", (0.037, 0.016, 0.050), (0.003, 0.024, 0.032), cyan, col, wband, bevel=0.0015)
+    cube("wristband_body", (0, 0, 0), (0.092, 0.030, 0.062), armor, col, wband, bevel=0.007)
+    cube("wristband_inner_strap", (0, -0.020, 0), (0.106, 0.016, 0.066), strap, col, wband, bevel=0.008)
+    cube("wristband_outer_lug_l", (-0.052, 0.000, 0), (0.010, 0.040, 0.068), armor, col, wband, bevel=0.003)
+    cube("wristband_outer_lug_r", (0.052, 0.000, 0), (0.010, 0.040, 0.068), armor, col, wband, bevel=0.003)
+    cube("wristband_screen_bezel", (0.0, 0.020, 0.038), (0.080, 0.009, 0.048), armor, col, wband, bevel=0.0025)
+    plane("wristband_screen_mesh", (0.0, 0.026, 0.063), (0.072, 0.038, 1), glass, col, wband, rot=(0, 0, 0))
+    cube("wristband_emitter_pad", (0.0, 0.043, 0.060), (0.030, 0.006, 0.024), cyan, col, wband, bevel=0.002)
+    cube("wristband_led_left", (-0.043, 0.017, 0.058), (0.004, 0.027, 0.036), cyan, col, wband, bevel=0.0015)
+    cube("wristband_led_right", (0.043, 0.017, 0.058), (0.004, 0.027, 0.036), cyan, col, wband, bevel=0.0015)
 
     plane("hologram_inventory_panel_mesh", (0, 0.014, 0.000), (0.112, 0.066, 1), cyan, col, holo_inventory, rot=(math.radians(80), 0, 0))
     plane("hologram_reload_glow_mesh", (0, 0.008, -0.002), (0.126, 0.190, 1), cyan_ray, col, holo_reload, rot=(math.radians(74), 0, math.radians(-2)))
@@ -461,7 +573,7 @@ def build_hands() -> None:
         "wrist_l": {"loc": (-0.126, 0.315, 0.055), "rot": (math.radians(6), 0, math.radians(3)), "scale": (1, 1, 1)},
     }), (40, rest)])
     wrist_rest = {
-        "wristband_root": {"loc": (-0.018, 0.074, 0.060), "rot": (0, 0, 0), "scale": (1, 1, 1)},
+        "wristband_root": {"loc": (-0.070, 0.020, 0.096), "rot": (0, 0, 0), "scale": (1, 1, 1)},
         "wristband_screen": {"loc": (0.0, 0.020, 0.047), "rot": (0, 0, 0), "scale": (1, 1, 1)},
         "wristband_emitter": {"loc": (0.0, 0.042, 0.050), "rot": (0, 0, 0), "scale": (1, 1, 1)},
         "holo_ray_idle": {"loc": (0.0, 0.048, 0.050), "rot": (0, 0, 0), "scale": (0.32, 0.32, 0.32)},
@@ -507,10 +619,13 @@ def main() -> None:
     if not WEAPON_TEX.exists():
         raise FileNotFoundError(f"Missing texture: {WEAPON_TEX}")
     build_m4()
+    build_usp()
     build_hands()
     print({
         "weapon_src": str(WEAPON_SRC),
         "weapon_glb": str(WEAPON_GLB),
+        "usp_src": str(USP_SRC),
+        "usp_glb": str(USP_GLB),
         "hands_src": str(HANDS_SRC),
         "hands_glb": str(HANDS_GLB),
     })

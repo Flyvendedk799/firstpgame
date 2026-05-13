@@ -174,7 +174,20 @@ export function tickEncounterEnemyIntent(enemy, dt, playerPos, player, floorplan
     const sid = pickFloorplanSpaceId(enemy.group.position.x, enemy.group.position.z, floorplan);
     const meta = sid && floorplan.spaces[sid];
     const k = meta && meta.kind;
-    if (k === 'connector' || k === 'service_hall' || k === 'transit_wedge') boost = 0.12;
+    if (
+      k === 'connector' ||
+      k === 'service_hall' ||
+      k === 'guided_tunnel' ||
+      k === 'return_loop' ||
+      k === 'side_pocket' ||
+      k === 'vestibule' ||
+      k === 'preview_threshold' ||
+      k === 'signature_gate' ||
+      k === 'transit_wedge'
+    ) {
+      boost = 0.12;
+    }
+    if (k === 'signature_gate' || k === 'preview_threshold') boost = Math.max(boost, 0.16);
   }
   enemy._fpHoldBoost = boost;
   let mul = 1;

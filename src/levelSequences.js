@@ -97,6 +97,15 @@ export function applySequenceLayout(ctx) {
     if (builder) builder(ctx, el);
   }
 
+  // End-to-end map completion pass: non-wave halls, side pockets, preview
+  // thresholds, return loops, and signature gates that make the shared shell
+  // read as twelve guided tactical buildings rather than twelve large boxes.
+  const routeExtras = ROUTE_COMPLETION_ELEMENTS_BY_BN[bn] || [];
+  for (const el of routeExtras) {
+    const builder = ELEMENT_BUILDERS[el.t];
+    if (builder) builder(ctx, el);
+  }
+
   // Per-building extra accent lights tuned to the theme (fake pool + glow — no scene PointLights).
   if (def.lights) for (const L of def.lights) {
     const baseIntensity = (L.int || 1.4) * 0.72;
@@ -1586,6 +1595,252 @@ const ELEMENT_BUILDERS = {
     });
   },
 
+  /**
+   * Guided tunnel kit: short, readable hallway made from corridor walls plus
+   * a chest/full cover pair. Width defaults stay above player/AI clearance.
+   */
+  guidedTunnel(ctx, e) {
+    const rotY = e.rotY || 0;
+    const len = e.len || 5.2;
+    const width = Math.max(1.18, e.width || 1.32);
+    const role = e.floorplanRole || 'guided_tunnel';
+    ELEMENT_BUILDERS.corridor(ctx, {
+      ...e,
+      len,
+      width,
+      gap: e.gap != null ? e.gap : 1.28,
+      gapPos: e.gapPos || 0,
+      floorplanRole: role,
+      geometryId: e.geometryId && `${e.geometryId}_walls`,
+    });
+    const side = e.side != null ? e.side : 1;
+    const ox = Math.cos(rotY) * (len * 0.22);
+    const oz = -Math.sin(rotY) * (len * 0.22);
+    const px = Math.cos(rotY + Math.PI / 2) * side * (width * 0.52);
+    const pz = -Math.sin(rotY + Math.PI / 2) * side * (width * 0.52);
+    ELEMENT_BUILDERS.cov(ctx, {
+      x: e.x - ox + px,
+      z: e.z - oz + pz,
+      w: 1.15,
+      h: 0.84,
+      d: 0.68,
+      rotY,
+      col: e.coverCol || e.col || 0x343840,
+      top: e.top,
+      cover: 'chest',
+      roomId: e.roomId,
+      floorplanRole: 'route_cover',
+      geometryId: e.geometryId && `${e.geometryId}_chest_cover`,
+    });
+    ELEMENT_BUILDERS.tall(ctx, {
+      x: e.x + ox - px * 0.45,
+      z: e.z + oz - pz * 0.45,
+      w: 0.72,
+      h: 1.72,
+      d: 0.58,
+      rotY,
+      col: e.fullCol || e.col || 0x20242a,
+      cover: 'full',
+      roomId: e.roomId,
+      floorplanRole: 'peek_corner',
+      geometryId: e.geometryId && `${e.geometryId}_full_cover`,
+    });
+  },
+
+  /** Service hall kit: tighter connector with an offset door read and full-height service cover. */
+  serviceHall(ctx, e) {
+    ELEMENT_BUILDERS.guidedTunnel(ctx, {
+      ...e,
+      width: e.width || 1.2,
+      len: e.len || 4.8,
+      gap: e.gap || 1.2,
+      floorplanRole: e.floorplanRole || 'service_hall',
+    });
+    ELEMENT_BUILDERS.glassPreview(ctx, {
+      ...e,
+      x: e.wx != null ? e.wx : e.x,
+      z: e.wz != null ? e.wz : e.z,
+      len: e.windowLen || 1.7,
+      sill: e.sill != null ? e.sill : 1.05,
+      head: e.head != null ? e.head : 1.95,
+      geometryId: e.geometryId && `${e.geometryId}_preview`,
+    });
+  },
+
+  /** Side pocket kit: small believable non-wave room with a readable door gap. */
+  sidePocket(ctx, e) {
+    const rotY = e.rotY || 0;
+    const w = e.w || 3.2;
+    const d = e.d || 2.8;
+    const door = e.gap || 1.18;
+    const cosR = Math.cos(rotY), sinR = Math.sin(rotY);
+    const local = (lx, lz) => ({ x: e.x + cosR * lx + sinR * lz, z: e.z - sinR * lx + cosR * lz });
+    const back = local(0, -d * 0.5);
+    const left = local(-w * 0.5, 0);
+    const right = local(w * 0.5, 0);
+    ELEMENT_BUILDERS.divider(ctx, { ...e, x: back.x, z: back.z, len: w, rotY, gap: 0, floorplanRole: 'side_pocket_wall', geometryId: e.geometryId && `${e.geometryId}_back` });
+    ELEMENT_BUILDERS.divider(ctx, { ...e, x: left.x, z: left.z, len: d, rotY: rotY + Math.PI / 2, gap: door, gapPos: e.gapPos || 0.35, floorplanRole: 'side_pocket_door', geometryId: e.geometryId && `${e.geometryId}_left` });
+    ELEMENT_BUILDERS.divider(ctx, { ...e, x: right.x, z: right.z, len: d, rotY: rotY + Math.PI / 2, gap: 0, floorplanRole: 'side_pocket_return', geometryId: e.geometryId && `${e.geometryId}_right` });
+    ELEMENT_BUILDERS.cov(ctx, {
+      x: e.x,
+      z: e.z,
+      w: 1.25,
+      h: 0.84,
+      d: 0.72,
+      rotY,
+      col: e.coverCol || e.col || 0x34343a,
+      top: e.top,
+      cover: 'chest',
+      roomId: e.roomId,
+      floorplanRole: 'side_pocket_cover',
+      geometryId: e.geometryId && `${e.geometryId}_cover`,
+    });
+  },
+
+  /** Offset room kit: dogleg threshold plus a pocket, good for objective/office reads. */
+  offsetRoom(ctx, e) {
+    ELEMENT_BUILDERS.dogleg(ctx, {
+      ...e,
+      len1: e.len1 || 3.4,
+      len2: e.len2 || 3.0,
+      gap1: e.gap1 || 1.25,
+      gap2: e.gap2 || 1.15,
+      floorplanRole: e.floorplanRole || 'offset_room_threshold',
+      geometryId: e.geometryId && `${e.geometryId}_dogleg`,
+    });
+    ELEMENT_BUILDERS.sidePocket(ctx, {
+      ...e,
+      x: e.pocketX != null ? e.pocketX : e.x,
+      z: e.pocketZ != null ? e.pocketZ : e.z,
+      w: e.pocketW || 2.9,
+      d: e.pocketD || 2.5,
+      geometryId: e.geometryId && `${e.geometryId}_pocket`,
+    });
+  },
+
+  /** Glass preview kit: a tactical pre-read plus low sill cover. */
+  glassPreview(ctx, e) {
+    ELEMENT_BUILDERS.window(ctx, {
+      ...e,
+      len: e.len || 2.4,
+      sill: e.sill != null ? e.sill : 0.9,
+      head: e.head != null ? e.head : 2.05,
+      floorplanRole: e.floorplanRole || 'preview_threshold',
+    });
+    if (e.sillCover !== false) {
+      const rotY = e.rotY || 0;
+      const nx = Math.sin(rotY) * 0.34;
+      const nz = Math.cos(rotY) * 0.34;
+      ELEMENT_BUILDERS.cov(ctx, {
+        x: e.x + nx,
+        z: e.z + nz,
+        w: Math.min(1.6, (e.len || 2.4) * 0.55),
+        h: 0.58,
+        d: 0.42,
+        rotY,
+        col: e.coverCol || e.frameCol || 0x202428,
+        cover: 'knee',
+        roomId: e.roomId,
+        floorplanRole: 'preview_sill_cover',
+        geometryId: e.geometryId && `${e.geometryId}_sill_cover`,
+      });
+    }
+  },
+
+  /** Vestibule threshold kit: two-stage doorway plus optional preview glass. */
+  vestibuleThreshold(ctx, e) {
+    ELEMENT_BUILDERS.vestibule(ctx, {
+      ...e,
+      w: e.w || 3.2,
+      gap: e.gap || 1.25,
+      len2: e.len2 || 3.0,
+      floorplanRole: e.floorplanRole || 'vestibule_threshold',
+    });
+    if (e.preview !== false) {
+      ELEMENT_BUILDERS.glassPreview(ctx, {
+        ...e,
+        x: e.previewX != null ? e.previewX : e.x,
+        z: e.previewZ != null ? e.previewZ : e.z,
+        len: e.previewLen || 1.8,
+        geometryId: e.geometryId && `${e.geometryId}_preview`,
+      });
+    }
+  },
+
+  /** Return loop kit: a small side detour that reconnects quickly to the primary route. */
+  returnLoop(ctx, e) {
+    const rotY = e.rotY || 0;
+    const spread = e.spread || 2.6;
+    const px = Math.cos(rotY + Math.PI / 2) * spread * 0.5;
+    const pz = -Math.sin(rotY + Math.PI / 2) * spread * 0.5;
+    ELEMENT_BUILDERS.guidedTunnel(ctx, {
+      ...e,
+      x: e.x + px,
+      z: e.z + pz,
+      len: e.len || 4.4,
+      width: e.width || 1.16,
+      rotY,
+      floorplanRole: 'return_loop_in',
+      geometryId: e.geometryId && `${e.geometryId}_in`,
+    });
+    ELEMENT_BUILDERS.guidedTunnel(ctx, {
+      ...e,
+      x: e.x - px,
+      z: e.z - pz,
+      len: e.len2 || e.len || 4.4,
+      width: e.width || 1.16,
+      rotY,
+      side: -1,
+      floorplanRole: 'return_loop_out',
+      geometryId: e.geometryId && `${e.geometryId}_out`,
+    });
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      x: e.x,
+      z: e.z + (e.bridgeZ || 0),
+      len: spread + 1.0,
+      rotY: rotY + Math.PI / 2,
+      gap: e.gap || 1.2,
+      gapPos: 0,
+      floorplanRole: 'return_loop_cross',
+      geometryId: e.geometryId && `${e.geometryId}_cross`,
+    });
+  },
+
+  /** Signature gate kit: final threshold framing before a map's hero room. */
+  signatureGate(ctx, e) {
+    ELEMENT_BUILDERS.divider(ctx, {
+      ...e,
+      len: e.len || 5.2,
+      gap: e.gap || 1.6,
+      gapPos: e.gapPos || 0,
+      floorplanRole: e.floorplanRole || 'signature_gate',
+      geometryId: e.geometryId && `${e.geometryId}_gate`,
+    });
+    const rotY = e.rotY || 0;
+    const half = (e.gap || 1.6) * 0.5 + 0.55;
+    for (const side of [-1, 1]) {
+      const lx = side * half;
+      const wx = e.x + Math.cos(rotY) * lx;
+      const wz = e.z - Math.sin(rotY) * lx;
+      ELEMENT_BUILDERS.tall(ctx, {
+        x: wx,
+        z: wz,
+        w: 0.46,
+        h: 1.9,
+        d: 0.46,
+        rotY,
+        col: e.pillarCol || e.col || 0x262a30,
+        stripes: e.stripes || 2,
+        stripe: e.stripe || e.glow || e.top || 0x80c8ff,
+        cover: 'full',
+        roomId: e.roomId,
+        floorplanRole: 'signature_gate_post',
+        geometryId: e.geometryId && `${e.geometryId}_post_${side < 0 ? 'l' : 'r'}`,
+      });
+    }
+  },
+
   // Statue / centerpiece (B11 Skycourt — recycled for boss arena flair on B4/B2).
   statue(ctx, e) {
     const { THREE, scene, ob, wl, dims } = ctx;
@@ -2861,6 +3116,98 @@ export const BUILDING_SKELETON_POST = {
   10: _skPost10,
   11: _skPost11,
   12: _skPost12,
+};
+
+export const ROUTE_INTENT_BY_BN = Object.freeze({
+  1: { main: 'dock_intake -> west/east service read -> alarm relay -> cage vestibule', side: 'west service + east dogleg', objective: 'alarm_relay_room', signature: 'relay_cage catwalk', ai: ['lookout:first_read', 'anchor:relay_desk', 'flanker:service_loop', 'overwatch:foreman_cage'] },
+  2: { main: 'atrium -> coat check/salon -> concierge spine -> manager suite', side: 'salon and service pantry pockets', objective: 'alarm_relay_room as security desk', signature: 'manager suite under mezzanine', ai: ['lookout:atrium_glass', 'anchor:concierge', 'flanker:salon_loop', 'overwatch:stair_landing'] },
+  3: { main: 'queue -> coat-check pit -> dance spine -> DJ/VIP -> mirrored lounge', side: 'bar pocket and VIP spine', objective: 'alarm_relay_room as booth relay', signature: 'mirrored lounge', ai: ['lookout:queue_neon', 'anchor:booth_relay', 'flanker:vip_loop', 'overwatch:dj_tier'] },
+  4: { main: 'elevator foyer -> reception -> conversation pit -> gallery -> master suite', side: 'wine vault and office annex', objective: 'alarm_relay_room as gallery console', signature: 'master suite glass crown', ai: ['lookout:foyer', 'anchor:gallery_console', 'flanker:wine_vault', 'overwatch:study_glass'] },
+  5: { main: 'triage -> pharmacy row -> patient bay -> nurse station -> operating theater', side: 'patient curtains and surgical prep', objective: 'alarm_relay_room as nurse relay', signature: 'operating theater', ai: ['lookout:triage', 'anchor:nurse_station', 'flanker:patient_loop', 'overwatch:observation_glass'] },
+  6: { main: 'turnstile -> platform hall -> track bypass -> power annex -> switch chamber', side: 'locker bay and dispatch office', objective: 'alarm_relay_room as power closet', signature: 'switch chamber tunnel mouth', ai: ['lookout:turnstile', 'anchor:power_panel', 'flanker:track_bypass', 'overwatch:dispatch_window'] },
+  7: { main: 'aft deck -> salon -> galley pass -> stateroom hall -> owner suite', side: 'crew hatch and engine pass', objective: 'alarm_relay_room as nav relay', signature: 'bridge/owner suite', ai: ['lookout:aft_deck', 'anchor:nav_relay', 'flanker:crew_hatch', 'overwatch:bridge_glass'] },
+  8: { main: 'mantrap -> cold aisle -> patch crawl -> hot aisle -> core vault', side: 'battery bay and network ops', objective: 'alarm_relay_room as ops relay', signature: 'core vault glass', ai: ['lookout:mantrap', 'anchor:ops_console', 'flanker:patch_crawl', 'overwatch:soc_glass'] },
+  9: { main: 'inspection lane -> customs gate -> vehicle search -> tower base -> customs office', side: 'truck bay and sand bypass', objective: 'alarm_relay_room as border office', signature: 'customs/tower crossfire', ai: ['lookout:gate', 'anchor:border_office', 'flanker:vehicle_search', 'overwatch:watchtower'] },
+  10: { main: 'transept -> nave -> confessionals -> choir stair -> high altar', side: 'reliquary and bell stair', objective: 'alarm_relay_room as sacristy relay', signature: 'altar crossing', ai: ['lookout:narthex', 'anchor:sacristy', 'flanker:confessional_loop', 'overwatch:choir_loft'] },
+  11: { main: 'container rows -> cargo spine -> engine companionway -> deck lift -> bridge approach', side: 'crew companionway and engine hood', objective: 'alarm_relay_room as engine relay', signature: 'bridge approach', ai: ['lookout:cargo_row', 'anchor:engine_console', 'flanker:companionway', 'overwatch:bridge_window'] },
+  12: { main: 'glass atrium -> reception -> boardroom/vault -> maintenance spine -> helipad apex', side: 'executive vault and helipad stair', objective: 'alarm_relay_room as board relay', signature: 'helipad apex', ai: ['lookout:atrium', 'anchor:boardroom', 'flanker:maintenance_spine', 'overwatch:helipad_glass'] },
+});
+
+export const ROUTE_COMPLETION_ELEMENTS_BY_BN = {
+  1: [
+    { t: 'serviceHall', x: -15.9, z: 13.8, len: 5.2, rotY: Math.PI / 2, width: 1.2, wx: -14.7, wz: 13.8, windowLen: 1.45, roomId: 'west_service_connector', geometryId: 'b01_west_service_nonwave', aiUse: 'flanker_loop' },
+    { t: 'returnLoop', x: 12.9, z: 13.7, len: 4.1, rotY: Math.PI / 2, spread: 2.5, roomId: 'east_flank_connector', geometryId: 'b01_east_return_loop', aiUse: 'flanker_reconnect' },
+    { t: 'glassPreview', x: -11.5, z: 2.2, len: 2.1, rotY: 0, sill: 0.95, head: 2.05, roomId: 'alarm_relay_room', sightlineId: 'relay_pre_read', geometryId: 'b01_relay_preread_glass', aiUse: 'lookout_preview' },
+    { t: 'signatureGate', x: 0, z: -13.2, len: 5.6, rotY: 0, gap: 1.7, roomId: 'relay_cage', geometryId: 'b01_cage_signature_gate', aiUse: 'arena_threshold' },
+  ],
+  2: [
+    { t: 'sidePocket', x: -14.2, z: 17.2, w: 3.2, d: 2.6, rotY: 0, roomId: 'west_service_connector', geometryId: 'b02_coat_check_pocket', aiUse: 'lookout_pocket', col: 0x3a3024, top: 0xffd070 },
+    { t: 'guidedTunnel', x: 13.2, z: 12.6, len: 5.0, rotY: Math.PI / 2, width: 1.24, roomId: 'east_flank_connector', geometryId: 'b02_salon_service_tunnel', aiUse: 'flanker_loop', top: 0xffe0a0 },
+    { t: 'glassPreview', x: -7.2, z: -1.2, len: 2.4, rotY: 0, sill: 0.85, head: 2.15, col: 0xffe8c8, roomId: 'alarm_relay_room', sightlineId: 'concierge_to_spine', geometryId: 'b02_concierge_preview', aiUse: 'anchor_preview' },
+    { t: 'signatureGate', x: 0, z: -13.6, len: 5.2, rotY: 0, gap: 1.65, roomId: 'relay_cage', geometryId: 'b02_manager_suite_gate', top: 0xffd070, aiUse: 'arena_threshold' },
+  ],
+  3: [
+    { t: 'vestibuleThreshold', x: 0, z: 18.4, w: 4.2, rotY: 0, gap: 1.35, dx: -1.1, dz: -1.7, len2: 3.4, previewX: 1.8, previewZ: 17.0, previewLen: 1.8, roomId: 'dock_intake', geometryId: 'b03_queue_vestibule', aiUse: 'arrival_read', col: 0x251028, top: 0xff40c8 },
+    { t: 'sidePocket', x: 11.8, z: 13.6, w: 3.0, d: 2.6, rotY: Math.PI / 2, roomId: 'east_flank_connector', geometryId: 'b03_bar_side_pocket', aiUse: 'flanker_pocket', col: 0x201020, top: 0x40e0ff },
+    { t: 'returnLoop', x: -13.6, z: -1.2, len: 4.6, rotY: Math.PI / 2, spread: 2.4, roomId: 'alarm_relay_room', geometryId: 'b03_vip_return_loop', aiUse: 'flanker_reconnect', top: 0xff40c8 },
+    { t: 'signatureGate', x: 0, z: -12.5, len: 5.8, rotY: 0, gap: 1.6, roomId: 'relay_cage', geometryId: 'b03_mirrored_lounge_gate', glow: 0xff40c8, aiUse: 'arena_threshold' },
+  ],
+  4: [
+    { t: 'guidedTunnel', x: -12.8, z: 14.4, len: 4.8, rotY: Math.PI / 2, width: 1.22, roomId: 'west_service_connector', geometryId: 'b04_gallery_service_tunnel', aiUse: 'gallery_pull', top: 0xffd060 },
+    { t: 'sidePocket', x: 13.4, z: 2.0, w: 3.0, d: 2.8, rotY: Math.PI / 2, roomId: 'drum_lane', geometryId: 'b04_glass_office_pocket', aiUse: 'anchor_office', col: 0x202430, top: 0xa0c8ff },
+    { t: 'glassPreview', x: -8.6, z: -12.8, len: 2.6, rotY: 0, sill: 0.9, head: 2.1, col: 0xffd060, roomId: 'relay_cage', sightlineId: 'wine_to_suite_preview', geometryId: 'b04_wine_suite_preview', aiUse: 'lookout_preview' },
+    { t: 'signatureGate', x: 0, z: -14.2, len: 5.4, rotY: 0, gap: 1.55, roomId: 'relay_cage', geometryId: 'b04_master_suite_gate', top: 0xffd060, aiUse: 'arena_threshold' },
+  ],
+  5: [
+    { t: 'serviceHall', x: 0, z: 15.2, len: 5.2, rotY: 0, width: 1.2, wx: 1.9, wz: 15.2, windowLen: 1.8, roomId: 'dock_intake', geometryId: 'b05_triage_service_hall', aiUse: 'guided_arrival', top: 0xc8e8ff },
+    { t: 'sidePocket', x: -14.2, z: -0.8, w: 3.0, d: 2.7, rotY: Math.PI / 2, roomId: 'alarm_relay_room', geometryId: 'b05_patient_curtain_pocket', aiUse: 'anchor_pocket', col: 0x384248, top: 0x40ff80 },
+    { t: 'returnLoop', x: 13.4, z: -1.0, len: 4.3, rotY: Math.PI / 2, spread: 2.3, roomId: 'drum_lane', geometryId: 'b05_nurse_return_loop', aiUse: 'flanker_reconnect', top: 0xc8e8ff },
+    { t: 'signatureGate', x: 0, z: -14.0, len: 5.6, rotY: 0, gap: 1.6, roomId: 'relay_cage', geometryId: 'b05_operating_theater_gate', top: 0x40ff80, aiUse: 'arena_threshold' },
+  ],
+  6: [
+    { t: 'guidedTunnel', x: 0, z: 17.2, len: 5.8, rotY: 0, width: 1.26, roomId: 'dock_intake', geometryId: 'b06_turnstile_tunnel', aiUse: 'linear_pull', top: 0xfff060 },
+    { t: 'sidePocket', x: 13.8, z: 3.0, w: 3.0, d: 2.6, rotY: Math.PI / 2, roomId: 'drum_lane', geometryId: 'b06_locker_pocket', aiUse: 'flanker_pocket', col: 0x30343a, top: 0xff5040 },
+    { t: 'serviceHall', x: -13.7, z: -13.8, len: 5.4, rotY: Math.PI / 2, width: 1.18, wx: -12.4, wz: -13.8, windowLen: 1.7, roomId: 'west_service_connector', geometryId: 'b06_track_bypass_hall', aiUse: 'track_bypass', top: 0xfff060 },
+    { t: 'signatureGate', x: 0, z: -16.2, len: 5.6, rotY: 0, gap: 1.55, roomId: 'relay_cage', geometryId: 'b06_switch_chamber_gate', top: 0xff5040, aiUse: 'arena_threshold' },
+  ],
+  7: [
+    { t: 'guidedTunnel', x: -12.8, z: 14.5, len: 4.8, rotY: Math.PI / 2, width: 1.18, roomId: 'west_service_connector', geometryId: 'b07_crew_hatch_tunnel', aiUse: 'crew_flank', top: 0xa0c8ff },
+    { t: 'sidePocket', x: 13.5, z: 1.8, w: 2.8, d: 2.5, rotY: Math.PI / 2, roomId: 'drum_lane', geometryId: 'b07_stateroom_pocket', aiUse: 'anchor_cabin', col: 0x281408, top: 0xffe8c8 },
+    { t: 'glassPreview', x: -6.2, z: 8.2, len: 2.6, rotY: Math.PI / 2, sill: 0.55, head: 2.05, col: 0xa0c8ff, roomId: 'mid_lane_center', sightlineId: 'salon_to_bridge_preview', geometryId: 'b07_salon_bridge_preview', aiUse: 'lookout_preview' },
+    { t: 'returnLoop', x: -13.0, z: -15.0, len: 4.2, rotY: Math.PI / 2, spread: 2.3, roomId: 'west_service_connector', geometryId: 'b07_engine_return_loop', aiUse: 'engine_flank', top: 0xa0c8ff },
+    { t: 'signatureGate', x: 0, z: -13.8, len: 5.4, rotY: 0, gap: 1.55, roomId: 'relay_cage', geometryId: 'b07_owner_suite_gate', top: 0xa0c8ff, aiUse: 'arena_threshold' },
+  ],
+  8: [
+    { t: 'guidedTunnel', x: -6.0, z: 16.6, len: 5.4, rotY: 0, width: 1.18, roomId: 'dock_intake', geometryId: 'b08_cold_aisle_tunnel_n', aiUse: 'aisle_pull', top: 0x40e0ff },
+    { t: 'guidedTunnel', x: 6.0, z: 13.2, len: 5.4, rotY: 0, width: 1.18, side: -1, roomId: 'east_flank_connector', geometryId: 'b08_cold_aisle_tunnel_s', aiUse: 'aisle_flank', top: 0x80c8ff },
+    { t: 'glassPreview', x: 0, z: 0.8, len: 3.0, rotY: 0, sill: 0.35, head: 2.25, col: 0x80c8ff, roomId: 'mid_lane_center', sightlineId: 'hot_cold_core_preview', geometryId: 'b08_hot_cold_preview', aiUse: 'aisle_preview' },
+    { t: 'sidePocket', x: -13.8, z: -2.0, w: 3.0, d: 2.7, rotY: Math.PI / 2, roomId: 'alarm_relay_room', geometryId: 'b08_patch_crawl_pocket', aiUse: 'ops_anchor', col: 0x10141c, top: 0x40e0ff },
+    { t: 'signatureGate', x: 0, z: -15.0, len: 5.8, rotY: 0, gap: 1.55, roomId: 'relay_cage', geometryId: 'b08_core_vault_gate', top: 0x40e0ff, aiUse: 'arena_threshold' },
+  ],
+  9: [
+    { t: 'guidedTunnel', x: 0, z: 17.2, len: 6.2, rotY: Math.PI / 2, width: 1.32, roomId: 'dock_intake', geometryId: 'b09_inspection_lane_tunnel', aiUse: 'long_lane_pull', top: 0xffd090 },
+    { t: 'sidePocket', x: 13.8, z: 5.0, w: 3.2, d: 2.8, rotY: Math.PI / 2, roomId: 'drum_lane', geometryId: 'b09_vehicle_search_pocket', aiUse: 'vehicle_flank', col: 0x4a3420, top: 0xffb060 },
+    { t: 'serviceHall', x: -13.8, z: -16.8, len: 5.2, rotY: Math.PI / 2, width: 1.18, wx: -12.5, wz: -16.8, windowLen: 1.8, roomId: 'west_service_connector', geometryId: 'b09_watchtower_base_hall', aiUse: 'overwatch_route', top: 0xffb060 },
+    { t: 'signatureGate', x: 0, z: -13.8, len: 5.8, rotY: 0, gap: 1.6, roomId: 'relay_cage', geometryId: 'b09_customs_office_gate', top: 0xffd090, aiUse: 'arena_threshold' },
+  ],
+  10: [
+    { t: 'guidedTunnel', x: 0, z: 16.2, len: 6.0, rotY: 0, width: 1.36, roomId: 'dock_intake', geometryId: 'b10_nave_procession_tunnel', aiUse: 'nave_pull', top: 0xffe8b0 },
+    { t: 'sidePocket', x: -14.2, z: -1.4, w: 3.1, d: 2.8, rotY: Math.PI / 2, roomId: 'alarm_relay_room', geometryId: 'b10_confessional_side_room', aiUse: 'anchor_confessional', col: 0x3a3428, top: 0xffe8b0 },
+    { t: 'serviceHall', x: 13.0, z: -8.0, len: 4.8, rotY: Math.PI / 2, width: 1.18, wx: 11.8, wz: -8.0, windowLen: 1.7, roomId: 'drum_lane', geometryId: 'b10_bell_stair_hall', aiUse: 'choir_flank', top: 0xffd060 },
+    { t: 'signatureGate', x: 0, z: -13.4, len: 6.0, rotY: 0, gap: 1.65, roomId: 'relay_cage', geometryId: 'b10_high_altar_gate', top: 0xffe8b0, aiUse: 'arena_threshold' },
+  ],
+  11: [
+    { t: 'guidedTunnel', x: 0, z: 16.8, len: 5.8, rotY: 0, width: 1.24, roomId: 'dock_intake', geometryId: 'b11_cargo_spine_tunnel', aiUse: 'deck_pull', top: 0xff8040 },
+    { t: 'serviceHall', x: -13.5, z: -1.2, len: 5.2, rotY: Math.PI / 2, width: 1.16, wx: -12.2, wz: -1.2, windowLen: 1.7, roomId: 'alarm_relay_room', geometryId: 'b11_engine_companionway_hall', aiUse: 'engine_anchor', top: 0xff8040 },
+    { t: 'returnLoop', x: 13.2, z: -7.0, len: 4.4, rotY: Math.PI / 2, spread: 2.4, roomId: 'drum_lane', geometryId: 'b11_crew_companionway_loop', aiUse: 'crew_flank', top: 0x80b0d0 },
+    { t: 'signatureGate', x: 0, z: -14.8, len: 5.6, rotY: 0, gap: 1.55, roomId: 'relay_cage', geometryId: 'b11_bridge_approach_gate', top: 0x80b0d0, aiUse: 'arena_threshold' },
+  ],
+  12: [
+    { t: 'guidedTunnel', x: 0, z: 16.6, len: 5.8, rotY: 0, width: 1.26, roomId: 'dock_intake', geometryId: 'b12_reception_glass_tunnel', aiUse: 'final_pull', top: 0xc8e0ff },
+    { t: 'sidePocket', x: -13.8, z: -0.4, w: 3.0, d: 2.8, rotY: Math.PI / 2, roomId: 'alarm_relay_room', geometryId: 'b12_boardroom_side_pocket', aiUse: 'board_anchor', col: 0x0a0c10, top: 0xc8e0ff },
+    { t: 'serviceHall', x: 13.6, z: -5.8, len: 5.0, rotY: Math.PI / 2, width: 1.18, wx: 12.4, wz: -5.8, windowLen: 1.9, roomId: 'drum_lane', geometryId: 'b12_maintenance_spine_hall', aiUse: 'final_flank', top: 0xffd060 },
+    { t: 'signatureGate', x: 0, z: -15.8, len: 6.0, rotY: 0, gap: 1.6, roomId: 'relay_cage', geometryId: 'b12_helipad_apex_gate', top: 0xc8e0ff, aiUse: 'arena_threshold' },
+  ],
 };
 
 // ── EXTRA_ELEMENTS — per-building post-pass placements ───────────────────

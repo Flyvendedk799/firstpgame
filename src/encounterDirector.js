@@ -25,6 +25,12 @@ export function pickFloorplanSpaceId(x, z, floorplan) {
   return null;
 }
 
+function _parentRoomId(roomId, floorplan) {
+  if (!roomId || !floorplan || !floorplan.spaces) return roomId || null;
+  const meta = floorplan.spaces[roomId];
+  return (meta && typeof meta.parentRoom === 'string' && meta.parentRoom) ? meta.parentRoom : roomId;
+}
+
 const _ROOM_LOG_MAX = 12;
 
 export class EncounterDirector {
@@ -116,10 +122,11 @@ export class EncounterDirector {
     if (this.activeEncounterIdForced) return;
     this.activeEncounterId = null;
     if (!roomId || !this.encountersCatalog) return;
-    const hit = this.encountersCatalog.find((e) => e && e.room === roomId);
+    const parentRoom = _parentRoomId(roomId, this.floorplan);
+    const hit = this.encountersCatalog.find((e) => e && (e.room === roomId || e.room === parentRoom));
     if (hit && hit.id) {
       this.activeEncounterId = hit.id;
-      this.lastTrigger = { type: 'enter_room', room: roomId, encounterId: hit.id, t: performance.now() * 0.001 };
+      this.lastTrigger = { type: 'enter_room', room: roomId, parentRoom, encounterId: hit.id, t: performance.now() * 0.001 };
     }
   }
 
@@ -288,6 +295,8 @@ export class EncounterDirector {
           this.roomFirstEnteredAt[id] = this._lastTransitionAt;
         }
         this._checkTraverseObjectives(id, opts && opts.levelData);
+        const parentRoom = _parentRoomId(id, this.floorplan);
+        if (parentRoom && parentRoom !== id) this._checkTraverseObjectives(parentRoom, opts && opts.levelData);
       }
     }
     this._tickReinforcementTimers(dt, opts);
@@ -327,7 +336,8 @@ export class EncounterDirector {
       if (this.objectiveState.alarmPanelDisabled && /_alarm_pair$/.test(String(key))) {
         continue;
       }
-      if (this.currentRoomId !== spec.roomId) {
+      const effectiveRoom = _parentRoomId(this.currentRoomId, this.floorplan);
+      if (this.currentRoomId !== spec.roomId && effectiveRoom !== spec.roomId) {
         this._reinforceTimers[key] = 0;
         continue;
       }

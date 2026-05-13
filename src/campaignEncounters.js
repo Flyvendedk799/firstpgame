@@ -1,6 +1,6 @@
 import { CAMPAIGN_CELL_REGIONS } from './levelSequences.js';
 import { NATIVE_CAMPAIGN_ENCOUNTER_NARRATIVE } from './campaign/nativeEncounterNarrative.js';
-import { mergeNativeEncounterTactics } from './campaign/nativeEncounterTactics.js';
+import { applyCampaignRouteFloorplanCompletion, mergeNativeEncounterTactics } from './campaign/nativeEncounterTactics.js';
 
 /**
  * Phase 1 encounter data model (authoring + future director).
@@ -780,6 +780,7 @@ function _cloneNativeCampaignEncounterFromB01(bn) {
     raw.shellTieIn = narr.shellTieIn.trim();
   }
   _appendSkeletonFloorplanRefs(raw, bn);
+  applyCampaignRouteFloorplanCompletion(raw, bn);
   mergeNativeEncounterTactics(raw, bn);
   return raw;
 }
@@ -788,6 +789,8 @@ for (let _bn = 2; _bn <= 12; _bn++) {
   const native = _cloneNativeCampaignEncounterFromB01(_bn);
   if (native) CAMPAIGN_ENCOUNTERS[_bn] = native;
 }
+
+applyCampaignRouteFloorplanCompletion(CAMPAIGN_ENCOUNTERS[1], 1);
 
 /** Every native campaign def must expose these floorplan space ids (nav / director spine). */
 export const MANDATORY_FLOORPLAN_SPACE_IDS_BY_BN = Object.freeze(

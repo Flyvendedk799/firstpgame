@@ -46,9 +46,9 @@ const rifleAgain = await registry.load('weapon.rifle');
 assert.equal(rifleAgain, rifle, 'registry should cache loaded authored GLBs by ID');
 
 const pistol = await registry.load('weapon.pistol');
-assert.equal(pistol.status, 'fallback');
-assert.equal(pistol.source, 'procedural');
-assert.equal(pistol.reason, 'no-src');
+assert.equal(pistol.status, 'loaded');
+assert.equal(pistol.source, 'authored');
+assert.ok(loadedUrls.some(url => url.endsWith('/assets/weapons/usp_viewmodel.glb')));
 
 const unknown = await registry.load('weapon.nope');
 assert.equal(unknown.status, 'unknown');
@@ -60,7 +60,7 @@ assert.equal(registry.get('weapon.rifle'), null);
 
 const afterDispose = registry.status();
 assert.equal(afterDispose.loaded.some(row => row.id === 'weapon.rifle'), false);
-assert.equal(afterDispose.fallback.some(row => row.id === 'weapon.pistol'), true);
+assert.equal(afterDispose.loaded.some(row => row.id === 'weapon.pistol'), true);
 
 console.log(JSON.stringify({
   ok: true,

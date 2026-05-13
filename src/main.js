@@ -10526,18 +10526,18 @@ const M4_AUTHORED_STATUS={
 };
 const AUTHORED_VIEWMODEL_FORCED_FALLBACKS=new Set();
 const LEGACY_PISTOL_GLB_STATUS={
-  id:'legacy.weapon.pistol.usp',
+  id:'weapon.pistol',
   manifestId:'weapon.pistol',
-  source:'quarantined',
-  quarantineReason:'usp_viewmodel.glb does not satisfy gun-standards weapon hierarchy/socket contract',
+  source:'authored-registry',
+  quarantineReason:null,
   loadStatus:'pending',
-  validation:{ok:false,errors:['legacy-direct-path'],warnings:['not manifest-backed']},
+  validation:{ok:true,errors:[],warnings:[]},
   visibleMeshes:0,
   renderableMeshes:0,
   activeClip:null,
   fallbackReason:null
 };
-const LEGACY_PISTOL_GLB_RUNTIME_ENABLED=false;
+const LEGACY_PISTOL_GLB_RUNTIME_ENABLED=true;
 // ── HK USP Tactical + can — compact pistol silhouette (short slide + K-length
 //   can): long slides / fat cans read as PDW in first-person view.
 //   Forward = -Z. Animated Z: deSlide, deSer1-2, deRsight, deHammer.
@@ -11104,22 +11104,20 @@ const _gunVMClonePairs=[];
   const n=Math.min(am.length,bm.length);
   for(let i=0;i<n;i++)_gunVMClonePairs.push([am[i],bm[i]]);
 })();
-// Legacy USP viewmodel (glTF): runtime-only compatibility path. It is
-// intentionally not declared as `weapon.pistol` because it lacks the standard
-// weapon hierarchy/sockets required by gun-standards.md.
+// Authored USP viewmodel (glTF). Procedural USP meshes stay as fallback if the
+// manifest-backed asset is missing or fails to attach.
 (function _loadUspViewmodelGlb(){
   if(!LEGACY_PISTOL_GLB_RUNTIME_ENABLED){
-    LEGACY_PISTOL_GLB_STATUS.loadStatus='quarantined';
-    LEGACY_PISTOL_GLB_STATUS.fallbackReason='legacy USP GLB quarantined; slot 2 uses the local procedural USP-T viewmodel';
+    LEGACY_PISTOL_GLB_STATUS.loadStatus='disabled';
+    LEGACY_PISTOL_GLB_STATUS.fallbackReason='authored USP GLB runtime disabled; slot 2 uses the local procedural USP-T viewmodel';
     return;
   }
-  const base=(typeof import.meta!=='undefined'&&import.meta.env&&import.meta.env.BASE_URL!=null)
-    ? String(import.meta.env.BASE_URL)
-    :'/';
-  const url=(base.endsWith('/')?base:base+'/')+'assets/weapons/usp_viewmodel.glb';
   LEGACY_PISTOL_GLB_STATUS.loadStatus='loading';
-  _debugUspVm('load_start', {url, base});
-  _ASSET_GLTF_LOADER.load(url,(gltf)=>{
+  _debugUspVm('load_start', {id:'weapon.pistol'});
+  _ASSET_REGISTRY.load('weapon.pistol').then(slot=>{
+    if(slot.status!=='loaded'||!slot.gltf)throw new Error(slot.reason||`registry returned ${slot.status}`);
+    const gltf=slot.gltf;
+    LEGACY_PISTOL_GLB_STATUS.source=slot.source||'authored-registry';
     _debugUspVm('load_ok', {
       sceneChildren:gltf.scene?.children?.length,
       anims:(gltf.animations||[]).map(a=>a.name),
@@ -11131,11 +11129,11 @@ const _gunVMClonePairs=[];
       LEGACY_PISTOL_GLB_STATUS.fallbackReason=String(e&&e.message||e);
       console.warn('[USP viewmodel] attach failed',e);
     }
-  },undefined,(err)=>{
+  }).catch(err=>{
     LEGACY_PISTOL_GLB_STATUS.loadStatus='fallback';
     LEGACY_PISTOL_GLB_STATUS.fallbackReason=String(err&&err.message||err);
-    _debugUspVm('load_error',{url,err:String(err)});
-    console.warn('[USP viewmodel] GLB load failed',url,err);
+    _debugUspVm('load_error',{id:'weapon.pistol',err:String(err)});
+    console.warn('[USP viewmodel] GLB load failed',err);
   });
 })();
 const _p2MeshBySrc=new WeakMap();
@@ -11766,7 +11764,7 @@ function _alignAuthoredHandsToM4Sockets(){
   const right=_m4SocketLocal('gripRight',new THREE.Vector3(0,-.052,-.012));
   const leftDefault=P&&P.reloading?_m4SocketLocal('magazine',new THREE.Vector3(-.035,-.080,-.060)):_m4SocketLocal('gripLeft',new THREE.Vector3(-.040,-.044,-.190));
   _retargetAuthoredHandPalm('r',right,new THREE.Vector3(.030,-.050,.020));
-  _retargetAuthoredHandPalm('l',leftDefault,new THREE.Vector3(.035,-.055,.010));
+  _retargetAuthoredHandPalm('l',leftDefault,new THREE.Vector3(-.050,-.020,.004));
 }
 function _authoredWristMat(map,color=0xffffff,opacity=1,additive=false){
   const mat=new THREE.MeshBasicMaterial({
@@ -15354,7 +15352,7 @@ function switchWeapon(idx){
   DE_MESHES.forEach(m=>m.visible=(idx===1)&&!_useGlbDeagle);
   if(deagleGlbRig)deagleGlbRig.visible=_useGlbDeagle&&(idx===1);
   if(deagleGlbRigP2)deagleGlbRigP2.visible=_useGlbDeagle&&(idx===1);
-  if(idx===1)LEGACY_PISTOL_GLB_STATUS.lastSwitch={usingLegacyGlb:!!deagleGlbRig,glbVisible:!!deagleGlbRig?.visible,proceduralVisible:!!DE_MESHES[0]?.visible,at:Math.round(performance.now())};
+  if(idx===1)LEGACY_PISTOL_GLB_STATUS.lastSwitch={usingAuthoredGlb:!!deagleGlbRig,glbVisible:!!deagleGlbRig?.visible,proceduralVisible:!!DE_MESHES[0]?.visible,at:Math.round(performance.now())};
   SG_MESHES.forEach(m=>m.visible=idx===3);
   SM_MESHES.forEach(m=>m.visible=idx===4);
   DMR_MESHES.forEach(m=>m.visible=idx===5);
@@ -24565,6 +24563,7 @@ function _weaponVisualStatus(){
     authoredViewmodels:{
       weapon:authoredWeaponReport,
       hands:authoredHandsReport,
+      authoredPistol:Object.assign({},LEGACY_PISTOL_GLB_STATUS),
       legacyPistol:Object.assign({},LEGACY_PISTOL_GLB_STATUS)
     },
     authoredM4Active:_isAuthoredM4RuntimeActive(),

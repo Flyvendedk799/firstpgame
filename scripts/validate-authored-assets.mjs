@@ -84,8 +84,8 @@ const legacyQuarantine = {
   id: 'legacy.weapon.pistol.usp',
   manifestId: 'weapon.pistol',
   file: 'public/assets/weapons/usp_viewmodel.glb',
-  acceptedAsManifestAsset: false,
-  reason: 'missing standard weapon hierarchy/sockets; keep legacy runtime path until reauthored or adapter-normalized'
+  acceptedAsManifestAsset: true,
+  reason: 'replaced by Blender-authored manifest asset'
 };
 
 const result = {
