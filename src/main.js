@@ -207,8 +207,43 @@ for (const cls of ['AmbientLight','HemisphereLight','DirectionalLight','PointLig
   THREE[cls] = Patched;
 }
 
+const STABLE_RENDERING_MODE=true;
+function _forceStableVisualSettings(s){
+  Object.assign(s,{
+    rendererMode:'webgl',
+    postEnabled:false,
+    aoQuality:'off',
+    bloomQuality:'off',
+    colorGrade:false,
+    filmGrain:false,
+    chromaticAberration:false,
+    sharpen:false,
+    smaa:false,
+    vignette:false,
+    phase2SSR:false,
+    phase2LUT:false,
+    phase2DoF:false,
+    phase2Volumetrics:false,
+    phase2PlanarReflections:false,
+    phase2Adaptive:false,
+    phase2Sharpen:0,
+    phase2TAA:false,
+    ssrIntensityMul:0,
+    scopePipEnabled:false,
+    scopePipResolution:0,
+    pixelRatioCap:1.0,
+    renderScale:'auto'
+  });
+  return s;
+}
 function _readBootSettings(){
-  try{const raw=localStorage.getItem('clearance_settings');return raw?JSON.parse(raw):{};}catch(_){return {};}
+  try{
+    const raw=localStorage.getItem('clearance_settings');
+    const parsed=raw?JSON.parse(raw):{};
+    return STABLE_RENDERING_MODE?_forceStableVisualSettings(parsed):parsed;
+  }catch(_){
+    return STABLE_RENDERING_MODE?_forceStableVisualSettings({}):{};
+  }
 }
 const _BOOT_SETTINGS=_readBootSettings();
 // Points at saved boot JSON until SETTINGS IIFE completes (avoids TDZ on SETTINGS during early _configureRenderStack).
@@ -10131,13 +10166,14 @@ function _renderGameFrame(){
 function _renderFramePost(){
   const nowMs=performance.now();
   _frameProfilePreRender();
+  const useComposer=!!(_renderStack&&_renderStack.composer&&G._useComposer!==false&&!STABLE_RENDERING_MODE);
   const setupT0=performance.now();
   try{
     const ld=typeof G!=='undefined'&&G?G.levelData:null;
     if(ld&&ld.csManager&&typeof ld.csManager.update==='function')ld.csManager.update(camera);
   }catch(_){}
   _frameProfileMark('postSetup',performance.now()-setupT0);
-  if(_renderStack&&typeof _renderStack.tickPhotography==='function'){
+  if(useComposer&&_renderStack&&typeof _renderStack.tickPhotography==='function'){
     const photoT0=performance.now();
     const ld=typeof G!=='undefined'&&G?G.levelData:null;
     const refl=ld&&ld.reflectionProfile;
@@ -10165,7 +10201,7 @@ function _renderFramePost(){
   const renderT0=performance.now();
   _sanitizeUndefinedTextureSlots(scene);
   try{
-    if(_renderStack&&_renderStack.composer&&G._useComposer!==false)_renderStack.render(nowMs*.001);
+    if(useComposer)_renderStack.render(nowMs*.001);
     else _renderFrameDirect(camera,false);
   }catch(err){
     console.warn('[render] composer frame skipped after renderer uniform error',err);
@@ -11342,7 +11378,7 @@ function applyAAViewmodelRig(){
   };
 }
 applyAAViewmodelRig();
-const _HAND_PROM_SCALE=1.10;
+const _HAND_PROM_SCALE=1.00;
 rGrp.scale.setScalar(_HAND_PROM_SCALE);
 lGrp.scale.setScalar(_HAND_PROM_SCALE);
 rGrp.renderOrder=8;lGrp.renderOrder=8;
@@ -11363,8 +11399,8 @@ function _vmHandTouchDepthBias(grp){
 _vmHandTouchDepthBias(rGrp);
 _vmHandTouchDepthBias(lGrp);
 // ── TECH ARM-BAND on left forearm ──────────────────────────────────────────
-// Always-on chunky band with a top-mounted micro-screen. During reload, a tall
-// holographic projection deploys above the band showing the count climbing.
+// Contextual band: it appears for inventory/shop/reload readouts, but stays out
+// of the weapon silhouette during normal hipfire/ADS.
 const armBandGrp=new THREE.Group();
 const _bandX=-.008,_bandY=.003,_bandZ=.040;
 const _bandM   =new THREE.MeshPhongMaterial({color:0x14181f,shininess:80,specular:0x303848});
@@ -11396,6 +11432,22 @@ armScreen.position.set(_bandX,_bandY+.0512,_bandZ);
 armScreen.rotation.x=-Math.PI/2;
 armBandGrp.add(armScreen);
 lGrp.add(armBandGrp);
+armBandGrp.visible=false;
+function _syncArmBandVisibility(){
+  let show=false;
+  try{
+    show=!!(
+      (G&&(G.invOpen||G.shopOpen))||
+      (P&&P.reloading)||
+      (wristTarget>.015)||
+      (shopTarget>.015)||
+      (reloadHoloTarget>.015)||
+      (reloadHoloDeployed>.015)
+    );
+  }catch(_){}
+  armBandGrp.visible=show;
+  return show;
+}
 function _drawArmBandCanvas(){
   const c=_armCanvas,g=c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
@@ -13105,7 +13157,7 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const VISUAL_PATCH_SETTINGS_VERSION=11;
+const VISUAL_PATCH_SETTINGS_VERSION=13;
 const SETTINGS=(()=>{
   // Defaults FIRST — then merge the saved values on top. Phase 6: new tactical
   // and lean fields default to enabled; loading an older settings JSON simply
@@ -13113,17 +13165,17 @@ const SETTINGS=(()=>{
   // compatible.
   let s={
     sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,mouseDpi:800,lastSensRefGame:'valorant',invY:false,radar:true,dmgNum:true,
-    scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
+    scopePipEnabled:false,scopePipResolution:0,gore:'med',aimAssist:false,
     pixelRatioCap:1.0,maxPointLightsEffective:24,perfHud:false,
     aiSkipFramesModulo:3,raycastSpatialIndex:true,
     maxParticlesBlood:120,maxParticlesSmoke:80,
     cheapMaterials:false,reducedBloomish:false,
-    rendererMode:'auto',postEnabled:true,aoQuality:'medium',bloomQuality:'medium',
+    rendererMode:'webgl',postEnabled:false,aoQuality:'off',bloomQuality:'off',
     shadowQuality:'high',atmosphereQuality:'high',textureQuality:'high',
     characterQuality:'high',weaponQuality:'high',renderScale:'auto',
     vfxQuality:'high',particleQuality:'high',decalQuality:'high',
-    colorGrade:true,filmGrain:false,chromaticAberration:false,sharpen:true,
-    smaa:true,pbrMaterials:true,vignette:false,gradeIntensity:.9,
+    colorGrade:false,filmGrain:false,chromaticAberration:false,sharpen:false,
+    smaa:false,pbrMaterials:true,vignette:false,gradeIntensity:.9,
     lightingQuality:null,
     visualPatchSettingsVersion:VISUAL_PATCH_SETTINGS_VERSION,
     // Phase 6 — tactical AI + lean toggles
@@ -13133,8 +13185,8 @@ const SETTINGS=(()=>{
     playerLeanBodyRig:true,
     authoredCampaignEncounters:true,
     // Phase 2 — expensive cinematic passes stay opt-in; high should be stable by default.
-    phase2SSR:false,phase2LUT:false,phase2DoF:false,phase2Volumetrics:false,phase2PlanarReflections:false,phase2Adaptive:true,
-    phase2Sharpen:0.16,phase2TAA:false,ssrIntensityMul:0,
+    phase2SSR:false,phase2LUT:false,phase2DoF:false,phase2Volumetrics:false,phase2PlanarReflections:false,phase2Adaptive:false,
+    phase2Sharpen:0,phase2TAA:false,ssrIntensityMul:0,
   };
   try{const raw=localStorage.getItem('clearance_settings');if(raw)Object.assign(s,JSON.parse(raw));}catch(_){}
   if(s.visualPatchSettingsVersion!==VISUAL_PATCH_SETTINGS_VERSION){
@@ -13143,8 +13195,9 @@ const SETTINGS=(()=>{
       chromaticAberration:false,
       vignette:false,
       gradeIntensity:.9,
-      bloomQuality:s.bloomQuality==='ultra'||s.bloomQuality==='high'?'medium':(s.bloomQuality||'medium'),
-      aoQuality:'medium',
+      bloomQuality:'off',
+      aoQuality:'off',
+      rendererMode:'webgl',
       pixelRatioCap:1.0,
       scopePipResolution:0,
       lightingQuality:s.lightingQuality||(s.quality||'high'),
@@ -13155,8 +13208,8 @@ const SETTINGS=(()=>{
       phase2DoF:false,
       phase2Volumetrics:false,
       phase2PlanarReflections:false,
-      phase2Adaptive:s.phase2Adaptive!=null?s.phase2Adaptive:true,
-      phase2Sharpen:.16,
+      phase2Adaptive:false,
+      phase2Sharpen:0,
       phase2TAA:false,
       ssrIntensityMul:0,
       visualPatchSettingsVersion:VISUAL_PATCH_SETTINGS_VERSION
@@ -13172,13 +13225,14 @@ const SETTINGS=(()=>{
   if(s.phase2DoF==null)s.phase2DoF=false;
   if(s.phase2Volumetrics==null)s.phase2Volumetrics=false;
   if(s.phase2PlanarReflections==null)s.phase2PlanarReflections=false;
-  if(s.phase2Adaptive==null)s.phase2Adaptive=true;
-  if(s.phase2Sharpen==null)s.phase2Sharpen=0.16;
+  if(s.phase2Adaptive==null)s.phase2Adaptive=false;
+  if(s.phase2Sharpen==null)s.phase2Sharpen=0;
   if(s.phase2TAA==null)s.phase2TAA=false;
   if(s.ssrIntensityMul==null||!Number.isFinite(s.ssrIntensityMul))s.ssrIntensityMul=0;
-  if(s.postEnabled==null)s.postEnabled=true;
-  if(s.aoQuality==null)s.aoQuality='medium';
-  if(s.bloomQuality==null)s.bloomQuality='medium';
+  if(s.postEnabled==null)s.postEnabled=false;
+  if(s.rendererMode==null)s.rendererMode='webgl';
+  if(s.aoQuality==null)s.aoQuality='off';
+  if(s.bloomQuality==null)s.bloomQuality='off';
   if(s.shadowQuality==null)s.shadowQuality='high';
   if(s.atmosphereQuality==null)s.atmosphereQuality='high';
   if(s.textureQuality==null)s.textureQuality='high';
@@ -13188,19 +13242,20 @@ const SETTINGS=(()=>{
   if(s.vfxQuality==null)s.vfxQuality='high';
   if(s.particleQuality==null)s.particleQuality='high';
   if(s.decalQuality==null)s.decalQuality='high';
-  if(s.colorGrade==null)s.colorGrade=true;
+  if(s.colorGrade==null)s.colorGrade=false;
   if(s.gradeIntensity==null)s.gradeIntensity=1;
   if(s.lightingQuality==null)s.lightingQuality=s.quality||'high';
   if(s.filmGrain==null)s.filmGrain=false;
   if(s.chromaticAberration==null)s.chromaticAberration=false;
-  if(s.sharpen==null)s.sharpen=true;
-  if(s.smaa==null)s.smaa=true;
+  if(s.sharpen==null)s.sharpen=false;
+  if(s.smaa==null)s.smaa=false;
   if(s.vignette==null)s.vignette=false;
   if(s.visualPatchSettingsVersion==null)s.visualPatchSettingsVersion=VISUAL_PATCH_SETTINGS_VERSION;
   if(s.mouseDpi==null||!Number.isFinite(Number(s.mouseDpi)))s.mouseDpi=_DEFAULT_MOUSE_DPI;
   else s.mouseDpi=Math.round(THREE.MathUtils.clamp(Number(s.mouseDpi),200,16000));
   if(typeof s.lastSensRefGame!=='string'||!s.lastSensRefGame)s.lastSensRefGame='valorant';
   if(!GAME_SENS_PRESETS.some(x=>x.id===s.lastSensRefGame))s.lastSensRefGame='valorant';
+  if(STABLE_RENDERING_MODE)_forceStableVisualSettings(s);
   return s;
 })();
 _SETTINGS_FOR_RENDER=SETTINGS;
@@ -13235,6 +13290,8 @@ function _applyShadowQuality(){
   }
 }
 function applyQuality(){
+  if(STABLE_RENDERING_MODE)_forceStableVisualSettings(SETTINGS);
+  document.body.classList.toggle('stable-render',!!STABLE_RENDERING_MODE);
   _refreshAAPbrAnisotropy();
   const q=SETTINGS.quality||'high';
   const rs=SETTINGS.renderScale||'auto';
@@ -13248,7 +13305,7 @@ function applyQuality(){
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
   _configureRenderStack();
   const stren=(_bloomPass&&_bloomPass.enabled)?(_bloomPass.strength||0):0;
-  G._useComposer=SETTINGS.postEnabled!==false&&(q!=='low'||stren>0||SETTINGS.aoQuality!=='off');
+  G._useComposer=STABLE_RENDERING_MODE?false:(SETTINGS.postEnabled!==false&&(q!=='low'||stren>0||SETTINGS.aoQuality!=='off'));
   applyScopePipRenderTargetSize();
 }
 const POST_STATE_PROFILES={
@@ -13345,6 +13402,17 @@ function _applyScreenPostProfile(ctx){
   const visual=(ctx&&ctx.visualProfile)||_activeVisualProfile();
   const cg=$e('color-grade');
   const grain=$e('post-grain');
+  if(STABLE_RENDERING_MODE){
+    document.body.classList.add('stable-render');
+    if(cg)cg.style.opacity='0';
+    if(grain)grain.style.opacity='0';
+    const chrom=$e('chrom');if(chrom)chrom.classList.remove('show');
+    const lowHp=$e('low-hp');if(lowHp)lowHp.style.opacity='0';
+    const scopeVig=$e('scope-vignette');if(scopeVig)scopeVig.style.opacity='0';
+    const leanVig=$e('lean-vignette');if(leanVig){leanVig.style.opacity='0';leanVig.className='';}
+    G._screenPost={enabled:false,stable:true};
+    return ctx;
+  }
   const postOn=SETTINGS.postEnabled!==false&&(SETTINGS.quality||'high')!=='low'&&SETTINGS.colorGrade!==false;
   if(!cg)return ctx;
   if(typeof _isSpawnPerfWarmup==='function'&&_isSpawnPerfWarmup()){
@@ -13393,6 +13461,12 @@ function _applyScreenPostProfile(ctx){
 }
 function _updatePostProfile(hpRatio=1){
   if(!_renderStack)return null;
+  if(STABLE_RENDERING_MODE){
+    const ctx={visualProfile:_activeVisualProfile(),grade:{},postProfile:'stable-direct',signature:'stable-direct'};
+    G._activePostProfile='stable-direct';
+    _applyScreenPostProfile(ctx);
+    return ctx;
+  }
   const ctx=_computePostContext(hpRatio);
   const merged=Object.assign({},ctx,_extrasForRenderStack());
   if(ctx.signature!==_lastPostSignature){
@@ -23248,11 +23322,20 @@ $e('set-vol').addEventListener('input',e=>{SETTINGS.vol=parseFloat(e.target.valu
     }
   });
 })();
+const STABLE_VISUAL_SETTING_KEYS=new Set([
+  'scopePipEnabled','postEnabled','colorGrade','filmGrain','chromaticAberration','sharpen','smaa','vignette',
+  'phase2SSR','phase2LUT','phase2DoF','phase2Volumetrics','phase2PlanarReflections','phase2TAA','phase2Adaptive'
+]);
 function _toggleSetting(id,key){
   const b=$e(id);if(!b)return;
   function refresh(){b.textContent=SETTINGS[key]?'ON':'OFF';b.classList.toggle('active',!!SETTINGS[key]);}
   refresh();
-  b.addEventListener('click',()=>{SETTINGS[key]=!SETTINGS[key];saveSettings();refresh();
+  b.addEventListener('click',()=>{
+    if(STABLE_RENDERING_MODE&&STABLE_VISUAL_SETTING_KEYS.has(key)){
+      _forceStableVisualSettings(SETTINGS);saveSettings();refresh();applyQuality();
+      return;
+    }
+    SETTINGS[key]=!SETTINGS[key];saveSettings();refresh();
     // Side effects
     if(key==='radar'){const r=$e('radar');if(r)r.style.display=SETTINGS.radar?'block':'none';}
     if(key==='dmgNum'){const d=$e('dmg-numbers');if(d)d.style.display=SETTINGS.dmgNum?'block':'none';}
@@ -23278,11 +23361,15 @@ _toggleSetting('set-phase2-taa','phase2TAA');
 _toggleSetting('set-phase2-adapt','phase2Adaptive');
 function _refreshGradeIntensityButtons(){document.querySelectorAll('.gradeint-btn').forEach(b=>b.classList.toggle('active',String(SETTINGS.gradeIntensity??1)===b.dataset.gradeint));}
 document.querySelectorAll('.gradeint-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();applyQuality();_refreshGradeIntensityButtons();return;}
   SETTINGS.gradeIntensity=parseFloat(b.dataset.gradeint)||1;saveSettings();applyQuality();_lastPostSignature='';_updatePostProfile(P.hp/(P.maxHp||100));_refreshGradeIntensityButtons();
 }));
 _refreshGradeIntensityButtons();
 function _refreshPipResButtons(){document.querySelectorAll('.pipres-btn').forEach(b=>b.classList.toggle('active',String(SETTINGS.scopePipResolution||0)===b.dataset.pipres));}
-document.querySelectorAll('.pipres-btn').forEach(b=>b.addEventListener('click',()=>{SETTINGS.scopePipResolution=parseInt(b.dataset.pipres,10)||0;saveSettings();applyQuality();_refreshPipResButtons();}));
+document.querySelectorAll('.pipres-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();applyQuality();_refreshPipResButtons();return;}
+  SETTINGS.scopePipResolution=parseInt(b.dataset.pipres,10)||0;saveSettings();applyQuality();_refreshPipResButtons();
+}));
 _refreshPipResButtons();
 // Quality buttons
 function _refreshQualityButtons(){
@@ -23296,25 +23383,44 @@ document.querySelectorAll('.quality-btn[data-q]').forEach(b=>{
 });
 function _refreshRendererButtons(){document.querySelectorAll('.renderer-btn').forEach(b=>b.classList.toggle('active',(SETTINGS.rendererMode||'auto')===b.dataset.renderer));}
 document.querySelectorAll('.renderer-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();_refreshRendererButtons();_meshyToast('Stable WebGL renderer is locked for this build.','#1b4b66');return;}
   SETTINGS.rendererMode=b.dataset.renderer||'auto';saveSettings();_refreshRendererButtons();
   _meshyToast('Renderer mode saved. Reload to reinitialize backend.','#1b4b66');
 }));
 _refreshRendererButtons();
 function _refreshAoButtons(){document.querySelectorAll('.ao-btn').forEach(b=>b.classList.toggle('active',(SETTINGS.aoQuality||'medium')===b.dataset.ao));}
 document.querySelectorAll('.ao-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();applyQuality();_refreshAoButtons();return;}
   SETTINGS.aoQuality=b.dataset.ao||'medium';saveSettings();applyQuality();_refreshAoButtons();
 }));
 _refreshAoButtons();
 function _refreshBloomButtons(){document.querySelectorAll('.bloom-btn').forEach(b=>b.classList.toggle('active',(SETTINGS.bloomQuality||'high')===b.dataset.bloom));}
 document.querySelectorAll('.bloom-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();applyQuality();_refreshBloomButtons();return;}
   SETTINGS.bloomQuality=b.dataset.bloom||'high';saveSettings();applyQuality();_refreshBloomButtons();
 }));
 _refreshBloomButtons();
 function _refreshScaleButtons(){document.querySelectorAll('.scale-btn').forEach(b=>b.classList.toggle('active',String(SETTINGS.renderScale||'auto')===b.dataset.scale));}
 document.querySelectorAll('.scale-btn').forEach(b=>b.addEventListener('click',()=>{
+  if(STABLE_RENDERING_MODE){_forceStableVisualSettings(SETTINGS);saveSettings();applyQuality();_refreshScaleButtons();return;}
   SETTINGS.renderScale=b.dataset.scale||'auto';saveSettings();applyQuality();_refreshScaleButtons();
 }));
 _refreshScaleButtons();
+function _hideStableVisualSettingControls(){
+  if(!STABLE_RENDERING_MODE)return;
+  const hideRowFor=el=>{
+    const row=el&&el.closest?el.closest('.pause-row'):null;
+    if(row)row.style.display='none';
+  };
+  [
+    'set-scopepip','set-postfx','set-grade','set-grain','set-sharpen','set-chroma','set-vignette','set-smaa',
+    'set-phase2-ssr','set-phase2-lut','set-phase2-dof','set-phase2-vol','set-phase2-taa','set-phase2-adapt'
+  ].forEach(id=>hideRowFor($e(id)));
+  ['.renderer-btn','.gradeint-btn','.pipres-btn','.ao-btn','.bloom-btn','.scale-btn'].forEach(sel=>{
+    document.querySelectorAll(sel).forEach(hideRowFor);
+  });
+}
+_hideStableVisualSettingControls();
 function _refreshShadowButtons(){document.querySelectorAll('.shadow-btn').forEach(b=>b.classList.toggle('active',(SETTINGS.shadowQuality||'medium')===b.dataset.shadow));}
 document.querySelectorAll('.shadow-btn').forEach(b=>b.addEventListener('click',()=>{
   SETTINGS.shadowQuality=b.dataset.shadow||'medium';saveSettings();applyQuality();_refreshShadowButtons();
@@ -23437,6 +23543,24 @@ function updateHands(dt){
     }
     lTX+=Math.sin(ip*1.07)*pr*92;lTY+=Math.cos(ip*.93)*pr*70;lTZ+=Math.sin(ip*.84)*pr*48;
     rTX+=Math.sin(ip*.79)*pr*38;rTY+=Math.cos(ip*1.02)*pr*28;
+  }
+  // Authored M4 fallback hands retarget to the GLB grip sockets so the
+  // procedural rig still matches the production weapon silhouette.
+  if(_wi===0&&_isAuthoredM4RuntimeActive()&&!P.reloading){
+    const lSock=_m4SocketLocal('gripLeft',null);
+    if(lSock){
+      lTX=THREE.MathUtils.lerp(lTX,lSock.x+.004,.78);
+      lTY=THREE.MathUtils.lerp(lTY,lSock.y-.025,.78);
+      lTZ=THREE.MathUtils.lerp(lTZ,lSock.z+.035,.78);
+      lTRX+=.03;lTRY+=.08;lTRZ+=.035;
+    }
+    const rSock=_m4SocketLocal('gripRight',null);
+    if(rSock){
+      rTX=THREE.MathUtils.lerp(rTX,rSock.x-.002,.58);
+      rTY=THREE.MathUtils.lerp(rTY,rSock.y+.025,.58);
+      rTZ=THREE.MathUtils.lerp(rTZ,rSock.z-.050,.58);
+      rTRY+=.035;rTRZ-=.025;
+    }
   }
   // ADS breathing — slower, gentler than hipfire. Hold breath kills sway entirely.
   if(a>.5){
@@ -24110,6 +24234,10 @@ function _weaponVisualStatus(){
     weaponIdx:P.weaponIdx,
     name:WEAPONS[P.weaponIdx]?WEAPONS[P.weaponIdx].name:'unknown',
     quality:SETTINGS.weaponQuality||'high',
+    stableRenderingMode:!!STABLE_RENDERING_MODE,
+    rendererMode:SETTINGS.rendererMode||'auto',
+    postEnabled:!!SETTINGS.postEnabled,
+    scopePipEnabled:!!SETTINGS.scopePipEnabled,
     gunVisible:!!gunGrp.visible,
     throwingKnifeVisible:typeof throwGrp!=='undefined'&&!!throwGrp.visible,
     meleeKnifeVisible:typeof knifGrp!=='undefined'&&!!knifGrp.visible,
@@ -24575,8 +24703,15 @@ renderer.setAnimationLoop(()=>{
   // Low-HP visual: red vignette + chromatic aberration when below 30% HP (DOM throttle)
   const hpRatio=P.hp/(P.maxHp||100);
   const spawnVisualGrace=performance.now()<(P._spawnVisualGraceUntil||0);
-  if((G._frame|0)%3===0)$e('low-hp').style.opacity=!spawnVisualGrace&&hpRatio<.30?String(.85*(1-hpRatio/.30)):'0';
-  $e('chrom').classList.toggle('show',!spawnVisualGrace&&SETTINGS.chromaticAberration!==false&&hpRatio<.30&&!P.dead);
+  if(STABLE_RENDERING_MODE){
+    if((G._frame|0)%3===0){
+      $e('low-hp').style.opacity='0';
+      $e('chrom').classList.remove('show');
+    }
+  }else{
+    if((G._frame|0)%3===0)$e('low-hp').style.opacity=!spawnVisualGrace&&hpRatio<.30?String(.85*(1-hpRatio/.30)):'0';
+    $e('chrom').classList.toggle('show',!spawnVisualGrace&&SETTINGS.chromaticAberration!==false&&hpRatio<.30&&!P.dead);
+  }
   _updatePostProfile(hpRatio);
   if(VIS_DEBUG.postIsolation!=='none')_applyPostIsolation();
   _syncVisualDebugOverlays();
@@ -24728,13 +24863,13 @@ renderer.setAnimationLoop(()=>{
   // vignette and crush the scene to near-black at the edges.
   // Phase BA: throttle DOM writes to every-other-frame. Track the last value
   // to skip writes when nothing changed (avoids style-recompute thrash).
-  const _leanOpacity=Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0);
+  const _leanOpacity=STABLE_RENDERING_MODE?0:Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0);
   if(((G._frameAlt|0)&1)===0){
     if(Math.abs((P._lastLeanOpacity||0)-_leanOpacity)>0.005){
       lv.style.opacity=String(_leanOpacity);
       P._lastLeanOpacity=_leanOpacity;
     }
-    const _leanCls=P.lean<-.15?'left':P.lean>.15?'right':'';
+    const _leanCls=STABLE_RENDERING_MODE?'':(P.lean<-.15?'left':P.lean>.15?'right':'');
     if(P._lastLeanCls!==_leanCls){lv.className=_leanCls;P._lastLeanCls=_leanCls;}
   }
     // ADS — disabled while running. Sprint NOW allowed during reload (gun-fu fluidity).
@@ -25267,7 +25402,9 @@ renderer.setAnimationLoop(()=>{
     else if(P.dmgFlash>0){P.dmgFlash-=dt;if(P.dmgFlash<=0){P.dmgFlash=0;$e('dmg-flash').style.opacity='0';}}
     // Low-HP vignette — pulses when HP < 35
     const _lhEl=$e('low-hp');
-    if(!spawnVisualGrace&&!P.dead&&P.hp<35&&((G._frame|0)%3)===0){
+    if(STABLE_RENDERING_MODE){
+      if((G._frame|0)%3===0)_lhEl.style.opacity='0';
+    }else if(!spawnVisualGrace&&!P.dead&&P.hp<35&&((G._frame|0)%3)===0){
       const _lhP=.55+.45*Math.sin(now*4.5);
       _lhEl.style.opacity=String(_lhP*(1-P.hp/35)*.92);
     }else if(P.dead||(P.hp>=35&&((G._frame|0)%3)===0))_lhEl.style.opacity='0';
@@ -25656,6 +25793,7 @@ renderer.setAnimationLoop(()=>{
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
       updateHands(dt);updateKnife(dt);
+      _syncArmBandVisibility();
       // ── Wrist-holo loadout panel — emerges UP from the armband emitter
       const _wAnim=Math.min(dt*10,1);
       wristDeployed+=(wristTarget-wristDeployed)*_wAnim;
@@ -25760,7 +25898,7 @@ renderer.setAnimationLoop(()=>{
         if(Math.abs(_vmRoll)>0.0001)scopeCamera.rotateZ(_vmRoll);
         scopeCamera.fov=Number.isFinite(_opticForPip.pipFov)?_opticForPip.pipFov:14;
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
-        const _shouldPip=SETTINGS.scopePipEnabled&&_opticVisible&&!_skipMotion&&!_skipFade;
+        const _shouldPip=!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled&&_opticVisible&&!_skipMotion&&!_skipFade;
         const stride=_scopePipRenderStride();
         const _contribAlpha=_pipAlpha>0.084;
         _scopePipStatus.throttleInterval=stride;
@@ -25786,7 +25924,7 @@ renderer.setAnimationLoop(()=>{
           _scopePipStatus.rendered=false;
         }
         _setScopePipView(_opticForPip,_shouldPip?_pipAlpha:0);
-        if(_vig)_vig.style.opacity=String(Math.max(0,_scopeAds*_scopeAds-.18)*1.6);
+        if(_vig)_vig.style.opacity=STABLE_RENDERING_MODE?'0':String(Math.max(0,_scopeAds*_scopeAds-.18)*1.6);
       } else {
         _setScopePipView(null,0);
         const _vig=$e('scope-vignette');if(_vig)_vig.style.opacity='0';
@@ -26217,7 +26355,7 @@ window.__game={
     camera:()=>camera,
     setToneMappingExposure:(v)=>{if(renderer&&typeof v==='number')renderer.toneMappingExposure=v;return renderer?.toneMappingExposure;},
     screenPost:()=>G._screenPost||null,
-    scopePip:()=>Object.assign({},_scopePipStatus,{stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
+    scopePip:()=>Object.assign({},_scopePipStatus,{stableRenderingMode:!!STABLE_RENDERING_MODE,stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
     lightingStats:()=>{
       const rs=_visualRuntimeStats();
       const L=rs.lighting||{};

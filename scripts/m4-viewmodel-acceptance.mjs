@@ -114,7 +114,11 @@ const ads = await page.evaluate(() => {
 console.log('[m4] ads checked');
 assert(ads.weapon.authoredM4Active, 'authored M4 deactivated during ADS');
 assert(ads.weapon.scopeVisible, 'scope attachment not visible during ADS');
-assert(ads.pip.enabled, `scope PIP not enabled: ${JSON.stringify(ads.pip)}`);
+if (ads.weapon.stableRenderingMode || ads.pip.stableRenderingMode) {
+  assert(!ads.pip.enabled && !ads.pip.visible, `stable renderer should keep scope PIP disabled: ${JSON.stringify(ads.pip)}`);
+} else {
+  assert(ads.pip.enabled, `scope PIP not enabled: ${JSON.stringify(ads.pip)}`);
+}
 const adsShot = await page.screenshot({ path: path.join(OUT_DIR, 'm4-ads-scoped.png') });
 console.log('[m4] ads captured');
 assert(nonBlankPng(adsShot).litRatio > 0.04, 'ADS screenshot blank-ish');

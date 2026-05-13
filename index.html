@@ -103,6 +103,17 @@ main{display:block;position:fixed;inset:0;width:100%;height:100%;margin:0;paddin
 /* Cinematic color grade — soft light wash only; no scanline/noise animation. */
 #color-grade{position:fixed;inset:0;pointer-events:none;z-index:4;mix-blend-mode:soft-light;opacity:.12;background:linear-gradient(180deg,rgba(20,55,95,.12) 0%,rgba(0,0,0,0) 40%,rgba(0,0,0,0) 62%,rgba(120,55,25,.08) 100%)}
 #post-grain{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;mix-blend-mode:soft-light;background-image:radial-gradient(circle at 18% 22%,rgba(255,255,255,.14) 0 1px,transparent 1.5px),radial-gradient(circle at 72% 64%,rgba(0,0,0,.12) 0 1px,transparent 1.6px);background-size:149px 131px,191px 173px}
+body.stable-render #lean-vignette,
+body.stable-render #scope-vignette,
+body.stable-render #color-grade,
+body.stable-render #post-grain,
+body.stable-render #chrom,
+body.stable-render #low-hp{
+  display:none!important;
+  opacity:0!important;
+  animation:none!important;
+  mix-blend-mode:normal!important;
+}
 /* Kill micro-beat — quick bright flash on every confirmed kill */
 #kill-beat{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:8;background:rgba(255,255,255,.7);mix-blend-mode:overlay;transition:opacity .08s ease-out}
 /* Cinematic briefing card — building intro between transitions */
