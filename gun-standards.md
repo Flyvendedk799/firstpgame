@@ -46,8 +46,10 @@ Rules:
 - `magazine` plus the `mag` part define reload animation and dropped-mag spawning.
 - `optic` and `scopeCamera` define attachment mounting and scope/PIP alignment.
 - Do not bake a permanent optic into the base gun unless that weapon always owns it. Base rifles should expose rails and attach optics through the socket contract.
+- Scope meshes are attachments. Temporary procedural scopes and future authored scope GLBs must mount to `optic`/`scopeCamera`; they must not be baked into the rifle model.
 - One 2K weapon atlas is the default target. Optional normal, roughness, and metalness maps are allowed, but there must be no missing external texture paths.
 - Split logical parts by gameplay use: magazine, trigger, charging handle, muzzle device, receiver/body, handguard, stock, rails, attachment bodies.
+- First-person viewmodels may crop or hide rear-only geometry such as stock/buttpad/buffer tube when it blocks the camera. Full logical parts should still exist in source assets when useful, but the runtime view must not cover the crosshair or critical aim information.
 
 ## Shared Hands GLB
 
@@ -80,6 +82,8 @@ tacticalLean
 ```
 
 Both hands share the same rig asset, but the right and left wrist/palm/finger chains must be individually controllable and keyed independently. Runtime may blend, scrub, or override one hand without forcing the other hand into the same pose.
+
+Hands must be retargetable to `gripRight`, `gripLeft`, and `magazine` sockets. Sleeve or wrist geometry must stay outside the crosshair region in hipfire and ADS.
 
 ## Export And Validation
 
@@ -131,4 +135,5 @@ For every future production gun:
 - Dropped magazine spawns from `magazine`.
 - Scope and attachments align to sockets.
 - Hands contact the weapon plausibly in hipfire, ADS, reload, and inspect.
+- No authored weapon, hand, sleeve, stock, or attachment mesh overlaps the center aim region in hipfire unless it is an intentional ADS optic view.
 - Temporarily invalidating the GLB path causes a clean procedural fallback.

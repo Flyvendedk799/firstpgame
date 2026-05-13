@@ -11685,12 +11685,53 @@ function _m4SocketLocal(name,fallback=null){
   gunGrp.worldToLocal(p);
   return p;
 }
+const _M4_SCOPE_LENS_GROUP_LOCAL=new THREE.Vector3(0,.078,-.0578);
+const _m4ScopeSocketOffset=new THREE.Vector3();
 function _syncAuthoredM4Sockets(){
-  if(!_isAuthoredM4RuntimeActive())return;
+  if(!_isAuthoredM4RuntimeActive()){
+    _m4ScopeSocketOffset.set(0,0,0);
+    return;
+  }
   const muzzle=_m4SocketLocal('muzzleFlash',_m4SocketLocal('muzzle',new THREE.Vector3(0,.030,-.49)));
   if(muzzle)_setMuzzlePos(muzzle.x,muzzle.y,muzzle.z);
   const scope=_m4SocketLocal('scopeCamera',_m4SocketLocal('optic',_scopeLensLocalM4));
-  if(scope)_scopeLensLocalM4.copy(scope);
+  if(scope){
+    _scopeLensLocalM4.copy(scope);
+    _m4ScopeSocketOffset.copy(scope).sub(_M4_SCOPE_LENS_GROUP_LOCAL);
+  }
+}
+function _retargetAuthoredHandPalm(side,targetLocal,extra=null){
+  if(!m4AuthoredHands||!m4AuthoredHands.nodes||!targetLocal)return false;
+  const wrist=m4AuthoredHands.nodes.get(`wrist_${side}`);
+  const palm=m4AuthoredHands.nodes.get(`palm_${side}`);
+  if(!wrist||!palm)return false;
+  gunGrp.updateMatrixWorld(true);
+  palm.updateMatrixWorld(true);
+  const palmLocal=palm.getWorldPosition(new THREE.Vector3());
+  gunGrp.worldToLocal(palmLocal);
+  const target=targetLocal.clone();
+  if(extra)target.add(extra);
+  const delta=target.sub(palmLocal);
+  wrist.position.add(delta);
+  wrist.updateMatrixWorld(true);
+  return true;
+}
+function _alignAuthoredHandsToM4Sockets(){
+  if(!_isAuthoredM4RuntimeActive()||!m4AuthoredHands||!m4AuthoredHands.ok)return;
+  const right=_m4SocketLocal('gripRight',new THREE.Vector3(0,-.052,-.012));
+  const leftDefault=P&&P.reloading?_m4SocketLocal('magazine',new THREE.Vector3(-.035,-.080,-.060)):_m4SocketLocal('gripLeft',new THREE.Vector3(-.040,-.044,-.190));
+  _retargetAuthoredHandPalm('r',right,new THREE.Vector3(.030,-.050,.020));
+  _retargetAuthoredHandPalm('l',leftDefault,new THREE.Vector3(.035,-.055,.010));
+}
+function _fitAuthoredM4RuntimeParts(rig){
+  if(!rig||!rig.traverse)return;
+  const hidden=new Set(['stock','buttPad','bufferTube']);
+  rig.traverse(o=>{
+    if(hidden.has(o.name)){
+      o.visible=false;
+      o.userData.firstPersonCropped=true;
+    }
+  });
 }
 function _syncAuthoredM4Visibility(){
   let m4Active=false,split=false;
@@ -11708,6 +11749,7 @@ function _syncAuthoredM4Visibility(){
     rGrp.visible=true;
   }
   if(useWeapon)_syncAuthoredM4Sockets();
+  else _m4ScopeSocketOffset.set(0,0,0);
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
 }
 function _prepareAuthoredActionBucket(kind,rig,animations,names){
@@ -11767,6 +11809,7 @@ function _tickAuthoredM4Viewmodel(dt){
     else if(m4AuthoredWeapon.oneShotUntil>now)M4_AUTHORED_STATUS.activeWeaponClip=m4AuthoredWeapon.oneShotName;
     else M4_AUTHORED_STATUS.activeWeaponClip=(P.adsVis>.12?'ads':'idle');
     m4AuthoredWeapon.mixer.update(dt);
+    _syncAuthoredM4Sockets();
   }
   if(m4AuthoredHands&&m4AuthoredHands.mixer){
     const moving=!!(K.KeyW||K.KeyA||K.KeyS||K.KeyD);
@@ -11786,6 +11829,7 @@ function _tickAuthoredM4Viewmodel(dt){
     else if(m4AuthoredHands.oneShotUntil>now)M4_AUTHORED_STATUS.activeHandClip=m4AuthoredHands.oneShotName;
     else M4_AUTHORED_STATUS.activeHandClip=sprint?'sprint':moving?'walkSway':(P.adsVis>.12?'ads':'idle');
     m4AuthoredHands.mixer.update(dt);
+    _alignAuthoredHandsToM4Sockets();
   }
   _syncAuthoredM4Sockets();
 }
@@ -11813,6 +11857,7 @@ function _loadAuthoredM4Viewmodels(){
       scaleViewmodelToLength(THREE,rig,.68);
       const nodes=validation.nodes;
       alignSocketToLocal(THREE,rig,nodes.get('muzzle'),gunGrp,new THREE.Vector3(0,.030,-.49));
+      _fitAuthoredM4RuntimeParts(rig);
       const bucket=_prepareAuthoredActionBucket('weapon',rig,gltf.animations,AUTHORED_WEAPON_CLIPS);
       m4AuthoredWeapon=Object.assign(bucket,{ok:validation.ok,rig,nodes,validation,clips:validation.clips,stats:validation.stats});
       M4_AUTHORED_STATUS.weaponSource=validation.ok?'authored':'fallback';
@@ -23723,9 +23768,15 @@ function updateHands(dt){
   if(m4ScopeGrp&&m4ScopeGrp.visible){
     const _att=(P.attachments&&P.attachments.scope)?P.attachments.scope:null;
     const _scopeAds=P.adsVis||P.ads||0;
-    const _s=1+_scopeAds*((_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70);
+    const _authScope=_isAuthoredM4RuntimeActive();
+    const _adsScaleMul=_authScope?.16:((_att&&Number.isFinite(_att.adsScaleMul))?_att.adsScaleMul:.70);
+    const _s=1+_scopeAds*_adsScaleMul;
     m4ScopeGrp.scale.setScalar(_s);
-    m4ScopeGrp.position.set(0,.078*(1-_s),-.05*(1-_s)-_scopeAds*.008);
+    m4ScopeGrp.position.set(
+      _m4ScopeSocketOffset.x,
+      _m4ScopeSocketOffset.y+(_authScope?.018:.078)*(1-_s),
+      _m4ScopeSocketOffset.z-(_authScope?.012:.05)*(1-_s)-_scopeAds*(_authScope?.002:.008)
+    );
   }
   _syncAuthoredM4Visibility();
 }

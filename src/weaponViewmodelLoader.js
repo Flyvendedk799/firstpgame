@@ -176,10 +176,14 @@ export function configureViewmodelScene(THREE, root) {
   if (!root || typeof root.traverse !== 'function') return;
   root.traverse(obj => {
     if (obj.layers && typeof obj.layers.set === 'function') obj.layers.set(1);
+    if (obj.userData) {
+      obj.userData.noSsr = true;
+      obj.userData.noReflect = true;
+    }
     if (!obj.isMesh) return;
     obj.frustumCulled = false;
-    obj.castShadow = true;
-    obj.receiveShadow = true;
+    obj.castShadow = false;
+    obj.receiveShadow = false;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const mat of mats) {
       if (!mat) continue;
