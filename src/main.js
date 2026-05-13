@@ -10528,7 +10528,7 @@ const AUTHORED_VIEWMODEL_FORCED_FALLBACKS=new Set();
 const LEGACY_PISTOL_GLB_STATUS={
   id:'legacy.weapon.pistol.usp',
   manifestId:'weapon.pistol',
-  source:'legacy-direct',
+  source:'quarantined',
   quarantineReason:'usp_viewmodel.glb does not satisfy gun-standards weapon hierarchy/socket contract',
   loadStatus:'pending',
   validation:{ok:false,errors:['legacy-direct-path'],warnings:['not manifest-backed']},
@@ -10537,6 +10537,7 @@ const LEGACY_PISTOL_GLB_STATUS={
   activeClip:null,
   fallbackReason:null
 };
+const LEGACY_PISTOL_GLB_RUNTIME_ENABLED=false;
 // ── HK USP Tactical + can — compact pistol silhouette (short slide + K-length
 //   can): long slides / fat cans read as PDW in first-person view.
 //   Forward = -Z. Animated Z: deSlide, deSer1-2, deRsight, deHammer.
@@ -10791,10 +10792,10 @@ function attachDeagleStaticModel(gltfScene, animations){
   // GLB often finishes after the player already has pistol selected; switchWeapon(idx)
   // no-ops when idx===current, so sync visibility explicitly (P1 + P2 clones).
   const widx=P.weaponIdx;
-  const hideProc=!!deagleGlbRig;
+  const hideProc=!!(LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig);
   DE_MESHES.forEach(m=>{m.visible=(widx===1)&&!hideProc;});
-  if(deagleGlbRig)deagleGlbRig.visible=(widx===1);
-  if(deagleGlbRigP2)deagleGlbRigP2.visible=(widx===1);
+  if(deagleGlbRig)deagleGlbRig.visible=hideProc&&(widx===1);
+  if(deagleGlbRigP2)deagleGlbRigP2.visible=hideProc&&(widx===1);
   if(typeof _applyWeaponIdxToP2Viewmodel==='function')_applyWeaponIdxToP2Viewmodel(widx);
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
   // GLB loads async after init-time _setLayer(gunGrp,1); new meshes default to
@@ -11032,7 +11033,7 @@ function _aaWeaponDetail(list,visible,w,h,d,mat,x,y,z,rx=0,ry=0,rz=0){
 }
 function _selectedWeaponMeshList(){
   if(P.weaponIdx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive))return null;
-  if(P.weaponIdx===1&&deagleGlbRig)return null;
+  if(P.weaponIdx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig)return null;
   return ({0:M4_MESHES,1:DE_MESHES,3:SG_MESHES,4:SM_MESHES,5:DMR_MESHES,6:SPP_MESHES,7:SNI_MESHES})[P.weaponIdx]||null;
 }
 function _applyWeaponQuality(){
@@ -11107,6 +11108,11 @@ const _gunVMClonePairs=[];
 // intentionally not declared as `weapon.pistol` because it lacks the standard
 // weapon hierarchy/sockets required by gun-standards.md.
 (function _loadUspViewmodelGlb(){
+  if(!LEGACY_PISTOL_GLB_RUNTIME_ENABLED){
+    LEGACY_PISTOL_GLB_STATUS.loadStatus='quarantined';
+    LEGACY_PISTOL_GLB_STATUS.fallbackReason='legacy USP GLB quarantined; slot 2 uses the local procedural USP-T viewmodel';
+    return;
+  }
   const base=(typeof import.meta!=='undefined'&&import.meta.env&&import.meta.env.BASE_URL!=null)
     ? String(import.meta.env.BASE_URL)
     :'/';
@@ -11140,7 +11146,7 @@ function _applyWeaponIdxToP2Viewmodel(idx){
     const on=wi===idx;
     for(const sm of list){
       const dm=_p2MeshBySrc.get(sm);
-      if(dm)dm.visible=on&&!(wi===1&&deagleGlbRig);
+      if(dm)dm.visible=on&&!(wi===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig);
     }
   }
   gunGrpP2.visible=idx!==2;
@@ -12048,13 +12054,9 @@ function _authoredWristbandDebugStatus(){
 }
 function _fitAuthoredM4RuntimeParts(rig){
   if(!rig||!rig.traverse)return;
-  const hidden=new Set(['stock','buttPad','bufferTube','frontSight','rearSight','opticMountGuide','topRail']);
+  const hidden=new Set(['opticMountGuide']);
   rig.traverse(o=>{
     if(hidden.has(o.name)){
-      o.visible=false;
-      o.userData.firstPersonCropped=true;
-    }
-    if(/^railTooth_/.test(o.name)){
       o.visible=false;
       o.userData.firstPersonCropped=true;
     }
@@ -15348,10 +15350,10 @@ function switchWeapon(idx){
   if(_useAuthoredM4&&M4_AUTHORED_HANDS_RUNTIME_ENABLED&&m4AuthoredHands&&m4AuthoredHands.ok)_playAuthoredM4Action(m4AuthoredHands,'hand','weaponSwap');
   // GLB Deagle takes over visuals when it's attached; hide procedural mesh
   // pieces so they don't peek through.
-  const _useGlbDeagle=!!deagleGlbRig;
+  const _useGlbDeagle=!!(LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig);
   DE_MESHES.forEach(m=>m.visible=(idx===1)&&!_useGlbDeagle);
-  if(deagleGlbRig)deagleGlbRig.visible=(idx===1);
-  if(deagleGlbRigP2)deagleGlbRigP2.visible=(idx===1);
+  if(deagleGlbRig)deagleGlbRig.visible=_useGlbDeagle&&(idx===1);
+  if(deagleGlbRigP2)deagleGlbRigP2.visible=_useGlbDeagle&&(idx===1);
   if(idx===1)LEGACY_PISTOL_GLB_STATUS.lastSwitch={usingLegacyGlb:!!deagleGlbRig,glbVisible:!!deagleGlbRig?.visible,proceduralVisible:!!DE_MESHES[0]?.visible,at:Math.round(performance.now())};
   SG_MESHES.forEach(m=>m.visible=idx===3);
   SM_MESHES.forEach(m=>m.visible=idx===4);

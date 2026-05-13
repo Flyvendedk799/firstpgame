@@ -206,54 +206,54 @@ def build_m4() -> None:
     visual = empty("visual", (0, 0, 0), col, root, 0.05)
     sockets = empty("sockets", (0, 0, 0), col, root, 0.05)
 
-    atlas = material("M4_2K_atlas_material", (0.030, 0.032, 0.034, 1), 0.62, 0.35)
+    atlas = material("M4_2K_atlas_material", (0.08, 0.08, 0.075, 1), 0.68, 0.35, WEAPON_TEX)
     metal = material("M4_dark_metal", (0.025, 0.026, 0.028, 1), 0.55, 0.75)
     polymer = material("M4_black_polymer", (0.008, 0.009, 0.010, 1), 0.86, 0.02)
     wear = material("M4_worn_edges", (0.45, 0.42, 0.34, 1), 0.52, 0.45)
     tan = material("M4_muted_tan", (0.46, 0.38, 0.25, 1), 0.78, 0)
 
     # Author +Y forward in Blender. glTF export maps that to game-forward -Z.
-    cube("body", (0, 0.00, 0.26), (0.22, 1.16, 0.22), atlas, col, visual, bevel=0.024)
-    cube("upperReceiver", (0, -0.06, 0.45), (0.21, 0.96, 0.16), atlas, col, visual, bevel=0.018)
-    cube("lowerReceiver", (0, -0.10, 0.22), (0.23, 0.56, 0.24), metal, col, visual, bevel=0.018)
-    cube("handguard", (0, 0.70, 0.43), (0.25, 0.78, 0.18), atlas, col, visual, bevel=0.018)
-    cube("topRail", (0, 0.26, 0.59), (0.22, 1.56, 0.035), metal, col, visual, bevel=0.004)
+    cube("body", (0, 0.00, 0.26), (0.28, 1.25, 0.28), atlas, col, visual, bevel=0.02)
+    cube("upperReceiver", (0, -0.06, 0.47), (0.26, 1.05, 0.20), atlas, col, visual, bevel=0.02)
+    cube("lowerReceiver", (0, -0.10, 0.23), (0.29, 0.62, 0.30), metal, col, visual, bevel=0.02)
+    cube("handguard", (0, 0.73, 0.45), (0.34, 0.88, 0.25), atlas, col, visual, bevel=0.02)
+    cube("topRail", (0, 0.28, 0.64), (0.30, 1.85, 0.06), metal, col, visual, bevel=0.005)
     for i in range(15):
-        cube(f"railTooth_{i:02d}", (0, -0.45 + i * 0.115, 0.645), (0.235, 0.040, 0.044), metal if i % 4 else wear, col, visual, bevel=0.0025)
+        cube(f"railTooth_{i:02d}", (0, -0.48 + i * 0.13, 0.71), (0.35, 0.055, 0.075), metal if i % 4 else wear, col, visual, bevel=0.003)
     for i in range(7):
         y = 0.35 + i * 0.12
-        cube(f"handguardRib_L_{i:02d}", (-0.155, y, 0.43), (0.026, 0.044, 0.16), polymer, col, visual, bevel=0.003)
-        cube(f"handguardRib_R_{i:02d}", (0.155, y, 0.43), (0.026, 0.044, 0.16), polymer, col, visual, bevel=0.003)
+        cube(f"handguardRib_L_{i:02d}", (-0.205, y, 0.45), (0.035, 0.050, 0.22), polymer, col, visual, bevel=0.003)
+        cube(f"handguardRib_R_{i:02d}", (0.205, y, 0.45), (0.035, 0.050, 0.22), polymer, col, visual, bevel=0.003)
 
-    cylinder("barrel", (0, 1.30, 0.43), 0.030, 0.96, metal, col, visual, "Y", 32)
-    cylinder("muzzleDevice", (0, 1.84, 0.43), 0.048, 0.16, wear, col, visual, "Y", 32)
-    cube("frontSight", (0, 1.05, 0.62), (0.15, 0.075, 0.17), metal, col, visual, bevel=0.008)
-    cube("rearSight", (0, -0.48, 0.64), (0.15, 0.09, 0.15), metal, col, visual, bevel=0.008)
-    charging = cube("chargingHandle", (0, -0.67, 0.52), (0.27, 0.055, 0.040), metal, col, visual, bevel=0.004)
-    mag = cube("mag", (0, -0.18, -0.19), (0.19, 0.28, 0.58), polymer, col, visual, rot=(math.radians(6), 0, 0), bevel=0.020)
-    cube("magwell", (0, -0.18, 0.03), (0.24, 0.24, 0.28), metal, col, visual, bevel=0.012)
-    cube("pistolGrip", (0, -0.50, -0.06), (0.18, 0.20, 0.48), polymer, col, visual, rot=(math.radians(-14), 0, 0), bevel=0.020)
+    cylinder("barrel", (0, 1.38, 0.45), 0.042, 1.06, metal, col, visual, "Y", 32)
+    cylinder("muzzleDevice", (0, 1.98, 0.45), 0.068, 0.20, wear, col, visual, "Y", 32)
+    cube("frontSight", (0, 1.18, 0.70), (0.22, 0.10, 0.25), metal, col, visual, bevel=0.01)
+    cube("rearSight", (0, -0.52, 0.72), (0.22, 0.12, 0.22), metal, col, visual, bevel=0.01)
+    charging = cube("chargingHandle", (0, -0.72, 0.56), (0.36, 0.075, 0.055), metal, col, visual, bevel=0.004)
+    mag = cube("mag", (0, -0.18, -0.22), (0.25, 0.34, 0.78), polymer, col, visual, rot=(math.radians(6), 0, 0), bevel=0.025)
+    cube("magwell", (0, -0.18, 0.03), (0.32, 0.30, 0.36), metal, col, visual, bevel=0.015)
+    cube("pistolGrip", (0, -0.52, -0.08), (0.23, 0.24, 0.65), polymer, col, visual, rot=(math.radians(-14), 0, 0), bevel=0.025)
     cube("triggerGuard", (0, -0.42, 0.07), (0.28, 0.14, 0.075), metal, col, visual, bevel=0.006)
     trigger = cube("trigger", (0, -0.48, 0.02), (0.05, 0.05, 0.17), wear, col, visual, bevel=0.004)
-    cylinder("bufferTube", (0, -0.94, 0.34), 0.045, 0.54, metal, col, visual, "Y", 24)
-    cube("stock", (0, -1.26, 0.27), (0.26, 0.40, 0.32), polymer, col, visual, bevel=0.026)
-    cube("buttPad", (0, -1.49, 0.22), (0.29, 0.060, 0.40), tan, col, visual, bevel=0.016)
-    cube("opticMountGuide", (0, -0.08, 0.69), (0.18, 0.14, 0.035), metal, col, visual, bevel=0.004)
-    cube("fictionalMarkingPlate", (-0.118, -0.18, 0.28), (0.010, 0.26, 0.065), wear, col, visual, bevel=0.002)
+    cylinder("bufferTube", (0, -1.02, 0.36), 0.060, 0.62, metal, col, visual, "Y", 24)
+    cube("stock", (0, -1.36, 0.28), (0.34, 0.50, 0.42), polymer, col, visual, bevel=0.03)
+    cube("buttPad", (0, -1.64, 0.23), (0.37, 0.08, 0.52), tan, col, visual, bevel=0.02)
+    cube("opticMountGuide", (0, -0.08, 0.76), (0.24, 0.18, 0.05), metal, col, visual, bevel=0.005)
+    cube("fictionalMarkingPlate", (-0.151, -0.18, 0.29), (0.012, 0.34, 0.09), wear, col, visual, bevel=0.002)
 
     socket_positions = {
-        "muzzle": (0, 1.94, 0.43),
-        "muzzleFlash": (0, 2.02, 0.43),
-        "gripRight": (0, -0.50, -0.05),
-        "gripLeft": (-0.145, 0.55, 0.23),
-        "magazine": (0, -0.20, -0.18),
-        "ejectionPort": (-0.13, -0.18, 0.48),
-        "optic": (0, -0.08, 0.70),
-        "scopeCamera": (0, -0.08, 0.74),
-        "attachmentMuzzle": (0, 1.84, 0.43),
-        "attachmentMag": (0, -0.18, -0.24),
-        "attachmentForegrip": (0, 0.66, 0.18),
-        "attachmentLaser": (-0.16, 0.88, 0.45),
+        "muzzle": (0, 2.10, 0.45),
+        "muzzleFlash": (0, 2.18, 0.45),
+        "gripRight": (0, -0.54, -0.06),
+        "gripLeft": (-0.20, 0.62, 0.24),
+        "magazine": (0, -0.20, -0.20),
+        "ejectionPort": (-0.17, -0.18, 0.51),
+        "optic": (0, -0.08, 0.78),
+        "scopeCamera": (0, -0.08, 0.82),
+        "attachmentMuzzle": (0, 1.98, 0.45),
+        "attachmentMag": (0, -0.18, -0.28),
+        "attachmentForegrip": (0, 0.72, 0.18),
+        "attachmentLaser": (-0.22, 0.98, 0.48),
     }
     for name, loc in socket_positions.items():
         empty(name, loc, col, sockets, 0.045, "SPHERE")
@@ -335,9 +335,9 @@ def build_hands() -> None:
         return nodes[name]
 
     rw = node("wrist_r", (0.13, -0.42, -0.10), camera_root)
-    rp = node("palm_r", (0.13, -0.48, -0.08), rw)
+    rp = node("palm_r", (0.0, -0.060, 0.020), rw)
     lw = node("wrist_l", (-0.145, 0.315, 0.055), camera_root)
-    lp = node("palm_l", (-0.165, 0.245, 0.095), lw)
+    lp = node("palm_l", (-0.020, -0.070, 0.040), lw)
     wband = node("wristband_root", (-0.018, 0.074, 0.060), lw)
     wscreen = node("wristband_screen", (0.0, 0.020, 0.047), wband)
     wemitter = node("wristband_emitter", (0.0, 0.042, 0.050), wband)

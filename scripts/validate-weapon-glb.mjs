@@ -129,6 +129,17 @@ function nodeMap(json) {
   return map;
 }
 
+function parentMap(json) {
+  const out = new Map();
+  for (const node of json.nodes || []) {
+    for (const childIndex of node.children || []) {
+      const child = json.nodes?.[childIndex];
+      if (child?.name) out.set(child.name, node.name || null);
+    }
+  }
+  return out;
+}
+
 function countTriangles(json) {
   let triangles = 0;
   for (const mesh of json.meshes || []) {
@@ -153,9 +164,15 @@ function defaultTransform(node) {
   return translationOk && rotationOk && scaleOk;
 }
 
+function vecLength(v) {
+  if (!Array.isArray(v)) return 0;
+  return Math.hypot(v[0] || 0, v[1] || 0, v[2] || 0);
+}
+
 function validate(file, type) {
   const { json, bin } = readGlb(file);
   const nodes = nodeMap(json);
+  const parents = parentMap(json);
   const clips = new Set((json.animations || []).map(a => a.name));
   const errors = [];
   const warnings = [];
@@ -167,6 +184,17 @@ function validate(file, type) {
   if (type === 'weapon') {
     const root = nodes.get('WeaponRoot');
     if (root && !defaultTransform(root)) errors.push('WeaponRoot transform is not applied/default');
+  }
+
+  if (type === 'hands') {
+    for (const side of ['r', 'l']) {
+      const palmName = `palm_${side}`;
+      const wristName = `wrist_${side}`;
+      const palm = nodes.get(palmName);
+      if (palm && parents.get(palmName) !== wristName) errors.push(`${palmName} must be parented to ${wristName}`);
+      const localSpan = vecLength(palm?.translation);
+      if (localSpan > 0.16) errors.push(`${palmName} local offset too large:${localSpan.toFixed(3)}; expected wrist-local, not world-space`);
+    }
   }
 
   const textureSizes = [];
