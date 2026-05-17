@@ -1,7 +1,7 @@
 // Phase AC — extracted cover-graph helpers (pure functions).
-// All functions here are pure with respect to runtime state: their inputs
-// fully determine their outputs. main.js keeps thin wrappers under the
-// same names so existing call sites continue to work.
+// Most helpers here are pure with respect to runtime state: their inputs
+// fully determine their outputs. navAStar keeps reusable scratch buffers on
+// the nav grid to avoid per-agent typed-array churn on large authored maps.
 //
 // Functions intentionally NOT extracted (depend on module-level RW/RD/RH
 // in main.js): _buildNavGrid, _bakeCornerEdges, _bakeCoverSlots.
@@ -86,6 +86,45 @@ export function navSnapOpen(ng, ix, iz) {
 }
 
 // ─── _navAStar — A* on the baked grid ────────────────────────────────────
+function _navAStarScratch(ng, nn) {
+  let s = ng._astarScratch;
+  if (!s || s.nn !== nn) {
+    s = {
+      nn,
+      stamp: 1,
+      g: new Float32Array(nn),
+      came: new Int32Array(nn),
+      seen: new Int32Array(nn),
+      closed: new Int32Array(nn),
+      heap: [],
+    };
+    ng._astarScratch = s;
+  }
+  s.stamp++;
+  if (s.stamp > 0x3fffffff) {
+    s.stamp = 1;
+    s.seen.fill(0);
+    s.closed.fill(0);
+  }
+  s.heap.length = 0;
+  return s;
+}
+
+function _navGridLineOpen(ng, sx, sz, gx, gz) {
+  const dx = gx - sx;
+  const dz = gz - sz;
+  const steps = Math.max(Math.abs(dx), Math.abs(dz));
+  if (steps <= 1) return true;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const ix = Math.round(sx + dx * t);
+    const iz = Math.round(sz + dz * t);
+    if (ix < 0 || iz < 0 || ix >= ng.nx || iz >= ng.nz) return false;
+    if (ng.blocked[ix + iz * ng.nx]) return false;
+  }
+  return true;
+}
+
 export function navAStar(ng, x0, z0, x1, z1) {
   if (!ng || !ng.blocked) return null;
   const { nx, nz, cs, xMin, zMin, blocked } = ng;
@@ -99,31 +138,74 @@ export function navAStar(ng, x0, z0, x1, z1) {
   const sid = sx + sz * nx, gid = gx + gz * nx;
   if (blocked[sid] || blocked[gid]) return null;
   if (sid === gid) return [{ x: x0, z: z0 }, { x: x1, z: z1 }];
-  const gScr = new Float32Array(NN); gScr.fill(1e9);
-  const came = new Int32Array(NN); came.fill(-1);
-  const open = []; const inOpen = new Uint8Array(NN);
+  if (_navGridLineOpen(ng, sx, sz, gx, gz)) return [{ x: x0, z: z0 }, { x: x1, z: z1 }];
+  const scratch = _navAStarScratch(ng, NN);
+  const stamp = scratch.stamp;
+  const gScr = scratch.g;
+  const came = scratch.came;
+  const seen = scratch.seen;
+  const closed = scratch.closed;
+  const heap = scratch.heap;
   const mh = (ix, iz) => (Math.abs(ix - gx) + Math.abs(iz - gz)) * cs;
-  gScr[sid] = 0; open.push(sid); inOpen[sid] = 1;
-  while (open.length) {
-    let bi = 0, best = 1e9;
-    for (let i = 0, l = open.length; i < l; i++) {
-      const id = open[i], ix = id % nx, iz = (id / nx) | 0;
-      const f = gScr[id] + mh(ix, iz);
-      if (f < best) { best = f; bi = i; }
+  const fScore = (id) => {
+    const ix = id % nx, iz = (id / nx) | 0;
+    return gScr[id] + mh(ix, iz);
+  };
+  const heapPush = (id) => {
+    let i = heap.length;
+    heap.push(id);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (fScore(heap[p]) <= fScore(id)) break;
+      heap[i] = heap[p];
+      i = p;
     }
-    const cid = open[bi]; open[bi] = open[open.length - 1]; open.pop(); inOpen[cid] = 0;
+    heap[i] = id;
+  };
+  const heapPop = () => {
+    const out = heap[0];
+    const last = heap.pop();
+    if (heap.length && last !== undefined) {
+      let i = 0;
+      while (true) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        if (l >= heap.length) break;
+        let child = l;
+        if (r < heap.length && fScore(heap[r]) < fScore(heap[l])) child = r;
+        if (fScore(last) <= fScore(heap[child])) break;
+        heap[i] = heap[child];
+        i = child;
+      }
+      heap[i] = last;
+    }
+    return out;
+  };
+  seen[sid] = stamp;
+  gScr[sid] = 0;
+  came[sid] = -1;
+  heapPush(sid);
+  while (heap.length) {
+    const cid = heapPop();
+    if (closed[cid] === stamp) continue;
+    closed[cid] = stamp;
     if (cid === gid) break;
     const cix = cid % nx, ciz = (cid / nx) | 0;
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nix = cix + dx, niz = ciz + dz;
       if (nix < 0 || niz < 0 || nix >= nx || niz >= nz) continue;
       const nid = nix + niz * nx;
-      if (blocked[nid]) continue;
+      if (blocked[nid] || closed[nid] === stamp) continue;
       const tentative = gScr[cid] + cs;
-      if (tentative < gScr[nid]) { came[nid] = cid; gScr[nid] = tentative; if (!inOpen[nid]) { open.push(nid); inOpen[nid] = 1; } }
+      if (seen[nid] !== stamp || tentative < gScr[nid]) {
+        seen[nid] = stamp;
+        came[nid] = cid;
+        gScr[nid] = tentative;
+        heapPush(nid);
+      }
     }
   }
-  if (gScr[gid] > 1e8) return null;
+  if (seen[gid] !== stamp || gScr[gid] > 1e8) return null;
   const path = [];
   let cur = gid;
   while (cur >= 0) {

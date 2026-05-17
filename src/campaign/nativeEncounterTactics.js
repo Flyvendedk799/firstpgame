@@ -179,7 +179,8 @@ for (const [bnRaw, patch] of Object.entries(ROUTE_FLOORPLAN_PATCH_BY_BN)) {
     west_lane_fork: side || [-13, 15],
     east_stack: flank || [13, 13],
     fe_stack: flank || [13, 13],
-    drum_spool: flank || [14, 0],
+    drum_spool: bn === 1 ? [14.35, -2.4] : flank || [14, 0],
+    'relay-east-hold': [1.6, 1.8],
     spine_pinch: objective || [0, 2],
     relay_desk: objective || [-14, 2],
     cage_pillar_west: signature || [-12, -16],
@@ -187,6 +188,14 @@ for (const [bnRaw, patch] of Object.entries(ROUTE_FLOORPLAN_PATCH_BY_BN)) {
     vestibule_face: signature || [3, -14],
     desk_rail: signature || [13, -16],
   };
+  if (bn === 1) {
+    Object.assign(COVER_HINT_ANCHOR_PATCH_BY_BN[bn], {
+      cage_pillar_west: [-3.6, -17.0],
+      cage_center_low: [0.0, -20.4],
+      vestibule_face: [3.2, -14.0],
+      desk_rail: [13.6, -17.2],
+    });
+  }
 }
 
 function _routePatrolTag(bn, kind) {

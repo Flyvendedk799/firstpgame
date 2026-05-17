@@ -1,0 +1,1412 @@
+{
+  "rooms": [
+    {
+      "id": "receiving_yard",
+      "name": "Receiving Yard",
+      "row": 0,
+      "col": 0,
+      "zone": 0,
+      "mood": "cold rain sodium",
+      "encounter": "patrol_forklift_ambush",
+      "bounds": {
+        "x0": -57.0,
+        "x1": -19.0,
+        "z0": 66.0,
+        "z1": 110.0
+      }
+    },
+    {
+      "id": "customs_entry",
+      "name": "Customs Entry Hall",
+      "row": 0,
+      "col": 1,
+      "zone": 0,
+      "mood": "warm security threshold",
+      "encounter": "lookout_peek_tutorial",
+      "bounds": {
+        "x0": -19.0,
+        "x1": 19.0,
+        "z0": 66.0,
+        "z1": 110.0
+      }
+    },
+    {
+      "id": "container_gate",
+      "name": "Container Gate",
+      "row": 0,
+      "col": 2,
+      "zone": 0,
+      "mood": "blue exterior slit",
+      "encounter": "crossfire_container_rows",
+      "bounds": {
+        "x0": 19.0,
+        "x1": 57.0,
+        "z0": 66.0,
+        "z1": 110.0
+      }
+    },
+    {
+      "id": "forklift_repair",
+      "name": "Forklift Repair Bay",
+      "row": 1,
+      "col": 0,
+      "zone": 0,
+      "mood": "dirty worklight",
+      "encounter": "breacher_rollup_door",
+      "bounds": {
+        "x0": -57.0,
+        "x1": -19.0,
+        "z0": 22.0,
+        "z1": 66.0
+      }
+    },
+    {
+      "id": "intake_court",
+      "name": "Intake Court",
+      "row": 1,
+      "col": 1,
+      "zone": 0,
+      "mood": "open dock court",
+      "encounter": "multi_angle_first_room",
+      "bounds": {
+        "x0": -19.0,
+        "x1": 19.0,
+        "z0": 22.0,
+        "z1": 66.0
+      }
+    },
+    {
+      "id": "security_screening",
+      "name": "Security Screening",
+      "row": 1,
+      "col": 2,
+      "zone": 0,
+      "mood": "cyan scan glass",
+      "encounter": "window_overwatch",
+      "bounds": {
+        "x0": 19.0,
+        "x1": 57.0,
+        "z0": 22.0,
+        "z1": 66.0
+      }
+    },
+    {
+      "id": "manifest_office",
+      "name": "Manifest Office",
+      "row": 2,
+      "col": 0,
+      "zone": 1,
+      "mood": "paper amber",
+      "encounter": "alarm_hold_manifest",
+      "bounds": {
+        "x0": -57.0,
+        "x1": -19.0,
+        "z0": -22.0,
+        "z1": 22.0
+      }
+    },
+    {
+      "id": "warehouse_spine",
+      "name": "Warehouse Spine",
+      "row": 2,
+      "col": 1,
+      "zone": 1,
+      "mood": "long rack lane",
+      "encounter": "suppression_lane",
+      "bounds": {
+        "x0": -19.0,
+        "x1": 19.0,
+        "z0": -22.0,
+        "z1": 22.0
+      }
+    },
+    {
+      "id": "hazmat_barrels",
+      "name": "Hazmat Barrel Room",
+      "row": 2,
+      "col": 2,
+      "zone": 1,
+      "mood": "red hazard pool",
+      "encounter": "barrel_flush_trap",
+      "bounds": {
+        "x0": 19.0,
+        "x1": 57.0,
+        "z0": -22.0,
+        "z1": 22.0
+      }
+    },
+    {
+      "id": "cold_storage",
+      "name": "Cold Storage",
+      "row": 3,
+      "col": 0,
+      "zone": 1,
+      "mood": "icy low visibility",
+      "encounter": "thermal_stealth_patrol",
+      "bounds": {
+        "x0": -57.0,
+        "x1": -19.0,
+        "z0": -66.0,
+        "z1": -22.0
+      }
+    },
+    {
+      "id": "alarm_relay",
+      "name": "Alarm Relay Control",
+      "row": 3,
+      "col": 1,
+      "zone": 1,
+      "mood": "amber relay storm",
+      "encounter": "objective_hold_reinforce",
+      "bounds": {
+        "x0": -19.0,
+        "x1": 19.0,
+        "z0": -66.0,
+        "z1": -22.0
+      }
+    },
+    {
+      "id": "boiler_pump",
+      "name": "Boiler Pump Room",
+      "row": 3,
+      "col": 2,
+      "zone": 1,
+      "mood": "steam orange pressure",
+      "encounter": "demolition_pipe_pressure",
+      "bounds": {
+        "x0": 19.0,
+        "x1": 57.0,
+        "z0": -66.0,
+        "z1": -22.0
+      }
+    },
+    {
+      "id": "loading_cage",
+      "name": "Loading Cage",
+      "row": 4,
+      "col": 0,
+      "zone": 2,
+      "mood": "cage shadows",
+      "encounter": "shield_push_cage",
+      "bounds": {
+        "x0": -57.0,
+        "x1": -19.0,
+        "z0": -110.0,
+        "z1": -66.0
+      }
+    },
+    {
+      "id": "sortation_hall",
+      "name": "Sortation Hall",
+      "row": 4,
+      "col": 1,
+      "zone": 2,
+      "mood": "moving conveyor amber",
+      "encounter": "final_multiwave_sorter",
+      "bounds": {
+        "x0": -19.0,
+        "x1": 19.0,
+        "z0": -110.0,
+        "z1": -66.0
+      }
+    },
+    {
+      "id": "foreman_catwalk",
+      "name": "Foreman Catwalk Office",
+      "row": 4,
+      "col": 2,
+      "zone": 2,
+      "mood": "high glass overwatch",
+      "encounter": "sniper_catwalk_relocate",
+      "bounds": {
+        "x0": 19.0,
+        "x1": 57.0,
+        "z0": -110.0,
+        "z1": -66.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "customs_entry",
+      "to": "receiving_yard",
+      "type": "door"
+    },
+    {
+      "from": "customs_entry",
+      "to": "intake_court",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "container_gate",
+      "to": "customs_entry",
+      "type": "door"
+    },
+    {
+      "from": "container_gate",
+      "to": "security_screening",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "forklift_repair",
+      "to": "receiving_yard",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "forklift_repair",
+      "to": "intake_court",
+      "type": "door"
+    },
+    {
+      "from": "forklift_repair",
+      "to": "manifest_office",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "intake_court",
+      "to": "security_screening",
+      "type": "door"
+    },
+    {
+      "from": "intake_court",
+      "to": "warehouse_spine",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "manifest_office",
+      "to": "warehouse_spine",
+      "type": "door"
+    },
+    {
+      "from": "hazmat_barrels",
+      "to": "security_screening",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "hazmat_barrels",
+      "to": "warehouse_spine",
+      "type": "door"
+    },
+    {
+      "from": "cold_storage",
+      "to": "manifest_office",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "cold_storage",
+      "to": "loading_cage",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "alarm_relay",
+      "to": "warehouse_spine",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "alarm_relay",
+      "to": "cold_storage",
+      "type": "door"
+    },
+    {
+      "from": "alarm_relay",
+      "to": "boiler_pump",
+      "type": "door"
+    },
+    {
+      "from": "alarm_relay",
+      "to": "sortation_hall",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "boiler_pump",
+      "to": "hazmat_barrels",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "boiler_pump",
+      "to": "foreman_catwalk",
+      "type": "rollup_threshold"
+    },
+    {
+      "from": "loading_cage",
+      "to": "sortation_hall",
+      "type": "door"
+    },
+    {
+      "from": "foreman_catwalk",
+      "to": "sortation_hall",
+      "type": "door"
+    }
+  ],
+  "encounterTypes": [
+    "patrol_forklift_ambush",
+    "lookout_peek_tutorial",
+    "crossfire_container_rows",
+    "breacher_rollup_door",
+    "multi_angle_first_room",
+    "window_overwatch",
+    "alarm_hold_manifest",
+    "suppression_lane",
+    "barrel_flush_trap",
+    "thermal_stealth_patrol",
+    "objective_hold_reinforce",
+    "demolition_pipe_pressure",
+    "shield_push_cage",
+    "final_multiwave_sorter",
+    "sniper_catwalk_relocate"
+  ],
+  "markers": [
+    {
+      "type": "enemy_spawn",
+      "room": "receiving_yard",
+      "zone": 0,
+      "role": "patrol",
+      "enemyType": "scout",
+      "behavior": "patrol_lane",
+      "x": -48.0,
+      "z": 96.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "receiving_yard",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": -31.0,
+      "z": 81.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "receiving_yard",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": -27.0,
+      "z": 97.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "receiving_yard",
+      "zone": 0,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "rush_when_player_reloads",
+      "x": -42.0,
+      "z": 76.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "customs_entry",
+      "zone": 0,
+      "role": "lookout",
+      "enemyType": "scout",
+      "behavior": "peek_from_cover",
+      "x": -7.0,
+      "z": 80.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "customs_entry",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 0.0,
+      "z": 92.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "customs_entry",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 9.0,
+      "z": 76.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "customs_entry",
+      "zone": 0,
+      "role": "runner",
+      "enemyType": "scout",
+      "behavior": "retreat_to_next_room",
+      "x": -10.0,
+      "z": 100.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "container_gate",
+      "zone": 0,
+      "role": "lookout",
+      "enemyType": "scout",
+      "behavior": "peek_from_cover",
+      "x": 29.0,
+      "z": 98.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "container_gate",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "suppress_lane",
+      "x": 47.0,
+      "z": 81.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "container_gate",
+      "zone": 0,
+      "role": "sniper",
+      "enemyType": "sniper",
+      "behavior": "overwatch_catwalk",
+      "x": 43.0,
+      "z": 101.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "container_gate",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 27.0,
+      "z": 75.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "forklift_repair",
+      "zone": 0,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -49.0,
+      "z": 32.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "forklift_repair",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": -30.0,
+      "z": 54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "forklift_repair",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": -27.0,
+      "z": 42.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "forklift_repair",
+      "zone": 0,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": -39.0,
+      "z": 57.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "intake_court",
+      "zone": 0,
+      "role": "lookout",
+      "enemyType": "scout",
+      "behavior": "peek_from_cover",
+      "x": -12.0,
+      "z": 54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "intake_court",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 0.0,
+      "z": 39.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "intake_court",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 12.0,
+      "z": 53.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "intake_court",
+      "zone": 0,
+      "role": "shield",
+      "enemyType": "shielded",
+      "behavior": "riot_screen_push",
+      "x": -9.0,
+      "z": 31.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "security_screening",
+      "zone": 0,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 38.0,
+      "z": 36.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "security_screening",
+      "zone": 0,
+      "role": "sniper",
+      "enemyType": "marksman",
+      "behavior": "sniper_relocate",
+      "x": 26.0,
+      "z": 56.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "security_screening",
+      "zone": 0,
+      "role": "drone",
+      "enemyType": "drone",
+      "behavior": "overwatch_catwalk",
+      "x": 47.0,
+      "z": 54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "security_screening",
+      "zone": 0,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 48.0,
+      "z": 32.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "manifest_office",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "guard_objective",
+      "x": -44.0,
+      "z": 3.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "manifest_office",
+      "zone": 1,
+      "role": "lookout",
+      "enemyType": "scout",
+      "behavior": "peek_from_cover",
+      "x": -29.0,
+      "z": 10.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "manifest_office",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -30.0,
+      "z": -13.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "manifest_office",
+      "zone": 1,
+      "role": "runner",
+      "enemyType": "pistolero",
+      "behavior": "retreat_to_next_room",
+      "x": -49.0,
+      "z": -10.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "manifest_office",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -42.0,
+      "z": 15.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "warehouse_spine",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "heavy",
+      "behavior": "suppress_lane",
+      "x": -10.0,
+      "z": 0.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "warehouse_spine",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 10.0,
+      "z": -8.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "warehouse_spine",
+      "zone": 1,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 12.0,
+      "z": 12.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "warehouse_spine",
+      "zone": 1,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": -11.0,
+      "z": -13.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "warehouse_spine",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -4.0,
+      "z": 15.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "hazmat_barrels",
+      "zone": 1,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": 31.0,
+      "z": -10.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "hazmat_barrels",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 46.0,
+      "z": 8.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "hazmat_barrels",
+      "zone": 1,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 49.0,
+      "z": -12.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "hazmat_barrels",
+      "zone": 1,
+      "role": "lookout",
+      "enemyType": "scout",
+      "behavior": "peek_from_cover",
+      "x": 28.0,
+      "z": 12.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "hazmat_barrels",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": 34.0,
+      "z": 15.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "cold_storage",
+      "zone": 1,
+      "role": "patrol",
+      "enemyType": "scout",
+      "behavior": "patrol_lane",
+      "x": -46.0,
+      "z": -33.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "cold_storage",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": -30.0,
+      "z": -44.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "cold_storage",
+      "zone": 1,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": -28.0,
+      "z": -55.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "cold_storage",
+      "zone": 1,
+      "role": "sniper",
+      "enemyType": "marksman",
+      "behavior": "sniper_relocate",
+      "x": -49.0,
+      "z": -54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "cold_storage",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -42.0,
+      "z": -29.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "alarm_relay",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "heavy",
+      "behavior": "guard_objective",
+      "x": 0.0,
+      "z": -40.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "alarm_relay",
+      "zone": 1,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": -9.0,
+      "z": -54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "alarm_relay",
+      "zone": 1,
+      "role": "shield",
+      "enemyType": "shielded",
+      "behavior": "riot_screen_push",
+      "x": 10.0,
+      "z": -35.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "alarm_relay",
+      "zone": 1,
+      "role": "drone",
+      "enemyType": "drone",
+      "behavior": "overwatch_catwalk",
+      "x": 11.0,
+      "z": -56.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "alarm_relay",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -4.0,
+      "z": -29.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "boiler_pump",
+      "zone": 1,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": 28.0,
+      "z": -32.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "boiler_pump",
+      "zone": 1,
+      "role": "anchor",
+      "enemyType": "heavy",
+      "behavior": "hold_angle",
+      "x": 46.0,
+      "z": -52.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "boiler_pump",
+      "zone": 1,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 26.0,
+      "z": -54.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "boiler_pump",
+      "zone": 1,
+      "role": "drone",
+      "enemyType": "drone",
+      "behavior": "overwatch_catwalk",
+      "x": 48.0,
+      "z": -34.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "boiler_pump",
+      "zone": 1,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": 34.0,
+      "z": -29.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "loading_cage",
+      "zone": 2,
+      "role": "shield",
+      "enemyType": "shielded",
+      "behavior": "riot_screen_push",
+      "x": -47.0,
+      "z": -82.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "loading_cage",
+      "zone": 2,
+      "role": "anchor",
+      "enemyType": "heavy",
+      "behavior": "hold_angle",
+      "x": -30.0,
+      "z": -95.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "loading_cage",
+      "zone": 2,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": -27.0,
+      "z": -77.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "loading_cage",
+      "zone": 2,
+      "role": "sniper",
+      "enemyType": "marksman",
+      "behavior": "overwatch_catwalk",
+      "x": -50.0,
+      "z": -100.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "loading_cage",
+      "zone": 2,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -42.0,
+      "z": -73.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "anchor",
+      "enemyType": "heavy",
+      "behavior": "suppress_lane",
+      "x": 0.0,
+      "z": -94.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "demolitions",
+      "enemyType": "demolitions",
+      "behavior": "grenade_flush_cover",
+      "x": -12.0,
+      "z": -77.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "drone",
+      "enemyType": "drone",
+      "behavior": "overwatch_catwalk",
+      "x": 12.0,
+      "z": -76.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "rush_when_player_reloads",
+      "x": 10.0,
+      "z": -100.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": -10.0,
+      "z": -101.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "sortation_hall",
+      "zone": 2,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": -4.0,
+      "z": -73.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "foreman_catwalk",
+      "zone": 2,
+      "role": "sniper",
+      "enemyType": "marksman",
+      "behavior": "sniper_relocate",
+      "x": 30.0,
+      "z": -82.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "foreman_catwalk",
+      "zone": 2,
+      "role": "anchor",
+      "enemyType": "soldier",
+      "behavior": "hold_angle",
+      "x": 43.0,
+      "z": -95.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "foreman_catwalk",
+      "zone": 2,
+      "role": "drone",
+      "enemyType": "drone",
+      "behavior": "overwatch_catwalk",
+      "x": 49.0,
+      "z": -79.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "foreman_catwalk",
+      "zone": 2,
+      "role": "flanker",
+      "enemyType": "pistolero",
+      "behavior": "flank_after_contact",
+      "x": 27.0,
+      "z": -100.0
+    },
+    {
+      "type": "enemy_spawn",
+      "room": "foreman_catwalk",
+      "zone": 2,
+      "role": "breacher",
+      "enemyType": "heavy",
+      "behavior": "ambush_on_crossing",
+      "x": 34.0,
+      "z": -73.0
+    }
+  ],
+  "hazards": [
+    {
+      "type": "electrical_arc_pipe",
+      "room": "forklift_repair",
+      "x": -38.0,
+      "z": 30.0
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 27.965490739619895,
+      "z": -11.907416596222134
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 27.558091120753396,
+      "z": -5.579408455554361
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 28.357794264518574,
+      "z": 2.4886266187143193
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 32.56096209321052,
+      "z": -12.333997459741102
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 32.708658639860495,
+      "z": -5.627079077694324
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 32.71208508790707,
+      "z": 2.280852101269962
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 37.79837469456515,
+      "z": -11.820084975538924
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 38.47182960638211,
+      "z": -6.385679290432353
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 37.67954658353401,
+      "z": 1.7610090554028828
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 43.47750580485727,
+      "z": -11.784327373751715
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 42.6840014445709,
+      "z": -6.206721064880058
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 43.30745905402945,
+      "z": 1.9933923246081373
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 42.503788134009966,
+      "z": 9.979170231999616
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 47.86079673083602,
+      "z": -12.256980267959069
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 48.4574115843178,
+      "z": -6.023480100580787
+    },
+    {
+      "type": "explosive_barrel",
+      "room": "hazmat_barrels",
+      "x": 48.17667241238491,
+      "z": 1.713085679605706
+    },
+    {
+      "type": "electrical_arc_pipe",
+      "room": "boiler_pump",
+      "x": 38.0,
+      "z": -49.0
+    }
+  ],
+  "features": [
+    {
+      "type": "forklift_cover",
+      "room": "receiving_yard",
+      "x": -31.0,
+      "z": 81.0
+    },
+    {
+      "type": "window",
+      "id": "customs_office_glass",
+      "room": "customs_entry",
+      "sightline": "entry_to_manifest_preview"
+    },
+    {
+      "type": "forklift_cover",
+      "room": "forklift_repair",
+      "x": -44.0,
+      "z": 50.0
+    },
+    {
+      "type": "forklift_cover",
+      "room": "forklift_repair",
+      "x": -32.0,
+      "z": 36.0
+    },
+    {
+      "type": "window",
+      "id": "intake_high_window_w",
+      "room": "intake_court",
+      "sightline": "west_to_intake_crossview"
+    },
+    {
+      "type": "window",
+      "id": "intake_high_window_e",
+      "room": "intake_court",
+      "sightline": "east_to_intake_crossview"
+    },
+    {
+      "type": "animated_conveyor",
+      "room": "security_screening",
+      "x": 38.0,
+      "z": 44.0
+    },
+    {
+      "type": "window",
+      "id": "security_glass_wall",
+      "room": "security_screening",
+      "sightline": "screening_overwatch"
+    },
+    {
+      "type": "window",
+      "id": "manifest_long_glass",
+      "room": "manifest_office",
+      "sightline": "office_to_warehouse"
+    },
+    {
+      "type": "animated_conveyor",
+      "room": "warehouse_spine",
+      "x": 0.0,
+      "z": -15.0
+    },
+    {
+      "type": "window",
+      "id": "alarm_control_glass_n",
+      "room": "alarm_relay",
+      "sightline": "relay_north_preview"
+    },
+    {
+      "type": "window",
+      "id": "alarm_control_glass_e",
+      "room": "alarm_relay",
+      "sightline": "relay_to_boiler_preview"
+    },
+    {
+      "type": "animated_ceiling_fan",
+      "room": "boiler_pump",
+      "x": 51.0,
+      "z": -31.0
+    },
+    {
+      "type": "animated_conveyor",
+      "room": "sortation_hall",
+      "x": 0.0,
+      "z": -82.0
+    },
+    {
+      "type": "animated_conveyor",
+      "room": "sortation_hall",
+      "x": 0.0,
+      "z": -96.0
+    },
+    {
+      "type": "window",
+      "id": "foreman_office_glass_w",
+      "room": "foreman_catwalk",
+      "sightline": "catwalk_to_sortation"
+    },
+    {
+      "type": "window",
+      "id": "foreman_office_glass_s",
+      "room": "foreman_catwalk",
+      "sightline": "catwalk_to_exit"
+    },
+    {
+      "type": "animated_ceiling_fan",
+      "room": "foreman_catwalk",
+      "x": 48.0,
+      "z": -78.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "receiving_yard",
+      "x": -38.0,
+      "z": 95.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "customs_entry",
+      "x": -6.0,
+      "z": 88.0
+    },
+    {
+      "type": "monitor_bank",
+      "room": "customs_entry",
+      "side": "N"
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "container_gate",
+      "x": 38.0,
+      "z": 95.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "forklift_repair",
+      "x": -44.0,
+      "z": 44.0
+    },
+    {
+      "type": "chain_curtain",
+      "room": "forklift_repair",
+      "x": -38.0,
+      "z": 57.5
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "intake_court",
+      "x": 0.0,
+      "z": 51.0
+    },
+    {
+      "type": "chain_curtain",
+      "room": "intake_court",
+      "x": -12.0,
+      "z": 55.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "security_screening",
+      "x": 32.0,
+      "z": 44.0
+    },
+    {
+      "type": "monitor_bank",
+      "room": "security_screening",
+      "side": "N"
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "manifest_office",
+      "x": -38.0,
+      "z": 7.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "warehouse_spine",
+      "x": -6.0,
+      "z": 0.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "hazmat_barrels",
+      "x": 38.0,
+      "z": 7.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "cold_storage",
+      "x": -44.0,
+      "z": -44.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "alarm_relay",
+      "x": 0.0,
+      "z": -37.0
+    },
+    {
+      "type": "monitor_bank",
+      "room": "alarm_relay",
+      "side": "N"
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "boiler_pump",
+      "x": 32.0,
+      "z": -44.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "loading_cage",
+      "x": -38.0,
+      "z": -81.0
+    },
+    {
+      "type": "chain_curtain",
+      "room": "loading_cage",
+      "x": -38.0,
+      "z": -74.5
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "sortation_hall",
+      "x": -6.0,
+      "z": -88.0
+    },
+    {
+      "type": "overhead_cable_tray",
+      "room": "foreman_catwalk",
+      "x": 38.0,
+      "z": -81.0
+    },
+    {
+      "type": "monitor_bank",
+      "room": "foreman_catwalk",
+      "side": "N"
+    },
+    {
+      "type": "aaa_visual_detail_pass",
+      "rooms": 15
+    }
+  ]
+}

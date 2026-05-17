@@ -89,13 +89,16 @@ console.log('[m4] setup checked');
 assert(setup.authoredWeaponSource === 'authored', `M4 did not load authored source: ${JSON.stringify(setup)}`);
 assert(setup.authoredM4Active === true, `M4 authored viewmodel inactive: ${JSON.stringify(setup)}`);
 assert(setup.authoredM4VisibleMeshes > 0, `M4 authored mesh not visible: ${JSON.stringify(setup)}`);
-assert(['authored', 'fallback-procedural'].includes(setup.authoredHandSource), `authored hands did not resolve: ${JSON.stringify(setup)}`);
+assert(['baked-weapon', 'authored', 'fallback-procedural'].includes(setup.authoredHandSource), `M4 hands did not resolve: ${JSON.stringify(setup)}`);
 if (setup.authoredHandSource === 'authored') {
   assert(setup.authoredHandVisibleMeshes > 0, `authored hand meshes not visible: ${JSON.stringify(setup)}`);
   assert(setup.authoredWristband?.configured, `authored wristband not configured: ${JSON.stringify(setup.authoredWristband)}`);
-  assert(setup.authoredWristband?.rootVisible, `authored wristband root not visible: ${JSON.stringify(setup.authoredWristband)}`);
-  assert(setup.authoredWristband?.screenVisible, `authored wristband screen not visible: ${JSON.stringify(setup.authoredWristband)}`);
-  assert(setup.authoredWristband?.idleRayVisible, `authored wristband idle ray not visible: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(!setup.authoredWristband?.rootVisible, `authored wristband should be hidden during clean M4 hold: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(!setup.authoredWristband?.screenVisible, `authored wristband screen should be hidden during clean M4 hold: ${JSON.stringify(setup.authoredWristband)}`);
+  assert(!setup.authoredWristband?.idleRayVisible, `authored wristband idle ray should be hidden during clean M4 hold: ${JSON.stringify(setup.authoredWristband)}`);
+} else if (setup.authoredHandSource === 'baked-weapon') {
+  assert(setup.m4BakedHandVisibleMeshes > 0, `baked M4 rifle-hold hands not visible: ${JSON.stringify(setup)}`);
+  assert(setup.authoredHandVisibleMeshes === 0, `shared hand rig should be hidden while baked M4 hands are active: ${JSON.stringify(setup)}`);
 } else {
   assert(setup.leftHandVisible && setup.rightHandVisible, `procedural hands fallback not visible: ${JSON.stringify(setup)}`);
 }
@@ -128,11 +131,13 @@ async function sampleWristHologram(kind, expectedClip, visibleKey, valueKey) {
   }
   assert(peak > 0.45, `${kind} hologram did not deploy enough: ${JSON.stringify(values)}`);
   assert(late >= early, `${kind} hologram did not progress smoothly: ${JSON.stringify(values)}`);
+  assert(final.authoredWristband?.rootVisible, `${kind} wristband root not visible during deploy: ${JSON.stringify(final.authoredWristband)}`);
   assert(final.authoredWristband?.[visibleKey], `${kind} hologram not visible at peak: ${JSON.stringify(final.authoredWristband)}`);
   await page.evaluate(({ kind }) => window.__game.debug.setWristbandHologram(kind, false), { kind });
   await page.waitForTimeout(800);
   const stowed = await page.evaluate(() => window.__game.debug.weaponVisualStatus());
   assert((stowed.authoredWristband?.deployValues?.[valueKey] ?? 1) < 0.15, `${kind} hologram did not stow smoothly: ${JSON.stringify(stowed.authoredWristband)}`);
+  assert(!stowed.authoredWristband?.rootVisible, `${kind} wristband root did not hide after stow: ${JSON.stringify(stowed.authoredWristband)}`);
   return { kind, values, final: final.authoredWristband, stowed: stowed.authoredWristband };
 }
 

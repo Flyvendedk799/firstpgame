@@ -132,6 +132,70 @@ def cylinder(name: str, loc, radius, depth, mat, col, parent=None, axis="Y", ver
     return obj
 
 
+def ellipsoid(name: str, loc, scale, mat, col, parent=None, rot=(0, 0, 0), segments=16, rings=8):
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=segments, ring_count=rings, radius=1, location=loc, rotation=rot)
+    obj = active_obj()
+    obj.name = name
+    obj.scale = scale
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    if mat:
+        obj.data.materials.append(mat)
+    obj.modifiers.new("weighted_normals", "WEIGHTED_NORMAL")
+    obj.parent = parent
+    move_to_collection(obj, col)
+    return obj
+
+
+def capsule(name: str, loc, radius, length, mat, col, parent=None, axis="Y", rot=(0, 0, 0), verts=14):
+    from mathutils import Euler, Vector
+
+    if axis == "Y":
+        base_rot = (rot[0] + math.radians(90), rot[1], rot[2])
+        direction = Vector((0, 1, 0))
+    elif axis == "X":
+        base_rot = (rot[0], rot[1] + math.radians(90), rot[2])
+        direction = Vector((1, 0, 0))
+    else:
+        base_rot = rot
+        direction = Vector((0, 0, 1))
+    direction.rotate(Euler(rot, "XYZ"))
+    end_vec = direction * (length * 0.5)
+    shaft = cylinder(f"{name}_shaft", loc, radius, length, mat, col, parent, "Z", verts)
+    shaft.rotation_euler = base_rot
+    bpy.context.view_layer.objects.active = shaft
+    shaft.select_set(True)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+    shaft.select_set(False)
+    ellipsoid(f"{name}_tip_a", (loc[0] - end_vec.x, loc[1] - end_vec.y, loc[2] - end_vec.z), (radius, radius, radius), mat, col, parent, segments=verts, rings=6)
+    ellipsoid(f"{name}_tip_b", (loc[0] + end_vec.x, loc[1] + end_vec.y, loc[2] + end_vec.z), (radius, radius, radius), mat, col, parent, segments=verts, rings=6)
+    return shaft
+
+
+def capsule_between(name: str, start, end, radius, mat, col, parent=None, verts=14):
+    from mathutils import Vector
+
+    a = Vector(start)
+    b = Vector(end)
+    direction = b - a
+    length = direction.length
+    if length <= 0:
+        return None
+    mid = (a + b) * 0.5
+    bpy.ops.mesh.primitive_cylinder_add(vertices=verts, radius=radius, depth=length, location=mid)
+    shaft = active_obj()
+    shaft.name = f"{name}_shaft"
+    shaft.rotation_euler = direction.to_track_quat("Z", "Y").to_euler()
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    if mat:
+        shaft.data.materials.append(mat)
+    shaft.modifiers.new("weighted_normals", "WEIGHTED_NORMAL")
+    shaft.parent = parent
+    move_to_collection(shaft, col)
+    ellipsoid(f"{name}_tip_a", a, (radius, radius, radius), mat, col, parent, segments=verts, rings=6)
+    ellipsoid(f"{name}_tip_b", b, (radius, radius, radius), mat, col, parent, segments=verts, rings=6)
+    return shaft
+
+
 def plane(name: str, loc, scale, mat, col, parent=None, rot=(0, 0, 0)):
     bpy.ops.mesh.primitive_plane_add(size=1, location=loc, rotation=rot)
     obj = active_obj()
@@ -213,29 +277,33 @@ def build_m4() -> None:
     polymer = material("M4_black_polymer", (0.008, 0.009, 0.010, 1), 0.86, 0.02)
     wear = material("M4_worn_edges", (0.45, 0.42, 0.34, 1), 0.52, 0.45)
     tan = material("M4_muted_tan", (0.46, 0.38, 0.25, 1), 0.78, 0)
+    vm_glove = material("M4_viewmodel_black_glove", (0.250, 0.260, 0.270, 1), 0.76, 0.0)
+    vm_sleeve = material("M4_viewmodel_sleeve_fabric", (0.070, 0.082, 0.094, 1), 0.88, 0.0)
+    vm_skin = material("M4_viewmodel_forearm_skin", (0.48, 0.31, 0.20, 1), 0.70, 0.0)
 
     # Author +Y forward in Blender. glTF export maps that to game-forward -Z.
-    cube("body", (0, 0.00, 0.26), (0.28, 1.25, 0.28), atlas, col, visual, bevel=0.02)
-    cube("upperReceiver", (0, -0.06, 0.47), (0.26, 1.05, 0.20), atlas, col, visual, bevel=0.02)
-    cube("lowerReceiver", (0, -0.10, 0.23), (0.29, 0.62, 0.30), metal, col, visual, bevel=0.02)
-    cube("handguard", (0, 0.73, 0.45), (0.34, 0.88, 0.25), atlas, col, visual, bevel=0.02)
-    cube("topRail", (0, 0.28, 0.64), (0.30, 1.85, 0.06), metal, col, visual, bevel=0.005)
+    cube("body", (0, 0.00, 0.27), (0.225, 1.18, 0.205), atlas, col, visual, bevel=0.026)
+    cube("upperReceiver", (0, -0.05, 0.455), (0.215, 1.03, 0.155), atlas, col, visual, bevel=0.022)
+    cube("lowerReceiver", (0, -0.12, 0.215), (0.235, 0.58, 0.240), metal, col, visual, bevel=0.022)
+    cube("handguard", (0, 0.74, 0.445), (0.255, 0.92, 0.170), atlas, col, visual, bevel=0.024)
+    cube("handguard_lower_shadow", (0, 0.72, 0.335), (0.205, 0.86, 0.045), polymer, col, visual, bevel=0.010)
+    cube("topRail", (0, 0.28, 0.615), (0.235, 1.82, 0.040), metal, col, visual, bevel=0.004)
     for i in range(15):
-        cube(f"railTooth_{i:02d}", (0, -0.48 + i * 0.13, 0.71), (0.35, 0.055, 0.075), metal if i % 4 else wear, col, visual, bevel=0.003)
+        cube(f"railTooth_{i:02d}", (0, -0.48 + i * 0.13, 0.670), (0.265, 0.044, 0.052), metal if i % 4 else wear, col, visual, bevel=0.003)
     for i in range(7):
         y = 0.35 + i * 0.12
-        cube(f"handguardRib_L_{i:02d}", (-0.205, y, 0.45), (0.035, 0.050, 0.22), polymer, col, visual, bevel=0.003)
-        cube(f"handguardRib_R_{i:02d}", (0.205, y, 0.45), (0.035, 0.050, 0.22), polymer, col, visual, bevel=0.003)
+        cube(f"handguardRib_L_{i:02d}", (-0.155, y, 0.435), (0.026, 0.046, 0.142), polymer, col, visual, bevel=0.003)
+        cube(f"handguardRib_R_{i:02d}", (0.155, y, 0.435), (0.026, 0.046, 0.142), polymer, col, visual, bevel=0.003)
 
-    cylinder("barrel", (0, 1.38, 0.45), 0.042, 1.06, metal, col, visual, "Y", 32)
-    cylinder("muzzleDevice", (0, 1.98, 0.45), 0.068, 0.20, wear, col, visual, "Y", 32)
-    cube("frontSight", (0, 1.18, 0.70), (0.22, 0.10, 0.25), metal, col, visual, bevel=0.01)
-    cube("rearSight", (0, -0.52, 0.72), (0.22, 0.12, 0.22), metal, col, visual, bevel=0.01)
-    charging = cube("chargingHandle", (0, -0.72, 0.56), (0.36, 0.075, 0.055), metal, col, visual, bevel=0.004)
-    mag = cube("mag", (0, -0.18, -0.22), (0.25, 0.34, 0.78), polymer, col, visual, rot=(math.radians(6), 0, 0), bevel=0.025)
-    cube("magwell", (0, -0.18, 0.03), (0.32, 0.30, 0.36), metal, col, visual, bevel=0.015)
-    cube("pistolGrip", (0, -0.52, -0.08), (0.23, 0.24, 0.65), polymer, col, visual, rot=(math.radians(-14), 0, 0), bevel=0.025)
-    cube("triggerGuard", (0, -0.42, 0.07), (0.28, 0.14, 0.075), metal, col, visual, bevel=0.006)
+    cylinder("barrel", (0, 1.38, 0.44), 0.031, 1.08, metal, col, visual, "Y", 32)
+    cylinder("muzzleDevice", (0, 1.99, 0.44), 0.050, 0.20, wear, col, visual, "Y", 32)
+    cube("frontSight", (0, 1.18, 0.650), (0.155, 0.080, 0.190), metal, col, visual, bevel=0.010)
+    cube("rearSight", (0, -0.52, 0.662), (0.160, 0.100, 0.145), metal, col, visual, bevel=0.010)
+    charging = cube("chargingHandle", (0, -0.72, 0.535), (0.275, 0.060, 0.042), metal, col, visual, bevel=0.004)
+    mag = cube("mag", (0, -0.18, -0.19), (0.185, 0.290, 0.660), polymer, col, visual, rot=(math.radians(6), 0, 0), bevel=0.024)
+    cube("magwell", (0, -0.18, 0.035), (0.250, 0.275, 0.280), metal, col, visual, bevel=0.015)
+    cube("pistolGrip", (0, -0.52, -0.065), (0.160, 0.190, 0.500), polymer, col, visual, rot=(math.radians(-14), 0, 0), bevel=0.026)
+    cube("triggerGuard", (0, -0.42, 0.075), (0.220, 0.115, 0.056), metal, col, visual, bevel=0.006)
     trigger = cube("trigger", (0, -0.48, 0.02), (0.05, 0.05, 0.17), wear, col, visual, bevel=0.004)
     cylinder("bufferTube", (0, -1.02, 0.36), 0.060, 0.62, metal, col, visual, "Y", 24)
     cube("stock", (0, -1.36, 0.28), (0.34, 0.50, 0.42), polymer, col, visual, bevel=0.03)
@@ -243,11 +311,36 @@ def build_m4() -> None:
     cube("opticMountGuide", (0, -0.08, 0.76), (0.24, 0.18, 0.05), metal, col, visual, bevel=0.005)
     cube("fictionalMarkingPlate", (-0.151, -0.18, 0.29), (0.012, 0.34, 0.09), wear, col, visual, bevel=0.002)
 
+    # Baked slot-1 rifle hold. These are part of the M4 viewmodel itself so
+    # weapon recoil and hand motion remain locked together in first person.
+    capsule_between("vm_left_forearm", (0.355, -0.265, -0.385), (0.205, 0.385, 0.155), 0.080, vm_skin, col, visual, 22)
+    capsule_between("vm_left_wrist_cuff", (0.205, 0.385, 0.155), (0.190, 0.490, 0.235), 0.052, vm_sleeve, col, visual, 20)
+    ellipsoid("vm_left_palm", (0.176, 0.555, 0.244), (0.145, 0.106, 0.080), vm_glove, col, visual, rot=(math.radians(-8), math.radians(7), math.radians(-12)), segments=22, rings=10)
+    ellipsoid("vm_left_palm_heel", (0.232, 0.475, 0.198), (0.095, 0.068, 0.056), vm_glove, col, visual, rot=(math.radians(-8), math.radians(4), math.radians(-10)), segments=18, rings=8)
+    cube("vm_left_knuckle_pad", (0.166, 0.575, 0.332), (0.182, 0.044, 0.030), vm_glove, col, visual, rot=(math.radians(-8), 0, math.radians(-6)), bevel=0.005)
+    for i, y in enumerate((0.455, 0.515, 0.575, 0.635)):
+        z = 0.324 - i * 0.004
+        capsule_between(f"vm_left_finger_{i}_wrap", (0.226, y, z), (0.040, y + 0.004, z + 0.008), 0.021, vm_glove, col, visual, 14)
+        capsule_between(f"vm_left_finger_{i}_curl", (0.040, y + 0.004, z + 0.008), (0.032, y + 0.016, z - 0.084), 0.018, vm_glove, col, visual, 14)
+        capsule_between(f"vm_left_finger_{i}_pad", (0.250, y + 0.001, z - 0.006), (0.216, y + 0.012, z - 0.086), 0.018, vm_glove, col, visual, 12)
+    capsule_between("vm_left_thumb", (0.268, 0.540, 0.222), (0.100, 0.720, 0.304), 0.022, vm_glove, col, visual, 14)
+
+    capsule("vm_right_forearm", (0.128, -0.920, -0.285), 0.036, 0.36, vm_sleeve, col, visual, "Y", (math.radians(13), 0, math.radians(-8)), 18)
+    capsule_between("vm_right_wrist_cuff", (0.124, -0.720, 0.030), (0.092, -0.604, 0.140), 0.036, vm_sleeve, col, visual, 18)
+    ellipsoid("vm_right_palm", (0.102, -0.515, 0.185), (0.104, 0.080, 0.066), vm_glove, col, visual, rot=(math.radians(10), math.radians(-7), math.radians(-12)), segments=22, rings=10)
+    ellipsoid("vm_right_palm_heel", (0.120, -0.575, 0.120), (0.072, 0.052, 0.044), vm_glove, col, visual, rot=(math.radians(7), math.radians(-4), math.radians(-10)), segments=18, rings=8)
+    cube("vm_right_knuckle_pad", (0.058, -0.470, 0.230), (0.120, 0.032, 0.024), vm_glove, col, visual, rot=(math.radians(6), math.radians(-5), math.radians(-8)), bevel=0.004)
+    for i, z in enumerate((0.215, 0.170, 0.125, 0.080)):
+        capsule_between(f"vm_right_finger_{i}_grip", (0.092, -0.476, z), (0.018, -0.548, z - 0.050), 0.014, vm_glove, col, visual, 14)
+        capsule_between(f"vm_right_finger_{i}_curl", (0.018, -0.548, z - 0.050), (0.058, -0.606, z - 0.094), 0.012, vm_glove, col, visual, 14)
+    capsule_between("vm_right_trigger_finger", (0.094, -0.426, 0.275), (0.004, -0.482, 0.252), 0.0125, vm_glove, col, visual, 14)
+    capsule_between("vm_right_thumb", (0.162, -0.570, 0.200), (0.078, -0.650, 0.132), 0.0135, vm_glove, col, visual, 14)
+
     socket_positions = {
         "muzzle": (0, 2.10, 0.45),
         "muzzleFlash": (0, 2.18, 0.45),
-        "gripRight": (0, -0.54, -0.06),
-        "gripLeft": (-0.20, 0.62, 0.24),
+        "gripRight": (0.070, -0.540, -0.060),
+        "gripLeft": (-0.135, 0.600, 0.390),
         "magazine": (0, -0.20, -0.20),
         "ejectionPort": (-0.17, -0.18, 0.51),
         "optic": (0, -0.08, 0.78),
@@ -468,25 +561,46 @@ def build_hands() -> None:
             node(f"{fname}_{side}_02", (xo, -0.052, 0.000), nodes[f"{fname}_{side}_01"])
             node(f"{fname}_{side}_03", (xo, -0.070, -0.004), nodes[f"{fname}_{side}_02"])
 
+    hand_visual_scale = 1.10
+    forearm_visual_scale = 1.02
+
+    def scaled_tuple(vals, s=hand_visual_scale):
+        return tuple(v * s for v in vals)
+
     def hand_mesh(prefix, wrist, palm, sx):
-        sleeve_loc = (0, 0.064, -0.010) if prefix == "right" else (-0.006, 0.058, 0.006)
-        sleeve_size = (0.078, 0.145, 0.076) if prefix == "right" else (0.088, 0.170, 0.088)
-        cube(f"{prefix}_sleeve", sleeve_loc, sleeve_size, fabric, col, wrist, bevel=0.018)
-        cube(f"{prefix}_palm_mesh", (0, 0, 0), (0.095, 0.085, 0.045), glove, col, palm, bevel=0.016)
-        cube(f"{prefix}_knuckle_pad", (0, -0.036, 0.028), (0.090, 0.020, 0.014), rubber, col, palm, bevel=0.005)
-        for i, x in enumerate((-0.030, -0.010, 0.010, 0.030)):
-            cube(f"{prefix}_finger_{i}", (x, -0.065, 0), (0.014, 0.062, 0.018), glove, col, palm, bevel=0.006)
-        cube(f"{prefix}_thumb_mesh", (0.047 * sx, -0.030, 0), (0.018, 0.052, 0.018), glove, col, palm, rot=(0, 0, math.radians(28 * sx)), bevel=0.006)
+        sleeve_loc = (0.002, 0.065, -0.016) if prefix == "right" else (-0.004, 0.058, 0.000)
+        sleeve_size = (0.070, 0.125, 0.060) if prefix == "right" else (0.076, 0.138, 0.066)
+        capsule(
+            f"{prefix}_sleeve",
+            scaled_tuple(sleeve_loc, forearm_visual_scale),
+            (0.022 if prefix == "right" else 0.024) * forearm_visual_scale,
+            (0.118 if prefix == "right" else 0.132) * forearm_visual_scale,
+            fabric,
+            col,
+            wrist,
+            "Y",
+            (math.radians(4), 0, math.radians(3 * sx)),
+            16,
+        )
+        ellipsoid(f"{prefix}_palm_mesh", (0, 0, 0), scaled_tuple((0.046, 0.042, 0.026)), glove, col, palm, rot=(0, 0, math.radians(4 * sx)), segments=16, rings=8)
+        ellipsoid(f"{prefix}_palm_heel", scaled_tuple((0.000, 0.020, -0.006)), scaled_tuple((0.038, 0.022, 0.021)), glove, col, palm, rot=(0, 0, math.radians(3 * sx)), segments=14, rings=6)
+        cube(f"{prefix}_knuckle_pad", scaled_tuple((0, -0.026, 0.020)), scaled_tuple((0.074, 0.011, 0.009)), rubber, col, palm, bevel=0.0025)
+        for i, x in enumerate((-0.027, -0.009, 0.009, 0.027)):
+            splay = (i - 1.5) * 4.0
+            curl = -10 if prefix == "right" else -16
+            capsule(f"{prefix}_finger_{i}_base", scaled_tuple((x, -0.030, 0.002)), 0.0062 * hand_visual_scale, 0.034 * hand_visual_scale, glove, col, palm, "Y", (math.radians(curl), 0, math.radians(splay)), 12)
+            capsule(f"{prefix}_finger_{i}_curl", scaled_tuple((x + sx * 0.003, -0.055, -0.004)), 0.0056 * hand_visual_scale, 0.028 * hand_visual_scale, glove, col, palm, "Y", (math.radians(-34 if prefix == "left" else -25), 0, math.radians(splay * 0.8)), 12)
+        capsule(f"{prefix}_thumb_mesh", scaled_tuple((0.032 * sx, -0.020, -0.002)), 0.0064 * hand_visual_scale, 0.038 * hand_visual_scale, glove, col, palm, "Y", (math.radians(-12), 0, math.radians(48 * sx)), 12)
 
     hand_mesh("right", rw, rp, 1)
     hand_mesh("left", lw, lp, -1)
 
     # Authored forearm mass. These stay narrow and low in the camera so the
     # weapon remains the first-read silhouette while still feeling like arms.
-    cylinder("right_forearm_sleeve_round", (0.0, 0.100, -0.008), 0.034, 0.16, fabric, col, rw, "Y", 24)
-    cylinder("left_forearm_sleeve_round", (-0.010, 0.090, 0.020), 0.042, 0.22, fabric, col, lw, "Y", 24)
-    cube("right_forearm_armor_plate", (0.0, 0.120, 0.030), (0.060, 0.064, 0.010), rubber, col, rw, bevel=0.006)
-    cube("left_forearm_armor_plate", (-0.010, 0.108, 0.064), (0.074, 0.082, 0.012), rubber, col, lw, bevel=0.006)
+    cylinder("right_forearm_sleeve_round", scaled_tuple((0.0, 0.104, -0.012), forearm_visual_scale), 0.018 * forearm_visual_scale, 0.108 * forearm_visual_scale, fabric, col, rw, "Y", 20)
+    cylinder("left_forearm_sleeve_round", scaled_tuple((-0.010, 0.092, 0.008), forearm_visual_scale), 0.020 * forearm_visual_scale, 0.118 * forearm_visual_scale, fabric, col, lw, "Y", 20)
+    cube("right_forearm_armor_plate", scaled_tuple((0.0, 0.124, 0.018), forearm_visual_scale), scaled_tuple((0.038, 0.034, 0.006), forearm_visual_scale), rubber, col, rw, bevel=0.002)
+    cube("left_forearm_armor_plate", scaled_tuple((-0.010, 0.110, 0.040), forearm_visual_scale), scaled_tuple((0.040, 0.038, 0.006), forearm_visual_scale), rubber, col, lw, bevel=0.002)
 
     # Always-on left wrist computer. Meshes are authored here; runtime swaps
     # the screen/panel materials to live CanvasTextures.

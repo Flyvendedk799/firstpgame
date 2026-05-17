@@ -25,6 +25,7 @@
     "test:sens:crosscheck": "node scripts/sens-gamingsmart-crosscheck.mjs",
     "audit:sequence-def": "node scripts/sequence-def-density-audit.mjs",
     "validate:campaign": "node scripts/validate-campaign.mjs",
+    "validate:room-flow": "node scripts/validate-room-flow.mjs",
     "validate:encounter-graph": "node scripts/validate-campaign.mjs",
     "validate:geometry": "node scripts/validate-level-geometry.mjs",
     "test:doorway:b01": "node scripts/b01-doorway-screenshot.mjs",

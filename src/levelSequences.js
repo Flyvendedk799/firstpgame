@@ -59,6 +59,11 @@ export function applySequenceLayout(ctx) {
   const def = SEQUENCE_DEFS[bn];
   if (!def) return;
 
+  if (bn === 1) {
+    applyB01DesignedDockLevel(ctx);
+    return;
+  }
+
   // Build the cell skeleton — partition walls + door frames around the doorway gaps.
   buildCellSkeleton(ctx);
 
@@ -294,6 +299,257 @@ function doorwayFrameX(ctx, z, gap0, gap1) {
   lin.position.set((gap0+gap1)/2, RH - 0.18, z); scene.add(lin); ob.push(lin);
   const thr = new THREE.Mesh(new THREE.BoxGeometry(gap1 - gap0, 0.04, 0.18), materials.trimM);
   thr.position.set((gap0+gap1)/2, WT + 0.012, z); scene.add(thr); ob.push(thr);
+}
+
+function tagB01Object(mesh, tag) {
+  if (!mesh || !tag) return mesh;
+  mesh.userData = mesh.userData || {};
+  if (tag.geometryId) mesh.userData.geometryId = tag.geometryId;
+  if (tag.roomId) mesh.userData.roomId = tag.roomId;
+  if (tag.floorplanRole) mesh.userData.floorplanRole = tag.floorplanRole;
+  if (tag.sightlineId) mesh.userData.sightlineId = tag.sightlineId;
+  if (tag.objectiveId) mesh.userData.objectiveId = tag.objectiveId;
+  return mesh;
+}
+
+function addB01BlockingBox(ctx, x, y, z, w, h, d, mat, tag, blocking = true) {
+  const m = ctx.helpers._addBox(x, y, z, w, h, d, mat, blocking);
+  if (!blocking) {
+    m.userData = m.userData || {};
+    m.userData.noBlock = true;
+  }
+  return tagB01Object(m, tag);
+}
+
+function addB01FloorPad(ctx, x, z, w, d, color, tag) {
+  const { THREE, dims } = ctx;
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72 });
+  return addB01BlockingBox(ctx, x, dims.WT + 0.024, z, w, 0.028, d, mat, tag, false);
+}
+
+function addB01Glass(ctx, x, z, w, h, rotY, tag) {
+  const { THREE, scene, ob, wl, dims } = ctx;
+  const { WT } = dims;
+  const mat = ctx.aaPhysicalGlass
+    ? ctx.aaPhysicalGlass({ color: 0x9fc7d8, transparent: true, opacity: 0.36, shininess: 160, specular: 0xffffff }, { transmission: 0.45, roughness: 0.18, thickness: 0.06, opacity: 0.72 })
+    : new THREE.MeshPhongMaterial({ color: 0x9fc7d8, transparent: true, opacity: 0.36, shininess: 160, specular: 0xffffff });
+  const pane = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.06), mat);
+  pane.position.set(x, WT + 1.15, z);
+  pane.rotation.y = rotY || 0;
+  pane.userData.glassPane = true;
+  pane.userData.breakable = true;
+  pane.userData.breakSound = 'glass';
+  tagB01Object(pane, tag);
+  scene.add(pane); ob.push(pane);
+  const c = Math.cos(rotY || 0), s = Math.sin(rotY || 0);
+  const ax = Math.abs(c) * w * 0.5 + Math.abs(s) * 0.08;
+  const az = Math.abs(s) * w * 0.5 + Math.abs(c) * 0.08;
+  const aabb = { x0: x - ax, x1: x + ax, z0: z - az, z1: z + az, isWindow: true, sillH: WT + 0.85 };
+  wl.push(aabb);
+  pane.userData.linkedAABB = aabb;
+  const frameMat = ctx.materials.postM || ctx.materials.dM;
+  addB01BlockingBox(ctx, x, WT + 2.25, z, w + 0.12, 0.10, 0.12, frameMat, tag, false).rotation.y = rotY || 0;
+  addB01BlockingBox(ctx, x, WT + 0.78, z, w + 0.12, 0.12, 0.16, frameMat, tag, false).rotation.y = rotY || 0;
+  return pane;
+}
+
+function applyB01DesignedDockLevel(ctx) {
+  const { THREE, materials, dims } = ctx;
+  const { WT } = dims;
+  const wall = materials.dM;
+  const trim = materials.trimM;
+  const post = materials.postM || materials.dM;
+  const crate = materials.crM;
+  const amber = new THREE.MeshLambertMaterial({ color: 0x5a3d22, emissive: 0x1a0900 });
+  const blueSteel = new THREE.MeshPhongMaterial({ color: 0x263340, shininess: 80, specular: 0x52606a });
+  const darkSteel = new THREE.MeshPhongMaterial({ color: 0x12161c, shininess: 95, specular: 0x46505a });
+  const hazard = new THREE.MeshBasicMaterial({ color: 0xffaa30 });
+  const red = new THREE.MeshLambertMaterial({ color: 0xb84020, emissive: 0x300804 });
+  const black = new THREE.MeshLambertMaterial({ color: 0x080a0c, emissive: 0x010203 });
+  const paintWhite = new THREE.MeshBasicMaterial({ color: 0xd8e0df, transparent: true, opacity: 0.8 });
+  const panelAmber = new THREE.MeshBasicMaterial({ color: 0xff9d2e, transparent: true, opacity: 0.88 });
+  const cyanPaint = new THREE.MeshBasicMaterial({ color: 0x5fe0ff, transparent: true, opacity: 0.58 });
+  const soot = new THREE.MeshBasicMaterial({ color: 0x060606, transparent: true, opacity: 0.24, depthWrite: false });
+
+  const wx = (z, x0, x1, id, roomId, role) =>
+    addWallSegmentX(ctx, z, x0, x1, 0.48, wall, { geometryId: id, roomId, floorplanRole: role || 'authored_wall' });
+  const wz = (x, z0, z1, id, roomId, role) =>
+    addWallSegmentZ(ctx, x, z0, z1, 0.48, wall, { geometryId: id, roomId, floorplanRole: role || 'authored_wall' });
+
+  // 01. Safe spawn vestibule: closed back, single readable throat.
+  wx(23.6, -4.4, 4.4, 'b01_entry_back_bulkhead', 'b01_entry_vestibule', 'room_shell');
+  wz(-4.4, 16.6, 23.6, 'b01_entry_left_bulkhead', 'b01_entry_vestibule', 'room_shell');
+  wz(4.4, 16.6, 23.6, 'b01_entry_right_bulkhead', 'b01_entry_vestibule', 'room_shell');
+  wx(16.6, -4.4, -1.35, 'dock_threshold_strip', 'dock_intake', 'threshold');
+  wx(16.6, 1.35, 4.4, 'b01_entry_threshold_return', 'b01_entry_vestibule', 'threshold');
+  doorwayFrameX(ctx, 16.6, -1.35, 1.35);
+  addB01FloorPad(ctx, 0, 18.0, 1.2, 3.2, 0xffaa30, { geometryId: 'b01_entry_route_stripe', roomId: 'b01_entry_vestibule', floorplanRole: 'route_language' });
+  addB01BlockingBox(ctx, -1.9, WT + 1.05, 23.32, 0.9, 1.3, 0.08, black, { geometryId: 'b01_story_manifest_clipboard', roomId: 'b01_entry_vestibule', floorplanRole: 'storytelling' }, false);
+  addB01BlockingBox(ctx, 0, WT + 2.75, 23.28, 2.5, 0.34, 0.06, hazard, { geometryId: 'b01_story_bay3_sign', roomId: 'b01_entry_vestibule', floorplanRole: 'storytelling' }, false);
+  addB01BlockingBox(ctx, 2.0, WT + 0.55, 21.5, 0.7, 1.1, 0.54, blueSteel, { geometryId: 'b01_entry_electrical_box', roomId: 'b01_entry_vestibule', floorplanRole: 'world_detail' });
+  addB01BlockingBox(ctx, 0, WT + 3.05, 16.34, 3.1, 0.34, 0.08, panelAmber, { geometryId: 'b01_entry_overhead_bay_warning', roomId: 'b01_entry_vestibule', floorplanRole: 'first_read_signage' }, false);
+  addB01BlockingBox(ctx, -3.95, WT + 1.7, 19.8, 0.08, 2.1, 4.6, darkSteel, { geometryId: 'b01_entry_left_service_riser', roomId: 'b01_entry_vestibule', floorplanRole: 'world_detail' }, false);
+  addB01BlockingBox(ctx, 3.95, WT + 1.7, 19.8, 0.08, 2.1, 4.6, darkSteel, { geometryId: 'b01_entry_right_service_riser', roomId: 'b01_entry_vestibule', floorplanRole: 'world_detail' }, false);
+  addB01BlockingBox(ctx, -2.75, WT + 0.12, 17.25, 1.45, 0.055, 0.28, cyanPaint, { geometryId: 'b01_spawn_left_floor_chip', roomId: 'b01_entry_vestibule', floorplanRole: 'floor_wear' }, false);
+  addB01BlockingBox(ctx, 2.9, WT + 0.12, 17.7, 1.2, 0.055, 0.24, cyanPaint, { geometryId: 'b01_spawn_right_floor_chip', roomId: 'b01_entry_vestibule', floorplanRole: 'floor_wear' }, false);
+
+  // 02. Intake peek: a deliberate first contact, not an open court.
+  wx(16.9, -7.8, -1.35, 'b01_intake_north_west', 'b01_intake_peek', 'room_shell');
+  wx(16.9, 1.35, 7.8, 'b01_intake_north_east', 'b01_intake_peek', 'room_shell');
+  wz(-7.8, 8.65, 16.9, 'b01_intake_west_shell', 'b01_intake_peek', 'room_shell');
+  wz(7.8, 8.65, 16.9, 'b01_intake_east_shell', 'b01_intake_peek', 'room_shell');
+  wx(8.65, -7.8, 3.92, 'intake_apron_divider', 'dock_intake', 'threshold');
+  wx(8.65, 6.08, 7.8, 'b01_intake_service_gate_return', 'b01_intake_peek', 'threshold');
+  doorwayFrameX(ctx, 8.65, 3.92, 6.08);
+  // Split around the lookout slit so the first contact is an actual sightline,
+  // not glass painted over an opaque collision wall.
+  wz(-1.35, 10.2, 13.32, 'b01_first_peek_blind', 'b01_intake_peek', 'peek_blind');
+  wz(-1.35, 14.78, 15.2, 'b01_first_peek_blind', 'b01_intake_peek', 'peek_blind');
+  addB01Glass(ctx, -1.35, 14.05, 1.25, 1.05, Math.PI / 2, { geometryId: 'b01_first_lookout_slit', roomId: 'b01_intake_peek', sightlineId: 'first_lookout_slit', floorplanRole: 'first_contact_preview' });
+  addB01BlockingBox(ctx, -1.08, WT + 1.65, 12.6, 0.08, 2.05, 4.25, darkSteel, { geometryId: 'b01_first_peek_blind_kickplate', roomId: 'b01_intake_peek', floorplanRole: 'readable_occluder_face' }, false);
+  addB01BlockingBox(ctx, -1.02, WT + 2.58, 12.5, 0.055, 0.16, 2.6, panelAmber, { geometryId: 'b01_first_peek_hazard_caption', roomId: 'b01_intake_peek', floorplanRole: 'first_contact_language' }, false);
+  addB01BlockingBox(ctx, -0.98, WT + 0.92, 11.7, 0.055, 0.95, 0.45, cyanPaint, { geometryId: 'b01_first_peek_old_route_paint', roomId: 'b01_intake_peek', floorplanRole: 'painted_history' }, false);
+  for (const x of [-5.6, -4.7, 4.6, 6.1]) {
+    addB01BlockingBox(ctx, x, dims.RH + WT - 0.72, 13.4, 0.055, 1.0, 0.055, black, { geometryId: `b01_intake_hanging_chain_${x}`, roomId: 'b01_intake_peek', floorplanRole: 'ceiling_detail' }, false);
+  }
+  addB01BlockingBox(ctx, -4.2, WT + 0.44, 14.6, 1.45, 0.88, 0.72, crate, { geometryId: 'b01_intake_player_cover', roomId: 'b01_intake_peek', floorplanRole: 'player_cover' });
+  addB01BlockingBox(ctx, -3.2, WT + 1.05, 11.0, 0.72, 2.1, 0.58, darkSteel, { geometryId: 'b01_intake_enemy_edge', roomId: 'b01_intake_peek', floorplanRole: 'enemy_peek_edge' });
+  addB01BlockingBox(ctx, 5.7, WT + 0.72, 14.0, 2.6, 1.44, 0.82, blueSteel, { geometryId: 'b01_intake_container_landmark', roomId: 'b01_intake_peek', floorplanRole: 'landmark_cover' });
+  for (const sx of [-1, 1]) {
+    addB01BlockingBox(ctx, sx * 6.9, WT + 2.15, 12.6, 0.07, 1.8, 0.9, soot, { geometryId: `b01_intake_grime_${sx}`, roomId: 'b01_intake_peek', floorplanRole: 'grime_story' }, false);
+  }
+
+  // 03. Service hall: short compression after first contact, with no equal-looking detours.
+  wz(2.25, 2.4, 9.1, 'west_service_run', 'west_service_connector', 'connector_wall');
+  wz(8.8, 2.4, 9.1, 'b01_service_east_wall', 'b01_service_hall', 'connector_wall');
+  wx(9.1, 2.25, 3.95, 'b01_service_north_west_return', 'b01_service_hall', 'connector_wall');
+  wx(9.1, 6.05, 8.8, 'b01_service_north_east_return', 'b01_service_hall', 'connector_wall');
+  wx(2.4, 2.25, 3.95, 'b01_service_to_relay_return_w', 'b01_service_hall', 'threshold');
+  wx(2.4, 6.05, 8.8, 'b01_service_to_relay_return_e', 'b01_service_hall', 'threshold');
+  doorwayFrameX(ctx, 2.4, 3.95, 6.05);
+  wz(5.9, 4.4, 8.0, 'b01_service_s_bend_occluder', 'b01_service_hall', 'sightline_blocker');
+  addB01BlockingBox(ctx, 3.4, WT + 0.42, 5.6, 1.25, 0.84, 0.72, blueSteel, { geometryId: 'b01_service_hall_cover', roomId: 'b01_service_hall', floorplanRole: 'recovery_cover' });
+  addB01FloorPad(ctx, 5.0, 5.4, 0.7, 4.5, 0x30485a, { geometryId: 'b01_service_route_strip', roomId: 'b01_service_hall', floorplanRole: 'route_language' });
+  for (const z of [3.2, 5.4, 7.6]) {
+    addB01BlockingBox(ctx, 8.52, WT + 2.2, z, 0.06, 0.08, 1.6, hazard, { geometryId: `b01_service_pipe_label_${z}`, roomId: 'b01_service_hall', floorplanRole: 'route_language' }, false);
+  }
+  addB01BlockingBox(ctx, 2.54, WT + 2.75, 5.8, 0.08, 0.16, 4.8, darkSteel, { geometryId: 'b01_service_overhead_cable_tray', roomId: 'b01_service_hall', floorplanRole: 'world_detail' }, false);
+
+  // 04. Relay approach: central threshold with west objective read and east flank door.
+  wx(4.8, -7.4, 3.95, 'b01_relay_north_west', 'b01_relay_approach', 'room_shell');
+  wx(4.8, 6.05, 7.4, 'b01_relay_north_east', 'b01_relay_approach', 'room_shell');
+  wx(-2.4, -7.4, 7.4, 'b01_relay_south_wall', 'b01_relay_approach', 'room_shell');
+  wz(-7.4, -2.4, -1.35, 'b01_relay_alarm_gate_return_s', 'b01_relay_approach', 'threshold');
+  wz(-7.4, 1.35, 4.8, 'b01_relay_alarm_gate_return_n', 'b01_relay_approach', 'threshold');
+  wz(7.4, -2.4, -1.35, 'b01_relay_drum_gate_return_s', 'b01_relay_approach', 'threshold');
+  wz(7.4, 1.35, 4.8, 'b01_relay_drum_gate_return_n', 'b01_relay_approach', 'threshold');
+  doorwayFrameZ(ctx, -7.4, -1.35, 1.35);
+  doorwayFrameZ(ctx, 7.4, -1.35, 1.35);
+  wz(-2.2, -1.5, 2.7, 'mid_spine_pinch', 'mid_lane_center', 'connector');
+  addB01BlockingBox(ctx, -0.6, WT + 0.48, 2.1, 1.35, 0.96, 0.76, crate, { geometryId: 'b01_relay_player_answer_cover', roomId: 'b01_relay_approach', floorplanRole: 'player_cover' });
+  addB01BlockingBox(ctx, 2.6, WT + 0.05, 1.1, 2.8, 0.035, 0.38, paintWhite, { geometryId: 'b01_relay_floor_arrow', roomId: 'b01_relay_approach', floorplanRole: 'route_language' }, false);
+  addB01BlockingBox(ctx, -4.8, WT + 2.45, 4.52, 1.8, 0.34, 0.06, hazard, { geometryId: 'b01_relay_warning_sign', roomId: 'b01_relay_approach', floorplanRole: 'storytelling' }, false);
+
+  // 05. Alarm relay office: objective room with an offset entry and desk anchor.
+  wx(5.2, -18.0, -7.4, 'relay_partition_north', 'alarm_relay_room', 'room_shell');
+  wx(-6.2, -18.0, -7.4, 'b01_alarm_south_wall', 'alarm_relay_room', 'room_shell');
+  wz(-18.0, -6.2, 5.2, 'relay_partition_west', 'alarm_relay_room', 'room_shell');
+  wz(-7.4, -6.2, -1.35, 'relay_offset_door', 'alarm_relay_room', 'threshold');
+  wz(-7.4, 1.35, 5.2, 'b01_alarm_east_return', 'alarm_relay_room', 'threshold');
+  addB01Glass(ctx, -10.1, 5.2, 2.7, 1.05, 0, { geometryId: 'manifest_office_window', roomId: 'alarm_relay_room', sightlineId: 'office_to_mid_floor', floorplanRole: 'objective_preview' });
+  addB01Glass(ctx, -7.4, 2.9, 1.45, 0.85, Math.PI / 2, { geometryId: 'relay_side_slit', roomId: 'alarm_relay_room', sightlineId: 'relay_peek_me', floorplanRole: 'side_slit' });
+  addB01BlockingBox(ctx, -14.2, WT + 0.55, 0.9, 2.4, 1.1, 0.86, amber, { geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', objectiveId: 'alarm_panel', floorplanRole: 'objective_anchor' });
+  addB01BlockingBox(ctx, -12.3, WT + 0.48, -2.2, 1.45, 0.96, 0.82, blueSteel, { geometryId: 'b01_alarm_player_cover', roomId: 'alarm_relay_room', floorplanRole: 'player_cover' });
+  addB01FloorPad(ctx, -14.2, 1.0, 2.0, 1.25, 0x40ffc8, { geometryId: 'alarm_interact_lane', roomId: 'alarm_relay_room', objectiveId: 'alarm_panel', floorplanRole: 'objective_lane' });
+  addB01FloorPad(ctx, -10.0, -0.1, 2.4, 0.35, 0xffaa30, { geometryId: 'b01_alarm_exit_read', roomId: 'alarm_relay_room', floorplanRole: 'exit_reveal' });
+  addB01BlockingBox(ctx, -17.55, WT + 2.25, 2.4, 0.08, 1.0, 2.2, black, { geometryId: 'b01_alarm_server_rack_west', roomId: 'alarm_relay_room', floorplanRole: 'world_detail' });
+  addB01BlockingBox(ctx, -15.2, WT + 1.9, 5.0, 2.4, 0.12, 0.12, hazard, { geometryId: 'b01_alarm_cable_over_console', roomId: 'alarm_relay_room', floorplanRole: 'objective_language' }, false);
+
+  // 06. Drum flank: pressure room opens after the relay; it reconnects to the final threshold.
+  wz(18.0, -6.4, 4.8, 'b01_drum_east_bulkhead', 'b01_drum_flank', 'room_shell');
+  wx(4.8, 7.4, 18.0, 'b01_drum_north_wall', 'b01_drum_flank', 'room_shell');
+  wx(-6.4, -7.4, -6.05, 'b01_drum_to_cage_return_w', 'b01_drum_flank', 'threshold');
+  wx(-6.4, -3.95, 18.0, 'b01_drum_to_cage_return_e', 'b01_drum_flank', 'threshold');
+  doorwayFrameX(ctx, -6.4, -6.05, -3.95);
+  wz(10.5, -5.5, 2.8, 'east_compression_corridor', 'east_flank_connector', 'connector');
+  wz(13.4, -4.7, 3.2, 'b01_east_return_loop', 'b01_drum_flank', 'return_loop');
+  addB01BlockingBox(ctx, 14.1, WT + 0.45, -2.5, 1.1, 0.9, 1.1, red, { geometryId: 'b01_drum_spool_cover', roomId: 'b01_drum_flank', floorplanRole: 'enemy_cover' });
+  addB01BlockingBox(ctx, 11.6, WT + 0.44, 1.7, 1.3, 0.88, 0.78, crate, { geometryId: 'b01_drum_player_cover', roomId: 'b01_drum_flank', floorplanRole: 'player_cover' });
+  addB01Glass(ctx, 7.4, -3.7, 1.9, 0.9, Math.PI / 2, { geometryId: 'b01_relay_preread_glass', roomId: 'b01_drum_flank', sightlineId: 'relay_pre_read', floorplanRole: 'final_preview' });
+  for (const z of [-4.1, -2.5, -0.9]) {
+    addB01BlockingBox(ctx, 16.6, WT + 0.38, z, 0.6, 0.76, 0.6, red, { geometryId: `b01_drum_stack_${z}`, roomId: 'b01_drum_flank', floorplanRole: 'world_detail' });
+  }
+  addB01BlockingBox(ctx, 17.65, WT + 2.2, 0.2, 0.08, 1.8, 4.4, soot, { geometryId: 'b01_drum_burn_shadow', roomId: 'b01_drum_flank', floorplanRole: 'storytelling' }, false);
+
+  // 07. Cage vestibule: quiet anticipation before the signature room.
+  wz(-7.4, -13.2, -6.4, 'b01_cage_vest_west_wall', 'b01_cage_vestibule', 'room_shell');
+  wz(0.8, -13.2, -6.4, 'b01_cage_vest_east_wall', 'b01_cage_vestibule', 'room_shell');
+  wx(-13.2, -7.4, -1.1, 'cage_vestibule', 'relay_cage', 'threshold');
+  wx(-13.2, 1.1, 0.8, 'b01_cage_vestibule_return', 'b01_cage_vestibule', 'threshold');
+  addB01Glass(ctx, -2.4, -13.2, 2.3, 0.95, 0, { geometryId: 'b01_cage_signature_gate', roomId: 'relay_cage', sightlineId: 'cage_signature_preview', floorplanRole: 'signature_gate' });
+  addB01FloorPad(ctx, -5.0, -9.6, 0.72, 4.2, 0xffaa30, { geometryId: 'b01_cage_route_stripe', roomId: 'b01_cage_vestibule', floorplanRole: 'route_language' });
+  for (const x of [-6.6, -4.8, -3.0, -1.2]) {
+    addB01BlockingBox(ctx, x, WT + 1.45, -12.98, 0.08, 2.1, 0.08, darkSteel, { geometryId: `b01_cage_preview_bar_${x}`, roomId: 'b01_cage_vestibule', floorplanRole: 'preview_bars' }, false);
+  }
+
+  // 08. Relay cage: wider final fight with rails, center landmark, and a back-lit exit.
+  wx(-13.0, -9.2, -1.1, 'b01_cage_north_west', 'b01_relay_cage', 'room_shell');
+  wx(-13.0, 1.1, 9.2, 'b01_cage_north_east', 'b01_relay_cage', 'room_shell');
+  wz(-9.2, -25.4, -13.0, 'b01_cage_west_wall', 'b01_relay_cage', 'room_shell');
+  wz(9.2, -25.4, -19.05, 'b01_cage_east_wall_south', 'b01_relay_cage', 'room_shell');
+  wz(9.2, -15.95, -13.0, 'b01_cage_east_wall_north', 'b01_relay_cage', 'room_shell');
+  doorwayFrameZ(ctx, 9.2, -19.05, -15.95);
+  wx(-25.4, -9.2, -1.35, 'b01_cage_back_west', 'b01_relay_cage', 'room_shell');
+  wx(-25.4, 1.35, 9.2, 'b01_cage_back_east', 'b01_relay_cage', 'room_shell');
+  doorwayFrameX(ctx, -25.4, -1.35, 1.35);
+  addB01BlockingBox(ctx, -3.6, WT + 0.52, -17.0, 1.4, 1.04, 0.82, darkSteel, { geometryId: 'b01_cage_pillar_west', roomId: 'b01_relay_cage', floorplanRole: 'cover_landmark' });
+  addB01BlockingBox(ctx, 3.6, WT + 0.52, -17.0, 1.4, 1.04, 0.82, darkSteel, { geometryId: 'b01_cage_pillar_east', roomId: 'b01_relay_cage', floorplanRole: 'cover_landmark' });
+  addB01BlockingBox(ctx, 0, WT + 0.50, -20.4, 2.1, 1.0, 0.92, amber, { geometryId: 'b01_cage_center_low', roomId: 'b01_relay_cage', floorplanRole: 'boss_cover' });
+  addB01FloorPad(ctx, 0, -23.2, 4.4, 1.2, 0xff7a30, { geometryId: 'b01_exit_read_pad', roomId: 'b01_relay_cage', floorplanRole: 'exit_reveal' });
+  for (const x of [-8.75, 8.75]) {
+    const railZs = x > 0 ? [-23.2, -21.0, -14.4] : [-23.2, -21.0, -18.8, -16.6, -14.4];
+    for (const z of railZs) {
+      addB01BlockingBox(ctx, x, WT + 1.85, z, 0.08, 2.9, 0.08, darkSteel, { geometryId: `b01_cage_rail_${x}_${z}`, roomId: 'b01_relay_cage', floorplanRole: 'cage_bars' }, false);
+    }
+  }
+  addB01BlockingBox(ctx, 0, WT + 2.9, -25.15, 2.2, 0.34, 0.06, hazard, { geometryId: 'b01_exit_overhead_sign', roomId: 'b01_relay_cage', floorplanRole: 'exit_reveal' }, false);
+
+  // 09. Foreman/catwalk overlook: reachable side perch for the final-room sniper.
+  wx(-12.8, 11.4, 17.8, 'foreman_cage_wall', 'foreman_cage', 'threshold');
+  wz(11.4, -22.0, -19.05, 'foreman_cage_return_south', 'foreman_cage', 'overlook_return');
+  wz(11.4, -15.95, -12.8, 'foreman_cage_return_north', 'foreman_cage', 'overlook_return');
+  doorwayFrameZ(ctx, 11.4, -19.05, -15.95);
+  addB01BlockingBox(ctx, 17.8, WT + 0.62, -17.4, 0.42, 1.24, 9.2, darkSteel, { geometryId: 'b01_foreman_overlook_east_rail', roomId: 'b01_relay_cage', floorplanRole: 'overlook_boundary' });
+  addB01BlockingBox(ctx, 14.6, WT + 0.62, -22.0, 6.4, 1.24, 0.42, darkSteel, { geometryId: 'b01_foreman_overlook_south_rail', roomId: 'b01_relay_cage', floorplanRole: 'overlook_boundary' });
+  addB01FloorPad(ctx, 10.3, -17.5, 1.6, 2.75, 0xffaa30, { geometryId: 'b01_foreman_overlook_access_strip', roomId: 'b01_relay_cage', floorplanRole: 'overlook_connector' });
+  addB01FloorPad(ctx, 14.2, -17.3, 3.4, 2.8, 0x30485a, { geometryId: 'b01_foreman_overlook_floor_zone', roomId: 'b01_relay_cage', floorplanRole: 'overlook_combat_pocket' });
+  addB01Glass(ctx, 12.2, -12.8, 2.6, 1.1, 0, { geometryId: 'foreman_glass', roomId: 'foreman_cage', sightlineId: 'foreman_to_relay_cage', floorplanRole: 'sightline' });
+  addB01Glass(ctx, 15.5, -15.7, 3.0, 1.0, Math.PI / 2, { geometryId: 'catwalk_to_cage_window', roomId: 'foreman_cage', sightlineId: 'catwalk_over_bc', floorplanRole: 'overwatch_window' });
+  addB01BlockingBox(ctx, 13.6, WT + 0.48, -17.2, 1.6, 0.96, 0.75, blueSteel, { geometryId: 'b01_foreman_desk_rail', roomId: 'b01_relay_cage', floorplanRole: 'overwatch_cover' });
+  addB01BlockingBox(ctx, 17.55, WT + 2.7, -17.5, 0.08, 0.34, 2.6, hazard, { geometryId: 'b01_foreman_office_sign', roomId: 'foreman_cage', floorplanRole: 'storytelling' }, false);
+
+  // Door hierarchy and route language: primary route is amber, side reads are blue.
+  for (const [x, z, w, d] of [
+    [0, 16.4, 2.4, 0.18],
+    [5, 8.4, 2.2, 0.18],
+    [5, 2.15, 2.2, 0.18],
+    [-7.55, 0, 0.18, 2.5],
+    [7.55, 0, 0.18, 2.5],
+    [-5, -6.65, 2.2, 0.18],
+    [0, -13.05, 2.2, 0.18],
+    [10.3, -17.5, 0.18, 2.75],
+    [0, -25.15, 2.5, 0.18],
+  ]) {
+    addB01BlockingBox(ctx, x, WT + 0.08, z, w, 0.06, d, hazard, { roomId: 'b01_route_language', floorplanRole: 'threshold_hierarchy' }, false);
+  }
+
+  pushFakeAccent(ctx, 0, 3.7, 18.2, 0xffaa30, 1.5, { b01Designed: true, room: 'entry' });
+  pushFakeAccent(ctx, -14.2, 3.2, 1.0, 0x40ffc8, 1.65, { b01Designed: true, room: 'alarm' });
+  pushFakeAccent(ctx, 13.6, 3.2, -2.2, 0xff5040, 1.35, { b01Designed: true, room: 'drum' });
+  pushFakeAccent(ctx, 0, 3.5, -20.4, 0xff7a30, 1.85, { b01Designed: true, room: 'cage' });
+  for (const z of [18.2, 12.8, 5.8, 0.8, -3.2, -10.0, -18.6, -23.4]) {
+    addB01BlockingBox(ctx, 0, dims.RH + WT - 0.16, z, 5.8, 0.10, 0.12, darkSteel, { geometryId: `b01_overhead_beam_${z}`, roomId: 'b01_loading_dock', floorplanRole: 'ceiling_structure' }, false);
+  }
 }
 
 // ── PLACARD ────────────────────────────────────────────────────────────────
@@ -3222,6 +3478,21 @@ export const ROUTE_COMPLETION_ELEMENTS_BY_BN = {
 const EXTRA_ELEMENTS = {
   // ── 1: LOADING DOCK — B01 floorplan: intake lanes, service run, relay cage reads
   1: [
+    // Room-flow rebuild — spawn vestibule and first peek threshold.
+    { t: 'divider', x: 0, z: 16.55, len: 9.2, rotY: 0, gap: 2.35, gapPos: 0,
+      roomId: 'b01_entry_vestibule', floorplanRole: 'flow_entry_threshold', geometryId: 'b01_entry_vestibule_threshold' },
+    { t: 'divider', x: -4.85, z: 18.6, len: 4.6, rotY: Math.PI / 2, gap: 0,
+      roomId: 'b01_entry_vestibule', floorplanRole: 'spawn_occluder', geometryId: 'b01_entry_west_blind' },
+    { t: 'divider', x: 4.85, z: 18.6, len: 4.6, rotY: Math.PI / 2, gap: 0,
+      roomId: 'b01_entry_vestibule', floorplanRole: 'spawn_occluder', geometryId: 'b01_entry_east_blind' },
+    { t: 'divider', x: 2.15, z: 12.9, len: 4.8, rotY: Math.PI / 2, gap: 0,
+      roomId: 'b01_intake_peek', floorplanRole: 'peek_blind', geometryId: 'b01_intake_peek_blind' },
+    { t: 'window', x: 3.1, z: 14.2, len: 1.25, rotY: Math.PI / 2, sill: 1.05, head: 2.05, frameCol: 0x1a1a20,
+      roomId: 'b01_intake_peek', sightlineId: 'b01_first_lookout_slit', floorplanRole: 'first_contact_preview', geometryId: 'b01_first_lookout_slit' },
+    { t: 'divider', x: 6.55, z: 11.7, len: 5.2, rotY: Math.PI / 2, gap: 1.4, gapPos: -1.55,
+      roomId: 'b01_intake_peek', floorplanRole: 'route_turn', geometryId: 'b01_intake_gate_turn' },
+    { t: 'divider', x: -5.2, z: 11.4, len: 4.6, rotY: Math.PI / 2, gap: 0,
+      roomId: 'b01_intake_peek', floorplanRole: 'spawn_sightline_cut', geometryId: 'b01_intake_west_sightline_cut' },
     // Dock intake — readable threshold before the open court compresses
     { t: 'divider', x: 0, z: 20.2, len: 11.5, rotY: 0, gap: 2.0, gapPos: 3.8,
       roomId: 'dock_intake', floorplanRole: 'threshold', geometryId: 'dock_threshold_strip' },
