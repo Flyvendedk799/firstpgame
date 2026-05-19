@@ -72,11 +72,11 @@ console.log('spawn result:', spawnResult);
 await page.waitForTimeout(2500);
 await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '06-after-spawn.png') });
 
-// Switch to Deagle (key 2)
-console.log('pressing 2 for Deagle...');
-await page.keyboard.press('Digit2');
+// Switch to USP-T (key 1 after M4 removal)
+console.log('pressing 1 for USP-T...');
+await page.keyboard.press('Digit1');
 await page.waitForTimeout(1500);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '07-deagle.png') });
+await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '07-usp.png') });
 
 // Summary
 const errors = consoleEvents.filter(e => e.type === 'error' || e.type === 'pageerror');

@@ -11,7 +11,7 @@ import {
 } from './reloadTimelines.js';
 import { describeGripForDebug, blendFingerCurl, weaponTypeFromIdx } from './viewmodelHandRig.js';
 
-export const PLAYER_ANIM_SCHEMA_VERSION = 1;
+export const PLAYER_ANIM_SCHEMA_VERSION = 3;
 
 function dampL(current, target, lambda, dt) {
   const d = Math.max(0, dt || 0);
@@ -56,6 +56,12 @@ export function createPlayerAnimState(opts) {
       footPhase: 0,
       turnInertia: 0,
       landEnv: 0,
+      airEnv: 0,
+      jumpEnv: 0,
+      fallEnv: 0,
+      apexEnv: 0,
+      wallJumpEnv: 0,
+      wallJumpSide: 0,
       slideEnv: 0,
       crouchEnv: 0,
       strafeLean: 0,
@@ -64,7 +70,7 @@ export function createPlayerAnimState(opts) {
       prevVy: null
     },
     layerWeights: {
-      locomotion: { idle: 1, walk: 0, sprint: 0, crouch: 0, slide: 0, jump: 0, fall: 0, land: 0 },
+      locomotion: { idle: 1, walk: 0, sprint: 0, crouch: 0, slide: 0, jump: 0, fall: 0, land: 0, wallJump: 0 },
       weaponPose: { hip: 1, ads: 0, sprintLow: 0, reload: 0, fire: 0, inspect: 0, swap: 0 },
       interaction: { vault: 0, quickThrow: 0, pistolWhip: 0, execution: 0, grenadeThrow: 0 },
       additive: { damageFlinch: 0, suppression: 0, breath: 0, focus: 0, lean: 0, landing: 0 },
@@ -83,6 +89,9 @@ export function createPlayerAnimState(opts) {
         turnLagRoll: 0,
         landDip: 0,
         landRebound: 0,
+        airFloat: 0,
+        wallKickPitch: 0,
+        wallKickRoll: 0,
         slideDrop: 0,
         slideRoll: 0,
         slideForwardPitch: 0
@@ -95,14 +104,32 @@ export function createPlayerAnimState(opts) {
         slideTuck: 0,
         crouchTuck: 0,
         landWrist: 0,
+        airLift: 0,
+        fallDrop: 0,
+        apexFloat: 0,
+        landPunch: 0,
+        runStepX: 0,
+        runStepY: 0,
+        runStepRoll: 0,
+        runStepPitch: 0,
+        wallKickX: 0,
+        wallKickY: 0,
+        wallKickZ: 0,
+        wallKickPitch: 0,
+        wallKickRoll: 0,
         fingerCurl: 0
       },
       proxy: {
         leanSh: 0,
         adsSh: 0,
         vaultBend: 0,
+        wallBrace: 0,
         flinchTwist: 0,
         footSwing: 0,
+        armSwing: 0,
+        jumpPose: 0,
+        fallPose: 0,
+        landSquash: 0,
         deathCollapse: 0
       }
     },
@@ -120,7 +147,7 @@ export function createPlayerAnimState(opts) {
     },
     lastShotVisual: null,
     notifyRing: createNotifyRing(),
-    flags: { slideWas: false, landKickWas: 0, frameSeq: 0 },
+    flags: { slideWas: false, wallJumpWas: false, landKickWas: 0, frameSeq: 0 },
     eventsConsumed: []
   };
 }
@@ -165,11 +192,33 @@ export function updatePlayerAnimInputs(state, ctx) {
   state.smoothed.accel = dampL(state.smoothed.accel, Math.min(18, accel), 6, dtCl);
   const stride = (P.running ? 5.8 : 3.2) * speed * dtCl;
   state.smoothed.footPhase = (state.smoothed.footPhase + stride) % 62.83;
-  state.smoothed.turnInertia = dampL(state.smoothed.turnInertia, yawDelta * 0.0012, 8, dtCl);
+  state.smoothed.turnInertia = dampL(state.smoothed.turnInertia, yawDelta * 0.008, 9, dtCl);
   const stx = (K.KeyA ? -1 : 0) + (K.KeyD ? 1 : 0);
-  state.smoothed.strafeLean = dampL(state.smoothed.strafeLean, stx * (1 - Math.abs(P.ads || 0)) * 0.08, 5, dtCl);
+  state.smoothed.strafeLean = dampL(state.smoothed.strafeLean, stx * (1 - Math.abs(P.ads || 0)) * 0.11, 6, dtCl);
   const landKick = P.landKick || 0;
   state.smoothed.landEnv = dampL(state.smoothed.landEnv, landKick, 12, dtCl);
+  state.smoothed.airEnv = dampFn(state.smoothed.airEnv, grounded ? 0 : 1, grounded ? 10 : 7, dtCl);
+  const jumpIntent = !grounded && vy > 0.45 ? 1 : 0;
+  const fallIntent = !grounded && vy < -0.35 ? 1 : 0;
+  const apexIntent = !grounded && Math.abs(vy) <= 1.2 ? 1 : 0;
+  state.smoothed.jumpEnv = dampFn(state.smoothed.jumpEnv, jumpIntent, jumpIntent ? 13 : 9, dtCl);
+  state.smoothed.fallEnv = dampFn(state.smoothed.fallEnv, fallIntent, fallIntent ? 10 : 12, dtCl);
+  state.smoothed.apexEnv = dampFn(state.smoothed.apexEnv, apexIntent, apexIntent ? 8 : 10, dtCl);
+  const wallJumpDur = Math.max(0.001, P.wallJumpDur || 0.24);
+  const wallJump = P.wallJumpTimer > 0 ? Math.max(0, Math.min(1, P.wallJumpTimer / wallJumpDur)) : 0;
+  const wallJumpSide = Number.isFinite(P.wallJumpSide) ? P.wallJumpSide : 0;
+  state.smoothed.wallJumpEnv = dampFn(
+    state.smoothed.wallJumpEnv,
+    wallJump,
+    wallJump > state.smoothed.wallJumpEnv ? 22 : 8,
+    dtCl
+  );
+  state.smoothed.wallJumpSide = dampFn(
+    state.smoothed.wallJumpSide,
+    wallJump > 0.02 ? wallJumpSide : 0,
+    wallJump > 0.02 ? 18 : 7,
+    dtCl
+  );
   const slideAmt = P.slideAmt || 0;
   state.smoothed.slideEnv = dampFn(state.smoothed.slideEnv, P.sliding || slideAmt > 0.12 ? 1 : 0, 9, dtCl);
   const crouchAmt = P.crouchAmt || 0;
@@ -183,6 +232,12 @@ export function updatePlayerAnimInputs(state, ctx) {
     ads: P.adsVis != null ? P.adsVis : P.ads,
     reloading: !!P.reloading,
     vaulting: !!P.vaulting,
+    vaultT: P.vaultT || 0,
+    vaultDir: P.vaultDir || 'forward',
+    wallJump,
+    wallJumpImpact: P.wallJumpImpact || 0,
+    wallJumpSide,
+    wallContact: !!P.wallContact,
     sprintAmt: P.sprintAmt || 0,
     slideAmt,
     crouchAmt,
@@ -206,6 +261,14 @@ export function updatePlayerAnimInputs(state, ctx) {
     emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'slideExit', { slot: state.slot });
   }
   state.flags.slideWas = slideOn;
+  const wallJumpOn = wallJump > 0.05;
+  if (wallJumpOn && !state.flags.wallJumpWas) {
+    emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'wallJump', {
+      slot: state.slot,
+      side: wallJumpSide
+    });
+  }
+  state.flags.wallJumpWas = wallJumpOn;
   if (landKick > (state.flags.landKickWas || 0) + 0.02) {
     emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), landKick > 0.12 ? 'landHeavy' : 'landLight', { slot: state.slot });
   }
@@ -234,14 +297,17 @@ export function resolvePlayerAnimLayers(state, dt) {
     loc.jump = 0;
     loc.fall = 0;
     loc.land = 0;
+    loc.wallJump = 0;
   } else {
+    const wallJumpW = Math.min(1, sm.wallJumpEnv * 1.15);
     loc.idle = 1 - Math.min(1, inp.speed * 1.2);
     loc.walk = inp.moving && !inp.reloading ? Math.min(1, inp.speed) * (1 - inp.sprintAmt) * (1 - inp.slideAmt) : 0;
     loc.sprint = inp.sprintAmt * (1 - inp.slideAmt) * (1 - inp.ads * 0.9);
     loc.crouch = inp.crouchAmt * (1 - inp.slideAmt);
     loc.slide = inp.slideAmt;
-    loc.jump = !inp.grounded && inp.vy > 0.2 ? 1 : 0;
-    loc.fall = !inp.grounded && inp.vy <= 0.2 ? 1 : 0;
+    loc.wallJump = wallJumpW;
+    loc.jump = (!inp.grounded && inp.vy > 0.2 ? 1 : 0) * (1 - wallJumpW * 0.55);
+    loc.fall = (!inp.grounded && inp.vy <= 0.2 ? 1 : 0) * (1 - wallJumpW * 0.4);
     loc.land = sm.landEnv > 0.02 ? Math.min(1, sm.landEnv * 4) : 0;
   }
   const wp = state.layerWeights.weaponPose;
@@ -266,35 +332,67 @@ export function resolvePlayerAnimLayers(state, dt) {
   ad.lean = Math.abs(inp.lean || 0);
   ad.landing = loc.land;
   const cam = state.resolved.camera;
-  const bobW = loc.walk * 0.55 + loc.sprint * 1;
-  cam.headBobX = Math.cos(sm.footPhase * 0.5) * 0.012 * bobW * (1 - inp.ads * 0.85);
-  cam.headBobY = Math.sin(sm.footPhase) * 0.014 * bobW * (1 - inp.ads * 0.85);
-  cam.headRoll = sm.turnInertia * -0.35 + sm.strafeLean * 0.22;
-  cam.headPitch = sm.accel * -0.0011 + sm.landEnv * -0.09;
-  cam.accelLagX = sm.accel * -0.0014 * Math.sign(sm.velLX || 1);
-  cam.accelLagZ = sm.accel * -0.0010 * Math.sign(sm.velLZ || 1);
-  cam.turnLagYaw = sm.turnInertia * 0.08;
-  cam.turnLagRoll = sm.turnInertia * -0.12;
-  cam.landDip = sm.landEnv * -0.04;
-  cam.landRebound = sm.landEnv * 0.015;
-  cam.slideDrop = loc.slide * -0.12;
-  cam.slideRoll = loc.slide * 0.06;
-  cam.slideForwardPitch = loc.slide * 0.04;
+  const bobW = loc.walk * 0.72 + loc.sprint * 1.22 + loc.crouch * 0.28;
+  const adsDamp = 1 - inp.ads * 0.88;
+  const wallSide = sm.wallJumpSide || inp.wallJumpSide || 0;
+  const wallShock = Math.max(sm.wallJumpEnv, inp.wallJump * 0.75, inp.wallJumpImpact || 0);
+  const airW = Math.min(1, sm.airEnv);
+  const jumpW = Math.min(1, sm.jumpEnv);
+  const fallW = Math.min(1, sm.fallEnv);
+  const apexW = Math.min(1, sm.apexEnv);
+  const airPitch = (jumpW * -0.040 + fallW * 0.050 + apexW * -0.012) * adsDamp;
+  const airRoll = airW * Math.max(-0.10, Math.min(0.10, sm.velLX * 0.12)) * adsDamp;
+  cam.wallKickPitch = wallShock * -0.16;
+  cam.wallKickRoll = wallShock * wallSide * 0.26;
+  const runStep = Math.sin(sm.footPhase);
+  const runStep2 = Math.cos(sm.footPhase * 0.5);
+  cam.headBobX = runStep2 * 0.018 * bobW * adsDamp;
+  cam.headBobY = runStep * 0.023 * bobW * adsDamp;
+  cam.headRoll = sm.turnInertia * -0.58 + sm.strafeLean * 0.38 + cam.wallKickRoll + airRoll;
+  cam.headPitch = sm.accel * -0.0017 + sm.landEnv * -0.13 + Math.sin(sm.footPhase) * 0.006 * loc.sprint * adsDamp + cam.wallKickPitch + airPitch;
+  cam.accelLagX = sm.accel * -0.0022 * Math.sign(sm.velLX || 1);
+  cam.accelLagZ = sm.accel * -0.0018 * Math.sign(sm.velLZ || 1);
+  cam.turnLagYaw = sm.turnInertia * 0.30;
+  cam.turnLagRoll = sm.turnInertia * -0.30;
+  cam.landDip = sm.landEnv * -0.06;
+  cam.landRebound = sm.landEnv * 0.025;
+  cam.airFloat = (apexW * 0.018 + jumpW * 0.010 - fallW * 0.014) * adsDamp;
+  cam.slideDrop = loc.slide * -0.16;
+  cam.slideRoll = loc.slide * 0.10;
+  cam.slideForwardPitch = loc.slide * 0.07;
   const vm = state.resolved.viewmodel;
-  vm.lagX = sm.accel * -0.0009;
-  vm.lagY = sm.accel * -0.0005;
-  vm.lagZ = loc.sprint * -0.012;
-  vm.shoulderPump = loc.sprint * Math.sin(sm.footPhase * 2) * 0.008;
-  vm.slideTuck = loc.slide * 0.12;
-  vm.crouchTuck = loc.crouch * 0.05;
-  vm.landWrist = loc.land * 0.04;
-  vm.fingerCurl = 0;
+  vm.lagX = sm.accel * -0.0014;
+  vm.lagY = sm.accel * -0.0009;
+  vm.lagZ = loc.sprint * -0.024;
+  vm.shoulderPump = loc.sprint * Math.sin(sm.footPhase * 2) * 0.017;
+  vm.slideTuck = loc.slide * 0.18;
+  vm.crouchTuck = loc.crouch * 0.07;
+  vm.landWrist = loc.land * 0.07;
+  vm.airLift = -jumpW * 0.026 * adsDamp;
+  vm.fallDrop = fallW * 0.038 * adsDamp;
+  vm.apexFloat = -apexW * 0.014 * adsDamp;
+  vm.landPunch = loc.land * 0.085;
+  vm.runStepX = runStep2 * 0.0075 * bobW * adsDamp;
+  vm.runStepY = Math.abs(runStep) * -0.0065 * bobW * adsDamp;
+  vm.runStepRoll = runStep2 * -0.020 * bobW * adsDamp;
+  vm.runStepPitch = runStep * 0.014 * bobW * adsDamp;
+  vm.wallKickX = wallShock * wallSide * 0.075;
+  vm.wallKickY = wallShock * 0.055;
+  vm.wallKickZ = wallShock * -0.090;
+  vm.wallKickPitch = wallShock * 0.30;
+  vm.wallKickRoll = wallShock * wallSide * -0.48;
+  vm.fingerCurl = Math.min(1, 0.10 + loc.sprint * 0.16 + loc.slide * 0.10 + loc.wallJump * 0.32 + loc.land * 0.18 + airW * 0.08 + wallShock * 0.08 + (inp.reloading ? 0.10 : 0));
   const pr = state.resolved.proxy;
   pr.leanSh = inp.lean * 0.15;
   pr.adsSh = inp.ads * 0.12;
   pr.vaultBend = intr.vault * 0.35;
+  pr.wallBrace = wallShock;
   pr.flinchTwist = ad.damageFlinch * 0.2;
-  pr.footSwing = Math.sin(sm.footPhase) * 0.08 * bobW;
+  pr.footSwing = runStep * 0.08 * bobW + jumpW * -0.10 + fallW * 0.08;
+  pr.armSwing = runStep2 * 0.11 * bobW;
+  pr.jumpPose = jumpW + apexW * 0.35;
+  pr.fallPose = fallW;
+  pr.landSquash = loc.land;
   pr.deathCollapse = inp.dead ? 1 : 0;
   const widx = inp.weaponIdx;
   state.reload.timelineClass = getReloadWeaponClass(widx);
@@ -347,6 +445,11 @@ export function getMovementAnimState(state) {
     velLZ: state.smoothed.velLZ,
     accel: state.smoothed.accel,
     slideEnv: state.smoothed.slideEnv,
+    jumpEnv: state.smoothed.jumpEnv,
+    fallEnv: state.smoothed.fallEnv,
+    apexEnv: state.smoothed.apexEnv,
+    wallJumpEnv: state.smoothed.wallJumpEnv,
+    wallJumpSide: state.smoothed.wallJumpSide,
     crouchEnv: state.smoothed.crouchEnv,
     turnInertia: state.smoothed.turnInertia
   };

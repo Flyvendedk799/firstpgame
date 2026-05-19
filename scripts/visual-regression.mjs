@@ -220,7 +220,8 @@ for (const mode of modes) {
   modeResult.weapons = await page.evaluate(async () => {
     const dbg = window.__game.debug;
     const out = [];
-    for (let i = 0; i < 8; i++) {
+    const playableWeapons = dbg.playableWeaponIndices ? dbg.playableWeaponIndices() : [1, 2, 3, 4, 5, 6, 7];
+    for (const i of playableWeapons) {
       dbg.switchWeapon(i);
       await new Promise(r => setTimeout(r, 80));
       out.push(dbg.weaponVisualStatus());

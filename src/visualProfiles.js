@@ -598,10 +598,10 @@ export const PLAYER_VIEWMODEL_PROFILE = {
   label: 'Operative First Person Body',
   skeleton: ['cameraRoot', 'rightClavicle', 'rightForearm', 'rightWrist', 'rightHand', 'leftForearm', 'leftWrist', 'leftHand', 'weaponSocket'],
   materials: {
-    skin: 'warm exposed wrist skin with subtle roughness',
-    glove: 'matte tactical glove with knuckle armor, stitched seams, and reinforced fingers',
-    sleeve: 'dark woven combat sleeve with cuff panels and wrist-mounted electronics',
-    armor: 'low-gloss polymer knuckle plates and hard seams'
+    skin: 'warm bare hands and forearms with subtle roughness',
+    glove: 'minimal palm/finger contact shading, not full tactical gloves',
+    sleeve: 'bare forearm geometry; black wrist computer stays as the main accessory',
+    armor: 'low-profile dark wrist hardware and tiny contact accents only'
   },
   rules: [
     'hands must support every weapon without blocking the aim point',

@@ -70,10 +70,10 @@ console.log('SPAWN:', JSON.stringify(spawnRes, null, 2));
 await page.waitForTimeout(2000);
 await page.screenshot({ path: SHOTS + '/04-with-soldier.png' });
 
-// Switch to weapon 2 (Deagle slot)
-await page.keyboard.press('Digit2');
+// Switch to slot 1 (USP-T after M4 removal)
+await page.keyboard.press('Digit1');
 await page.waitForTimeout(1500);
-await page.screenshot({ path: SHOTS + '/05-deagle.png' });
+await page.screenshot({ path: SHOTS + '/05-usp.png' });
 
 // Re-probe Deagle state after switch
 const probe2 = await page.evaluate(() => ({

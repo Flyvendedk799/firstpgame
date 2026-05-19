@@ -15,18 +15,18 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(800);
 
-// Default = M4
-await page.evaluate(() => window.__game.debug.switchWeapon(0));
-await page.waitForTimeout(1000);
-await page.screenshot({ path: 'screenshots/cmp-01-m4.png' });
-
+// Slot 1 = USP-T after M4 removal
 await page.evaluate(() => window.__game.debug.switchWeapon(1));
 await page.waitForTimeout(1000);
-await page.screenshot({ path: 'screenshots/cmp-02-deagle.png' });
+await page.screenshot({ path: 'screenshots/cmp-01-usp.png' });
 
 await page.evaluate(() => window.__game.debug.switchWeapon(2));
 await page.waitForTimeout(1000);
-await page.screenshot({ path: 'screenshots/cmp-03-knife.png' });
+await page.screenshot({ path: 'screenshots/cmp-02-knife.png' });
+
+await page.evaluate(() => window.__game.debug.switchWeapon(3));
+await page.waitForTimeout(1000);
+await page.screenshot({ path: 'screenshots/cmp-03-shotgun.png' });
 
 // Inspect what's visible inside gunGrp
 const sceneInfo = await page.evaluate(() => {

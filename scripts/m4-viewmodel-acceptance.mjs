@@ -58,6 +58,15 @@ await page.addStyleTag({
 console.log('[m4] page loaded');
 await page.waitForFunction(() => window.__game?.debug?.weaponVisualStatus, null, { timeout: 45000 });
 console.log('[m4] debug ready');
+const playableWeapons = await page.evaluate(() => window.__game.debug.playableWeaponIndices?.() || []);
+if (!playableWeapons.includes(0)) {
+  const summary = { ok: true, skipped: true, reason: 'M4 removed from playable loadout' };
+  fs.writeFileSync(path.join(OUT_DIR, 'summary.json'), JSON.stringify(summary, null, 2));
+  console.log(JSON.stringify(summary));
+  await context.close();
+  await browser.close();
+  process.exit(0);
+}
 await page.waitForFunction(() => {
   const st = window.__game.debug.weaponVisualStatus();
   return st.authoredWeaponSource !== 'pending' && st.authoredHandSource !== 'pending';

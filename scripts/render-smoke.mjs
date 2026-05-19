@@ -81,7 +81,7 @@ for (const mode of modes) {
     P.pos.set(0, 0.2, 18);
     P.yaw = Math.PI;
     P.pitch = 0;
-    P.weaponIdx = 0;
+    P.weaponIdx = dbg.playableWeaponIndices?.()[0] ?? 1;
     dbg.equipScope(4);
     dbg.setAds(1);
     // Give the engine a few frames to settle into the scope-PIP visible state
@@ -133,7 +133,8 @@ for (const mode of modes) {
 
     const weaponStatuses = [];
     settings.weaponQuality = 'high';
-    for (let i = 0; i < 8; i++) {
+    const playableWeapons = dbg.playableWeaponIndices ? dbg.playableWeaponIndices() : [1, 2, 3, 4, 5, 6, 7];
+    for (const i of playableWeapons) {
       P.dead = false;
       if (P.weaponIdx !== i) dbg.switchWeapon(i);
       await new Promise(r => setTimeout(r, 80));
@@ -270,7 +271,7 @@ for (const mode of modes) {
   assert(result.texturePhase.high.quality.high > 0, `${mode}: high texture-quality materials were not created`);
   assert(result.texturePhase.high.maps.normal > result.texturePhase.low.maps.normal, `${mode}: generated normal maps did not scale with texture quality`);
   assert(result.texturePhase.high.maps.roughness > result.texturePhase.low.maps.roughness, `${mode}: generated roughness maps did not scale with texture quality`);
-  assert(result.weaponPhase.length === 8, `${mode}: did not visit all weapon slots`);
+  assert(result.weaponPhase.length === 7, `${mode}: did not visit all playable weapon slots`);
   for (const weapon of result.weaponPhase) {
     const visiblePrimary =
       weapon.visibleProceduralMeshes +

@@ -10490,7 +10490,7 @@ function _sampleRuntimeFrame(){
   }
   return sample;
 }
-const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0,throttleInterval:1,renderedThisFrame:false,skippedThrottle:false};
+const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0,throttleInterval:1,renderedThisFrame:false,skippedThrottle:false,ads:0,settle:0,fov:0,vignetteOpacity:0,eyeBoxX:0,eyeBoxY:0};
 function _renderScopeTarget(target,cam){
   try{
     if(_renderStack)_renderStack.renderToTarget(target,cam);
@@ -10754,11 +10754,12 @@ const gButtPad  = _m4(.040,.078,.012,m4PadM,    0, .010, .220);
 const M4_MESHES=[gLower,gBody,gRail,gCharge,gHand,gHandTop,gHandBot,gFsight,gBarrel,gMuzzle1,gMuzzle2,gMagwell,gMag1,gMag2,gGrip,gTrigGd,gTrig,gBuffer,gStock,gCheek,gButt,gEject,gFwdAsst,gFwdAsstP,gBrassDef,gChLatch,gFsWingL,gFsWingR,gFsPost,gFhSlot1,gFhSlot2,gRailT1,gRailT2,gRailT3,gHvL1,gHvL2,gHvR1,gHvR2,gSelector,gMagRel,gMagCurve,gGripBT,gSling,gButtPad];
 let m4AuthoredWeapon=null;
 let m4AuthoredHands=null;
-// Slot 1 uses the rifle-hold hands baked into the M4 GLB. Those hands are
-// authored in the weapon's own socket space, so they stay locked to the rail
-// instead of relying on runtime retargeting of the shared wrist UI rig.
+// The authored M4 remains the weapon source, but the runtime procedural hand
+// groups own the first-person silhouette for now. The shared authored hand GLB
+// validates structurally, but its wrist/palm local axes do not match the M4
+// grip sockets yet, which turns palms the wrong way in first person.
 const M4_AUTHORED_HANDS_RUNTIME_ENABLED=false;
-const M4_BAKED_RIFLE_HANDS_ENABLED=true;
+const M4_BAKED_RIFLE_HANDS_ENABLED=false;
 const M4_AUTHORED_VIEWMODEL_LENGTH=0.76;
 const M4_AUTHORED_MUZZLE_ANCHOR=new THREE.Vector3(.004,.022,-.585);
 const AUTHORED_WRIST_CLIPS=['wristbandIdle','holoInventoryDeploy','holoReloadDeploy','holoShopDeploy'];
@@ -11393,6 +11394,7 @@ const _gunVMClonePairs=[];
 const _p2MeshBySrc=new WeakMap();
 for(const [s,d] of _gunVMClonePairs)_p2MeshBySrc.set(s,d);
 function _applyWeaponIdxToP2Viewmodel(idx){
+  idx=normalizeWeaponIdx(idx,START_WEAPON_IDX);
   const sets=[[M4_MESHES,0],[DE_MESHES,1],[SG_MESHES,3],[SM_MESHES,4],[DMR_MESHES,5],[SPP_MESHES,6],[SNI_MESHES,7]];
   const split=!!(typeof G!=='undefined'&&G&&G.splitScreenActive);
   for(const [list,wi] of sets){
@@ -11471,11 +11473,12 @@ knifGrp.rotation.set(.12,-.22,.15);
 knifGrp.visible=false;
 camera.add(knifGrp);
 // ── HANDS ─────────────────────────────────────────────────────────────────────
-// Materials — tactical dark gloves, olive sleeve, exposed wrist skin
-const skinM=_aaMat('skin',{color:0xc8956c,roughness:.68,metalness:0});
-const gloveM=_aaMat('rubber',{color:0x14161c,roughness:.88,metalness:.02});
-const sleeveM=_aaMat('fabric',{color:0x2d3428,roughness:.94,metalness:0});
-const gloveDarkM=_aaMat('rubber',{color:0x0e1012,roughness:.92,metalness:.01});
+// Materials — fallback procedural hands. Keep the palm/finger blockout dark so
+// it reads as a glove; the authored M4 hand rig below carries the bare-skin look.
+const skinM=_aaMat('skin',{color:0xd6a383,roughness:.70,metalness:0});
+const gloveM=_aaMat('rubber',{color:0x17161a,roughness:.88,metalness:.02});
+const sleeveM=_aaMat('skin',{color:0xc99072,roughness:.78,metalness:0});
+const gloveDarkM=_aaMat('rubber',{color:0x0d0d10,roughness:.92,metalness:.01});
 function hBox(w,h,d,mat,px,py,pz,rx,ry,rz){
   const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat||gloveM);
   if(px!=null)m.position.set(px,py,pz);if(rx!=null)m.rotation.set(rx,ry,rz);return m;
@@ -11539,7 +11542,7 @@ gunGrp.add(lGrp);
 const _VIEWMODEL_PROFILE=getViewmodelProfile();
 const _AA_VIEWMODEL_PARTS=[];
 const _M4_RIGHT_FOREARM_CROP_PARTS=[rForearm,rWrist];
-const _M4_LEFT_FOREARM_CROP_PARTS=[lWrist];
+const _M4_LEFT_FOREARM_CROP_PARTS=[lForearm,lWrist];
 const _M4_SUPPORT_HAND_HIDE_PARTS=[lPalm];
 const _M4_SUPPORT_HAND_GRIP_PARTS=[];
 const _M4_TRIGGER_HAND_HIDE_PARTS=[rPalm,rKnuck];
@@ -11547,11 +11550,11 @@ const _M4_TRIGGER_HAND_GRIP_PARTS=[];
 function _aaViewMat(color,roughness=.72,metalness=.03,extra={},kind='fabric'){
   return _aaMat(kind,Object.assign({color,roughness,metalness},extra));
 }
-const vmSkinM=_aaViewMat(0xc78f68,.66,0,{},'skin');
-const vmGloveM=_aaViewMat(0x111720,.86,.04,{},'rubber');
-const vmGlovePanelM=_aaViewMat(0x05070a,.90,.02,{},'rubber');
-const vmSleeveM=_aaViewMat(0x243027,.88,0,{},'fabric');
-const vmArmorM=_aaViewMat(0x202a34,.58,.16,{},'armor');
+const vmSkinM=_aaViewMat(0xd6a383,.68,0,{},'skin');
+const vmGloveM=_aaViewMat(0x17161a,.86,.02,{},'rubber');
+const vmGlovePanelM=_aaViewMat(0x0a0a0d,.90,.02,{},'rubber');
+const vmSleeveM=_aaViewMat(0xc99072,.78,0,{},'skin');
+const vmArmorM=_aaViewMat(0x0e1116,.72,.04,{},'rubber');
 [skinM,gloveM,sleeveM,gloveDarkM].forEach(m=>{
   if('roughness' in m)m.roughness=.78;
   if('metalness' in m)m.metalness=0;
@@ -11661,7 +11664,7 @@ function applyAAViewmodelRig(){
   };
 }
 applyAAViewmodelRig();
-const _HAND_PROM_SCALE=1.00;
+const _HAND_PROM_SCALE=1.10;
 rGrp.scale.setScalar(_HAND_PROM_SCALE);
 lGrp.scale.setScalar(_HAND_PROM_SCALE);
 rGrp.renderOrder=8;lGrp.renderOrder=8;
@@ -11720,7 +11723,7 @@ _M4_LEFT_FOREARM_CROP_PARTS.push(armBandGrp);
 function _syncArmBandVisibility(){
   let show=true;
   try{show=!_isAuthoredHandRuntimeActive();}catch(_){show=true;}
-  try{if(P&&P.weaponIdx===0&&_isAuthoredM4RuntimeActive())show=false;}catch(_){}
+  try{if(P&&P.weaponIdx===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)show=false;}catch(_){}
   armBandGrp.visible=show;
   try{if(typeof reloadHoloGrp!=='undefined')reloadHoloGrp.visible=show;}catch(_){}
   return show;
@@ -11986,7 +11989,8 @@ function _opticGunY(profile){return profile?-(profile.lensY||.078):-.078;}
 function _opticGunZ(profile){
   if(!profile)return -.22;
   const adsZ=Number.isFinite(profile.adsGunZ)?profile.adsGunZ:-.12;
-  return -.22+P.ads*(adsZ+.22);
+  const adsAmt=THREE.MathUtils.clamp(Number.isFinite(P&&P.adsVis)?P.adsVis:(P&&P.ads)||0,0,1);
+  return -.22+adsAmt*(adsZ+.22);
 }
 function _setScopePipView(profile,alpha){
   _hideScopePipViews();
@@ -11998,7 +12002,7 @@ function _setScopePipView(profile,alpha){
 // Tag viewmodel groups onto layer 1 so scope camera can ignore them
 function _setLayer(grp,n){grp.traverse(o=>o.layers.set(n));}
 function _isAuthoredM4RuntimeActive(){
-  try{return !!(m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&P&&P.weaponIdx===0&&!(G&&G.splitScreenActive));}
+  try{return !!(isPlayableWeaponIdx(0)&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&P&&P.weaponIdx===0&&!(G&&G.splitScreenActive));}
   catch(_){return false;}
 }
 function _isAuthoredHandRuntimeActive(){
@@ -12381,6 +12385,30 @@ function _authoredWristbandDebugStatus(){
     idleRayVisible:nodeVis(tech&&tech.rayIdle)
   };
 }
+const _AUTHORED_HAND_STYLE_MATS={};
+function _styleAuthoredHandsRuntime(rig){
+  if(!rig||!rig.traverse)return;
+  if(!_AUTHORED_HAND_STYLE_MATS.skin){
+    _AUTHORED_HAND_STYLE_MATS.skin=new THREE.MeshStandardMaterial({color:0xd6a383,roughness:.72,metalness:0});
+    _AUTHORED_HAND_STYLE_MATS.skinShade=new THREE.MeshStandardMaterial({color:0xba8868,roughness:.80,metalness:0});
+    _AUTHORED_HAND_STYLE_MATS.band=new THREE.MeshStandardMaterial({color:0x05070a,roughness:.82,metalness:.08,emissive:0x010204});
+    _AUTHORED_HAND_STYLE_MATS.screen=new THREE.MeshStandardMaterial({color:0x07131c,roughness:.34,metalness:.08,emissive:0x082a3a,emissiveIntensity:.8});
+    _AUTHORED_HAND_STYLE_MATS.holo=new THREE.MeshBasicMaterial({color:0x66d8ff,transparent:true,opacity:.38,blending:THREE.AdditiveBlending,depthWrite:false});
+  }
+  const mats=_AUTHORED_HAND_STYLE_MATS;
+  rig.traverse(o=>{
+    if(!o||(!o.isMesh&&!o.isSkinnedMesh))return;
+    const n=`${o.name||''} ${o.parent&&o.parent.name||''}`.toLowerCase();
+    let mat=mats.skin;
+    if(/holo|ray|beam|projection/.test(n))mat=mats.holo;
+    else if(/screen|display|emitter/.test(n))mat=mats.screen;
+    else if(/wristband|band|strap|cuff|hardware|watch/.test(n))mat=mats.band;
+    else if(/nail|knuckle|crease|palm|shadow/.test(n))mat=mats.skinShade;
+    o.material=mat;
+    o.frustumCulled=false;
+    o.renderOrder=42;
+  });
+}
 function _fitAuthoredM4RuntimeParts(rig){
   if(!rig||!rig.traverse)return;
   const hideBakedHands=!M4_BAKED_RIFLE_HANDS_ENABLED;
@@ -12428,7 +12456,7 @@ function _fitAuthoredM4RuntimeParts(rig){
 }
 function _syncAuthoredM4Visibility(){
   let m4Active=false,split=false;
-  try{m4Active=P.weaponIdx===0;split=!!(G&&G.splitScreenActive);}
+  try{m4Active=isPlayableWeaponIdx(0)&&P.weaponIdx===0;split=!!(G&&G.splitScreenActive);}
   catch(_){}
   const useWeapon=!!(m4Active&&!split&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId));
   if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=useWeapon;
@@ -12630,9 +12658,10 @@ function _loadAuthoredM4Viewmodels(){
       const rig=cloneGltfScene(THREE,SkeletonUtils,gltf.scene);
       if(!rig)throw new Error('empty hand scene');
       configureViewmodelScene(THREE,rig);
+      _styleAuthoredHandsRuntime(rig);
       setViewmodelLayer(rig,1);
       rig.visible=false;
-      rig.scale.setScalar(1);
+      rig.scale.setScalar(1.12);
       gunGrp.add(rig);
       const validation=validateHandsViewmodel({scene:rig,animations:gltf.animations},handsEntry,{requiredClips:AUTHORED_HAND_RUNTIME_CLIPS});
       const bucket=_prepareAuthoredActionBucket('hand',rig,gltf.animations,AUTHORED_HAND_RUNTIME_CLIPS);
@@ -12816,15 +12845,38 @@ function updateKnives(dt){
 }
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
 const WEAPONS=[
-  {name:'M4A1',  slot:'[1/8]',mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[2/8]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
-  {name:'THROWING KNIFE',slot:'[3/8]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
-  {name:'TAC-12 SHOTGUN',slot:'[4/8]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
-  {name:'MP9 SUPPRESSED',slot:'[5/8]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
-  {name:'MK14 DMR',  slot:'[6/8]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
-  {name:'P226 SUPP', slot:'[7/8]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
-  {name:'AWM SNIPER',slot:'[8/8]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
+  {name:'M4A1',slot:'',playable:false,removed:true,mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
+  {name:'USP-T',slot:'[1/7]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
+  {name:'THROWING KNIFE',slot:'[2/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
+  {name:'TAC-12 SHOTGUN',slot:'[3/7]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
+  {name:'MP9 SUPPRESSED',slot:'[4/7]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
+  {name:'MK14 DMR',  slot:'[5/7]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
+  {name:'P226 SUPP', slot:'[6/7]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
+  {name:'AWM SNIPER',slot:'[7/7]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
 ];
+const PLAYABLE_WEAPON_INDICES=WEAPONS.map((w,i)=>w&&w.playable!==false&&!w.removed?i:-1).filter(i=>i>=0);
+const START_WEAPON_IDX=PLAYABLE_WEAPON_INDICES[0]??0;
+const START_WEAPON=WEAPONS[START_WEAPON_IDX]||WEAPONS[0];
+function isPlayableWeaponIdx(idx){return PLAYABLE_WEAPON_INDICES.includes(idx|0);}
+function normalizeWeaponIdx(idx,fallback=START_WEAPON_IDX){
+  const n=Number.isFinite(Number(idx))?(Number(idx)|0):fallback;
+  const fb=Number.isFinite(Number(fallback))?(Number(fallback)|0):START_WEAPON_IDX;
+  if(isPlayableWeaponIdx(n))return n;
+  if(isPlayableWeaponIdx(fb))return fb;
+  return START_WEAPON_IDX;
+}
+function weaponIdxForDisplaySlot(slotNumber){
+  const s=(Number(slotNumber)|0)-1;
+  return s>=0&&s<PLAYABLE_WEAPON_INDICES.length?PLAYABLE_WEAPON_INDICES[s]:null;
+}
+function nextPlayableWeaponIdx(current,dir=1){
+  const list=PLAYABLE_WEAPON_INDICES;
+  if(!list.length)return current|0;
+  const step=dir>=0?1:-1;
+  let at=list.indexOf(current|0);
+  if(at<0)at=step>0?-1:0;
+  return list[(at+step+list.length)%list.length];
+}
 // Reflect mag/res for new sniper in P arrays (initial state)
 function _padWeaponState(){
   while(P.weaponAmmo&&P.weaponAmmo.length<WEAPONS.length)P.weaponAmmo.push(WEAPONS[P.weaponAmmo.length].mag);
@@ -12876,8 +12928,9 @@ function randomAttachment(type,minTier,maxTier){
   return Object.assign({},list[idx]);
 }
 // ── STATE ─────────────────────────────────────────────────────────────────────
-const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,hp:100,ammo:30,ammoRes:90,reloading:false,reloadTimer:0,RELOAD_TIME:2.2,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:.10,dmgFlash:0,weaponIdx:0,running:false,
+const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
   vy:0,jumpH:0,grounded:true,
+  wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
   vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
   nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
   // Camera dynamics: landing dip, damage roll, breathing/idle sway
@@ -12896,8 +12949,9 @@ const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,
   // Per-weapon ammo state — preserved across swaps so swapping isn't a free reload.
   weaponAmmo:[30,12,999,6,32,10,12,5],
   weaponRes:[90,36,99,18,64,40,36,15],focus:1.0,focusActive:false,timeScale:1.0,score:0,kills:0,headshots:0,shotsFired:0,shotsHit:0,execs:0,combo:null,maxHp:100,smokes:1,flashes:1};
-const P2={pos:new THREE.Vector3(1.5,.2,18),yaw:0,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,hp:100,ammo:30,ammoRes:90,reloading:false,reloadTimer:0,RELOAD_TIME:2.2,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:.10,dmgFlash:0,weaponIdx:0,running:false,
+const P2={pos:new THREE.Vector3(1.5,.2,18),yaw:0,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
   vy:0,jumpH:0,grounded:true,
+  wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
   vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
   nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
   landKick:0,dmgRoll:0,dmgPitch:0,
@@ -12916,8 +12970,8 @@ const H={
   // Fire
   fireT:0,firePlaying:false,
   // Stored base positions for lerp targets (in gunGrp local space)
-  rBase:{x:.003,y:-.052,z:.042},
-  lBase:{x:-.004,y:-.052,z:-.070},
+  rBase:{x:.003,y:-.052,z:.042,rx:0,ry:0,rz:0},
+  lBase:{x:-.004,y:-.052,z:-.070,rx:.11,ry:0,rz:0},
   // Smoothed working values (lerp toward targets each frame)
   rRX:0,rRY:0,rRZ:0, lRX:.11,lRY:0,lRZ:0,
   idxRX:0,
@@ -12929,13 +12983,55 @@ const H={
 const H2={
   idlePhase:0,
   fireT:0,firePlaying:false,
-  rBase:{x:.003,y:-.052,z:.042},
-  lBase:{x:-.004,y:-.052,z:-.070},
+  rBase:{x:.003,y:-.052,z:.042,rx:0,ry:0,rz:0},
+  lBase:{x:-.004,y:-.052,z:-.070,rx:.11,ry:0,rz:0},
   rRX:0,rRY:0,rRZ:0, lRX:.11,lRY:0,lRZ:0,
   idxRX:0,
   heat:0,
   reticlePhase:0
 };
+const DEFAULT_HAND_FIT={
+  id:'default',
+  right:{x:.003,y:-.060,z:.058,rx:.010,ry:.020,rz:-.020},
+  left:{x:-.012,y:-.046,z:-.115,rx:.135,ry:.040,rz:.010},
+  leftScale:1.04,
+  fine:{hipX:-.010,hipY:0,hipZ:.004,hipRY:.012,hipRZ:.006,adsX:.004,adsY:.006,adsZ:-.004,adsRY:.014,adsRZ:.010},
+  gun:{x:.13,y:-.115,z:-.22}
+};
+const WEAPON_HAND_FITS={
+  0:{id:'m4-rifle',right:{x:.004,y:-.052,z:.042,rx:.016,ry:.030,rz:-.028},left:{x:-.018,y:-.032,z:-.198,rx:.168,ry:.072,rz:.048},leftScale:1.01,fine:{hipX:-.006,hipY:.004,hipZ:.002,hipRY:.012,hipRZ:.012,adsX:.012,adsY:.006,adsZ:-.014,adsRY:.018,adsRZ:.030},gun:{x:.13,y:-.115,z:-.225}},
+  1:{id:'usp-two-hand',right:{x:.004,y:-.058,z:.050,rx:.020,ry:.034,rz:-.030},left:{x:-.052,y:-.043,z:-.074,rx:.220,ry:.125,rz:.045},leftScale:1.02,fine:{hipX:-.026,hipY:-.018,hipZ:.034,hipRY:.040,hipRZ:.060,adsX:.010,adsY:-.002,adsZ:.010,adsRY:-.012,adsRZ:.050},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
+  2:{id:'knife',right:{x:.010,y:-.060,z:.050,rx:.035,ry:.070,rz:-.060},left:null,leftScale:1.0,fine:{},gun:{x:.12,y:-.10,z:-.20}},
+  3:{id:'shotgun-pump',right:{x:.003,y:-.054,z:.060,rx:.012,ry:.020,rz:-.024},left:{x:-.018,y:-.026,z:-.206,rx:.170,ry:.050,rz:.024},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.002,hipRY:.012,hipRZ:.010,adsX:.012,adsY:.004,adsZ:-.010,adsRY:.020,adsRZ:.028},gun:{x:.132,y:-.114,z:-.230}},
+  4:{id:'smg-foregrip',right:{x:.003,y:-.054,z:.050,rx:.014,ry:.025,rz:-.026},left:{x:-.024,y:-.033,z:-.150,rx:.160,ry:.062,rz:.036},leftScale:1.045,fine:{hipX:-.006,hipY:.000,hipZ:.004,hipRY:.016,hipRZ:.012,adsX:.010,adsY:.005,adsZ:-.008,adsRY:.018,adsRZ:.024},gun:{x:.122,y:-.106,z:-.205}},
+  5:{id:'dmr-fore-end',right:{x:.003,y:-.058,z:.054,rx:.012,ry:.018,rz:-.022},left:{x:-.026,y:-.028,z:-.260,rx:.166,ry:.050,rz:.026},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.006,hipRY:.012,hipRZ:.010,adsX:.010,adsY:.004,adsZ:-.012,adsRY:.016,adsRZ:.026},gun:{x:.130,y:-.112,z:-.235}},
+  6:{id:'p226-two-hand',right:{x:.004,y:-.058,z:.052,rx:.018,ry:.032,rz:-.028},left:{x:-.054,y:-.044,z:-.082,rx:.216,ry:.120,rz:.042},leftScale:1.02,fine:{hipX:-.030,hipY:-.018,hipZ:.032,hipRY:.038,hipRZ:.054,adsX:.010,adsY:-.001,adsZ:.010,adsRY:-.010,adsRZ:.046},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
+  7:{id:'sniper-fore-end',right:{x:.003,y:-.057,z:.060,rx:.010,ry:.016,rz:-.020},left:{x:-.028,y:-.026,z:-.314,rx:.158,ry:.044,rz:.018},leftScale:1.065,fine:{hipX:-.004,hipY:.002,hipZ:-.008,hipRY:.010,hipRZ:.008,adsX:.010,adsY:.004,adsZ:-.014,adsRY:.014,adsRZ:.022},gun:{x:.132,y:-.114,z:-.250}}
+};
+function _handFitForWeapon(idx){
+  return WEAPON_HAND_FITS[idx|0]||DEFAULT_HAND_FIT;
+}
+function _copyHandBase(dst,src){
+  dst.x=src.x;dst.y=src.y;dst.z=src.z;
+  dst.rx=src.rx||0;dst.ry=src.ry||0;dst.rz=src.rz||0;
+}
+function _applyWeaponHandFit(idx,snap=false){
+  const fit=_handFitForWeapon(idx);
+  H.handFit=fit;
+  if(fit.right){
+    _copyHandBase(H.rBase,fit.right);
+    if(snap){rGrp.position.set(fit.right.x,fit.right.y,fit.right.z);rGrp.rotation.set(fit.right.rx||0,fit.right.ry||0,fit.right.rz||0);}
+  }
+  if(fit.left){
+    lGrp.visible=true;
+    _copyHandBase(H.lBase,fit.left);
+    if(snap){lGrp.position.set(fit.left.x,fit.left.y,fit.left.z);lGrp.rotation.set(fit.left.rx||0,fit.left.ry||0,fit.left.rz||0);}
+  }else{
+    lGrp.visible=false;
+  }
+  return fit;
+}
+_applyWeaponHandFit(START_WEAPON_IDX,true);
 let _playerAnimFrameSeq=0;
 const playerAnimState0=createPlayerAnimState({slot:0});
 const playerAnimState1=createPlayerAnimState({slot:1});
@@ -12999,13 +13095,19 @@ function _updatePlayerProxy(){
   PLAYER_PROXY.group.position.set(P.pos.x,P.jumpH||0,P.pos.z);
   PLAYER_PROXY.group.rotation.y=P.yaw;
   const crouch=P.crouchAmt||0,slide=P.slideAmt||0;
-  PLAYER_PROXY.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28),1);
-  const pr=playerAnimState0.resolved&&playerAnimState0.resolved.proxy?playerAnimState0.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,flinchTwist:0,footSwing:0,deathCollapse:0};
+  const pr=playerAnimState0.resolved&&playerAnimState0.resolved.proxy?playerAnimState0.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,wallBrace:0,flinchTwist:0,footSwing:0,armSwing:0,jumpPose:0,fallPose:0,landSquash:0,deathCollapse:0};
+  PLAYER_PROXY.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10),1);
+  const wallSide=(playerAnimState0.inputs&&playerAnimState0.inputs.wallJumpSide)||0;
   for(const m of PLAYER_PROXY.parts){
     const part=m.userData.proxyPart||'';
     m.rotation.z=(part==='head'?0.04:0)*pr.adsSh+(part==='armL'||part==='armR'?0.12:0)*pr.vaultBend*Math.sign(part==='armL'?-1:1);
+    if(pr.wallBrace>0.01){
+      if(part==='torso')m.rotation.z+=wallSide*pr.wallBrace*.08;
+      if(part==='armL'||part==='armR')m.rotation.z+=wallSide*pr.wallBrace*(part==='armL'?0.20:-0.20);
+    }
     m.rotation.x=pr.flinchTwist*(part==='torso'?.08:part==='head'?.12:0.04);
-    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06;
+    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12;
+    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08;
     if(pr.deathCollapse>0.01){
       const d=pr.deathCollapse;
       m.rotation.x+=d*(part==='torso'?.35:part==='head'?-.2:.15);
@@ -13021,13 +13123,19 @@ function _updatePlayerProxy2(){
   PLAYER_PROXY2.group.position.set(P2.pos.x,P2.jumpH||0,P2.pos.z);
   PLAYER_PROXY2.group.rotation.y=P2.yaw;
   const crouch=P2.crouchAmt||0,slide=P2.slideAmt||0;
-  PLAYER_PROXY2.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28),1);
-  const pr=playerAnimState1.resolved&&playerAnimState1.resolved.proxy?playerAnimState1.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,flinchTwist:0,footSwing:0,deathCollapse:0};
+  const pr=playerAnimState1.resolved&&playerAnimState1.resolved.proxy?playerAnimState1.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,wallBrace:0,flinchTwist:0,footSwing:0,armSwing:0,jumpPose:0,fallPose:0,landSquash:0,deathCollapse:0};
+  PLAYER_PROXY2.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10),1);
+  const wallSide=(playerAnimState1.inputs&&playerAnimState1.inputs.wallJumpSide)||0;
   for(const m of PLAYER_PROXY2.parts){
     const part=m.userData.proxyPart||'';
     m.rotation.z=(part==='head'?0.04:0)*pr.adsSh+(part==='armL'||part==='armR'?0.12:0)*pr.vaultBend*(part==='armL'?-1:1);
+    if(pr.wallBrace>0.01){
+      if(part==='torso')m.rotation.z+=wallSide*pr.wallBrace*.08;
+      if(part==='armL'||part==='armR')m.rotation.z+=wallSide*pr.wallBrace*(part==='armL'?0.20:-0.20);
+    }
     m.rotation.x=pr.flinchTwist*(part==='torso'?.08:part==='head'?.12:0.04);
-    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06;
+    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12;
+    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08;
   }
 }
 function _defaultAttachments(){
@@ -13048,20 +13156,33 @@ function _weaponReserveDefaults(extraPrimary=0,extraSidearm=0,fillAll=false){
   });
 }
 function resetWeaponAmmoState(extraPrimary=0,extraSidearm=0,fillAll=false){
+  P.weaponIdx=normalizeWeaponIdx(P.weaponIdx);
   P.weaponAmmo=_weaponAmmoDefaults();
   P.weaponRes=_weaponReserveDefaults(extraPrimary,extraSidearm,fillAll);
-  const W=WEAPONS[P.weaponIdx]||WEAPONS[0];
+  const W=WEAPONS[P.weaponIdx]||START_WEAPON;
   P.ammo=P.weaponAmmo[P.weaponIdx]??W.mag;
   P.ammoRes=P.weaponRes[P.weaponIdx]??W.res;
   _padWeaponState();
 }
 function normalizePlayerRuntime(){
   P.attachments=_normalizeAttachments(P.attachments);
+  P.weaponIdx=normalizeWeaponIdx(P.weaponIdx);
+  if(typeof P2!=='undefined')P2.weaponIdx=normalizeWeaponIdx(P2.weaponIdx);
   if(!Array.isArray(P.weaponAmmo)||P.weaponAmmo.length<WEAPONS.length)P.weaponAmmo=_weaponAmmoDefaults().map((v,i)=>P.weaponAmmo?.[i]??v);
   if(!Array.isArray(P.weaponRes)||P.weaponRes.length<WEAPONS.length)P.weaponRes=_weaponReserveDefaults().map((v,i)=>P.weaponRes?.[i]??v);
   _padWeaponState();
   if(typeof P.adsVis!=='number'||Number.isNaN(P.adsVis))P.adsVis=P.ads||0;
   P.smokes=P.smokes||0;P.flashes=P.flashes||0;P.healPacks=P.healPacks||0;P.grenades=P.grenades||0;
+}
+function _applyWeaponIdxToP2Player(idx){
+  const n=normalizeWeaponIdx(idx,P2.weaponIdx);
+  P2.weaponIdx=n;
+  const Ww=WEAPONS[n];
+  if(Ww){P2.FIRE_RATE=Ww.fireRate;P2.RELOAD_TIME=Ww.reloadTime;}
+  P2.ammo=P2.weaponAmmo[n]??0;
+  P2.ammoRes=P2.weaponRes[n]??0;
+  _applyWeaponIdxToP2Viewmodel(n);
+  return n;
 }
 // ── INPUT ─────────────────────────────────────────────────────────────────────
 const K={};const K2={};const M={dx:0,dy:0,lmbHeld:false,rmbDown:false,mmbDown:false};const M1={dx:0,dy:0,lmbHeld:false,rmbDown:false,mmbDown:false};let locked=false;let gameFocused=false;
@@ -13240,6 +13361,14 @@ function _evtTargetIsPointerDomUi(el){
 function _gameShouldCapturePointerLock(){
   return !!(G.started&&!P.dead&&!G.menuOpen&&!G.invOpen&&!G.shopOpen);
 }
+function _endRunOverlayVisible(){
+  const es=document.getElementById('endscreen');
+  const ending=document.getElementById('ending-overlay');
+  return !!((es&&es.classList.contains('show'))||(ending&&ending.classList.contains('show')));
+}
+function _canRestartRunFromInput(){
+  return !!(G.started&&P.dead&&_endRunOverlayVisible());
+}
 document.addEventListener('pointerlockchange',()=>{
   locked=!!document.pointerLockElement;
   if(locked)gameFocused=true;
@@ -13312,23 +13441,28 @@ document.addEventListener('keydown',e=>{
   if(!G.started)return;
   const W=WEAPONS[P.weaponIdx];
   if(e.code==='KeyR'&&!P.reloading&&W.mag>P.ammo&&P.ammoRes>0&&!P.dead)startReload();
-  if(e.code==='KeyR'&&P.dead)restartGame();
-  if(e.code==='Space'&&P.dead)restartGame();
-  if(e.code==='Space'&&!P.dead&&P.grounded&&!P.vaulting){if(P.nearVault)doVault(P.nearVault);else doJump();}
+  if((e.code==='KeyR'||e.code==='Space')&&P.dead){
+    e.preventDefault();
+    if(!e.repeat&&_canRestartRunFromInput())restartGame();
+    return;
+  }
+  if(e.code==='Space'&&!P.dead&&!P.vaulting&&!e.repeat){e.preventDefault();if(P.grounded&&P.nearVault)doVault(P.nearVault);else doJump();}
   if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
   if(e.code==='KeyF'&&!P.dead&&P.nearPickup){tryEquipPickup(P.nearPickup);}
   if(e.code==='KeyH'&&!P.dead)useHealPack();
   if(e.code==='KeyG'&&!P.dead)tryThrowGrenade();
   if(e.code==='KeyB'&&!P.dead){e.preventDefault();toggleShop();}
-  // Number keys: weapon switch when no popup; shop purchase when shop open
-  if(e.code==='Digit1'&&!P.dead){if(G.shopOpen)buyHealPack();else switchWeapon(0);}
-  if(e.code==='Digit2'&&!P.dead){if(G.shopOpen)buyGrenade();else switchWeapon(1);}
-  if(e.code==='Digit3'&&!P.dead&&!G.shopOpen)switchWeapon(2);
-  if(e.code==='Digit4'&&!P.dead&&!G.shopOpen)switchWeapon(3);
-  if(e.code==='Digit5'&&!P.dead&&!G.shopOpen)switchWeapon(4);
-  if(e.code==='Digit6'&&!P.dead&&!G.shopOpen)switchWeapon(5);
-  if(e.code==='Digit7'&&!P.dead&&!G.shopOpen)switchWeapon(6);
-  if(e.code==='Digit8'&&!P.dead&&!G.shopOpen)switchWeapon(7);
+  // Number keys: shifted weapon slots now skip the removed M4.
+  if(/^Digit[1-9]$/.test(e.code)&&!P.dead){
+    const slotNum=Number(e.code.slice(5));
+    if(G.shopOpen){
+      if(slotNum===1)buyHealPack();
+      else if(slotNum===2)buyGrenade();
+    }else{
+      const wi=weaponIdxForDisplaySlot(slotNum);
+      if(wi!=null)switchWeapon(wi);
+    }
+  }
   if(e.code==='KeyF'&&!P.dead&&!G.menuOpen)toggleFocus();
   if(e.code==='KeyE'&&!P.dead&&!G.menuOpen){tryTakedown();}
   if(e.code==='KeyT'&&!P.dead&&!G.menuOpen){tryThrowSmoke();}
@@ -14686,12 +14820,12 @@ function toggleShop(){G.shopOpen?closeShop():openShop();}
 function tryEquipPickup(pk){
   // Ammo pack — full reload of all weapons + 1 grenade
   if(pk.isAmmoPack){
-    for(let i=0;i<2;i++){
+    for(const i of PLAYABLE_WEAPON_INDICES){
       const W=WEAPONS[i];
-      P.weaponAmmo[i]=W.mag;
+      P.weaponAmmo[i]=i===2?999:W.mag;
       P.weaponRes[i]=Math.max(P.weaponRes[i],W.res);
     }
-    if(P.weaponIdx<2){
+    if(isPlayableWeaponIdx(P.weaponIdx)){
       P.ammo=WEAPONS[P.weaponIdx].mag;
       P.ammoRes=P.weaponRes[P.weaponIdx];
     }
@@ -15546,7 +15680,7 @@ function shoot(){
   // HOT-SWAP / RELOAD on empty
   if(pl.ammo===0){
     let foundAlt=-1;
-    for(let i=0;i<WEAPONS.length;i++){
+    for(const i of PLAYABLE_WEAPON_INDICES){
       if(i===pl.weaponIdx||i===2)continue;
       if((pl.weaponAmmo[i]||0)>0){foundAlt=i;break;}
     }
@@ -15554,14 +15688,7 @@ function shoot(){
       setTimeout(()=>{
         if(pl.dead)return;
         if(pl===P)switchWeapon(foundAlt);
-        if(pl===P2){
-          P2.weaponIdx=foundAlt;
-          _applyWeaponIdxToP2Viewmodel(foundAlt);
-          const Ww=WEAPONS[foundAlt];
-          if(Ww){P2.FIRE_RATE=Ww.fireRate;P2.RELOAD_TIME=Ww.reloadTime;}
-          P2.ammo=P2.weaponAmmo[foundAlt]??0;
-          P2.ammoRes=P2.weaponRes[foundAlt]??0;
-        }
+        if(pl===P2)_applyWeaponIdxToP2Player(foundAlt);
       },150);
     } else if(pl.ammoRes>0){
       setTimeout(()=>{if(!pl.dead&&pl===P)startReload();if(!pl.dead&&pl===P2)_startReloadP2();},220);
@@ -15723,8 +15850,14 @@ function _startReloadP2(){
   P2._tacticalReload=tacticalMul<1.0;
   sfxReload();
 }
-function switchWeapon(idx){
-  if(P.dead||MELEE.out||idx===P.weaponIdx||idx>=WEAPONS.length)return;
+function switchWeapon(idx,force=false){
+  idx=normalizeWeaponIdx(idx,P.weaponIdx);
+  if(P.dead||MELEE.out)return;
+  if(!force&&idx===P.weaponIdx&&isPlayableWeaponIdx(idx)){
+    const fit=_handFitForWeapon(idx);
+    if(!H.handFit||H.handFit.id!==fit.id)_applyWeaponHandFit(idx,true);
+    return;
+  }
   // Reset recoil pattern + counter-strafe stop on swap
   if(typeof RECOIL_STATE!=='undefined'){
     RECOIL_STATE.shotIndex=0;
@@ -15743,9 +15876,9 @@ function switchWeapon(idx){
     $e('reload-bar').style.display='none';
   }
   const W=WEAPONS[idx];P.weaponIdx=idx;
-  const _useAuthoredM4=!!(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive));
-  M4_MESHES.forEach(m=>m.visible=(idx===0)&&!_useAuthoredM4);
-  if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=_useAuthoredM4;
+  const _useAuthoredM4=false;
+  M4_MESHES.forEach(m=>m.visible=false);
+  if(m4AuthoredWeapon&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=false;
   // The imported hand swap clip is authored on a long DCC timeline and leaves
   // the M4 support hand riding above the rail. The gun group already performs
   // the visible swap dip, so keep authored hands on their socketed idle pose.
@@ -15767,22 +15900,7 @@ function switchWeapon(idx){
   // Cancel any in-flight throw animation when leaving knife slot
   if(idx!==2){TK.active=false;throwGrp.position.set(.10,-.10,-.20);throwGrp.rotation.set(0,0,0);}
   refreshAttachmentVisuals();
-  // Support hand visible for two-handed weapons + pistols that use a support grip (USP-T, SPP).
-  lGrp.visible = (idx===0||idx===1||idx===3||idx===4||idx===5||idx===6||idx===7);
-  if(idx===1||idx===6){
-    // USP-T / SPP: same hand scale as M4; pivot farther along -Z (barrel-forward) so more forearm/sleeve reads in frame like a rifle support.
-    lGrp.position.set(-.054,-.044,-.062);
-    lGrp.rotation.set(.195,.13,0);
-    H.lBase.x=lGrp.position.x;H.lBase.y=lGrp.position.y;H.lBase.z=lGrp.position.z;
-  }else if(idx===0){
-    lGrp.position.set(-.004,-.052,-.070);
-    lGrp.rotation.set(.11,0,0);
-    H.lBase.x=-.004;H.lBase.y=-.044;H.lBase.z=-.190;
-  }else{
-    lGrp.position.set(-.004,-.052,-.070);
-    lGrp.rotation.set(.11,0,0);
-    H.lBase.x=-.004;H.lBase.y=-.052;H.lBase.z=-.070;
-  }
+  const handFit=_applyWeaponHandFit(idx,true);
   // Move muzzle flash to current weapon's muzzle (gunGrp-local space)
   if(idx===0)      {if(_useAuthoredM4)_syncAuthoredM4Sockets();else _setMuzzlePos(0,.030,-.49);}   // M4 A2 flash hider
   else if(idx===1) _setMuzzlePos(0,.026,-.15);   // USP-T compact can muzzle
@@ -15796,25 +15914,142 @@ function switchWeapon(idx){
   // Restore the INCOMING weapon's saved ammo state
   P.ammo=P.weaponAmmo[idx];
   P.ammoRes=P.weaponRes[idx];
-  // Rest position — pistol held closer to centerline & slightly higher
-  const tx=idx===1?.10:.13, ty=idx===1?-.085:-.115, tz=idx===1?-.18:-.22;
+  // Rest position — fitted per weapon so the hand anchors stay glued to grips.
+  const restGun=handFit.gun||DEFAULT_HAND_FIT.gun;
+  const tx=restGun.x, ty=restGun.y, tz=restGun.z;
   gunGrp.position.x+=(tx-gunGrp.position.x)*.5;
   gunGrp.position.y+=(ty-gunGrp.position.y)*.5;
   gunGrp.position.z+=(tz-gunGrp.position.z)*.5;
-  // Right-hand animation origin (gunGrp local)
-  H.rBase.z=idx===0?.042:.058;
-  H.rBase.y=idx===0?-.052:-.060;
   $e('weapon-name').textContent=W.name;$e('weapon-num').textContent=W.slot;
   gunGrp.position.z+=-.04;
   _applyWeaponIdxToP2Viewmodel(P2.weaponIdx);
   _syncAuthoredM4Visibility();
   hudUpdate();
 }
+const WALL_JUMP={
+  reach:.30,
+  up:7.75,
+  impulse:13.00,
+  tangentImpulse:4.80,
+  dur:.42,
+  cooldownMs:180,
+  sameWallMs:560,
+  minAirMs:55,
+  minGroundClear:.14,
+  shove:.115,
+  hardenMs:580
+};
+function _resetWallJumpState(pl){
+  if(!pl)return;
+  pl.wallJumpTimer=0;pl.wallJumpHardenTimer=0;pl.wallJumpVx=0;pl.wallJumpVz=0;pl.wallJumpSide=0;pl.wallJumpImpact=0;pl.wallJumpNx=0;pl.wallJumpNz=0;pl.wallContact=null;
+  pl._lastWallJumpT=0;pl._wallJumpLockWall=null;
+  if(pl.grounded)pl._lastGroundedT=performance.now();
+}
+function _wallJumpProbeFor(pl,walls,reach=WALL_JUMP.reach){
+  if(!pl||!pl.pos||!walls||!walls.length)return null;
+  const px=pl.pos.x,pz=pl.pos.z,R=PR,maxD=R+reach,maxD2=maxD*maxD;
+  let best=null,bestD2=maxD2;
+  for(const w of walls){
+    if(!w||w.broken)continue;
+    const x0=Math.min(w.x0,w.x1),x1=Math.max(w.x0,w.x1),z0=Math.min(w.z0,w.z1),z1=Math.max(w.z0,w.z1);
+    if(!Number.isFinite(x0)||!Number.isFinite(x1)||!Number.isFinite(z0)||!Number.isFinite(z1))continue;
+    if(px<x0-maxD||px>x1+maxD||pz<z0-maxD||pz>z1+maxD)continue;
+    const inside=px>=x0&&px<=x1&&pz>=z0&&pz<=z1;
+    let nx=0,nz=0,dist=0,d2=0;
+    if(inside){
+      const dl=Math.abs(px-x0),dr=Math.abs(x1-px),db=Math.abs(pz-z0),df=Math.abs(z1-pz);
+      const m=Math.min(dl,dr,db,df);
+      if(m===dl){nx=-1;nz=0;}else if(m===dr){nx=1;nz=0;}else if(m===db){nx=0;nz=-1;}else{nx=0;nz=1;}
+      d2=0;
+    }else{
+      const cx=Math.max(x0,Math.min(px,x1)),cz=Math.max(z0,Math.min(pz,z1));
+      const dx=px-cx,dz=pz-cz;
+      d2=dx*dx+dz*dz;
+      if(d2>bestD2)continue;
+      dist=Math.sqrt(Math.max(d2,1e-8));
+      nx=dx/dist;nz=dz/dist;
+    }
+    const rx=Math.cos(pl.yaw||0),rz=-Math.sin(pl.yaw||0);
+    const side=Math.sign(nx*rx+nz*rz)||0;
+    bestD2=d2;
+    best={wall:w,nx,nz,dist:Math.sqrt(d2),side,geometryId:w.geometryId||null,roomId:w.roomId||null};
+  }
+  return best;
+}
+function _wallJumpIntentDir(keys,yaw){
+  const KJ=keys||K;
+  const fx=-Math.sin(yaw),fz=-Math.cos(yaw),rx=Math.cos(yaw),rz=-Math.sin(yaw);
+  let x=0,z=0;
+  if(KJ.KeyW){x+=fx;z+=fz;}if(KJ.KeyS){x-=fx;z-=fz;}
+  if(KJ.KeyA){x-=rx;z-=rz;}if(KJ.KeyD){x+=rx;z+=rz;}
+  const l=Math.hypot(x,z);
+  return l>0.001?{x:x/l,z:z/l}:null;
+}
+function _canWallJump(pl,probe){
+  if(!pl||!probe||pl.dead||pl.grounded||pl.vaulting)return false;
+  const nowMs=performance.now();
+  const sinceWall=nowMs-(pl._lastWallJumpT||0);
+  if(sinceWall<WALL_JUMP.cooldownMs)return false;
+  if(pl._wallJumpLockWall===probe.wall&&sinceWall<WALL_JUMP.sameWallMs)return false;
+  const groundY=_floorYAt(pl.pos.x,pl.pos.z,G.levelData&&G.levelData.floorRegions);
+  if(pl.jumpH<=groundY+WALL_JUMP.minGroundClear&&(pl.vy||0)<=0.2)return false;
+  const airMs=nowMs-(pl._lastGroundedT||pl._jumpStartT||0);
+  if(airMs<WALL_JUMP.minAirMs&&(pl.vy||0)>1.5)return false;
+  return true;
+}
+function _performWallJump(pl,probe,keys=K){
+  const intent=_wallJumpIntentDir(keys,pl.yaw||0);
+  let tx=0,tz=0;
+  if(intent){
+    tx=intent.x;tz=intent.z;
+    const into=tx*probe.nx+tz*probe.nz;
+    if(into<0){tx-=probe.nx*into;tz-=probe.nz*into;}
+  }
+  let ox=probe.nx*1.08+tx*.50,oz=probe.nz*1.08+tz*.50;
+  const ol=Math.hypot(ox,oz)||1;
+  ox/=ol;oz/=ol;
+  const tangentLen=Math.hypot(tx,tz);
+  pl.vy=Math.max(pl.vy||0,WALL_JUMP.up+(tangentLen>0?.22:0));
+  pl.grounded=false;
+  pl.wallJumpTimer=WALL_JUMP.dur;
+  pl.wallJumpDur=WALL_JUMP.dur;
+  pl.wallJumpVx=ox*WALL_JUMP.impulse+tx*WALL_JUMP.tangentImpulse;
+  pl.wallJumpVz=oz*WALL_JUMP.impulse+tz*WALL_JUMP.tangentImpulse;
+  pl.wallJumpSide=probe.side;
+  pl.wallJumpImpact=1;
+  pl.wallJumpNx=probe.nx;
+  pl.wallJumpNz=probe.nz;
+  pl.wallContact={nx:probe.nx,nz:probe.nz,dist:probe.dist,side:probe.side,geometryId:probe.geometryId,roomId:probe.roomId};
+  pl._lastWallJumpT=performance.now();
+  pl._wallJumpLockWall=probe.wall;
+  pl._wallJumpHardenUntil=pl._lastWallJumpT+WALL_JUMP.hardenMs;
+  pl.wallJumpHardenTimer=WALL_JUMP.hardenMs/1000;
+  pl.pos.x+=probe.nx*WALL_JUMP.shove;
+  pl.pos.z+=probe.nz*WALL_JUMP.shove;
+  pl._jumpStartT=pl._lastWallJumpT;
+  pl._didDoubleJump=false;
+  pl.sliding=false;pl.slideTimer=0;pl.slideTarget=0;pl.slideAmt=Math.min(pl.slideAmt||0,.08);
+  if(pl===P){
+    PP.shakeY-=.12;
+    PP.shakeX+=probe.side*.12;
+    P.dmgPitch-=.045;
+    P.dmgRoll+=probe.side*.032;
+    gunGrp.position.x+=probe.side*.028;
+    gunGrp.position.z+=.030;
+  }
+  sfxWallJump();
+}
 function doJump(){
   // Allow double-jump if perk + already in air with one jump used
   if(!P.grounded&&P.vaulting)return;
   if(P.dead)return;
   if(!P.grounded){
+    const walls=G.levelData?G.levelData.walls:[];
+    const wallProbe=_wallJumpProbeFor(P,walls,WALL_JUMP.reach);
+    if(_canWallJump(P,wallProbe)){
+      _performWallJump(P,wallProbe,K);
+      return;
+    }
     if(P._canDoubleJump&&!P._didDoubleJump){
       P._didDoubleJump=true;
       P.vy=5.5;
@@ -15875,6 +16110,24 @@ function doVault(v){
   sfxVault();
 }
 function sfxJump(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(200,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.12);g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);}
+function sfxWallJump(){
+  sfxJump();
+  const c=getAC();
+  const thud=c.createOscillator(),tg=c.createGain();
+  thud.type='triangle';
+  thud.frequency.setValueAtTime(92,c.currentTime);
+  thud.frequency.exponentialRampToValueAtTime(38,c.currentTime+.16);
+  tg.gain.setValueAtTime(.18,c.currentTime);
+  tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
+  thud.connect(tg);tg.connect(c.destination);thud.start();thud.stop(c.currentTime+.20);
+  const snap=c.createOscillator(),sg=c.createGain();
+  snap.type='square';
+  snap.frequency.setValueAtTime(210,c.currentTime);
+  snap.frequency.exponentialRampToValueAtTime(130,c.currentTime+.035);
+  sg.gain.setValueAtTime(.035,c.currentTime);
+  sg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.045);
+  snap.connect(sg);sg.connect(c.destination);snap.start();snap.stop(c.currentTime+.055);
+}
 // ── VOICE BARKS ────────────────────────────────────────────────────
 // Procedural formant-ish vocal grunts. Two oscillators tuned to vowel-ish
 // frequencies plus a noise burst gives a passable "ugh / uh / agh" reaction.
@@ -16068,12 +16321,7 @@ const CIVILIAN_BEHAVIORS={
 };
 // ── EXHAUSTIVE PER-WEAPON UPGRADE PATH — display in pause loadout viewer
 const WEAPON_UPGRADE_PATHS={
-  0:[
-    {tier:1,milestone:'Use M4 for 50 kills',unlock:'Unlocks tactical sight'},
-    {tier:2,milestone:'Use M4 for 200 kills',unlock:'Unlocks extended mag'},
-    {tier:3,milestone:'Use M4 for 500 kills',unlock:'Unlocks suppressor variant'},
-    {tier:4,milestone:'Reach 1000 M4 kills',unlock:'Unlocks gold variant'}
-  ],
+  0:[],
   1:[
     {tier:1,milestone:'Use Deagle for 25 kills',unlock:'Unlocks heavy mag'},
     {tier:2,milestone:'Use Deagle for 100 kills',unlock:'Unlocks chrome slide'},
@@ -17045,7 +17293,7 @@ const CINEMATIC_SCENES={
 };
 // ── COMPREHENSIVE WEAPON UNLOCK FLOWCHART — when each weapon becomes available
 const WEAPON_UNLOCK_GATES={
-  0:{always:true,name:'M4A1'},
+  0:{removed:true,name:'M4A1'},
   1:{always:true,name:'USP-T'},
   2:{always:true,name:'KNIFE'},
   3:{building:1,name:'SHOTGUN',  unlock:'Clear B1'},
@@ -17055,6 +17303,7 @@ const WEAPON_UNLOCK_GATES={
   7:{building:5,name:'SNIPER',   unlock:'Clear B5'}
 };
 function isWeaponUnlocked(idx){
+  if(!isPlayableWeaponIdx(idx))return false;
   const gate=WEAPON_UNLOCK_GATES[idx];
   if(!gate)return true;
   if(gate.always)return true;
@@ -17283,7 +17532,6 @@ const INPUT_BINDINGS={
     slot5:'Digit5',
     slot6:'Digit6',
     slot7:'Digit7',
-    slot8:'Digit8',
     radial:'KeyQ'
   },
   ui:{
@@ -17396,9 +17644,9 @@ function _cameraDip(amount){
 }
 // ── ARCHETYPE WEAPON PREFERENCES — aligned to operator playstyle
 const ARCHETYPE_PREFS={
-  echo:    {primary:[0,4],secondary:[1,6],favored:'M4'},
+  echo:    {primary:[1,4],secondary:[6,2],favored:'USP'},
   wraith:  {primary:[4,6,7],secondary:[6,2],favored:'SUPP'},
-  havoc:   {primary:[3,0],secondary:[1,4],favored:'BOOM'},
+  havoc:   {primary:[3,4],secondary:[1,6],favored:'BOOM'},
   edge:    {primary:[2,6],secondary:[1,2],favored:'MELEE'}
 };
 // ── COMPREHENSIVE BACKLOG — long task list of game features inspired by feedback
@@ -19061,16 +19309,18 @@ function openRadial(){
   // Render the radial overlay
   const r=$e('radial');if(!r)return;
   r.innerHTML='';
-  for(let i=0;i<WEAPONS.length;i++){
+  const slots=PLAYABLE_WEAPON_INDICES;
+  for(let si=0;si<slots.length;si++){
+    const i=slots[si];
     const w=WEAPONS[i];
-    const a=(i/WEAPONS.length)*Math.PI*2-Math.PI/2;
+    const a=(si/slots.length)*Math.PI*2-Math.PI/2;
     const cx=120+Math.cos(a)*82;
     const cy=120+Math.sin(a)*82;
     const slot=document.createElement('div');
     slot.className='rad-slot'+(i===P.weaponIdx?' rad-current':'');
     slot.style.left=cx+'px';slot.style.top=cy+'px';
     slot.dataset.idx=i;
-    slot.innerHTML=`<div class="rad-num">${i+1}</div><div class="rad-name">${w.name.split(' ')[0]}</div>`;
+    slot.innerHTML=`<div class="rad-num">${si+1}</div><div class="rad-name">${w.name.split(' ')[0]}</div>`;
     slot.addEventListener('mouseenter',()=>{
       document.querySelectorAll('.rad-slot').forEach(s=>s.classList.remove('rad-hover'));
       slot.classList.add('rad-hover');
@@ -19968,7 +20218,7 @@ const ONBOARD={steps:[
   {id:'focus', hint:'<kbd>F</kbd> activates Focus mode (slow time)',cond:()=>P.focus<.85||P.focusActive},
   {id:'melee', hint:'<kbd>V</kbd> melee · <kbd>E</kbd> takedown low-HP enemies',cond:()=>P.execs>=1||P.kills>=8},
   {id:'tact',  hint:'<kbd>G</kbd> grenade · <kbd>T</kbd> smoke · <kbd>Y</kbd> flashbang',cond:()=>P.kills>=12},
-  {id:'weap',  hint:'<kbd>1</kbd>-<kbd>8</kbd> swap weapons · firing while reloading cancels',cond:()=>P.weaponIdx!==0},
+  {id:'weap',  hint:'<kbd>1</kbd>-<kbd>7</kbd> swap weapons · firing while reloading cancels',cond:()=>isPlayableWeaponIdx(P.weaponIdx)},
   {id:'shop',  hint:'<kbd>B</kbd> opens the shop between firefights',cond:()=>G.shopOpen||P.kills>=20}
 ],idx:0,active:false,timer:0};
 function tickOnboard(dt){
@@ -20065,6 +20315,7 @@ function tickDuelRespawns(){
     if(sp){pl.pos.set(sp.x,.2,sp.z);pl.yaw=Number.isFinite(sp.yaw)?sp.yaw:0;pl.pitch=0;}
     pl.hp=pl.maxHp||100;pl.dead=false;pl.dmgFlash=0;
     pl.reloading=false;pl.reloadTimer=0;
+    pl.vy=0;pl.jumpH=0;pl.grounded=true;_resetWallJumpState(pl);
     DUEL.respawnAt[slot]=0;
   }
 }
@@ -20171,13 +20422,16 @@ function startDuelMode(){
   const s0=DUEL.spawns[0],s1=DUEL.spawns[1]||DUEL.spawns[0];
   P.pos.set(s0.x,.2,s0.z);P.yaw=Number.isFinite(s0.yaw)?s0.yaw:Math.PI;P.pitch=0;
   P2.pos.set(s1.x,.2,s1.z);P2.yaw=Number.isFinite(s1.yaw)?s1.yaw:0;P2.pitch=0;
-  P.weaponIdx=0;P2.weaponIdx=0;
+  P.weaponIdx=START_WEAPON_IDX;P2.weaponIdx=START_WEAPON_IDX;
   resetWeaponAmmoState(0,0,false);
   P2.weaponAmmo=P.weaponAmmo.slice();P2.weaponRes=P.weaponRes.slice();
-  P2.ammo=P2.weaponAmmo[0];P2.ammoRes=P2.weaponRes[0];
-  M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);DMR_MESHES.forEach(m=>m.visible=false);SPP_MESHES.forEach(m=>m.visible=false);SNI_MESHES.forEach(m=>m.visible=false);
+  P2.ammo=P2.weaponAmmo[START_WEAPON_IDX];P2.ammoRes=P2.weaponRes[START_WEAPON_IDX];
+  M4_MESHES.forEach(m=>m.visible=false);DE_MESHES.forEach(m=>m.visible=START_WEAPON_IDX===1&&!deagleGlbRig);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);DMR_MESHES.forEach(m=>m.visible=false);SPP_MESHES.forEach(m=>m.visible=false);SNI_MESHES.forEach(m=>m.visible=false);
+  if(deagleGlbRig)deagleGlbRig.visible=START_WEAPON_IDX===1;
   _syncAuthoredM4Visibility();
-  _applyWeaponIdxToP2Viewmodel(0);
+  _applyWeaponIdxToP2Viewmodel(START_WEAPON_IDX);
+  switchWeapon(START_WEAPON_IDX,true);
+  _applyWeaponIdxToP2Player(START_WEAPON_IDX);
   throwGrp.visible=false;knifGrp.visible=false;
   if(typeof ambientStart==='function')ambientStart(1);
   if(typeof musicSetBuilding==='function')musicSetBuilding(1);
@@ -20212,8 +20466,9 @@ async function startEndlessMode(){
   else G.enemyMgr.scene=scene;
   const startYaw=G.building===1?0:Math.PI;
   P.pos.set(0,.2,18);P.yaw=startYaw;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
-  P.weaponIdx=0;resetWeaponAmmoState(G.building*18,G.building*8,false);
-  M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);DMR_MESHES.forEach(m=>m.visible=false);SPP_MESHES.forEach(m=>m.visible=false);SNI_MESHES.forEach(m=>m.visible=false);
+  P.weaponIdx=START_WEAPON_IDX;resetWeaponAmmoState(G.building*18,G.building*8,false);
+  switchWeapon(START_WEAPON_IDX,true);
+  M4_MESHES.forEach(m=>m.visible=false);
   _syncAuthoredM4Visibility();
   hudUpdate();
   // Open all doors so player has full mobility
@@ -21268,26 +21523,18 @@ function _applyPadToSlot(pad,slot,dt){
   if(pressed(3)){
     if(slot===0&&rbHeld)toggleShop&&toggleShop();
     else{
-      let n=pl.weaponIdx+1;
-      if(n>=WEAPONS.length)n=0;
+      const n=nextPlayableWeaponIdx(pl.weaponIdx,1);
       if(slot===0)switchWeapon(n);
-      else{
-        P2.weaponIdx=n;
-        const Ww=WEAPONS[n];
-        if(Ww){P2.FIRE_RATE=Ww.fireRate;P2.RELOAD_TIME=Ww.reloadTime;}
-        P2.ammo=P2.weaponAmmo[n]||0;
-        P2.ammoRes=P2.weaponRes[n]||0;
-        _applyWeaponIdxToP2Viewmodel(n);
-      }
+      else _applyWeaponIdxToP2Player(n);
     }
   }
   if(slot===0&&lbHeld&&pressed(14)){
-    switchWeapon((P.weaponIdx-1+WEAPONS.length)%WEAPONS.length);
+    switchWeapon(nextPlayableWeaponIdx(P.weaponIdx,-1));
   }else if(pressed(14)&&slot===0&&!adsHeld){
     tryThrowSmoke&&tryThrowSmoke();
   }
   if(slot===0&&lbHeld&&pressed(15)){
-    switchWeapon((P.weaponIdx+1)%WEAPONS.length);
+    switchWeapon(nextPlayableWeaponIdx(P.weaponIdx,1));
   }else if(pressed(15)&&slot===0&&!adsHeld){
     tryThrowFlash&&tryThrowFlash();
   }
@@ -21951,11 +22198,11 @@ async function startBuilding(){
   P.pos.set(spawnX,spawnFloorY,spawnZ);
   const spawnSnap=_snapSpawnOutOfWalls(P.pos.x,P.pos.z,spawnFloorY,G.levelData&&G.levelData.walls,PR,null);
   if(spawnSnap)P.pos.copy(spawnSnap);
-  P.vy=0;P.jumpH=spawnFloorY;
+  P.vy=0;P.jumpH=spawnFloorY;_resetWallJumpState(P);
   P.yaw=campaignStartYaw;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
-  P.weaponIdx=0;M4_MESHES.forEach(m=>m.visible=true);DE_MESHES.forEach(m=>m.visible=false);throwGrp.visible=false;TK.active=false;lGrp.visible=true;_setMuzzlePos(0,.030,-.49);_syncAuthoredM4Visibility();
+  P.weaponIdx=START_WEAPON_IDX;M4_MESHES.forEach(m=>m.visible=false);DE_MESHES.forEach(m=>m.visible=false);throwGrp.visible=false;TK.active=false;lGrp.visible=true;_syncAuthoredM4Visibility();
   refreshAttachmentVisuals();
-  const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
+  const W0=START_WEAPON;P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
   const resumeState=G._resumeState||null;G._resumeState=null;
   P.hp=P.maxHp||100;P.dead=false;P.reloading=false;
   // Reset per-weapon ammo state so each building starts with full mags
@@ -21965,11 +22212,12 @@ async function startBuilding(){
     if(Array.isArray(resumeState.weaponAmmo))P.weaponAmmo=resumeState.weaponAmmo.slice(0,WEAPONS.length);
     if(Array.isArray(resumeState.weaponRes))P.weaponRes=resumeState.weaponRes.slice(0,WEAPONS.length);
     normalizePlayerRuntime();
-    const resumeWeaponIdx=Math.max(0,Math.min(WEAPONS.length-1,resumeState.weaponIdx||0));
+    const resumeWeaponIdx=normalizeWeaponIdx(resumeState.weaponIdx||START_WEAPON_IDX);
     P.ammo=P.weaponAmmo[P.weaponIdx]??WEAPONS[P.weaponIdx].mag;
     P.ammoRes=P.weaponRes[P.weaponIdx]??WEAPONS[P.weaponIdx].res;
-    if(resumeWeaponIdx!==P.weaponIdx)switchWeapon(resumeWeaponIdx);
+    switchWeapon(resumeWeaponIdx,resumeWeaponIdx===P.weaponIdx);
   }
+  if(!resumeState)switchWeapon(START_WEAPON_IDX,true);
   if(G.playMode==='coop'&&G.splitScreenActive){
     P2.pos.copy(P.pos);P2.pos.x+=1.2;P2.yaw=P.yaw;P2.pitch=0;
     const sp=_snapSpawnOutOfWalls(P2.pos.x,P2.pos.z,WT,G.levelData&&G.levelData.walls,.46,null);
@@ -21985,7 +22233,7 @@ async function startBuilding(){
   }
   const WNow=WEAPONS[P.weaponIdx]||W0;
   $e('weapon-name').textContent=WNow.name;$e('weapon-num').textContent=WNow.slot;
-    P.vy=0;P.jumpH=spawnFloorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;
+    P.vy=0;P.jumpH=spawnFloorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);
     MELEE.out=false;MELEE.swinging=false;MELEE.cooldown=0;MELEE.returnTimer=0;knifGrp.visible=false;gunGrp.visible=true;
   hudUpdate();
   // Per-building reverb tail
@@ -22397,7 +22645,7 @@ function resumeRunState(){
   G.building=r.building;P.money=r.money;
   P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
   P.attachments=_normalizeAttachments(r.attachments);
-  P.weaponIdx=Math.max(0,Math.min(WEAPONS.length-1,r.weaponIdx||0));
+  P.weaponIdx=normalizeWeaponIdx(r.weaponIdx||START_WEAPON_IDX);
   if(Array.isArray(r.weaponAmmo))P.weaponAmmo=r.weaponAmmo.slice(0,WEAPONS.length);
   if(Array.isArray(r.weaponRes))P.weaponRes=r.weaponRes.slice(0,WEAPONS.length);
   normalizePlayerRuntime();
@@ -23730,7 +23978,7 @@ function startTutorial(){
   _tutorialTip('<span class="kb">R</span> reload &nbsp; firing cancels reload',13500);
   _tutorialTip('<span class="kb">F</span> activate FOCUS — slow time briefly',18500);
   _tutorialTip('<span class="kb">V</span> melee &nbsp; <span class="kb">G</span> grenade &nbsp; <span class="kb">H</span> heal pack',23500);
-  _tutorialTip('<span class="kb">1</span>-<span class="kb">8</span> swap weapons &nbsp; <span class="kb">B</span> shop &nbsp; <span class="kb">Tab</span> loadout',28500);
+  _tutorialTip('<span class="kb">1</span>-<span class="kb">7</span> swap weapons &nbsp; <span class="kb">B</span> shop &nbsp; <span class="kb">Tab</span> loadout',28500);
   _tutorialTip('Headshots are an instant kill. <span style="color:#ffd060">Move &amp; chain.</span>',33500);
 }
 // ── AIM DEMO MAP - authored FPS blockout with no combatants ───────────────
@@ -24530,17 +24778,18 @@ async function startDemoMap(){
     const snapped=_snapSpawnOutOfWalls(P.pos.x,P.pos.z,AIM_DEMO_MAP.floorY,G.levelData.walls,PR,null);
     if(snapped)P.pos.copy(snapped);
     P.yaw=Number.isFinite(sp.yaw)?sp.yaw:Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
-    P.vy=0;P.jumpH=AIM_DEMO_MAP.floorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;
-    P.weaponIdx=0;
-    M4_MESHES.forEach(m=>m.visible=true);
-    _syncAuthoredM4Visibility();
+    P.vy=0;P.jumpH=AIM_DEMO_MAP.floorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);
+	    P.weaponIdx=START_WEAPON_IDX;
+	    M4_MESHES.forEach(m=>m.visible=false);
+	    _syncAuthoredM4Visibility();
     DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);
     if(typeof DMR_MESHES!=='undefined')DMR_MESHES.forEach(m=>m.visible=false);
     if(typeof SPP_MESHES!=='undefined')SPP_MESHES.forEach(m=>m.visible=false);
     if(typeof SNI_MESHES!=='undefined')SNI_MESHES.forEach(m=>m.visible=false);
-    throwGrp.visible=false;TK.active=false;lGrp.visible=true;knifGrp.visible=false;gunGrp.visible=true;
-    resetWeaponAmmoState(0,0,true);
-    const W0=WEAPONS[0];P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
+	    throwGrp.visible=false;TK.active=false;lGrp.visible=true;knifGrp.visible=false;gunGrp.visible=true;
+	    resetWeaponAmmoState(0,0,true);
+	    switchWeapon(START_WEAPON_IDX,true);
+	    const W0=START_WEAPON;P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
     refreshAttachmentVisuals();
     if(typeof reverbSetBuilding==='function')reverbSetBuilding(1);
     hudUpdate();
@@ -24582,18 +24831,19 @@ async function startRange(){
   else G.enemyMgr.scene=scene;
   G.enemyMgr.clear();
   P.pos.set(0,.2,18);P.yaw=Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
-  P.weaponIdx=0;
-  M4_MESHES.forEach(m=>m.visible=true);
-  _syncAuthoredM4Visibility();
+	  P.weaponIdx=START_WEAPON_IDX;
+	  M4_MESHES.forEach(m=>m.visible=false);
+	  _syncAuthoredM4Visibility();
   DE_MESHES.forEach(m=>m.visible=false);
   SG_MESHES.forEach(m=>m.visible=false);
   SM_MESHES.forEach(m=>m.visible=false);
   if(typeof DMR_MESHES!=='undefined')DMR_MESHES.forEach(m=>m.visible=false);
   if(typeof SPP_MESHES!=='undefined')SPP_MESHES.forEach(m=>m.visible=false);
   if(typeof SNI_MESHES!=='undefined')SNI_MESHES.forEach(m=>m.visible=false);
-  throwGrp.visible=false;TK.active=false;lGrp.visible=true;
-  P.hp=P.maxHp||100;P.dead=false;P.reloading=false;
-  resetWeaponAmmoState(0,0,true);
+	  throwGrp.visible=false;TK.active=false;lGrp.visible=true;
+	  P.hp=P.maxHp||100;P.dead=false;P.reloading=false;
+	  resetWeaponAmmoState(0,0,true);
+	  switchWeapon(START_WEAPON_IDX,true);
   // Spawn 8 target dummies at varied positions
   RANGE.targets=[];
   const positions=[
@@ -25036,20 +25286,21 @@ function updateHands(dt){
   H.idlePhase+=dt;
   const ip=H.idlePhase;
   const _wi=P.weaponIdx|0;
-  const _cropM4RightForearm=_wi===0&&_isAuthoredM4RuntimeActive();
+  const handFit=H.handFit||_handFitForWeapon(_wi);
+  const _animVM=playerAnimState0.resolved&&playerAnimState0.resolved.viewmodel?playerAnimState0.resolved.viewmodel:null;
+  const _vaultForearmCrop=!!(P.vaulting&&(P.vaultT||0)>.05&&(P.vaultT||0)<.78);
+  const _cropM4RightForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop;
   for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4RightForearm;
-  const _cropM4LeftForearm=_wi===0&&_isAuthoredM4RuntimeActive();
+  const _cropM4LeftForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop;
   for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4LeftForearm;
   const _m4RuntimeGrip=_wi===0&&_isAuthoredM4RuntimeActive();
   for(const part of _M4_SUPPORT_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
   for(const part of _M4_SUPPORT_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
   for(const part of _M4_TRIGGER_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
   for(const part of _M4_TRIGGER_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
-  rGrp.scale.setScalar(_HAND_PROM_SCALE*(_m4RuntimeGrip?.62:1));
-  let _lHandScale=1.04;
-  if(_wi===0||_wi===1||_wi===6)_lHandScale=1.02; // pistols match M4 hand scale; longer guns slightly larger support hand
-  else if(_wi===3||_wi===4||_wi===5||_wi===7)_lHandScale=1.06;
-  lGrp.scale.setScalar(_HAND_PROM_SCALE*_lHandScale*(_m4RuntimeGrip?.78:1));
+  rGrp.scale.setScalar(_HAND_PROM_SCALE*(_m4RuntimeGrip?.92:1));
+  let _lHandScale=handFit.leftScale||1.04;
+  lGrp.scale.setScalar(_HAND_PROM_SCALE*_lHandScale*(_m4RuntimeGrip?.98:1));
   // Smooth breathing oscillation
   const breathY=Math.sin(ip*1.15)*.0020;
   const breathRX=Math.sin(ip*1.15)*.0095;
@@ -25063,19 +25314,22 @@ function updateHands(dt){
   let rTX=H.rBase.x+swayX;
   let rTY=H.rBase.y+breathY+walkBob;
   let rTZ=H.rBase.z+microZ;
-  let rTRX=breathRX+walkTilt*.5;
-  let rTRY=0;
-  let rTRZ=walkTilt;
+  let rTRX=(H.rBase.rx||0)+breathRX+walkTilt*.5;
+  let rTRY=H.rBase.ry||0;
+  let rTRZ=(H.rBase.rz||0)+walkTilt;
   // --- Target values for left hand ---
   let lTX=H.lBase.x-swayX;
   let lTY=H.lBase.y+breathY*.7+walkBob*.8;
   let lTZ=H.lBase.z-microZ;
-  let lTRX=.11+breathRX*.4;
-  let lTRY=0;
-  let lTRZ=-walkTilt*.5;
+  let lTRX=(H.lBase.rx==null?0.11:H.lBase.rx)+breathRX*.4;
+  let lTRY=H.lBase.ry||0;
+  let lTRZ=(H.lBase.rz||0)-walkTilt*.5;
   // --- Trigger finger target ---
   let idxTRX=0;
   let fingerSnap=0;
+  let vaultHandOpen=0;
+  let shotgunPump=0;
+  let sniperBolt=0;
   // ── ADS: pull hands together and up — gun rises to eye level along sight line
   const a=P.adsVis;
   // Hipfire cant (CS-style): yaw+roll on wrists / gun so viewmodel isn't parallel to the view plane; fades with ADS
@@ -25123,7 +25377,8 @@ function updateHands(dt){
   }
   // Authored M4 fallback hands retarget to the GLB grip sockets so the
   // procedural rig still matches the production weapon silhouette.
-  if(_wi===0&&_isAuthoredM4RuntimeActive()&&!P.reloading){
+  const retargetProceduralHandsToAuthoredM4Sockets=false;
+  if(retargetProceduralHandsToAuthoredM4Sockets&&_wi===0&&_isAuthoredM4RuntimeActive()&&!P.reloading){
     const lSock=_m4SocketLocal('gripLeft',null);
     if(lSock){
       lTX=THREE.MathUtils.lerp(lTX,lSock.x-.020,.92);
@@ -25173,12 +25428,62 @@ function updateHands(dt){
   // ── SPRINT POSE (Phase C5) — gun lower, more forward tilt, looser grip
   const sprAmt=P.sprintAmt||0;
   if(sprAmt>0){
-    rTY-=sprAmt*.034;
-    rTZ+=sprAmt*.028;
-    rTRX+=sprAmt*.28;       // barrel angles down
-    rTRZ-=sprAmt*.18;       // gun tilts inward (cradle pose)
-    lTY-=sprAmt*.018;
-    lTRX+=sprAmt*.32;
+    rTX+=sprAmt*.014;
+    rTY-=sprAmt*.050;
+    rTZ+=sprAmt*.040;
+    rTRX+=sprAmt*.36;       // barrel angles down
+    rTRZ-=sprAmt*.22;       // gun tilts inward (cradle pose)
+    lTX-=sprAmt*.032;
+    lTY+=sprAmt*.018;
+    lTZ+=sprAmt*.034;
+    lTRX+=sprAmt*.22;
+    lTRY+=sprAmt*.12;
+    lTRZ+=sprAmt*.16;
+    vaultHandOpen=Math.max(vaultHandOpen,sprAmt*.28);
+  }
+  if(_animVM){
+    const airLift=_animVM.airLift||0,fallDrop=_animVM.fallDrop||0,apexFloat=_animVM.apexFloat||0,landPunch=_animVM.landPunch||0;
+    const stepX=_animVM.runStepX||0,stepY=_animVM.runStepY||0,stepRoll=_animVM.runStepRoll||0,stepPitch=_animVM.runStepPitch||0;
+    const airY=airLift+fallDrop+apexFloat;
+    rTX+=stepX*.55;
+    rTY+=airY*.52+stepY*.55-landPunch*.30;
+    rTZ+=fallDrop*.44-airLift*.20+landPunch*.26;
+    rTRX+=stepPitch*.60+fallDrop*1.25-landPunch*.90;
+    rTRZ+=stepRoll*.75;
+    if(lGrp.visible){
+      lTX-=stepX*.38;
+      lTY+=airY*.45+stepY*.45-landPunch*.24;
+      lTZ+=fallDrop*.34-airLift*.16+landPunch*.20;
+      lTRX+=stepPitch*.48+fallDrop*1.05-landPunch*.70;
+      lTRZ-=stepRoll*.55;
+    }
+    vaultHandOpen=Math.max(vaultHandOpen,THREE.MathUtils.clamp(fallDrop*4+landPunch*3,0,.32));
+  }
+  // ── MANTLE / VAULT HAND PLANT — hands lead the body, then the weapon
+  // follows. This mirrors the reference clip's ledge-climb readability.
+  if(P.vaulting){
+    const vt=THREE.MathUtils.clamp(P.vaultT||0,0,1);
+    const plantIn=THREE.MathUtils.smoothstep(vt,.02,.32);
+    const plantOut=1-THREE.MathUtils.smoothstep(vt,.68,.98);
+    const plant=plantIn*plantOut;
+    const crest=Math.sin(vt*Math.PI);
+    const dir=P.vaultDir||'forward';
+    const side=dir==='left'?-1:dir==='right'?1:0;
+    const back=dir==='backward'?1:0;
+    rTX+=plant*(.142+side*.050-back*.045);
+    rTY+=plant*(.074-back*.020)+crest*.010;
+    rTZ-=plant*(.070-back*.030);
+    rTRX-=plant*(.24-back*.10);
+    rTRY+=plant*(.40+side*.20);
+    rTRZ+=plant*(.72+side*.42-back*.50);
+    lTX-=plant*(.170-side*.060-back*.035);
+    lTY+=plant*(.082-back*.018)+crest*.012;
+    lTZ-=plant*(.064-back*.028);
+    lTRX-=plant*(.22-back*.08);
+    lTRY-=plant*(.30-side*.24);
+    lTRZ-=plant*(.56-side*.48-back*.30);
+    idxTRX-=plant*.22;
+    vaultHandOpen=Math.max(vaultHandOpen,plant*.92+crest*.18);
   }
   // ── WEAPON SWAP MOTION (Phase C4) — gun lowers offscreen briefly when changing
   if(typeof H.swapT==='undefined')H.swapT=0;
@@ -25194,17 +25499,17 @@ function updateHands(dt){
     rTRX+=drop*.65;
     lTY-=drop*.08;
   }
-  // ── USP-T hipfire: left hand rests off the pistol (true one-hand); ADS blends it back onto support grip. Not during reload.
-  if(P.weaponIdx===1&&!P.reloading){
+  // ── Compact pistols: hipfire relaxes the support hand but keeps it braced on the frame.
+  if(handFit.offHandHip&&!P.reloading){
     const hipUsp=Math.max(0,1-Math.min(1,a/.48));
     if(hipUsp>.04){
       const hb=Math.sin(ip*1.05)*.0018;
-      lTX+=hipUsp*(-.032+hb);
-      lTY+=hipUsp*(-.026+Math.sin(ip*.98)*.0022);
-      lTZ+=hipUsp*(.036+Math.cos(ip*.79)*.0018);
-      lTRX+=hipUsp*(-.1+a*.55);
-      lTRY+=hipUsp*(.042+Math.sin(ip*.74)*.055);
-      lTRZ+=hipUsp*(.08+Math.sin(ip*.66)*.045);
+      lTX+=hipUsp*(-.012+hb);
+      lTY+=hipUsp*(-.010+Math.sin(ip*.98)*.0018);
+      lTZ+=hipUsp*(.012+Math.cos(ip*.79)*.0014);
+      lTRX+=hipUsp*(-.036+a*.28);
+      lTRY+=hipUsp*(.018+Math.sin(ip*.74)*.020);
+      lTRZ+=hipUsp*(.030+Math.sin(ip*.66)*.018);
     }
   }
   // ── FIRE ANIMATION — per-weapon recoil curve profile
@@ -25219,6 +25524,13 @@ function updateHands(dt){
     const fd=recoilProf.dur;
     const raw=H.fireT/fd;
     if(raw>=1){H.firePlaying=false;H.fireT=0;}
+    if(P.weaponIdx===3){
+      const pumpT=THREE.MathUtils.clamp((raw-.24)/.56,0,1);
+      shotgunPump=Math.sin(pumpT*Math.PI);
+    }else if(P.weaponIdx===7){
+      const boltT=THREE.MathUtils.clamp((raw-.20)/.62,0,1);
+      sniperBolt=Math.sin(boltT*Math.PI);
+    }
     // Envelope: sharp snap front, slow settle
     const snap=raw<.30?(raw/.30):Math.max(0,1-(raw-.30)/.70);
     fingerSnap=snap;
@@ -25247,7 +25559,34 @@ function updateHands(dt){
       lTRX+=snap*.055;
       lTZ-=snap*.003;
     }
+    if(shotgunPump>0){
+      lTZ+=shotgunPump*.048;
+      lTY-=shotgunPump*.006;
+      lTRX+=shotgunPump*.085;
+      lTRY-=shotgunPump*.030;
+      vaultHandOpen=Math.max(vaultHandOpen,shotgunPump*.28);
+    }
+    if(sniperBolt>0){
+      rTZ+=sniperBolt*.036;
+      rTY+=sniperBolt*.006;
+      rTRX-=sniperBolt*.070;
+      rTRY+=sniperBolt*.050;
+      idxTRX+=sniperBolt*.080;
+    }
     rTRY-=snap*recoilProf.kickRZ*.14*P.adsVis;
+  }
+  if(typeof sgPump!=='undefined'){
+    const p=P.weaponIdx===3?shotgunPump:0;
+    sgPump.position.z=-.20+p*.050;
+    sgPumpRid1.position.z=-.18+p*.050;
+    sgPumpRid2.position.z=-.21+p*.050;
+    sgPumpRid3.position.z=-.24+p*.050;
+  }
+  if(typeof snBolt!=='undefined'){
+    const b=P.weaponIdx===7?sniperBolt:0;
+    snBolt.position.z=.018+b*.042;
+    snBoltKnob.position.z=.020+b*.042;
+    snBoltKnob.position.y=.032+b*.004;
   }
   // ── RELOAD ANIMATION — hide gun-mounted mag during phases 1-3 so it
   // visually matches the dropped-mag spawn, restore at phase 4 (insert).
@@ -25357,26 +25696,16 @@ function updateHands(dt){
       }
     }
   }
-  // Left hand framing — fades toward ADS on pistols so support grip centers; M4 stays subtle
+  // Left hand framing — small per-weapon offsets around fitted grip anchors.
   if(lGrp.visible){
-    if(_wi===0){
-      if(_isAuthoredM4RuntimeActive()){
-        lTX+=.006;lTY+=.010;lTZ+=.004;lTRY+=.020;lTRZ+=.018;
-      }else{
-        lTX-=.02;lTZ+=.012;lTRY+=.02;lTRZ+=.008;
-      }
-    }else if(_wi===1){
-      const h=1-a;
-      lTX-=.026*h-.004*a;
-      lTZ+=.018*h+.012*a;
-      lTRY+=.03*h+.022*a;
-      lTRZ+=.014*h+.018*a;
-    }else if(_wi===6){
-      const h=1-a*.88;
-      lTX-=.038*h-.003*a;lTZ+=.024*h+.01*a;lTRY+=.04*h+.02*a;lTRZ+=.018*h+.016*a;
-    }else{
-      lTX-=.042;lTZ+=.022;lTRY+=.038;lTRZ+=.014;
-    }
+    const hf=handFit.fine||{};
+    const h=1-a;
+    lTX+=(hf.hipX||0)*h+(hf.adsX||0)*a;
+    lTY+=(hf.hipY||0)*h+(hf.adsY||0)*a;
+    lTZ+=(hf.hipZ||0)*h+(hf.adsZ||0)*a;
+    lTRX+=(hf.hipRX||0)*h+(hf.adsRX||0)*a;
+    lTRY+=(hf.hipRY||0)*h+(hf.adsRY||0)*a;
+    lTRZ+=(hf.hipRZ||0)*h+(hf.adsRZ||0)*a;
   }
   // ── Smooth toward targets — exponential damping keeps motion frame-rate stable
   const ls=22,lm=14;
@@ -25407,19 +25736,21 @@ function updateHands(dt){
   const adsTight=a*((_wi===1||_wi===6)?0.11:0.072);
   const adsTrigFlat=a*.034;
   const ipf=ip;
-  const rMidT=Math.sin(ipf*.73)*.07*fAds+Math.sin(ipf*1.27+.4)*.026+adsTight+relDig*.1+relRack*.095;
-  const rRingT=Math.sin(ipf*.67)*.065*fAds+Math.sin(ipf*1.19)*.023+adsTight*.92+relDig*.085+relRack*.088;
-  const rPinkT=Math.sin(ipf*.81)*.078*fAds+Math.sin(ipf*1.41+.6)*.029+adsTight*.85+relDig*.07+relRack*.078;
-  rMidGrp.rotation.x=damp(rMidGrp.rotation.x,rMidT+relMagBtn*.04-fingerSnap*.16,_fSp,dt);
-  rRingGrp.rotation.x=damp(rRingGrp.rotation.x,rRingT-relMagBtn*.055-fingerSnap*.14,_fSp,dt);
-  rPinkGrp.rotation.x=damp(rPinkGrp.rotation.x,rPinkT-relMagBtn*.062-fingerSnap*.12,_fSp,dt);
-  rMid2.rotation.x=damp(rMid2.rotation.x,.26+Math.sin(ipf*.69)*.062-relDig*.05-fingerSnap*.22+relMagBtn*.05+relRack*.07,_fSp,dt);
-  rRing2.rotation.x=damp(rRing2.rotation.x,.24+Math.sin(ipf*.71)*.058-relDig*.045-fingerSnap*.2-relMagBtn*.04+relRack*.065,_fSp,dt);
-  rPink2.rotation.x=damp(rPink2.rotation.x,.3+Math.sin(ipf*.77)*.068-relDig*.055-fingerSnap*.24-relMagBtn*.045+relRack*.06,_fSp,dt);
-  rIdx2.rotation.x=damp(rIdx2.rotation.x,.28+Math.sin(ipf*.66)*.052-fingerSnap*.28-adsTrigFlat+relIns*.04,_fSp,dt);
-  rThGrp.rotation.x=damp(rThGrp.rotation.x,.06+Math.sin(ipf*.52)*.042+relDig*.02+relMagBtn*.16-relRack*.05,_fSp,dt);
-  rThGrp.rotation.y=damp(rThGrp.rotation.y,Math.sin(ipf*.39)*.028-relMagBtn*.12,_fSp,dt);
-  rThGrp.rotation.z=damp(rThGrp.rotation.z,.5+Math.sin(ipf*.48)*.038-fingerSnap*.075-relMagBtn*.08+relRack*.06,_fSp,dt);
+  const vOpen=THREE.MathUtils.clamp(vaultHandOpen||0,0,1);
+  const animGrip=THREE.MathUtils.clamp((_animVM&&_animVM.fingerCurl)||0,0,1);
+  const rMidT=Math.sin(ipf*.73)*.07*fAds+Math.sin(ipf*1.27+.4)*.026+adsTight+relDig*.1+relRack*.095+animGrip*.055;
+  const rRingT=Math.sin(ipf*.67)*.065*fAds+Math.sin(ipf*1.19)*.023+adsTight*.92+relDig*.085+relRack*.088+animGrip*.052;
+  const rPinkT=Math.sin(ipf*.81)*.078*fAds+Math.sin(ipf*1.41+.6)*.029+adsTight*.85+relDig*.07+relRack*.078+animGrip*.048;
+  rMidGrp.rotation.x=damp(rMidGrp.rotation.x,rMidT+relMagBtn*.04-fingerSnap*.16-vOpen*.20,_fSp,dt);
+  rRingGrp.rotation.x=damp(rRingGrp.rotation.x,rRingT-relMagBtn*.055-fingerSnap*.14-vOpen*.19,_fSp,dt);
+  rPinkGrp.rotation.x=damp(rPinkGrp.rotation.x,rPinkT-relMagBtn*.062-fingerSnap*.12-vOpen*.18,_fSp,dt);
+  rMid2.rotation.x=damp(rMid2.rotation.x,.26+Math.sin(ipf*.69)*.062-relDig*.05-fingerSnap*.22+relMagBtn*.05+relRack*.07-vOpen*.22+animGrip*.060,_fSp,dt);
+  rRing2.rotation.x=damp(rRing2.rotation.x,.24+Math.sin(ipf*.71)*.058-relDig*.045-fingerSnap*.2-relMagBtn*.04+relRack*.065-vOpen*.20+animGrip*.055,_fSp,dt);
+  rPink2.rotation.x=damp(rPink2.rotation.x,.3+Math.sin(ipf*.77)*.068-relDig*.055-fingerSnap*.24-relMagBtn*.045+relRack*.06-vOpen*.19+animGrip*.050,_fSp,dt);
+  rIdx2.rotation.x=damp(rIdx2.rotation.x,.28+Math.sin(ipf*.66)*.052-fingerSnap*.28-adsTrigFlat+relIns*.04-vOpen*.18+animGrip*.030,_fSp,dt);
+  rThGrp.rotation.x=damp(rThGrp.rotation.x,.06+Math.sin(ipf*.52)*.042+relDig*.02+relMagBtn*.16-relRack*.05-vOpen*.08+animGrip*.025,_fSp,dt);
+  rThGrp.rotation.y=damp(rThGrp.rotation.y,Math.sin(ipf*.39)*.028-relMagBtn*.12+vOpen*.05,_fSp,dt);
+  rThGrp.rotation.z=damp(rThGrp.rotation.z,.5+Math.sin(ipf*.48)*.038-fingerSnap*.075-relMagBtn*.08+relRack*.06-vOpen*.12,_fSp,dt);
   if(lGrp.visible){
     const _uspHip=(P.weaponIdx===1||P.weaponIdx===6)&&!P.reloading?Math.max(0,1-Math.min(1,a/.48)):0;
     const _m4Grip=(P.weaponIdx===0&&_isAuthoredM4RuntimeActive()&&!P.reloading)?Math.max(0,1-a*.55):0;
@@ -25429,18 +25760,18 @@ function updateHands(dt){
     const lWave=Math.sin(ipf*.64)*.048*fAdsL*_uAmp;
     const lGrab=relGrab*.38;
     const lIns=relIns*.22;
-    lIdxGrp.rotation.x=damp(lIdxGrp.rotation.x,lBase+lWave-lGrab*1.1+lIns*.12-fingerSnap*.052-_m4Grip*.26,_fSp,dt);
-    lMidGrp.rotation.x=damp(lMidGrp.rotation.x,lBase+.02+lWave*.92-lGrab*1.05+lIns*.18-fingerSnap*.048-_m4Grip*.30,_fSp,dt);
-    lRingGrp.rotation.x=damp(lRingGrp.rotation.x,lBase+.04+lWave*.85-lGrab*.88+lIns*.14-fingerSnap*.042-_m4Grip*.29,_fSp,dt);
-    lPinkGrp.rotation.x=damp(lPinkGrp.rotation.x,lBase+.065+lWave*.78-lGrab*.72+lIns*.08-fingerSnap*.036-_m4Grip*.24,_fSp,dt);
+    lIdxGrp.rotation.x=damp(lIdxGrp.rotation.x,lBase+lWave-lGrab*1.1+lIns*.12-fingerSnap*.052-_m4Grip*.26-vOpen*.30-animGrip*.034,_fSp,dt);
+    lMidGrp.rotation.x=damp(lMidGrp.rotation.x,lBase+.02+lWave*.92-lGrab*1.05+lIns*.18-fingerSnap*.048-_m4Grip*.30-vOpen*.31-animGrip*.038,_fSp,dt);
+    lRingGrp.rotation.x=damp(lRingGrp.rotation.x,lBase+.04+lWave*.85-lGrab*.88+lIns*.14-fingerSnap*.042-_m4Grip*.29-vOpen*.29-animGrip*.035,_fSp,dt);
+    lPinkGrp.rotation.x=damp(lPinkGrp.rotation.x,lBase+.065+lWave*.78-lGrab*.72+lIns*.08-fingerSnap*.036-_m4Grip*.24-vOpen*.26-animGrip*.030,_fSp,dt);
     const lIdxD=lIdxGrp.children[1],lMidD=lMidGrp.children[1],lRingD=lRingGrp.children[1],lPinkD=lPinkGrp.children[1];
-    if(lIdxD)lIdxD.rotation.x=damp(lIdxD.rotation.x,-.22+Math.sin(ipf*.58)*.052*_uAmp-relDig*.04-lGrab*.28+lIns*.1-fingerSnap*.072-_m4Grip*.30,_fSp,dt);
-    if(lMidD)lMidD.rotation.x=damp(lMidD.rotation.x,-.22+Math.sin(ipf*.54)*.05*_uAmp-relDig*.036-lGrab*.32+lIns*.14-fingerSnap*.065-_m4Grip*.34,_fSp,dt);
-    if(lRingD)lRingD.rotation.x=damp(lRingD.rotation.x,-.22+Math.sin(ipf*.5)*.048*_uAmp-relDig*.03-lGrab*.26+lIns*.1-fingerSnap*.055-_m4Grip*.32,_fSp,dt);
-    if(lPinkD)lPinkD.rotation.x=damp(lPinkD.rotation.x,-.22+Math.sin(ipf*.46)*.045*_uAmp-relDig*.025-lGrab*.2+lIns*.06-fingerSnap*.045-_m4Grip*.27,_fSp,dt);
-    lThGrp.rotation.x=damp(lThGrp.rotation.x,-.08+Math.sin(ipf*.54)*.052*_uAmp+relDig*.016+lIns*.04-relRack*.035,_fSp,dt);
-    lThGrp.rotation.y=damp(lThGrp.rotation.y,Math.sin(ipf*.33)*.034*_uAmp+lIns*.03,_fSp,dt);
-    lThGrp.rotation.z=damp(lThGrp.rotation.z,-.52+Math.sin(ipf*.44)*.048*_uAmp-relRack*.04,_fSp,dt);
+    if(lIdxD)lIdxD.rotation.x=damp(lIdxD.rotation.x,-.22+Math.sin(ipf*.58)*.052*_uAmp-relDig*.04-lGrab*.28+lIns*.1-fingerSnap*.072-_m4Grip*.30-vOpen*.24-animGrip*.042,_fSp,dt);
+    if(lMidD)lMidD.rotation.x=damp(lMidD.rotation.x,-.22+Math.sin(ipf*.54)*.05*_uAmp-relDig*.036-lGrab*.32+lIns*.14-fingerSnap*.065-_m4Grip*.34-vOpen*.25-animGrip*.045,_fSp,dt);
+    if(lRingD)lRingD.rotation.x=damp(lRingD.rotation.x,-.22+Math.sin(ipf*.5)*.048*_uAmp-relDig*.03-lGrab*.26+lIns*.1-fingerSnap*.055-_m4Grip*.32-vOpen*.23-animGrip*.040,_fSp,dt);
+    if(lPinkD)lPinkD.rotation.x=damp(lPinkD.rotation.x,-.22+Math.sin(ipf*.46)*.045*_uAmp-relDig*.025-lGrab*.2+lIns*.06-fingerSnap*.045-_m4Grip*.27-vOpen*.21-animGrip*.035,_fSp,dt);
+    lThGrp.rotation.x=damp(lThGrp.rotation.x,-.08+Math.sin(ipf*.54)*.052*_uAmp+relDig*.016+lIns*.04-relRack*.035+vOpen*.08,_fSp,dt);
+    lThGrp.rotation.y=damp(lThGrp.rotation.y,Math.sin(ipf*.33)*.034*_uAmp+lIns*.03-vOpen*.05,_fSp,dt);
+    lThGrp.rotation.z=damp(lThGrp.rotation.z,-.52+Math.sin(ipf*.44)*.048*_uAmp-relRack*.04+vOpen*.10,_fSp,dt);
   }
   // ── DEAGLE SLIDE CYCLE — driven by fire envelope. Slide racks rearward
   // ~14mm then returns; hammer falls forward on shot, re-cocks on return.
@@ -25822,6 +26153,7 @@ function _weaponVisualStatus(){
   const knifeStats=(typeof knifGrp!=='undefined')?_collectMaterialStats(knifGrp):{aa:0,pbr:0,total:0,byFamily:{},quality:{},maps:{}};
   const combined=_mergeMaterialStats(_mergeMaterialStats(gunStats,throwStats),knifeStats);
   const _gripDbg=typeof getGripDebug==='function'?getGripDebug(playerAnimState0):null;
+  const _fitDbg=H.handFit||_handFitForWeapon(P.weaponIdx);
   const authoredWeaponReport=buildAuthoredViewmodelReport('weapon',M4_AUTHORED_STATUS.weaponId,m4AuthoredWeapon,{
     source:M4_AUTHORED_STATUS.weaponSource,
     active:_isAuthoredM4RuntimeActive(),
@@ -25901,6 +26233,15 @@ function _weaponVisualStatus(){
     scopePipMaterial:!!scopeViewM_active,
     glbDeagleVisible:!!(deagleGlbRig&&deagleGlbRig.visible),
     gripPose:_gripDbg?_gripDbg.gripPoseId:null,
+    handFit:_fitDbg?{
+      id:_fitDbg.id||'unknown',
+      rightBase:H.rBase?{x:H.rBase.x,y:H.rBase.y,z:H.rBase.z,rx:H.rBase.rx||0,ry:H.rBase.ry||0,rz:H.rBase.rz||0}:null,
+      leftBase:_fitDbg.left&&H.lBase?{x:H.lBase.x,y:H.lBase.y,z:H.lBase.z,rx:H.lBase.rx||0,ry:H.lBase.ry||0,rz:H.lBase.rz||0}:null,
+      rightCurrent:{x:rGrp.position.x,y:rGrp.position.y,z:rGrp.position.z,rx:rGrp.rotation.x,ry:rGrp.rotation.y,rz:rGrp.rotation.z},
+      leftCurrent:_fitDbg.left?{x:lGrp.position.x,y:lGrp.position.y,z:lGrp.position.z,rx:lGrp.rotation.x,ry:lGrp.rotation.y,rz:lGrp.rotation.z}:null,
+      leftScale:_fitDbg.leftScale||1,
+      supportVisible:!!lGrp.visible
+    }:null,
     handContacts:_gripDbg?{left:_gripDbg.leftOffset,right:_gripDbg.rightOffset,sockets:_gripDbg.sockets}:null
   };
 }
@@ -26521,15 +26862,32 @@ renderer.setAnimationLoop(()=>{
     P.sprintBlend=damp(P.sprintBlend,_sprintBlendTarget,_sprintBlendTarget>P.sprintBlend?14:10,dt);
     const isRunning=P.sprintBlend>.18&&_moving&&!P.dead&&!P.vaulting&&!P.crouching;
     P.running=isRunning;
+    const _adsPrevTarget=Number.isFinite(P.adsTarget)?P.adsTarget:0;
     P.adsTarget=M.rmbDown&&!P.reloading&&P.sprintBlend<.38?1:0;
+    if(P.adsTarget>.5&&_adsPrevTarget<=.5){
+      P.adsKick=Math.max(P.adsKick||0,1.0);
+      P.adsSettle=0;
+    }else if(P.adsTarget<.5&&_adsPrevTarget>.5){
+      P.adsKick=Math.max(P.adsKick||0,.34);
+    }
     const _adsLamIn=32*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
     const _adsLamOut=22*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
     P.ads=damp(P.ads,P.adsTarget,P.adsTarget>P.ads?_adsLamIn:_adsLamOut,dt);
     P.adsVis=damp(typeof P.adsVis==='number'?P.adsVis:P.ads,P.ads,13,dt);
     const _opticForFov=_currentOpticProfile();
+    const _adsVis01=THREE.MathUtils.clamp(P.adsVis||0,0,1);
+    const _scopeEaseForFov=_opticForFov?THREE.MathUtils.smoothstep(_adsVis01,.20,.92):0;
+    const _adsEaseForFov=THREE.MathUtils.smoothstep(_adsVis01,.08,_opticForFov ? .86 : .74);
+    const _adsSettleTarget=P.adsTarget>.5?1:0;
+    P.adsSettle=damp(Number.isFinite(P.adsSettle)?P.adsSettle:_adsSettleTarget,_adsSettleTarget,_opticForFov?(_adsSettleTarget?8.5:14):(_adsSettleTarget?12:16),dt);
+    P.adsKick=damp(Number.isFinite(P.adsKick)?P.adsKick:0,0,_opticForFov?10:13,dt);
+    P.scopeSettle=damp(Number.isFinite(P.scopeSettle)?P.scopeSettle:_scopeEaseForFov,_scopeEaseForFov,_opticForFov?10:16,dt);
     const _adsFovDelta=_opticForFov?(_opticForFov.adsFovDelta||44):32;
-    const targetFov=SETTINGS.fov-P.adsVis*_adsFovDelta+(P.sprintBlend*6);
-    camera.fov=damp(camera.fov,targetFov,8,dt);
+    const _adsKickFov=(P.adsKick||0)*(_opticForFov?1.8:.9);
+    const _scopeSettleFov=_opticForFov?(1-(P.adsSettle||0))*1.2*_scopeEaseForFov:0;
+    const targetFov=Math.max(_opticForFov?18:34,SETTINGS.fov-_adsEaseForFov*_adsFovDelta+(P.sprintBlend*6)+_adsKickFov+_scopeSettleFov);
+    P.scopeViewFov=targetFov;
+    camera.fov=damp(camera.fov,targetFov,_opticForFov?10:8,dt);
     camera.updateProjectionMatrix();
     if(P.ads>.6)$e('xhair').classList.add('ads');else $e('xhair').classList.remove('ads');
     // Phase BA: throttle per-frame HUD DOM writes (crosshair scale, shotgun
@@ -26612,6 +26970,9 @@ renderer.setAnimationLoop(()=>{
           P.jumpH=_groundY;P.vy=0;P.grounded=true;
           P._lastLandT=performance.now();
           P._didDoubleJump=false;
+          P._lastGroundedT=P._lastLandT;
+          P._wallJumpLockWall=null;
+          P.wallJumpTimer=0;P.wallJumpHardenTimer=0;P.wallJumpVx=0;P.wallJumpVz=0;P.wallJumpSide=0;P.wallJumpImpact=0;P.wallJumpNx=0;P.wallJumpNz=0;P.wallContact=null;
           if(impact>3.25){
             const landT=THREE.MathUtils.clamp((impact-3.25)/8,0,1);
             P.landKick=Math.min(.50,impact*.048);
@@ -26621,6 +26982,16 @@ renderer.setAnimationLoop(()=>{
             gunGrp.position.y-=Math.min(.052,impact*.0065);
           }
         }
+      }
+      if(P.grounded){
+        P._lastGroundedT=performance.now();
+        P._wallJumpLockWall=null;
+        P._wallJumpHardenUntil=0;
+        P.wallJumpHardenTimer=0;
+        P.wallContact=null;
+      } else {
+        const _wp=_wallJumpProbeFor(P,walls,.08);
+        P.wallContact=_wp?{nx:_wp.nx,nz:_wp.nz,dist:_wp.dist,side:_wp.side,geometryId:_wp.geometryId,roomId:_wp.roomId}:null;
       }
       // ── Near-vault detection (proximity to vaultable barriers while grounded)
       let nearV=null;
@@ -26668,6 +27039,16 @@ renderer.setAnimationLoop(()=>{
       }
       if(P.slideExitGrace>0)P.slideExitGrace=Math.max(0,P.slideExitGrace-dt);
       P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dt);
+      if(P.wallJumpTimer>0){
+        P.wallJumpTimer=Math.max(0,P.wallJumpTimer-dt);
+        P.wallJumpImpact=Math.max(0,(P.wallJumpImpact||0)-dt*5.5);
+      } else {
+        P.wallJumpVx=damp(P.wallJumpVx||0,0,18,dt);
+        P.wallJumpVz=damp(P.wallJumpVz||0,0,18,dt);
+        P.wallJumpImpact=Math.max(0,(P.wallJumpImpact||0)-dt*6.5);
+        if(Math.hypot(P.wallJumpVx||0,P.wallJumpVz||0)<0.04&&(P.wallJumpHardenTimer||0)<=0){P.wallJumpVx=0;P.wallJumpVz=0;P.wallJumpSide=0;P.wallJumpNx=0;P.wallJumpNz=0;}
+      }
+      if(P.wallJumpHardenTimer>0)P.wallJumpHardenTimer=Math.max(0,P.wallJumpHardenTimer-dt);
       // ── Horizontal movement — SHIFT = sprint, slide overrides direction + speed
       let spd;
       let mx=0,mz=0;
@@ -26689,6 +27070,19 @@ renderer.setAnimationLoop(()=>{
         spd=(P.ads>.5?2.8:runSpeed*carryBoost*sprintMul*wMul)*crouchSpdMul*airMul*adrenMul*dt;
         if(K['KeyW']){mx+=fx*spd;mz+=fz*spd;}if(K['KeyS']){mx-=fx*spd;mz-=fz*spd;}
         if(K['KeyA']){mx-=rx*spd;mz-=rz*spd;}if(K['KeyD']){mx+=rx*spd;mz+=rz*spd;}
+      }
+      if(!P.grounded&&(P.wallJumpHardenTimer||0)>0&&(P.wallJumpNx||P.wallJumpNz)&&(mx||mz)){
+        const into=mx*(P.wallJumpNx||0)+mz*(P.wallJumpNz||0);
+        if(into<0){
+          mx-=(P.wallJumpNx||0)*into*1.35;
+          mz-=(P.wallJumpNz||0)*into*1.35;
+        }
+      }
+      if((P.wallJumpTimer||0)>0||Math.hypot(P.wallJumpVx||0,P.wallJumpVz||0)>0.04){
+        const jt=THREE.MathUtils.clamp(P.wallJumpTimer/(P.wallJumpDur||WALL_JUMP.dur),0,1);
+        const je=(P.wallJumpTimer||0)>0?THREE.MathUtils.smoothstep(jt,0,1):.22;
+        mx+=(P.wallJumpVx||0)*je*dt;
+        mz+=(P.wallJumpVz||0)*je*dt;
       }
       const _moveStepLen=Math.hypot(mx,mz)/Math.max(dt,0.0001);
       if(typeof P._moveSpeedSmooth!=='number')P._moveSpeedSmooth=_moveStepLen;
@@ -26764,9 +27158,18 @@ renderer.setAnimationLoop(()=>{
   P._camBobX=damp(P._camBobX,bX,P.adsVis>.55?18:14,dt);
   // Landing dip — exponential decay
   P.landKick*=Math.exp(-dt*9);
-  // Subtle ADS breath sway (held breath wobble)
-  const adsBY=P.adsVis>.35?Math.sin(now*1.7)*.0028*P.adsVis:0;
-  const adsBX=P.adsVis>.35?Math.sin(now*1.15)*.0022*P.adsVis:0;
+  // Subtle ADS breath sway. Scoped optics get a smaller, steadier eye box so
+  // the POV tightens instead of drifting while fully shouldered.
+  const _scopeAimNow=_scopedAdsAmt(P);
+  const _scopeAimEase=THREE.MathUtils.smoothstep(_scopeAimNow,.28,.92);
+  const _adsAimEase=THREE.MathUtils.smoothstep(P.adsVis||0,.35,.95);
+  const _adsBreathMul=_adsAimEase*(1-_scopeAimEase*.72);
+  const _scopeEyeTargetX=_scopeAimEase?(Math.sin(now*.72)*.00145*(1-(P.scopeSettle||0)*.55)+(P.adsKick||0)*.00135):0;
+  const _scopeEyeTargetY=_scopeAimEase?(Math.sin(now*.58+1.4)*.00105*(1-(P.scopeSettle||0)*.48)-(P.adsKick||0)*.00115):0;
+  P.scopeEyeX=damp(Number.isFinite(P.scopeEyeX)?P.scopeEyeX:0,_scopeEyeTargetX,9,dt);
+  P.scopeEyeY=damp(Number.isFinite(P.scopeEyeY)?P.scopeEyeY:0,_scopeEyeTargetY,9,dt);
+  const adsBY=Math.sin(now*1.7)*.0022*_adsBreathMul+(P.scopeEyeY||0);
+  const adsBX=Math.sin(now*1.15)*.0018*_adsBreathMul+(P.scopeEyeX||0);
   // Crouch lowers eye height
   P.crouchAmt=P.crouchAmt||0;
   P.crouching=!!((K['KeyC']||GAMEPAD._gpL3Crouch)&&!(P.slideExitGrace>0));
@@ -26775,7 +27178,7 @@ renderer.setAnimationLoop(()=>{
   const _pa0=playerAnimState0.resolved.camera;
   camera.position.set(
     P.pos.x+rx*leanOff+P._camBobX*rx+PP.shakeX*.012+adsBX+_pa0.headBobX*rx+_pa0.accelLagX,
-    EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY-P.slideAmt*0.55-P.crouchAmt+_pa0.headBobY+_pa0.landDip+_pa0.landRebound+_pa0.slideDrop,
+    EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY-P.slideAmt*0.55-P.crouchAmt+_pa0.headBobY+_pa0.landDip+_pa0.landRebound+(_pa0.airFloat||0)+_pa0.slideDrop,
     P.pos.z+rz*leanOff+P._camBobX*rz+_pa0.headBobX*rz+_pa0.accelLagZ
   );
   // ── Vault camera animation: direction-specific pitch + roll
@@ -26814,9 +27217,10 @@ renderer.setAnimationLoop(()=>{
   // Damage cam decay (additive roll/pitch from takeDamage)
   P.dmgRoll*=Math.exp(-dt*7);
   P.dmgPitch*=Math.exp(-dt*7);
-  camera.rotation.y=P.yaw+_pa0.turnLagYaw*0.02;
+  camera.rotation.y=P.yaw+_pa0.turnLagYaw;
   camera.rotation.x=P.pitch+vaultPitch+P.dmgPitch+_pa0.headPitch+_pa0.slideForwardPitch;
-  camera.rotation.z=_leanEff*-.12+vaultRoll+P.dmgRoll+_pa0.headRoll+_pa0.turnLagRoll+_pa0.slideRoll+P._camStrafeRoll;
+  const _adsRollDamp=1-_scopeAimEase*.52;
+  camera.rotation.z=_leanEff*-.12+vaultRoll+P.dmgRoll+_pa0.headRoll+_pa0.turnLagRoll+_pa0.slideRoll+P._camStrafeRoll*_adsRollDamp;
   _syncAimHud();
   _updatePlayerProxy();
   _updatePlayerProxy2();
@@ -26875,11 +27279,9 @@ renderer.setAnimationLoop(()=>{
       const _sprintTarget=(P.running&&!P.ads&&!P.reloading)?1:0;
       P.sprintAmt=damp(P.sprintAmt,_sprintTarget,7,dt);
       const _pv=playerAnimState0.resolved.viewmodel;
-      const _pvf=1-Math.min(1,P.adsVis*1.15);
-      gunGrp.position.x+=_pv.lagX*_pvf+_pv.shoulderPump*_pvf;
-      gunGrp.position.y+=_pv.lagY*_pvf+_pv.landWrist;
-      gunGrp.position.z+=_pv.lagZ+_pv.slideTuck*(1-P.adsVis*.9);
-      gunGrp.rotation.x+=_pv.crouchTuck;
+      const _opticPose=_currentOpticProfile();
+      const _scopePose=_opticPose?THREE.MathUtils.smoothstep(P.adsVis||0,.20,.92):0;
+      const _pvf=1-Math.min(1,P.adsVis*(_opticPose?1.45:1.15));
       // Idle figure-8 sway — disappears when ADS active; sprint amplifies bob.
       // Phase U: enriched with weapon-weight cues —
       //   • lateral drift opposite to recent strafe (inertia carry),
@@ -26897,18 +27299,28 @@ renderer.setAnimationLoop(()=>{
       const _breath=(1-P.adsVis)*Math.sin(_gT*0.95)*0.0035;
       // Crouch settle — gun dips when crouching, easier to read
       const _crouchDip=(P.crouchAmt||0)*0.022;
-      const _opticPose=_currentOpticProfile();
       const _adsGunX=_opticGunX(_opticPose);
       const _adsGunY=_opticGunY(_opticPose);
-      const _baseGunX=.12+(_adsGunX-.12)*P.ads;
-      const _baseGunY=-.11+(_adsGunY+.11)*P.ads;
-      gunGrp.position.x=_baseGunX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias-_accelLag*.018;
-      gunGrp.position.y=_baseGunY-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip-Math.abs(_accelLag)*.006;
+      const _adsPose=THREE.MathUtils.clamp(P.adsVis||0,0,1);
+      const _baseGunX=.12+(_adsGunX-.12)*_adsPose;
+      const _baseGunY=-.11+(_adsGunY+.11)*_adsPose;
+      const _adsKickAmt=P.adsKick||0;
+      gunGrp.position.x=_baseGunX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias-_accelLag*.018-(P.scopeEyeX||0)*.72*_scopePose;
+      gunGrp.position.y=_baseGunY-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip-Math.abs(_accelLag)*.006-(P.scopeEyeY||0)*.55*_scopePose+_adsKickAmt*.006*_scopePose;
       {const _zT=_opticGunZ(_opticPose);
-     gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);}
+     gunGrp.position.z=damp(gunGrp.position.z,_zT+_adsKickAmt*.012*_scopePose,18,dt);}
       // Sprint tilt — barrel angles down + slight roll
-      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.32,9,dt);
+      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.32-_adsKickAmt*.018*_scopePose,9,dt);
       gunGrp.rotation.z=damp(gunGrp.rotation.z,P.sprintAmt*-.18,9,dt);
+      gunGrp.position.x+=_pv.lagX*_pvf+_pv.shoulderPump*_pvf+(_pv.runStepX||0)*_pvf;
+      gunGrp.position.y+=_pv.lagY*_pvf+_pv.landWrist+(_pv.airLift||0)+(_pv.fallDrop||0)+(_pv.apexFloat||0)-(_pv.landPunch||0)*.35+(_pv.runStepY||0)*_pvf;
+      gunGrp.position.z+=_pv.lagZ+_pv.slideTuck*(1-P.adsVis*.9)+(_pv.fallDrop||0)*.42-(_pv.airLift||0)*.20+(_pv.landPunch||0)*.18;
+      gunGrp.rotation.x+=_pv.crouchTuck+(_pv.runStepPitch||0)*_pvf+(_pv.fallDrop||0)*.85-(_pv.landPunch||0)*.50;
+      gunGrp.rotation.z+=(_pv.runStepRoll||0)*_pvf;
+      if(_scopePose>0){
+        gunGrp.rotation.x+=(1-(P.scopeSettle||0))*-.014*_scopePose+_adsKickAmt*.010*_scopePose;
+        gunGrp.rotation.z+=-(P.scopeEyeX||0)*2.0*_scopePose;
+      }
       if(P.weaponIdx===0&&_isAuthoredM4RuntimeActive()){
         const _m4HipFit=THREE.MathUtils.clamp(1-P.adsVis*.92,0,1);
         gunGrp.position.x+=.160*_m4HipFit;
@@ -26940,6 +27352,14 @@ renderer.setAnimationLoop(()=>{
         gunGrp.rotation.x+=tl.x;
         gunGrp.rotation.y+=tl.y;
         gunGrp.rotation.z+=tl.z;
+      }
+      if((_pv.wallKickX||_pv.wallKickY||_pv.wallKickZ||_pv.wallKickPitch||_pv.wallKickRoll)&&P.adsVis<.92){
+        const _wkFade=1-Math.min(1,P.adsVis*.95);
+        gunGrp.position.x+=_pv.wallKickX*_wkFade;
+        gunGrp.position.y+=_pv.wallKickY*_wkFade;
+        gunGrp.position.z+=_pv.wallKickZ*_wkFade;
+        gunGrp.rotation.x+=_pv.wallKickPitch*_wkFade;
+        gunGrp.rotation.z+=_pv.wallKickRoll*_wkFade;
       }
     }
   _tickSplitSecondPlayerFrame(dt,walls);
@@ -27526,14 +27946,16 @@ renderer.setAnimationLoop(()=>{
       hudUpdate();
       // ── PIP scope render — attachment optics plus built-in DMR/sniper scopes
       const _opticForPip=_currentOpticProfile();
-      _scopePipStatus.enabled=!!SETTINGS.scopePipEnabled;
+      _scopePipStatus.enabled=!!(!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled);
       _scopePipStatus.visible=false;
       _scopePipStatus.opacity=0;
       const _scopeAds=P.adsVis||P.ads||0;
+      _scopePipStatus.ads=_scopeAds;
       const _scopeWarmup=(typeof _isSpawnPerfWarmup==='function'&&_isSpawnPerfWarmup())&&_scopeAds<0.95;
       if(_opticForPip&&_scopeAds>.05&&!_scopeWarmup){
         const _pipMax=Number.isFinite(_opticForPip.pipOpacityMax)?_opticForPip.pipOpacityMax:.97;
-        const _pipAlpha=Math.min(_pipMax,Math.max(0,(_scopeAds-.06)/.62));
+        const _pipScopeEase=THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(_scopeAds,0,1),.12,.92);
+        const _pipAlpha=_pipMax*_pipScopeEase;
         const _opticMesh=_opticForPip.view;
         const _opticVisible=!_opticMesh||(_opticMesh.visible!==false);
         const _lowAds=_scopeAds<0.08;
@@ -27548,17 +27970,23 @@ renderer.setAnimationLoop(()=>{
         scopeCamera.quaternion.copy(camera.quaternion);
         const _vmRoll=Number.isFinite(gunGrp.rotation.z)?gunGrp.rotation.z*(1-Math.min(1,_scopeAds*.86)):0;
         if(Math.abs(_vmRoll)>0.0001)scopeCamera.rotateZ(_vmRoll);
-        scopeCamera.fov=Number.isFinite(_opticForPip.pipFov)?_opticForPip.pipFov:14;
+        const _pipBaseFov=Number.isFinite(_opticForPip.pipFov)?_opticForPip.pipFov:14;
+        scopeCamera.fov=Math.max(3,_pipBaseFov+(1-_pipScopeEase)*3.6+(P.adsKick||0)*1.2);
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
         const _shouldPip=!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled&&_opticVisible&&!_skipMotion&&!_skipFade;
         const stride=_scopePipRenderStride();
         const _contribAlpha=_pipAlpha>0.084;
+        const _vigAlpha=Math.min(1,_pipScopeEase*(.40+_pipMax*.38)+(P.adsKick||0)*.035);
         _scopePipStatus.throttleInterval=stride;
         _scopePipStatus.skippedThrottle=false;
         _scopePipStatus.renderedThisFrame=false;
         _scopePipStatus.visible=!!_shouldPip;
         _scopePipStatus.opacity=_shouldPip?_pipAlpha:0;
         _scopePipStatus.fov=scopeCamera.fov;
+        _scopePipStatus.settle=_pipScopeEase;
+        _scopePipStatus.vignetteOpacity=_vigAlpha;
+        _scopePipStatus.eyeBoxX=P.scopeEyeX||0;
+        _scopePipStatus.eyeBoxY=P.scopeEyeY||0;
         _scopePipStatus.attachment=_opticForPip.name||'scope';
         _scopePipStatus.weapon=WEAPONS[P.weaponIdx]?WEAPONS[P.weaponIdx].name:null;
         if(_shouldPip&&_contribAlpha&&((G._frame|0)%stride)===0){
@@ -27576,10 +28004,17 @@ renderer.setAnimationLoop(()=>{
           _scopePipStatus.rendered=false;
         }
         _setScopePipView(_opticForPip,_shouldPip?_pipAlpha:0);
-        if(_vig)_vig.style.opacity=STABLE_RENDERING_MODE?'0':String(Math.max(0,_scopeAds*_scopeAds-.18)*1.6);
+        P.scopeVignetteOpacity=_vigAlpha;
+        if(_vig)_vig.style.opacity=String(_vigAlpha);
       } else {
         _setScopePipView(null,0);
         const _vig=$e('scope-vignette');if(_vig)_vig.style.opacity='0';
+        P.scopeVignetteOpacity=0;
+        _scopePipStatus.settle=0;
+        _scopePipStatus.fov=0;
+        _scopePipStatus.vignetteOpacity=0;
+        _scopePipStatus.eyeBoxX=P.scopeEyeX||0;
+        _scopePipStatus.eyeBoxY=P.scopeEyeY||0;
         _scopePipStatus.rendered=false;
         _scopePipStatus.renderedThisFrame=false;
         _scopePipStatus.skippedThrottle=false;
@@ -28018,6 +28453,27 @@ window.__game={
     setToneMappingExposure:(v)=>{if(renderer&&typeof v==='number')renderer.toneMappingExposure=v;return renderer?.toneMappingExposure;},
     screenPost:()=>G._screenPost||null,
     scopePip:()=>Object.assign({},_scopePipStatus,{stableRenderingMode:!!STABLE_RENDERING_MODE,stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null}),
+    povState:()=>{
+      const optic=_currentOpticProfile();
+      return {
+        fov:camera.fov,
+        targetFov:P.scopeViewFov||SETTINGS.fov,
+        baseFov:SETTINGS.fov,
+        ads:P.ads||0,
+        adsVis:P.adsVis||0,
+        adsTarget:P.adsTarget||0,
+        adsSettle:P.adsSettle||0,
+        adsKick:P.adsKick||0,
+        scoped:_scopedAdsAmt(P),
+        scopeSettle:P.scopeSettle||0,
+        scopeEyeX:P.scopeEyeX||0,
+        scopeEyeY:P.scopeEyeY||0,
+        scopeVignetteOpacity:P.scopeVignetteOpacity||0,
+        optic:optic?{name:optic.name||'scope',tier:optic.tier||0,pipFov:optic.pipFov||0,adsFovDelta:optic.adsFovDelta||0}:null,
+        gun:{x:gunGrp.position.x,y:gunGrp.position.y,z:gunGrp.position.z,rx:gunGrp.rotation.x,ry:gunGrp.rotation.y,rz:gunGrp.rotation.z},
+        scopePip:Object.assign({},_scopePipStatus)
+      };
+    },
     lightingStats:()=>{
       const rs=_visualRuntimeStats();
       const L=rs.lighting||{};
@@ -28094,8 +28550,10 @@ window.__game={
       };
     },
     vfxStress:(count)=>_debugSpawnVfxStress(count),
-    equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);P.weaponIdx=0;refreshAttachmentVisuals();return P.attachments.scope;},
-    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P.ads=x;P.adsVis=x;P.adsTarget=x;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
+    playableWeaponIndices:()=>PLAYABLE_WEAPON_INDICES.slice(),
+    weaponSlots:()=>PLAYABLE_WEAPON_INDICES.map((idx,slot)=>({slot:slot+1,idx,name:WEAPONS[idx]?.name||'unknown'})),
+    equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);switchWeapon(isPlayableWeaponIdx(5)?5:START_WEAPON_IDX,true);refreshAttachmentVisuals();return P.attachments.scope;},
+    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P.ads=x;P.adsVis=x;P.adsTarget=x;P.adsSettle=x;P.scopeSettle=_hasScopedAds(P)?x:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
     vfxBudget:()=>_trailBudget(),
     visualDebug:()=>_visualDebugState(),
     setHitboxOverlay:(on)=>_setVisualDebugFlag('hitboxes',on),
@@ -28115,6 +28573,7 @@ window.__game={
     playerAnimation:(opts)=>{const o=opts||{};const slot=o.slot|0;const st=slot===1?playerAnimState1:playerAnimState0;return Object.assign({active:slot===0||!!(typeof _splitVsActive==='function'&&_splitVsActive())},getPlayerAnimDebug(st));},
     setAnimDebugOverlay:(on)=>{_animDebugHud=!!on;const el=document.getElementById('anim-debug-hud');if(el&&!_animDebugHud)el.remove();return _animDebugHud;},
     forcePlayerAnimEvent:(name,options)=>{playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,String(name||'pulse'),options||{});return getPlayerAnimDebug(playerAnimState0).recentNotifies;},
+    wallJumpState:()=>({timer:P.wallJumpTimer||0,duration:P.wallJumpDur||0,hardenTimer:P.wallJumpHardenTimer||0,vx:P.wallJumpVx||0,vz:P.wallJumpVz||0,side:P.wallJumpSide||0,impact:P.wallJumpImpact||0,nx:P.wallJumpNx||0,nz:P.wallJumpNz||0,contact:P.wallContact||null,lastWallJumpT:P._lastWallJumpT||0}),
     viewmodelPose:()=>({rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray()},lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray()},gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray()},fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null}),
     setWristbandHologram:(kind,on=true)=>{
       const k=String(kind||'inventory');
