@@ -6,6 +6,7 @@ import {
   createHoldPosition,
   createPeekAngle,
   createPlacedObject,
+  normalizeDoorAccess,
   normalizeCustomMapPack,
 } from './schema.js';
 import { collectCustomMapGeometry, partRuntimeTransform, partWorldAabb } from './customMapCompiler.js';
@@ -53,6 +54,20 @@ function colorToInt(color, fallback = 0xffffff) {
 
 function customMarkerId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function isDoorPrefab(pf) {
+  if (!pf) return false;
+  if (pf.category === 'doors') return true;
+  if (String(pf.id || '').startsWith('door.')) return true;
+  return Array.isArray(pf.tags) && pf.tags.includes('door');
+}
+
+function isWindowPrefab(pf) {
+  if (!pf) return false;
+  if (pf.category === 'windows') return true;
+  if (String(pf.id || '').startsWith('window.')) return true;
+  return Array.isArray(pf.tags) && pf.tags.includes('window');
 }
 
 export function createLevelEditorController(options = {}) {
@@ -239,10 +254,56 @@ export function createLevelEditorController(options = {}) {
     return sockets;
   }
 
+  function wallInsertSnap(prefabId, base, options = {}) {
+    const pf = prefabId ? prefab(prefabId) : null;
+    if (!socketSnapEnabled || !pf || (!isDoorPrefab(pf) && !isWindowPrefab(pf)) || !map || !map.objects || !map.objects.length) return null;
+    let best = null;
+    for (const obj of map.objects) {
+      if (!obj || obj.id === options.excludeId) continue;
+      const otherPf = prefab(obj.prefabId);
+      if (!otherPf || !['walls', 'modules'].includes(otherPf.category)) continue;
+      const yaw = Number(obj.yaw) || 0;
+      const scale = Number.isFinite(obj.scale) ? obj.scale : 1;
+      for (const part of otherPf.parts || []) {
+        if (!part || part.kind !== 'box' || part.collision !== 'wall_aabb') continue;
+        const size = part.size || [];
+        const sx = Math.abs(Number(size[0]) || 0) * scale;
+        const sz = Math.abs(Number(size[2]) || 0) * scale;
+        const length = Math.max(sx, sz);
+        const thickness = Math.min(sx, sz);
+        if (length < 1.2 || thickness > 1.15) continue;
+        const tx = partRuntimeTransform(part, obj, Number.isFinite(map.floorY) ? map.floorY : 0.4, otherPf);
+        const off = rotateXZ(tx.ox, tx.oz, yaw);
+        const center = { x: (Number(obj.x) || 0) + off.x, z: (Number(obj.z) || 0) + off.z };
+        const long = sx >= sz ? rotateXZ(1, 0, yaw) : rotateXZ(0, 1, yaw);
+        const longLen = Math.hypot(long.x, long.z) || 1;
+        long.x /= longLen;
+        long.z /= longLen;
+        const normal = { x: -long.z, z: long.x };
+        const dx = base.x - center.x;
+        const dz = base.z - center.z;
+        const along = dx * long.x + dz * long.z;
+        const side = dx * normal.x + dz * normal.z;
+        if (Math.abs(side) > 1.2 || Math.abs(along) > length / 2 + 0.9) continue;
+        const snappedAlong = clamp(along, -length / 2, length / 2);
+        const x = center.x + long.x * snappedAlong;
+        const z = center.z + long.z * snappedAlong;
+        const dist = Math.hypot(x - base.x, z - base.z);
+        if (dist > 1.35) continue;
+        if (!best || dist < best.dist) best = { dist, x, z, yaw: Math.atan2(long.z, long.x), target: obj };
+      }
+    }
+    if (!best) return null;
+    lastSnapHint = 'WALL INSERT';
+    return { x: best.x, z: best.z, yaw: best.yaw };
+  }
+
   function snapPlacement(prefabId, world, options = {}) {
     const base = { x: snapGrid(world.x), z: snapGrid(world.z) };
     lastSnapHint = 'GRID';
     const pf = prefabId ? prefab(prefabId) : null;
+    const insertSnap = wallInsertSnap(prefabId, base, options);
+    if (insertSnap) return insertSnap;
     if (!socketSnapEnabled || !pf || !prefabSockets(pf).length || !map || !map.objects || !map.objects.length) return base;
     const candidate = {
       id: options.excludeId || '__placement',
@@ -503,12 +564,13 @@ export function createLevelEditorController(options = {}) {
 
   function mapStats() {
     const geo = map && kit() ? collectCustomMapGeometry(map, kit()) : null;
+    const assetDoors = map?.objects?.filter((obj) => isDoorPrefab(prefab(obj.prefabId))).length || 0;
     return {
       objects: map?.objects?.length || 0,
       enemies: map?.markers?.enemySpawns?.length || 0,
       covers: geo?.vaultables?.length || 0,
       walls: geo?.walls?.filter((w) => !w.perimeter).length || 0,
-      doors: map?.markers?.zoneDoors?.length || 0,
+      doors: (map?.markers?.zoneDoors?.length || 0) + assetDoors,
       exits: map?.markers?.exits?.length || 0,
       navCells: geo?.navGrid?.cells || 0,
       geo,
@@ -656,12 +718,12 @@ export function createLevelEditorController(options = {}) {
   function addPartMesh(group, obj, pf, part, options = {}) {
     if (!part || part.kind !== 'box') return null;
     const floorY = map && Number.isFinite(Number(map.floorY)) ? Number(map.floorY) : 0;
-    const tx = partRuntimeTransform(part, obj, floorY, pf);
-    const sx = Math.max(0.04, tx.sx || 0.1);
-    const sy = Math.max(0.04, tx.sy || 0.1);
-    const sz = Math.max(0.04, tx.sz || 0.1);
+    const runtimeBox = options.runtimeBox || null;
+    const tx = runtimeBox ? null : partRuntimeTransform(part, obj, floorY, pf);
+    const sx = runtimeBox ? Math.max(0.04, runtimeBox.x1 - runtimeBox.x0) : Math.max(0.04, tx.sx || 0.1);
+    const sy = runtimeBox ? Math.max(0.04, runtimeBox.y1 - runtimeBox.y0) : Math.max(0.04, tx.sy || 0.1);
+    const sz = runtimeBox ? Math.max(0.04, runtimeBox.z1 - runtimeBox.z0) : Math.max(0.04, tx.sz || 0.1);
     const yaw = Number.isFinite(obj.yaw) ? obj.yaw : 0;
-    const off = rotateXZ(tx.ox, tx.oz, yaw);
     const opacity = options.ghost ? 0.38 : (part.collision === 'transparent_window_aabb' ? 0.46 : 1);
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(sx, sy, sz),
@@ -673,8 +735,14 @@ export function createLevelEditorController(options = {}) {
         depthWrite: !options.ghost && part.collision !== 'transparent_window_aabb',
       }),
     );
-    mesh.position.set(obj.x + off.x, tx.oy, obj.z + off.z);
-    mesh.rotation.y = yaw;
+    if (runtimeBox) {
+      mesh.position.set((runtimeBox.x0 + runtimeBox.x1) / 2, (runtimeBox.y0 + runtimeBox.y1) / 2, (runtimeBox.z0 + runtimeBox.z1) / 2);
+      mesh.rotation.y = 0;
+    } else {
+      const off = rotateXZ(tx.ox, tx.oz, yaw);
+      mesh.position.set(obj.x + off.x, tx.oy, obj.z + off.z);
+      mesh.rotation.y = yaw;
+    }
     mesh.name = `${pf.id}:${part.name || 'part'}`;
     if (!options.ghost) {
       mesh.userData.editorPick = { type: 'object', id: obj.id };
@@ -693,25 +761,54 @@ export function createLevelEditorController(options = {}) {
     return mesh;
   }
 
+  function addSelectionCross(group, obj) {
+    if (!obj || !map) return;
+    const y = Number.isFinite(map.floorY) ? map.floorY : 0.4;
+    addLine(group, [
+      { x: obj.x - 0.55, y: y + 0.08, z: obj.z },
+      { x: obj.x + 0.55, y: y + 0.08, z: obj.z },
+    ], '#ffffff', 0.9);
+    addLine(group, [
+      { x: obj.x, y: y + 0.08, z: obj.z - 0.55 },
+      { x: obj.x, y: y + 0.08, z: obj.z + 0.55 },
+    ], '#ffffff', 0.9);
+  }
+
+  function partLayerVisible(part) {
+    if (!part) return false;
+    if (!layers.geometry && part.collision !== 'decorative_only') return false;
+    if (!layers.gameplay && (part.collision === 'decorative_only' || part.collision === 'nonblocking_visual')) return false;
+    return true;
+  }
+
   function addObject(group, obj, options = {}) {
     const pf = prefab(obj.prefabId);
     if (!pf) return;
     const objectSelected = selected && selected.type === 'object' && selected.id === obj.id;
     for (const part of pf.parts || []) {
-      if (!layers.geometry && part.collision !== 'decorative_only') continue;
-      if (!layers.gameplay && (part.collision === 'decorative_only' || part.collision === 'nonblocking_visual')) continue;
+      if (!partLayerVisible(part)) continue;
       addPartMesh(group, obj, pf, part, { selected: objectSelected, ghost: options.ghost });
     }
-    if (!options.ghost && objectSelected) {
-      const y = Number.isFinite(map.floorY) ? map.floorY : 0.4;
-      addLine(group, [
-        { x: obj.x - 0.55, y: y + 0.08, z: obj.z },
-        { x: obj.x + 0.55, y: y + 0.08, z: obj.z },
-      ], '#ffffff', 0.9);
-      addLine(group, [
-        { x: obj.x, y: y + 0.08, z: obj.z - 0.55 },
-        { x: obj.x, y: y + 0.08, z: obj.z + 0.55 },
-      ], '#ffffff', 0.9);
+    if (!options.ghost && objectSelected) addSelectionCross(group, obj);
+  }
+
+  function addCompiledObjects(group) {
+    const geo = kit() ? collectCustomMapGeometry(map, kit()) : null;
+    if (!geo) {
+      for (const obj of map.objects || []) addObject(group, obj);
+      return;
+    }
+    for (const entry of geo.placedParts || []) {
+      if (!entry || !entry.object || !entry.prefab || !partLayerVisible(entry.part)) continue;
+      const objectSelected = selected && selected.type === 'object' && selected.id === entry.object.id;
+      addPartMesh(group, entry.object, entry.prefab, entry.part, {
+        selected: objectSelected,
+        runtimeBox: entry.runtimeBox || null,
+      });
+    }
+    if (selected && selected.type === 'object') {
+      const obj = (map.objects || []).find((candidate) => candidate.id === selected.id);
+      if (obj) addSelectionCross(group, obj);
     }
   }
 
@@ -881,7 +978,8 @@ export function createLevelEditorController(options = {}) {
     if (!hoverWorld || activeTool === 'select' || activeTool === 'pan') return;
     if (activePrefabId) {
       const pos = snapPlacement(activePrefabId, hoverWorld, { yaw: placementYaw });
-      const ghost = createPlacedObject(activePrefabId, pos.x, pos.z, { yaw: placementYaw });
+      const yaw = Number.isFinite(pos.yaw) ? pos.yaw : placementYaw;
+      const ghost = createPlacedObject(activePrefabId, pos.x, pos.z, { yaw });
       addObject(group, ghost, { ghost: true });
       addCursorReticle(group, pos);
       return;
@@ -918,7 +1016,7 @@ export function createLevelEditorController(options = {}) {
     scene.add(editorRoot);
     hitMeshes = [];
     addGrid(editorRoot);
-    for (const obj of map.objects || []) addObject(editorRoot, obj);
+    addCompiledObjects(editorRoot);
     addMarkers(editorRoot);
     addAnalysisOverlay(editorRoot);
     addGhost(editorRoot);
@@ -1051,6 +1149,9 @@ export function createLevelEditorController(options = {}) {
       return;
     }
     const isEnemy = selected.type === 'enemy';
+    const selectedPrefab = selected.type === 'object' ? prefab(ent.prefabId) : null;
+    const isOpenableDoor = selected.type === 'object' && isDoorPrefab(selectedPrefab);
+    const doorAccess = normalizeDoorAccess(ent.doorAccess, 'player') || 'player';
     const pos = entityPosition(selected.type, ent);
     const yawDeg = Math.round((entityYaw(selected.type, ent) * 180) / Math.PI);
     inspector.innerHTML = `<div class="ce-ins-title">${selected.type.toUpperCase()}</div>
@@ -1060,6 +1161,12 @@ export function createLevelEditorController(options = {}) {
       <label>YAW<input id="ce-ent-yaw" type="number" step="15" value="${yawDeg}"${selected.type === 'exit' ? ' disabled' : ''}></label>
       ${selected.type === 'object' ? `<label>PREFAB<input value="${ent.prefabId}" disabled></label>` : ''}
       ${selected.type === 'object' ? `<label>SCALE<input id="ce-ent-scale" type="number" min="0.25" max="4" step="0.05" value="${Number(ent.scale || 1).toFixed(2)}"></label>` : ''}
+      ${isOpenableDoor ? `<label>OPENED BY<select id="ce-door-access">${[
+        ['player', 'PLAYER'],
+        ['enemies', 'ENEMIES'],
+        ['both', 'PLAYER + ENEMIES'],
+        ['locked', 'LOCKED'],
+      ].map(([value, label]) => `<option value="${value}"${doorAccess === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>` : ''}
       ${selected.type === 'door' ? `
         <label>ZONE<select id="ce-door-zone">${[0,1,2].map((x) => `<option value="${x}"${Number(ent.zoneId) === x ? ' selected' : ''}>ZONE ${x + 1}</option>`).join('')}</select></label>
         <label>WIDTH<input id="ce-door-width" type="number" step="0.5" value="${fmt(ent.width || 5.4)}"></label>
@@ -1085,6 +1192,7 @@ export function createLevelEditorController(options = {}) {
       setEntityPosition(selected.type, ent, nextX, nextZ);
       setEntityYaw(selected.type, ent, ((Number(inspector.querySelector('#ce-ent-yaw').value) || 0) * Math.PI) / 180);
       if (selected.type === 'object') ent.scale = clamp(Number(inspector.querySelector('#ce-ent-scale').value) || 1, 0.25, 4);
+      if (isOpenableDoor) ent.doorAccess = normalizeDoorAccess(inspector.querySelector('#ce-door-access').value, 'player') || 'player';
       if (isEnemy) {
         ent.enemyType = inspector.querySelector('#ce-enemy-type').value;
         ent.role = inspector.querySelector('#ce-enemy-role').value;
@@ -1184,49 +1292,97 @@ export function createLevelEditorController(options = {}) {
     return null;
   }
 
-  function placeAt(world) {
+  function normalizeYawForKey(yaw) {
+    const twoPi = Math.PI * 2;
+    return (((Number(yaw) || 0) % twoPi) + twoPi) % twoPi;
+  }
+
+  function placementKey(kind, id, pos, yaw) {
+    if (!pos) return '';
+    return [
+      kind || 'place',
+      id || '',
+      Math.round((Number(pos.x) || 0) * 1000),
+      Math.round((Number(pos.z) || 0) * 1000),
+      Math.round(normalizeYawForKey(yaw) * 1000),
+    ].join(':');
+  }
+
+  function hasExistingObjectStamp(prefabId, pos, yaw) {
+    if (!prefabId || !pos || !map) return false;
+    const key = placementKey('object', prefabId, pos, yaw);
+    return (map.objects || []).some((obj) => obj && obj.prefabId === prefabId && placementKey('object', obj.prefabId, obj, obj.yaw || 0) === key);
+  }
+
+  function placeAt(world, options = {}) {
     if (!world || !map) return;
     if (!['enemy', 'peek', 'hold', 'spawn', 'exit', 'door', 'pickup'].includes(activeTool) && !activePrefabId) return;
-    saveHistory();
     const pos = snapPlacement(activePrefabId || null, world, { yaw: placementYaw });
+    const yaw = Number.isFinite(pos.yaw) ? pos.yaw : placementYaw;
+    const kind = activePrefabId ? 'object' : activeTool;
+    const key = placementKey(kind, activePrefabId || activeTool, pos, yaw);
+    if (options.skipKeys && options.skipKeys.has(key)) return null;
+    if (options.skipExisting && activePrefabId && hasExistingObjectStamp(activePrefabId, pos, yaw)) return null;
+    if (options.saveHistory !== false) saveHistory();
+    let placed = null;
     if (activeTool === 'enemy') {
-      const marker = createEnemySpawn(pos.x, pos.z, { yaw: placementYaw, zoneId: zoneForZ(pos.z) });
+      const marker = createEnemySpawn(pos.x, pos.z, { yaw, zoneId: zoneForZ(pos.z) });
       map.markers.enemySpawns.push(marker);
       selected = { type: 'enemy', id: marker.id };
+      placed = selected;
     } else if (activeTool === 'peek') {
-      const marker = createPeekAngle(pos.x, pos.z, { yaw: placementYaw });
+      const marker = createPeekAngle(pos.x, pos.z, { yaw });
       map.markers.peekAngles.push(marker);
       selected = { type: 'peek', id: marker.id };
+      placed = selected;
     } else if (activeTool === 'hold') {
-      const marker = createHoldPosition(pos.x, pos.z, { yaw: placementYaw });
+      const marker = createHoldPosition(pos.x, pos.z, { yaw });
       map.markers.holdPositions.push(marker);
       selected = { type: 'hold', id: marker.id };
+      placed = selected;
     } else if (activeTool === 'spawn') {
       const bounded = clampToPlayableBounds(pos.x, pos.z);
-      map.markers.playerSpawn = Object.assign({}, map.markers.playerSpawn || {}, { id: 'player_spawn', x: bounded.x, z: bounded.z, yaw: placementYaw, floorY: map.floorY });
+      map.markers.playerSpawn = Object.assign({}, map.markers.playerSpawn || {}, { id: 'player_spawn', x: bounded.x, z: bounded.z, yaw, floorY: map.floorY });
       selected = { type: 'spawn', id: 'player_spawn' };
+      placed = selected;
     } else if (activeTool === 'exit') {
       const marker = { id: customMarkerId('exit'), x0: pos.x - 2, x1: pos.x + 2, z0: pos.z - 1.5, z1: pos.z + 1.5, label: 'EXTRACT' };
       map.markers.exits = map.markers.exits || [];
       map.markers.exits.push(marker);
       selected = { type: 'exit', id: marker.id };
+      placed = selected;
     } else if (activeTool === 'door') {
-      const marker = { id: customMarkerId('zone_gate'), zoneId: zoneForZ(pos.z), x: pos.x, z: pos.z, width: 5.4, depth: 0.62, yaw: placementYaw };
+      const marker = { id: customMarkerId('zone_gate'), zoneId: zoneForZ(pos.z), x: pos.x, z: pos.z, width: 5.4, depth: 0.62, yaw };
       map.markers.zoneDoors = map.markers.zoneDoors || [];
       map.markers.zoneDoors.push(marker);
       selected = { type: 'door', id: marker.id };
+      placed = selected;
     } else if (activeTool === 'pickup') {
-      const marker = { id: customMarkerId('pickup'), x: pos.x, z: pos.z, yaw: placementYaw, type: placementPickupType || 'ammo' };
+      const marker = { id: customMarkerId('pickup'), x: pos.x, z: pos.z, yaw, type: placementPickupType || 'ammo' };
       map.markers.pickups = map.markers.pickups || [];
       map.markers.pickups.push(marker);
       selected = { type: 'pickup', id: marker.id };
+      placed = selected;
     } else if (activePrefabId) {
-      const obj = createPlacedObject(activePrefabId, pos.x, pos.z, { yaw: placementYaw });
+      const obj = createPlacedObject(activePrefabId, pos.x, pos.z, { yaw });
       map.objects.push(obj);
       selected = { type: 'object', id: obj.id };
+      placed = selected;
     }
     scheduleAutosave();
-    renderAll();
+    if (options.render === 'paint') {
+      renderViewport();
+      renderInspector();
+      renderAnalysisPanel();
+      updateHud();
+    } else {
+      renderAll();
+    }
+    return placed ? { ...placed, key, x: pos.x, z: pos.z, yaw } : null;
+  }
+
+  function canPaintObjects() {
+    return activeTool === 'place' && !!activePrefabId;
   }
 
   function moveSelected(world) {
@@ -1236,6 +1392,7 @@ export function createLevelEditorController(options = {}) {
       ? snapPlacement(ent.prefabId, world, { excludeId: ent.id, yaw: ent.yaw || 0 })
       : snapPlacement(null, world);
     setEntityPosition(selected.type, ent, pos.x, pos.z);
+    if (selected && selected.type === 'object' && Number.isFinite(pos.yaw)) ent.yaw = pos.yaw;
     scheduleAutosave();
     renderViewport();
     renderInspector();
@@ -1801,6 +1958,14 @@ export function createLevelEditorController(options = {}) {
       drag = { kind: 'pan', startWorld: world, originX: view.targetX, originZ: view.targetZ };
       return;
     }
+    if (e.button === 0 && canPaintObjects()) {
+      saveHistory();
+      const painted = placeAt(world, { saveHistory: false, render: 'paint', skipExisting: true });
+      const keys = new Set();
+      if (painted && painted.key) keys.add(painted.key);
+      drag = { kind: 'paint', keys, count: painted ? 1 : 0 };
+      return;
+    }
     if (activeTool !== 'select' && activeTool !== 'pan') {
       placeAt(world);
       return;
@@ -1835,10 +2000,23 @@ export function createLevelEditorController(options = {}) {
       renderViewport();
       return;
     }
+    if (drag.kind === 'paint') {
+      const painted = placeAt(world, { saveHistory: false, render: 'paint', skipKeys: drag.keys, skipExisting: true });
+      if (painted && painted.key) {
+        drag.keys.add(painted.key);
+        drag.count += 1;
+      }
+      return;
+    }
     if (drag.kind === 'move') moveSelected(world);
   });
 
-  window.addEventListener('mouseup', () => { drag = null; });
+  window.addEventListener('mouseup', () => {
+    if (drag && drag.kind === 'paint' && drag.count > 1) {
+      setStatus(`Painted ${drag.count} objects.`, 'ok');
+    }
+    drag = null;
+  });
 
   canvas?.addEventListener('wheel', (e) => {
     e.preventDefault();

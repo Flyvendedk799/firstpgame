@@ -8190,6 +8190,9 @@ class Enemy{
   _tryMove(dx,dz,walls,opts=null){
     const R=.38,nx=this.group.position.x+dx,nz=this.group.position.z+dz;
     const cx=this.group.position.x,cz=this.group.position.z;
+    if(!(opts&&opts.separation)&&typeof G!=='undefined'&&G.levelData&&typeof G.levelData.tryOpenDoorFor==='function'){
+      G.levelData.tryOpenDoorFor('enemy',{x:nx,z:nz},this);
+    }
     let okX=true,okZ=true;
     // Phase BA: spatial index — only check walls in the agent's current cell
     // and the candidate-move cell. Falls back to linear walk if no index.
@@ -9908,6 +9911,10 @@ class EnemyManager{
         const enemy=new Enemy(this.scene,pos,diff,type);
         enemy.zoneId=lvl&&lvl.zoneIdByPosition?getZoneOf(pos):z;
         if(lvl&&lvl.isMegaplexB01)applyMegaplexB01EnemyPresentation(enemy,type);
+        else if(lvl&&lvl.isCustomMap){
+          enemy.visualScale=Math.max(enemy.visualScale||1,megaplexB01EnemyVisualScale(type));
+          enemy.group.userData.customMapScale=enemy.visualScale;
+        }
         if(authoredMeta){
           if(authoredMeta.roomId)enemy.roomId=authoredMeta.roomId;
           if(authoredMeta.encounterId)enemy.encounterId=authoredMeta.encounterId;
@@ -15469,6 +15476,14 @@ document.addEventListener('keydown',e=>{
   }
   if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
   if(e.code==='KeyF'&&!P.dead&&P.nearPickup){e.preventDefault();tryEquipPickup(P.nearPickup);return;}
+  if(e.code==='KeyF'&&!P.dead&&P.nearOpenableDoor&&G.levelData&&typeof G.levelData.openCustomDoor==='function'){
+    e.preventDefault();
+    if(G.levelData.openCustomDoor(P.nearOpenableDoor,'player')){
+      P.nearOpenableDoor=null;
+      P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,.8);
+    }
+    return;
+  }
   if(e.code==='KeyH'&&!P.dead)useHealPack();
   if(e.code==='KeyG'&&!P.dead)tryThrowGrenade();
   if(e.code==='KeyB'&&!P.dead){e.preventDefault();toggleShop();}
@@ -28807,7 +28822,8 @@ async function startCustomMapLevel(pack,mapIndex=0,opts={}){
         bakeCornerEdges:_bakeCornerEdges,
         bakeCoverSlots:_bakeCoverSlots,
         flagSsrSolidsDirty:_flagSsrSolidsDirty,
-        isExitUnlocked:()=>G.exitUnlocked
+        isExitUnlocked:()=>G.exitUnlocked,
+        onDoorOpen:()=>{try{sfxInvOpen();}catch(_){}}
       });
     });
     await _deploySpan('lighting probes',72,async()=>{_applyShadowQuality();_syncEncounterDirectorFromLevel();_flagSsrSolidsDirty();});
@@ -32711,6 +32727,26 @@ renderer.setAnimationLoop(()=>{
   } else {
     P.nearPickup=null;P._pickupSticky=null;P._pickupStickyUntil=0;P._lastPickupPromptId=null;
     const pp=$e('pickup-prompt');if(pp){pp.style.opacity='0';pp.style.transform='translate(-50%,-50%) scale(1)';}
+  }
+  const _nearOpenableDoor=(G.levelData&&typeof G.levelData.findOpenableDoorFor==='function')
+    ?G.levelData.findOpenableDoorFor('player',P.pos,1.9):null;
+  P.nearOpenableDoor=_nearOpenableDoor;
+  if(!P.nearPickup&&_nearOpenableDoor&&!P.dead){
+    const pp=$e('pickup-prompt');
+    if(pp){
+      const promptId=`door:${_nearOpenableDoor.id||'open'}`;
+      if(P._lastDoorPromptId!==promptId){
+        P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,.85);
+        P._lastDoorPromptId=promptId;
+      }
+      $e('pickup-prompt-text').textContent='OPEN DOOR';
+      $e('pickup-prompt-sub').innerHTML='<span style="color:#ffd060">ACCESS READY</span>';
+      const pulse=THREE.MathUtils.clamp(P._pickupPromptPulse||0,0,1);
+      pp.style.opacity=String(0.76+pulse*.22);
+      pp.style.transform=`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`;
+    }
+  }else if(!_nearOpenableDoor){
+    P._lastDoorPromptId=null;
   }
   // Trails / FX — category budgets keep decals, smoke, shells, and flashes
   // independently bounded so one noisy system cannot evict every other effect.

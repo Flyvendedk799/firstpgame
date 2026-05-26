@@ -12,6 +12,7 @@ export const DEFAULT_CUSTOM_ZONE_BOUNDS = { halfWidth: 18, halfDepth: 54, zSplit
 export const ENEMY_TYPES = ['soldier', 'scout', 'heavy', 'pistolero', 'riot', 'marksman', 'sniper', 'shielded', 'demolitions'];
 export const ENEMY_ROLES = ['anchor', 'lookout', 'flanker', 'breacher', 'patrol', 'marksman', 'reinforcement'];
 export const ENEMY_BEHAVIORS = ['hold_angle', 'peek_from_cover', 'ambush_on_crossing', 'push_after_contact', 'patrol_route', 'reposition'];
+export const DOOR_ACCESS_MODES = ['player', 'enemies', 'both', 'locked'];
 
 export function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -34,6 +35,23 @@ export function slugify(value, fallback = 'custom-map') {
     .replace(/^-+|-+$/g, '')
     .slice(0, 72);
   return out || fallback;
+}
+
+export function normalizeDoorAccess(value, fallback = null) {
+  if (value && typeof value === 'object') {
+    const player = !!(value.player || value.players || value.playerCanOpen);
+    const enemies = !!(value.enemy || value.enemies || value.enemyCanOpen);
+    if (player && enemies) return 'both';
+    if (player) return 'player';
+    if (enemies) return 'enemies';
+    return 'locked';
+  }
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'enemy') return 'enemies';
+  if (mode === 'players') return 'player';
+  if (mode === 'all') return 'both';
+  if (DOOR_ACCESS_MODES.includes(mode)) return mode;
+  return fallback;
 }
 
 export function defaultMarkers() {
@@ -142,7 +160,7 @@ export function normalizeCustomMapPack(pack = {}) {
 }
 
 export function normalizePlacedObject(obj = {}) {
-  return {
+  const out = {
     id: obj.id || customId('obj'),
     prefabId: obj.prefabId || 'cover.half_crate',
     x: Number.isFinite(Number(obj.x)) ? Number(obj.x) : 0,
@@ -155,6 +173,9 @@ export function normalizePlacedObject(obj = {}) {
     layer: obj.layer || 'geometry',
     label: obj.label || '',
   };
+  const doorAccess = normalizeDoorAccess(obj.doorAccess ?? obj.openBy ?? obj.doorOpenMode, null);
+  if (doorAccess) out.doorAccess = doorAccess;
+  return out;
 }
 
 export function createPlacedObject(prefabId, x = 0, z = 0, options = {}) {

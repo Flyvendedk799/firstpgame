@@ -51,6 +51,11 @@ function navOpen(nav, ix, iz) {
   return ix >= 0 && iz >= 0 && ix < nav.nx && iz < nav.nz && nav.blocked[ix + iz * nav.nx] === 0;
 }
 
+function playerCanOpenWall(wall) {
+  if (!wall || !wall.openableDoor) return false;
+  return !wall.doorAccess || wall.doorAccess === 'player' || wall.doorAccess === 'both';
+}
+
 function findOpenNear(nav, ix, iz) {
   if (navOpen(nav, ix, iz)) return { ix, iz };
   for (let r = 1; r < 18; r++) {
@@ -125,7 +130,7 @@ export function validateCustomMap(map, kitManifest, options = {}) {
       if (!clearOfWalls(spawn.x, spawn.z, geo.walls, ENEMY_R, true)) errors.push(`enemy_spawn_inside_collision:${z}:${spawn.x.toFixed(1)},${spawn.z.toFixed(1)}`);
     }
   }
-  const routeWalls = geo.walls.map((w) => (w && w.zoneDoorId != null ? Object.assign({}, w, { broken: true }) : w));
+  const routeWalls = geo.walls.map((w) => (w && (w.zoneDoorId != null || playerCanOpenWall(w)) ? Object.assign({}, w, { broken: true }) : w));
   const nav = buildValidationNav(geo.map.bounds, routeWalls);
   const route = reachBox(nav, geo.playerSpawn, geo.exitZone);
   if (!route.ok) errors.push(`spawn_to_exit_unreachable:${route.reason}`);

@@ -1,8 +1,9 @@
-import { DEFAULT_CUSTOM_MAP_BOUNDS, DEFAULT_CUSTOM_ZONE_BOUNDS, normalizeCustomMap } from './schema.js';
+import { DEFAULT_CUSTOM_MAP_BOUNDS, DEFAULT_CUSTOM_ZONE_BOUNDS, normalizeCustomMap, normalizeDoorAccess } from './schema.js';
 
 const COLLISION_WALLS = new Set(['wall_aabb', 'cover_aabb', 'transparent_window_aabb']);
 const LEVEL_ONE_WALL_HEIGHT = 4.25;
 const KIT_AUTHORED_WALL_HEIGHT = 3.3;
+const FLOOR_EDGE_PAD = 0.85;
 
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
@@ -16,6 +17,181 @@ function rotateXZ(x, z, yaw) {
   const c = Math.cos(yaw || 0);
   const s = Math.sin(yaw || 0);
   return { x: x * c - z * s, z: x * s + z * c };
+}
+
+function expandedBounds(bounds, pad = FLOOR_EDGE_PAD) {
+  const b = Object.assign({}, DEFAULT_CUSTOM_MAP_BOUNDS, bounds || {});
+  return {
+    x0: (Number(b.x0) || 0) - pad,
+    x1: (Number(b.x1) || 0) + pad,
+    z0: (Number(b.z0) || 0) - pad,
+    z1: (Number(b.z1) || 0) + pad,
+  };
+}
+
+function isDoorPrefab(prefab) {
+  if (!prefab) return false;
+  if (prefab.category === 'doors') return true;
+  if (String(prefab.id || '').startsWith('door.')) return true;
+  return Array.isArray(prefab.tags) && prefab.tags.includes('door');
+}
+
+function isWindowPrefab(prefab) {
+  if (!prefab) return false;
+  if (prefab.category === 'windows') return true;
+  if (String(prefab.id || '').startsWith('window.')) return true;
+  return Array.isArray(prefab.tags) && prefab.tags.includes('window');
+}
+
+function isAperturePrefab(prefab) {
+  return isDoorPrefab(prefab) || isWindowPrefab(prefab);
+}
+
+function doorAccessForObject(object, prefab) {
+  if (!isDoorPrefab(prefab)) return null;
+  return normalizeDoorAccess(object && object.doorAccess, 'player') || 'player';
+}
+
+function doorCanOpen(access, actor) {
+  const mode = normalizeDoorAccess(access, 'player');
+  if (mode === 'both') return true;
+  if (mode === 'player') return actor === 'player';
+  if (mode === 'enemies') return actor === 'enemy' || actor === 'enemies';
+  return false;
+}
+
+function prefabLocalBounds(prefab) {
+  const out = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+  for (const part of (prefab && prefab.parts) || []) {
+    if (!part || part.kind !== 'box') continue;
+    const size = part.size || [];
+    const off = part.offset || [];
+    const sx = Math.abs(Number(size[0]) || 0);
+    const sz = Math.abs(Number(size[2]) || 0);
+    const ox = Number(off[0]) || 0;
+    const oz = Number(off[2]) || 0;
+    out.minX = Math.min(out.minX, ox - sx / 2);
+    out.maxX = Math.max(out.maxX, ox + sx / 2);
+    out.minZ = Math.min(out.minZ, oz - sz / 2);
+    out.maxZ = Math.max(out.maxZ, oz + sz / 2);
+  }
+  if (!Number.isFinite(out.minX)) return { minX: -1.6, maxX: 1.6, minZ: -0.2, maxZ: 0.2 };
+  return out;
+}
+
+function isStructurePrefab(prefab) {
+  return !!prefab && (prefab.category === 'walls' || prefab.category === 'modules');
+}
+
+function isWallLikePart(part, prefab) {
+  if (!part || part.kind !== 'box' || !isStructurePrefab(prefab)) return false;
+  if (!['wall_aabb', 'cover_aabb', 'transparent_window_aabb', 'decorative_only'].includes(part.collision)) return false;
+  const size = part.size || [];
+  const sx = Math.abs(Number(size[0]) || 0);
+  const sz = Math.abs(Number(size[2]) || 0);
+  return Math.max(sx, sz) >= 1.05 && Math.min(sx, sz) <= 1.1;
+}
+
+function unionBoxes(boxes) {
+  const clean = (boxes || []).filter(Boolean);
+  if (!clean.length) return null;
+  return clean.reduce((acc, box) => ({
+    x0: Math.min(acc.x0, box.x0),
+    x1: Math.max(acc.x1, box.x1),
+    z0: Math.min(acc.z0, box.z0),
+    z1: Math.max(acc.z1, box.z1),
+    y0: Math.min(acc.y0, box.y0),
+    y1: Math.max(acc.y1, box.y1),
+  }), { ...clean[0] });
+}
+
+function apertureCutoutsForObject(obj, prefab, floorY) {
+  if (!obj || !prefab || !isAperturePrefab(prefab)) return [];
+  const boxParts = (prefab.parts || []).filter((part) => part && part.kind === 'box');
+  if (!boxParts.length) return [];
+  if (isDoorPrefab(prefab)) {
+    const box = unionBoxes(boxParts.map((part) => partWorldAabb(part, obj, floorY, prefab)));
+    if (!box) return [];
+    const baseY = (Number(floorY) || 0) + (Number(obj.y) || 0);
+    box.y0 = Math.min(box.y0, baseY);
+    return [{ objectId: obj.id, prefabId: obj.prefabId, kind: 'door', box }];
+  }
+  const glassParts = boxParts.filter((part) => part.collision === 'transparent_window_aabb' || part.glassPane);
+  const cutters = glassParts.length ? glassParts : boxParts.filter((part) => COLLISION_WALLS.has(part.collision));
+  return cutters.map((part) => ({
+    objectId: obj.id,
+    prefabId: obj.prefabId,
+    kind: 'window',
+    box: partWorldAabb(part, obj, floorY, prefab),
+  }));
+}
+
+function boxesOverlap(a, b, minY = 0.06, minLong = 0.08, minThick = 0.02) {
+  if (!a || !b) return false;
+  const ix = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  const iz = Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0);
+  const iy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  return iy > minY && Math.max(ix, iz) > minLong && Math.min(ix, iz) > minThick;
+}
+
+function validSegmentBox(box) {
+  if (!box) return false;
+  return (box.x1 - box.x0) > 0.035 && (box.z1 - box.z0) > 0.035 && (box.y1 - box.y0) > 0.035;
+}
+
+function segment(box, collision2d, seeThrough2d = false) {
+  return { box, collision2d: collision2d !== false, seeThrough2d: !!seeThrough2d };
+}
+
+function splitSegmentByCutout(seg, cutout) {
+  const box = seg && seg.box;
+  const cut = cutout && cutout.box;
+  if (!boxesOverlap(box, cut)) return [seg];
+  const longAxis = (box.x1 - box.x0) >= (box.z1 - box.z0) ? 'x' : 'z';
+  const cutY0 = clamp(cut.y0, box.y0, box.y1);
+  const cutY1 = clamp(cut.y1, box.y0, box.y1);
+  if (cutY1 - cutY0 <= 0.08) return [seg];
+  const baseCollision = seg.collision2d !== false;
+  const baseSeeThrough = !!seg.seeThrough2d;
+  const out = [];
+  const add = (nextBox, collision2d, seeThrough2d = false) => {
+    if (validSegmentBox(nextBox)) out.push(segment(nextBox, baseCollision && collision2d, baseSeeThrough || seeThrough2d));
+  };
+  const windowSill = cutout.kind === 'window';
+  if (longAxis === 'x') {
+    const cutX0 = clamp(cut.x0, box.x0, box.x1);
+    const cutX1 = clamp(cut.x1, box.x0, box.x1);
+    if (cutX1 - cutX0 <= 0.08) return [seg];
+    add({ ...box, x1: cutX0 }, true);
+    add({ ...box, x0: cutX1 }, true);
+    add({ ...box, x0: cutX0, x1: cutX1, y1: cutY0 }, true, windowSill);
+    add({ ...box, x0: cutX0, x1: cutX1, y0: cutY1 }, false);
+  } else {
+    const cutZ0 = clamp(cut.z0, box.z0, box.z1);
+    const cutZ1 = clamp(cut.z1, box.z0, box.z1);
+    if (cutZ1 - cutZ0 <= 0.08) return [seg];
+    add({ ...box, z1: cutZ0 }, true);
+    add({ ...box, z0: cutZ1 }, true);
+    add({ ...box, z0: cutZ0, z1: cutZ1, y1: cutY0 }, true, windowSill);
+    add({ ...box, z0: cutZ0, z1: cutZ1, y0: cutY1 }, false);
+  }
+  return out;
+}
+
+function splitBoxByCutouts(box, cutouts) {
+  let parts = [segment(box, true)];
+  let wasCut = false;
+  for (const cutout of cutouts || []) {
+    const next = [];
+    for (const part of parts) {
+      const split = splitSegmentByCutout(part, cutout);
+      if (split.length !== 1 || split[0] !== part) wasCut = true;
+      next.push(...split);
+    }
+    parts = next;
+    if (!parts.length) break;
+  }
+  return { segments: parts, wasCut };
 }
 
 function wallHeightNormalized(part, prefab) {
@@ -214,10 +390,17 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
   const kit = prefabMap(kitManifest);
   const walls = [];
   const vaultables = [];
-  const floorRegions = [{ ...map.bounds, floorY: map.floorY }];
+  const floorRegions = [{ ...expandedBounds(map.bounds), floorY: map.floorY }];
   const placedParts = [];
   const errors = [];
   const warnings = [];
+  const apertureCutouts = [];
+
+  for (const obj of map.objects || []) {
+    const prefab = kit.get(obj.prefabId);
+    if (!prefab) continue;
+    apertureCutouts.push(...apertureCutoutsForObject(obj, prefab, map.floorY));
+  }
 
   for (const obj of map.objects || []) {
     const prefab = kit.get(obj.prefabId);
@@ -225,31 +408,56 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       errors.push(`missing_prefab:${obj.prefabId}`);
       continue;
     }
+    const doorAccess = doorAccessForObject(obj, prefab);
     for (const part of prefab.parts || []) {
-        const box = partWorldAabb(part, obj, map.floorY, prefab);
-      placedParts.push({ object: obj, prefab, part, box });
+      const box = partWorldAabb(part, obj, map.floorY, prefab);
+      const matchingCutouts = isWallLikePart(part, prefab)
+        ? apertureCutouts.filter((cutout) => cutout.objectId !== obj.id && boxesOverlap(box, cutout.box))
+        : [];
+      const split = matchingCutouts.length ? splitBoxByCutouts(box, matchingCutouts) : { segments: [segment(box, true)], wasCut: false };
       if (part.collision === 'floor_aabb') {
         floorRegions.push({ x0: box.x0, x1: box.x1, z0: box.z0, z1: box.z1, floorY: map.floorY });
       }
-      if (!COLLISION_WALLS.has(part.collision)) continue;
-      const entry = {
-        x0: box.x0,
-        x1: box.x1,
-        z0: box.z0,
-        z1: box.z1,
-        roomId: obj.roomId || null,
-        geometryId: `${obj.id}:${part.name}`,
-        prefabId: obj.prefabId,
-        floorplanRole: part.floorplanRole || null,
-        isWindow: part.collision === 'transparent_window_aabb' || !!part.glassPane,
-      };
-      walls.push(entry);
-      const height = Math.max(0, box.y1 - map.floorY);
-      const width = Math.abs(box.x1 - box.x0);
-      const depth = Math.abs(box.z1 - box.z0);
-      if (part.collision === 'cover_aabb' && height >= 0.38 && height <= 1.75 && width >= 0.18 && depth >= 0.18) {
-        vaultables.push({ ...entry, height: box.y1, objectHeight: height, vaultCandidate: true });
-      }
+      split.segments.forEach((seg, segmentIndex) => {
+        const segmentBox = seg.box;
+        const placed = {
+          object: obj,
+          prefab,
+          part,
+          box: segmentBox,
+          sourceBox: box,
+          runtimeBox: split.wasCut ? segmentBox : null,
+          cutSegment: split.wasCut,
+          cutSegmentIndex: split.wasCut ? segmentIndex : null,
+          collision2d: seg.collision2d !== false,
+          doorAccess,
+        };
+        placedParts.push(placed);
+        if (!COLLISION_WALLS.has(part.collision) || seg.collision2d === false) return;
+        const entry = {
+          x0: segmentBox.x0,
+          x1: segmentBox.x1,
+          z0: segmentBox.z0,
+          z1: segmentBox.z1,
+          roomId: obj.roomId || null,
+          geometryId: `${obj.id}:${part.name}${split.wasCut ? `:cut${segmentIndex}` : ''}`,
+          objectId: obj.id,
+          prefabId: obj.prefabId,
+          partName: part.name || null,
+          floorplanRole: part.floorplanRole || null,
+          isWindow: part.collision === 'transparent_window_aabb' || !!part.glassPane || !!seg.seeThrough2d,
+          openableDoor: !!doorAccess,
+          doorAccess: doorAccess || null,
+        };
+        placed.wallEntry = entry;
+        walls.push(entry);
+        const height = Math.max(0, segmentBox.y1 - map.floorY);
+        const width = Math.abs(segmentBox.x1 - segmentBox.x0);
+        const depth = Math.abs(segmentBox.z1 - segmentBox.z0);
+        if (part.collision === 'cover_aabb' && height >= 0.38 && height <= 1.75 && width >= 0.18 && depth >= 0.18) {
+          vaultables.push({ ...entry, height: segmentBox.y1, objectHeight: height, vaultCandidate: true });
+        }
+      });
     }
   }
 
@@ -373,17 +581,26 @@ function materialFor(THREE, kitManifest, cache, key) {
 function createPartMesh(THREE, kitManifest, matCache, entry, floorY = 0) {
   const { object, prefab, part } = entry;
   if (part.kind !== 'box') return null;
-  const { sx, sy, sz, ox, oy, oz } = partRuntimeTransform(part, object, floorY, prefab);
+  const runtimeBox = entry && entry.runtimeBox;
+  const tx = runtimeBox ? null : partRuntimeTransform(part, object, floorY, prefab);
+  const sx = runtimeBox ? Math.max(0.04, runtimeBox.x1 - runtimeBox.x0) : tx.sx;
+  const sy = runtimeBox ? Math.max(0.04, runtimeBox.y1 - runtimeBox.y0) : tx.sy;
+  const sz = runtimeBox ? Math.max(0.04, runtimeBox.z1 - runtimeBox.z0) : tx.sz;
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(sx || 0.1, sy || 0.1, sz || 0.1),
     materialFor(THREE, kitManifest, matCache, part.material || 'wall_dark'),
   );
-  const off = rotateXZ(ox, oz, object.yaw || 0);
-  mesh.position.set(object.x + off.x, oy, object.z + off.z);
-  mesh.rotation.y = object.yaw || 0;
+  if (runtimeBox) {
+    mesh.position.set((runtimeBox.x0 + runtimeBox.x1) / 2, (runtimeBox.y0 + runtimeBox.y1) / 2, (runtimeBox.z0 + runtimeBox.z1) / 2);
+    mesh.rotation.y = 0;
+  } else {
+    const off = rotateXZ(tx.ox, tx.oz, object.yaw || 0);
+    mesh.position.set(object.x + off.x, tx.oy, object.z + off.z);
+    mesh.rotation.y = object.yaw || 0;
+  }
   mesh.castShadow = part.collision !== 'floor_aabb' && part.collision !== 'decorative_only';
   mesh.receiveShadow = true;
-  mesh.name = `${object.prefabId}:${part.name}`;
+  mesh.name = `${object.prefabId}:${part.name}${entry.cutSegment ? `:cut${entry.cutSegmentIndex}` : ''}`;
   Object.assign(mesh.userData, {
     customMapObjectId: object.id,
     prefabId: object.prefabId,
@@ -392,6 +609,7 @@ function createPartMesh(THREE, kitManifest, matCache, entry, floorY = 0) {
     glassPane: !!part.glassPane,
     breakable: !!part.breakable,
     breakSound: part.breakSound || null,
+    cutSegment: !!entry.cutSegment,
   });
   return mesh;
 }
@@ -427,15 +645,51 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
   const reflectionCandidates = [];
   const shadowCasters = [];
   const localObjects = [];
+  const openableDoorMap = new Map();
 
   const floorMat = materialFor(THREE, kitManifest, matCache, 'floor_concrete');
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(geo.dims.RW, 0.08, geo.dims.RD), floorMat);
+  const floorBounds = expandedBounds(geo.map.bounds);
+  const floorWidth = Math.max(1, floorBounds.x1 - floorBounds.x0);
+  const floorDepth = Math.max(1, floorBounds.z1 - floorBounds.z0);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(floorWidth, 0.08, floorDepth), floorMat);
   floor.name = 'custom-map-authoring-floor';
-  floor.position.set((geo.map.bounds.x0 + geo.map.bounds.x1) / 2, geo.map.floorY - 0.04, (geo.map.bounds.z0 + geo.map.bounds.z1) / 2);
+  floor.position.set((floorBounds.x0 + floorBounds.x1) / 2, geo.map.floorY - 0.04, (floorBounds.z0 + floorBounds.z1) / 2);
   floor.receiveShadow = true;
   floor.userData.collision = 'floor_aabb';
   root.add(floor);
   solids.push(floor);
+
+  function ensureOpenableDoor(entry) {
+    if (!entry || !entry.doorAccess || !entry.object || !entry.prefab) return null;
+    let door = openableDoorMap.get(entry.object.id);
+    if (door) return door;
+    const obj = entry.object;
+    const scale = Number.isFinite(obj.scale) ? obj.scale : 1;
+    const yaw = Number.isFinite(obj.yaw) ? obj.yaw : 0;
+    const local = prefabLocalBounds(entry.prefab);
+    const hinge = rotateXZ(local.minX * scale, ((local.minZ + local.maxZ) / 2) * scale, yaw);
+    const spanX = Math.max(0.6, (local.maxX - local.minX) * scale);
+    const spanZ = Math.max(0.2, (local.maxZ - local.minZ) * scale);
+    door = {
+      id: obj.id,
+      prefabId: obj.prefabId,
+      access: entry.doorAccess,
+      opened: false,
+      opening: false,
+      openProgress: 0,
+      targetOpen: 0,
+      currentAngle: 0,
+      targetAngle: Math.PI / 2,
+      pivot: new THREE.Vector3((Number(obj.x) || 0) + hinge.x, geo.map.floorY + (Number(obj.y) || 0), (Number(obj.z) || 0) + hinge.z),
+      center: new THREE.Vector3(Number(obj.x) || 0, geo.map.floorY + (Number(obj.y) || 0), Number(obj.z) || 0),
+      wallEntries: [],
+      meshes: [],
+      radius: Math.max(1.45, Math.min(2.3, Math.max(spanX, spanZ) * 0.45)),
+      userData: { customMapObjectId: obj.id, prefabId: obj.prefabId },
+    };
+    openableDoorMap.set(obj.id, door);
+    return door;
+  }
 
   for (const entry of geo.placedParts) {
     const mesh = createPartMesh(THREE, kitManifest, matCache, entry, geo.map.floorY);
@@ -443,6 +697,18 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     root.add(mesh);
     if (entry.part.collision !== 'decorative_only' && entry.part.collision !== 'nonblocking_visual') solids.push(mesh);
     if (entry.part.material === 'glass' || entry.part.material === 'steel' || entry.part.material === 'floor_wet') reflectionCandidates.push(mesh);
+    const dynamicDoor = ensureOpenableDoor(entry);
+    if (dynamicDoor) {
+      mesh.userData.openableDoorId = dynamicDoor.id;
+      dynamicDoor.meshes.push({
+        mesh,
+        closedPos: mesh.position.clone(),
+        closedYaw: mesh.rotation.y || 0,
+        offsetX: mesh.position.x - dynamicDoor.pivot.x,
+        offsetZ: mesh.position.z - dynamicDoor.pivot.z,
+      });
+      if (entry.wallEntry && !dynamicDoor.wallEntries.includes(entry.wallEntry)) dynamicDoor.wallEntries.push(entry.wallEntry);
+    }
   }
 
   const doorVisuals = [];
@@ -495,6 +761,7 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     levelData.cornerEdges = env.bakeCornerEdges ? env.bakeCornerEdges(levelData.walls, levelData.navGrid) : [];
     levelData.coverSlots = env.bakeCoverSlots ? env.bakeCoverSlots(levelData.cornerEdges || [], levelData.vaultables || []) : [];
   }
+  const openableDoors = Array.from(openableDoorMap.values()).filter((door) => door.meshes.length);
   const zoneDoors = doorVisuals.map((visual) => ({
     id: visual.door.id,
     zoneId: visual.door.zoneId,
@@ -515,6 +782,73 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     rebuildNavigation();
     return true;
   }
+  function actorPos(actorOrPos) {
+    if (!actorOrPos) return null;
+    if (Number.isFinite(actorOrPos.x) && Number.isFinite(actorOrPos.z)) return actorOrPos;
+    if (actorOrPos.position && Number.isFinite(actorOrPos.position.x) && Number.isFinite(actorOrPos.position.z)) return actorOrPos.position;
+    if (actorOrPos.group && actorOrPos.group.position) return actorOrPos.group.position;
+    return null;
+  }
+  function findOpenableDoorFor(actor, actorOrPos, radius = null) {
+    const pos = actorPos(actorOrPos);
+    if (!pos) return null;
+    const r = Number.isFinite(radius) ? radius : (actor === 'player' ? 1.85 : 1.25);
+    const r2 = r * r;
+    let best = null;
+    let bestD2 = Infinity;
+    for (const door of openableDoors) {
+      if (!door || door.opened || door.opening) continue;
+      if (!doorCanOpen(door.access, actor)) continue;
+      let d2 = (pos.x - door.center.x) ** 2 + (pos.z - door.center.z) ** 2;
+      for (const wall of door.wallEntries || []) d2 = Math.min(d2, pointToAabbDist2(pos.x, pos.z, wall));
+      const reach = Math.max(r, door.radius || 0);
+      const reach2 = reach * reach;
+      if (d2 <= reach2 && d2 < bestD2) {
+        best = door;
+        bestD2 = d2;
+      }
+    }
+    return best;
+  }
+  function openCustomDoor(doorOrId, actor = 'player') {
+    const door = typeof doorOrId === 'string' ? openableDoors.find((d) => d.id === doorOrId) : doorOrId;
+    if (!door || door.opened || !doorCanOpen(door.access, actor)) return false;
+    door.opened = true;
+    door.opening = true;
+    door.targetOpen = 1;
+    for (const w of door.wallEntries || []) if (w) w.broken = true;
+    rebuildNavigation();
+    if (typeof env.flagSsrSolidsDirty === 'function') env.flagSsrSolidsDirty();
+    if (typeof env.onDoorOpen === 'function') env.onDoorOpen(door, actor);
+    return true;
+  }
+  function tryOpenDoorFor(actor, actorOrPos, source = null) {
+    const door = findOpenableDoorFor(actor, actorOrPos || source);
+    return door ? openCustomDoor(door, actor) : false;
+  }
+  function tickOpenableDoors(dt) {
+    for (const door of openableDoors) {
+      if (!door || !door.meshes.length) continue;
+      const delta = (door.targetOpen || 0) - (door.openProgress || 0);
+      if (Math.abs(delta) < 0.002) {
+        door.openProgress = door.targetOpen || 0;
+        if (door.openProgress >= 0.999) door.opening = false;
+      } else {
+        door.openProgress += delta * Math.min(1, dt * 5.2);
+      }
+      const angle = door.targetAngle * Math.sin((door.openProgress || 0) * Math.PI / 2);
+      if (Math.abs(angle - (door.currentAngle || 0)) < 0.0005) continue;
+      door.currentAngle = angle;
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      for (const part of door.meshes) {
+        const x = part.offsetX * c - part.offsetZ * s;
+        const z = part.offsetX * s + part.offsetZ * c;
+        part.mesh.position.set(door.pivot.x + x, part.closedPos.y, door.pivot.z + z);
+        part.mesh.rotation.y = part.closedYaw + angle;
+      }
+    }
+  }
   function tickZoneDoors(dt) {
     for (const door of zoneDoors) {
       if (!door || !door.mesh) continue;
@@ -526,6 +860,7 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
   }
   function tickDynProps(dt) {
     tickZoneDoors(dt);
+    tickOpenableDoors(dt);
     const targetOpacity = env.isExitUnlocked && env.isExitUnlocked() ? 0.42 : 0;
     exitMat.opacity += (targetOpacity - exitMat.opacity) * Math.min(1, dt * 5);
   }
@@ -550,6 +885,11 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     playerSpawn: geo.playerSpawn,
     zoneBounds: geo.zoneBounds,
     zoneDoors,
+    openableDoors,
+    findOpenableDoorFor,
+    openCustomDoor,
+    tryOpenDoorFor,
+    tickOpenableDoors,
     alertDoorways: geo.alertDoorways,
     spawnDoors: [],
     tickSpawnDoors: () => {},
