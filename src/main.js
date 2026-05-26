@@ -177,6 +177,29 @@ import {
   coverSlotRisk as _coverSlotRiskImpl,
   getBestPeekSlot as _getBestPeekSlotImpl,
 } from './cover-graph.js';
+import {
+  ATTACHMENT_DEFS,
+  ATTACH_TIER_COL,
+  GAMEPLAY_QOL_FEEL,
+  PLAYABLE_WEAPON_INDICES,
+  START_WEAPON,
+  START_WEAPON_IDX,
+  WEAPONS,
+  attachmentScore,
+  isPlayableWeaponIdx,
+  nextPlayableWeaponIdx,
+  normalizeWeaponIdx,
+  randomAttachment,
+  weaponIdxForDisplaySlot,
+} from './data/weapons.js';
+import {
+  createGameState,
+  createHandAnimationState,
+  createPrimaryPlayerState,
+  createSecondaryPlayerState,
+} from './game/state.js';
+import { installDebugApi, installPerfDebug } from './debug/installDebugApi.js';
+import { byId as $e } from './ui/dom.js';
 
 // `import * as` returns a frozen Module Namespace — clone into a plain object
 // so we can re-attach the addons under the same `THREE.X` names the legacy
@@ -14735,168 +14758,22 @@ function updateKnives(dt){
   }
 }
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
-const WEAPONS=[
-  {name:'M4A1',slot:'',playable:false,removed:true,mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[1/7]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
-  {name:'THROWING KNIFE',slot:'[2/7]',mag:1,res:99,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
-  {name:'TAC-12 SHOTGUN',slot:'[3/7]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
-  {name:'MP9 SUPPRESSED',slot:'[4/7]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
-  {name:'MK14 DMR',  slot:'[5/7]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
-  {name:'P226 SUPP', slot:'[6/7]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
-  {name:'AWM SNIPER',slot:'[7/7]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
-];
-const PLAYABLE_WEAPON_INDICES=WEAPONS.map((w,i)=>w&&w.playable!==false&&!w.removed?i:-1).filter(i=>i>=0);
-const START_WEAPON_IDX=PLAYABLE_WEAPON_INDICES[0]??0;
-const START_WEAPON=WEAPONS[START_WEAPON_IDX]||WEAPONS[0];
-function isPlayableWeaponIdx(idx){return PLAYABLE_WEAPON_INDICES.includes(idx|0);}
-function normalizeWeaponIdx(idx,fallback=START_WEAPON_IDX){
-  const n=Number.isFinite(Number(idx))?(Number(idx)|0):fallback;
-  const fb=Number.isFinite(Number(fallback))?(Number(fallback)|0):START_WEAPON_IDX;
-  if(isPlayableWeaponIdx(n))return n;
-  if(isPlayableWeaponIdx(fb))return fb;
-  return START_WEAPON_IDX;
-}
-function weaponIdxForDisplaySlot(slotNumber){
-  const s=(Number(slotNumber)|0)-1;
-  return s>=0&&s<PLAYABLE_WEAPON_INDICES.length?PLAYABLE_WEAPON_INDICES[s]:null;
-}
-function nextPlayableWeaponIdx(current,dir=1){
-  const list=PLAYABLE_WEAPON_INDICES;
-  if(!list.length)return current|0;
-  const step=dir>=0?1:-1;
-  let at=list.indexOf(current|0);
-  if(at<0)at=step>0?-1:0;
-  return list[(at+step+list.length)%list.length];
-}
+// Static weapon and attachment tables live in ./data/weapons.js. Runtime state
+// helpers stay here until the player/weapon systems are split out.
 // Reflect mag/res for new sniper in P arrays (initial state)
 function _padWeaponState(){
   while(P.weaponAmmo&&P.weaponAmmo.length<WEAPONS.length)P.weaponAmmo.push(WEAPONS[P.weaponAmmo.length].mag);
   while(P.weaponRes &&P.weaponRes.length <WEAPONS.length)P.weaponRes.push(WEAPONS[P.weaponRes.length ].res);
 }
-// ── ATTACHMENTS ───────────────────────────────────────────────────────────────
-// 4 tiers per type. Multipliers applied at fire/ADS time.
-//   spreadMul/adsSpreadMul < 1 = tighter; adsSpeedMul > 1 = faster ADS lerp
-const ATTACHMENT_DEFS={
-  scope:[
-    {tier:1,type:'scope',name:'IRON RDS', desc:'Open-top red dot',  spreadMul:.92,adsSpreadMul:.85,adsSpeedMul:1.05,pipFov:14,adsScaleMul:.70,dotRadiusMul:1.00,haloRadiusMul:1.00,pipOpacityMax:.90,reticleShape:'dot',dotColor:0xff2820,haloColor:0xff5050,bodyColor:0x252530,lensColor:0x102020,glowEm:0x081208,vignetteColor:'rgba(255,64,64,.08)'},
-    {tier:2,type:'scope',name:'COMP RDS', desc:'Compact red dot',   spreadMul:.85,adsSpreadMul:.74,adsSpeedMul:1.18,pipFov:12,adsScaleMul:.80,dotRadiusMul:1.08,haloRadiusMul:1.10,pipOpacityMax:.93,reticleShape:'ring',dotColor:0xff3838,haloColor:0xff6868,bodyColor:0x1a1a1f,lensColor:0x142020,glowEm:0x0a1410,vignetteColor:'rgba(255,82,82,.09)'},
-    {tier:3,type:'scope',name:'HOLO RDS', desc:'Wide holographic',  spreadMul:.78,adsSpreadMul:.62,adsSpeedMul:1.28,pipFov:10,adsScaleMul:.90,dotRadiusMul:1.20,haloRadiusMul:1.22,pipOpacityMax:.95,reticleShape:'dotRing',dotColor:0x40ff80,haloColor:0x80ffa0,bodyColor:0x12141a,lensColor:0x103020,glowEm:0x10381c,vignetteColor:'rgba(80,255,160,.10)'},
-    {tier:4,type:'scope',name:'PRISM RDS',desc:'Prism reticle',     spreadMul:.65,adsSpreadMul:.48,adsSpeedMul:1.42,pipFov:8,adsScaleMul:1.00,dotRadiusMul:1.35,haloRadiusMul:1.30,pipOpacityMax:.97,reticleShape:'chevron',dotColor:0x40c8ff,haloColor:0x80e0ff,bodyColor:0x0e0e16,lensColor:0x102030,glowEm:0x183848,vignetteColor:'rgba(96,200,255,.14)'}
-  ],
-  mag:[
-    {tier:1,type:'mag',name:'STD MAG',     desc:'Standard capacity',           magMul:1.00,reloadMul:1.00,dmgMul:1.00},
-    {tier:2,type:'mag',name:'EXTENDED',    desc:'+30% mag capacity',           magMul:1.30,reloadMul:1.05,dmgMul:1.00},
-    {tier:3,type:'mag',name:'FAST EJECT',  desc:'-25% reload time',            magMul:1.00,reloadMul:0.75,dmgMul:1.00},
-    {tier:4,type:'mag',name:'AP ROUND',    desc:'+18% damage · armor pierce',  magMul:0.85,reloadMul:1.00,dmgMul:1.18}
-  ],
-  muzzle:[
-    {tier:1,type:'muzzle',name:'A2 BRAKE',  desc:'Reduces vertical recoil',    recoilMul:.90,spreadMul:1.00,suppressed:false},
-    {tier:2,type:'muzzle',name:'COMPENSATOR',desc:'Tighter horizontal',        recoilMul:.85,spreadMul:.92, suppressed:false},
-    {tier:3,type:'muzzle',name:'SUPPRESSOR',desc:'Silenced — no LOS alert',     recoilMul:1.00,spreadMul:1.05,suppressed:true},
-    {tier:4,type:'muzzle',name:'HEAVY BARREL',desc:'Tightest spread, more recoil',recoilMul:1.10,spreadMul:.78,suppressed:false}
-  ],
-  foregrip:[
-    {tier:1,type:'foregrip',name:'POLY GRIP',     desc:'Standard control grip',     recoilMul:.95,adsSpeedMul:1.05,spreadMul:1.00},
-    {tier:2,type:'foregrip',name:'ANGLED',         desc:'Faster ADS transition',     recoilMul:.95,adsSpeedMul:1.20,spreadMul:.95},
-    {tier:3,type:'foregrip',name:'VERTICAL',       desc:'Reduced visual recoil',     recoilMul:.80,adsSpeedMul:1.00,spreadMul:.92},
-    {tier:4,type:'foregrip',name:'BIPOD GRIP',     desc:'Tightest spread + recoil',  recoilMul:.75,adsSpeedMul:1.00,spreadMul:.85}
-  ]
-};
-const ATTACH_TIER_COL=['#9aa0aa','#5fcb52','#3aa6ff','#c46bff']; // tier 1..4 swatches
-const GAMEPLAY_QOL_FEEL={
-  vaultBufferMs:185,
-  vaultPromptGraceMs:155,
-  pickupStickyMs:340,
-  pickupStickyRange:2.55,
-  reloadDeniedToastMs:720,
-  triggerReadyPulse:.46,
-  criticalHpRatio:.34
-};
-function attachmentScore(a){
-  if(!a)return 0;
-  const m=(k,d=1)=>Number.isFinite(a[k])?a[k]:d;
-  if(a.type==='scope')return Math.round(((1-m('spreadMul'))+(1-m('adsSpreadMul'))+(m('adsSpeedMul')-1))*100);
-  if(a.type==='mag')return Math.round(((m('magMul')-1)*55)+((1-m('reloadMul'))*65)+((m('dmgMul')-1)*95));
-  if(a.type==='muzzle')return Math.round(((1-m('recoilMul'))*80)+((1-m('spreadMul'))*70)+(a.suppressed?12:0));
-  if(a.type==='foregrip')return Math.round(((1-m('recoilMul'))*85)+((1-m('spreadMul'))*70)+((m('adsSpeedMul')-1)*55));
-  return Math.round(((1-m('spreadMul'))+(1-m('adsSpreadMul'))+(m('adsSpeedMul')-1))*100);
-}
-function randomAttachment(type,minTier,maxTier){
-  const list=ATTACHMENT_DEFS[type];if(!list||!list.length)return null;
-  const lo=Math.max(0,((minTier|0)||1)-1),hi=Math.min(list.length-1,((maxTier|0)||list.length)-1);
-  const idx=lo+Math.floor(Math.random()*(hi-lo+1));
-  return Object.assign({},list[idx]);
-}
+// Static attachment data lives in ./data/weapons.js.
 // ── STATE ─────────────────────────────────────────────────────────────────────
-const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
-  vy:0,jumpH:0,grounded:true,
-  wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
-  dropkickActive:false,dropkickT:0,dropkickTimer:0,dropkickDur:.58,dropkickCooldown:0,dropkickDirX:0,dropkickDirZ:-1,dropkickImpact:0,dropkickLandTimer:0,dropkickLandDur:.46,dropkickHitEnemies:null,
-  vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
-  nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
-  // Camera dynamics: landing dip, damage roll, breathing/idle sway
-  landKick:0,dmgRoll:0,dmgPitch:0,
-  // Smoothed sprint amount (0..1) for gun-down pose
-  sprintAmt:0,
-  // Slide state — duration-gated, momentum-carrying low-stance dash
-  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,slideLocalR:0,slideLocalF:1,
-  slideCarryTimer:0,slideExitGrace:0,
-  guardBehindHeld:false,guardBehindActive:false,guardBehindAmt:0,guardPeekUp:0,guardPeekSide:0,guardPeekForward:0,guardNormalX:0,guardNormalZ:1,guardTangentX:1,guardTangentZ:0,guardCover:null,guardCoverReady:0,guardCoverDist:0,guardMode:'none',
-  // Attachment slots (one per type). null = empty.
-  attachments:{scope:null,mag:null,muzzle:null,foregrip:null},
-  // Pickup interaction state
-  nearPickup:null,
-  // Economy
-  money:0,healPacks:0,grenades:0,
-  // Per-weapon ammo state — preserved across swaps so swapping isn't a free reload.
-  weaponAmmo:[30,12,999,6,32,10,12,5],
-  weaponRes:[90,36,99,18,64,40,36,15],focus:1.0,focusActive:false,timeScale:1.0,score:0,kills:0,headshots:0,shotsFired:0,shotsHit:0,execs:0,combo:null,maxHp:100,smokes:1,flashes:1};
-const P2={pos:new THREE.Vector3(1.5,.2,18),yaw:0,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
-  vy:0,jumpH:0,grounded:true,
-  wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
-  dropkickActive:false,dropkickT:0,dropkickTimer:0,dropkickDur:.58,dropkickCooldown:0,dropkickDirX:0,dropkickDirZ:-1,dropkickImpact:0,dropkickLandTimer:0,dropkickLandDur:.46,dropkickHitEnemies:null,
-  vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
-  nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
-  landKick:0,dmgRoll:0,dmgPitch:0,
-  sprintAmt:0,
-  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,slideLocalR:0,slideLocalF:1,
-  slideCarryTimer:0,slideExitGrace:0,
-  guardBehindHeld:false,guardBehindActive:false,guardBehindAmt:0,guardPeekUp:0,guardPeekSide:0,guardPeekForward:0,guardNormalX:0,guardNormalZ:1,guardTangentX:1,guardTangentZ:0,guardCover:null,guardCoverReady:0,guardCoverDist:0,guardMode:'none',
-  crouching:false,crouchAmt:0,
-  attachments:{scope:null,mag:null,muzzle:null,foregrip:null},
-  nearPickup:null,
-  money:0,healPacks:0,grenades:0,
-  weaponAmmo:[30,12,999,6,32,10,12,5],
-  weaponRes:[90,36,99,18,64,40,36,15],focus:1.0,focusActive:false,timeScale:1.0,score:0,kills:0,headshots:0,shotsFired:0,shotsHit:0,execs:0,combo:null,maxHp:100,smokes:1,flashes:1};
+const P=createPrimaryPlayerState({THREE,startWeapon:START_WEAPON,startWeaponIdx:START_WEAPON_IDX});
+const P2=createSecondaryPlayerState({THREE,startWeapon:START_WEAPON,startWeaponIdx:START_WEAPON_IDX});
+
 // Hand animation state
-const H={
-  idlePhase:0,
-  // Fire
-  fireT:0,firePlaying:false,
-  // Stored base positions for lerp targets (in gunGrp local space)
-  rBase:{x:.003,y:-.052,z:.042,rx:0,ry:0,rz:0},
-  lBase:{x:-.004,y:-.052,z:-.070,rx:.11,ry:0,rz:0},
-  // Smoothed working values (lerp toward targets each frame)
-  rRX:0,rRY:0,rRZ:0, lRX:.11,lRY:0,lRZ:0,
-  idxRX:0,
-  // Barrel heat (0..1, accumulates on shot, decays each frame)
-  heat:0,
-  // Short additive kick when a bullet connects with an enemy.
-  hitKickT:0,hitKickDur:.18,hitKickStrength:0,hitKickSide:1,hitKickHead:false,hitKickKill:false,
-  // Reticle pulse phase
-  reticlePhase:0
-};
-const H2={
-  idlePhase:0,
-  fireT:0,firePlaying:false,
-  rBase:{x:.003,y:-.052,z:.042,rx:0,ry:0,rz:0},
-  lBase:{x:-.004,y:-.052,z:-.070,rx:.11,ry:0,rz:0},
-  rRX:0,rRY:0,rRZ:0, lRX:.11,lRY:0,lRZ:0,
-  idxRX:0,
-  heat:0,
-  hitKickT:0,hitKickDur:.18,hitKickStrength:0,hitKickSide:1,hitKickHead:false,hitKickKill:false,
-  reticlePhase:0
-};
+const H=createHandAnimationState();
+const H2=createHandAnimationState();
+
 function _viewmodelHitKickEnvelope(hState){
   if(!hState||!(hState.hitKickT>0))return 0;
   const dur=Math.max(.001,hState.hitKickDur||.18);
@@ -15113,11 +14990,8 @@ const playerAnimState0=createPlayerAnimState({slot:0});
 const playerAnimState1=createPlayerAnimState({slot:1});
 let _animDebugHud=false;
 const EYE=1.7,PR=0.35;
-const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:null,encounterDirector:null,currentRoomId:null,waveActive:false,exitUnlocked:false,trails:[],hitMarkTimer:0,advancePending:false,vaultables:[],pickups:[],invOpen:false,shopOpen:false,menuOpen:false,knives:[],campaignLevel:null,currentBeat:null,mastery:null,runModifiers:null,
-  playMode:'solo',splitScreenActive:false,_ssrSolidsDirty:false,
-  // Phase 6 — AI/lean telemetry counters (read by __game.debug.snapshot)
-  _aiPeekCount:0,_aiPeekShotsFired:0,_aiAllShotsFired:0,_aiPairsActive:0,_aiRepositions:0,_aiVaults:0,_aiReloads:0,
-  _playerLeanShots:0,_playerTotalShots:0,  _floorplanDebugHud:false,_floorplanMapLabels:false};
+const G=createGameState();
+
 const CUSTOM_MAP_STORE=createCustomMapStore();
 const CUSTOM_LEVEL_KIT=createLevelKitRegistry();
 const CUSTOM_MAP_RUNTIME={pack:null,mapIndex:0,map:null,returnToEditor:false,lastResult:null};
@@ -15634,7 +15508,6 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('keyup',e=>{delete K[e.code];delete K2[e.code];if(e.code==='KeyC')P.crouching=false;if(e.code==='AltLeft'||e.code==='AltRight')P.guardBehindHeld=false;});
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
-const $e=id=>document.getElementById(id);
 let _canvasPeMenuSync=null;
 /** WebGL canvas can composite above the HTML menu; disable hit-testing whenever the main menu is up. */
 function _syncCanvasPointerEventsForMainMenu(){
@@ -30984,7 +30857,7 @@ function _visualDebugState(){
     forcedVisualProfile:_forcedVisualProfile?_forcedVisualProfile.id:null
   };
 }
-window.__PERF={snapshot:()=>{
+installPerfDebug({snapshot:()=>{
   const sorted=Array.from(PERF.samples).filter(x=>x>.012).sort((a,b)=>a-b);
   const p99Snap=sorted.length?sorted[Math.floor((sorted.length-1)*.99)]:0;
   const pct=_perfFramePercentiles(PERF.samples);
@@ -31024,7 +30897,7 @@ window.__PERF={snapshot:()=>{
     visual:vm,
     runtime:_visualRuntimeStats()
   };
-}};
+}});
 function _perfTriage(){
   const pct=_perfFramePercentiles(PERF.samples);
   const ri=renderer.info?.render||{};
@@ -33204,7 +33077,7 @@ function _floorplanGeometryAudit(fp,solids){
   return {expected:exp,present:[...have],missing:exp.filter(g=>!have.has(g))};
 }
 
-window.__game={
+installDebugApi({
   debug:{
     snapshot:()=>{
       const _safeDiv=(a,b)=>b>0?(a/b):0;
@@ -34047,4 +33920,4 @@ window.__game={
       return _runLevelAuthoringValidation(ld,def);
     },
   }
-};
+});

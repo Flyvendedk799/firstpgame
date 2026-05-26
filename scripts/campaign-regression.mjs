@@ -39,6 +39,10 @@ await page.waitForFunction(() => {
   const snap = window.__game?.debug?.snapshot?.();
   return snap?.campaign?.id === 'B01_LOADING_DOCK';
 }, null, { timeout: 45000 });
+await page.waitForFunction(() => {
+  const snap = window.__game?.debug?.snapshot?.();
+  return snap?.cornerEdgesCount >= 8 && snap?.coverSlotsCount >= 16;
+}, null, { timeout: 45000 });
 
 const snapshot = await page.evaluate(() => window.__game.debug.snapshot());
 await page.screenshot({ path: path.join(SCREENSHOTS_DIR, 'campaign-regression-gameplay.png'), fullPage: false });
