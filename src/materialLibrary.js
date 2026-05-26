@@ -55,6 +55,160 @@ function authoredMaps(name, extras = {}) {
     ...extras
   };
 }
+
+export const CORE_VISUAL_MATERIAL_POLISH_VERSION = 'core-visual-material-polish-v1';
+
+const CORE_VISUAL_MATERIAL_POLISH_PROFILES = {
+  concrete: { scale: 0.38, colorBreakup: 0.050, roughnessNoise: 0.075, grime: 0.080, rimStrength: 0.014, rimPower: 2.7, rimColor: 0x7f94a8 },
+  tile: { scale: 0.46, colorBreakup: 0.030, roughnessNoise: 0.045, grime: 0.045, rimStrength: 0.012, rimPower: 2.9, rimColor: 0xd7f2ec },
+  metal: { scale: 0.58, colorBreakup: 0.020, roughnessNoise: 0.050, grime: 0.030, rimStrength: 0.040, rimPower: 2.35, rimColor: 0xc8d6e6 },
+  paintedMetal: { scale: 0.52, colorBreakup: 0.026, roughnessNoise: 0.052, grime: 0.050, rimStrength: 0.026, rimPower: 2.55, rimColor: 0x9ab5cf },
+  glass: { scale: 0.42, colorBreakup: 0.010, roughnessNoise: 0.020, grime: 0.012, rimStrength: 0.060, rimPower: 2.15, rimColor: 0xd8f2ff },
+  wood: { scale: 0.34, colorBreakup: 0.045, roughnessNoise: 0.050, grime: 0.050, rimStrength: 0.016, rimPower: 2.8, rimColor: 0xffd6a0 },
+  rubber: { scale: 0.64, colorBreakup: 0.022, roughnessNoise: 0.035, grime: 0.060, rimStrength: 0.008, rimPower: 3.0, rimColor: 0x6e7a84 },
+  fabric: { scale: 0.40, colorBreakup: 0.040, roughnessNoise: 0.045, grime: 0.055, rimStrength: 0.012, rimPower: 3.1, rimColor: 0x8fa0b2 },
+  plastic: { scale: 0.55, colorBreakup: 0.030, roughnessNoise: 0.046, grime: 0.040, rimStrength: 0.026, rimPower: 2.45, rimColor: 0x9be7ff },
+  skin: { scale: 0.26, colorBreakup: 0.018, roughnessNoise: 0.020, grime: 0.012, rimStrength: 0.010, rimPower: 3.1, rimColor: 0xffd0b0 },
+  hair: { scale: 0.30, colorBreakup: 0.030, roughnessNoise: 0.035, grime: 0.030, rimStrength: 0.012, rimPower: 2.8, rimColor: 0x806040 },
+  armor: { scale: 0.62, colorBreakup: 0.024, roughnessNoise: 0.052, grime: 0.038, rimStrength: 0.032, rimPower: 2.45, rimColor: 0xb6cadc },
+  marble: { scale: 0.30, colorBreakup: 0.020, roughnessNoise: 0.034, grime: 0.024, rimStrength: 0.024, rimPower: 2.6, rimColor: 0xf1efe2 },
+  brass: { scale: 0.44, colorBreakup: 0.018, roughnessNoise: 0.040, grime: 0.028, rimStrength: 0.046, rimPower: 2.35, rimColor: 0xffd684 },
+  chrome: { scale: 0.50, colorBreakup: 0.012, roughnessNoise: 0.030, grime: 0.018, rimStrength: 0.065, rimPower: 2.1, rimColor: 0xe5f4ff },
+  leather: { scale: 0.36, colorBreakup: 0.046, roughnessNoise: 0.056, grime: 0.052, rimStrength: 0.018, rimPower: 2.75, rimColor: 0xb88a62 },
+  wetSurface: { scale: 0.48, colorBreakup: 0.018, roughnessNoise: 0.028, grime: 0.018, rimStrength: 0.050, rimPower: 2.1, rimColor: 0xc8e8ff },
+  emissivePanel: { scale: 0.54, colorBreakup: 0.012, roughnessNoise: 0.018, grime: 0.010, rimStrength: 0.024, rimPower: 2.4, rimColor: 0xffffff },
+  warningPaint: { scale: 0.56, colorBreakup: 0.036, roughnessNoise: 0.052, grime: 0.055, rimStrength: 0.020, rimPower: 2.65, rimColor: 0xffd080 },
+  signage: { scale: 0.45, colorBreakup: 0.025, roughnessNoise: 0.036, grime: 0.032, rimStrength: 0.016, rimPower: 2.8, rimColor: 0xe8f0ff }
+};
+
+function _qualityPolishScale(qualityName) {
+  if (qualityName === 'ultra') return 1.14;
+  if (qualityName === 'high') return 1.0;
+  return 0;
+}
+
+function _coreVisualPolishParams(name, material, qualityName) {
+  const qScale = _qualityPolishScale(qualityName);
+  if (!qScale || !material || !CORE_VISUAL_MATERIAL_POLISH_PROFILES[name]) return null;
+  if (material.transparent || material.depthWrite === false || material.opacity < 0.999) return null;
+  if (!(material.isMeshStandardMaterial || material.isMeshPhysicalMaterial)) return null;
+  const p = CORE_VISUAL_MATERIAL_POLISH_PROFILES[name];
+  const reflectiveBoost = Math.max(0, Math.min(1, ((material.envMapIntensity || 0) - 0.65) * 0.9 + (material.metalness || 0) * 0.35));
+  return {
+    version: CORE_VISUAL_MATERIAL_POLISH_VERSION,
+    family: name,
+    quality: qualityName,
+    variant: CORE_VISUAL_MATERIAL_POLISH_VERSION,
+    scale: p.scale,
+    colorBreakup: p.colorBreakup * qScale,
+    roughnessNoise: p.roughnessNoise * qScale,
+    grime: p.grime * qScale,
+    rimStrength: p.rimStrength * (0.75 + reflectiveBoost) * qScale,
+    rimPower: p.rimPower,
+    rimColor: p.rimColor
+  };
+}
+
+function _injectCoreVisualMaterialPolish(shader) {
+  if (!shader || !shader.vertexShader || !shader.fragmentShader) return false;
+  if (shader.fragmentShader.includes('AA_CORE_VISUAL_MATERIAL_POLISH')) return true;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', [
+      '#include <common>',
+      'varying vec3 vAaPolishWorldPos;'
+    ].join('\n'))
+    .replace('#include <worldpos_vertex>', [
+      '#include <worldpos_vertex>',
+      'vAaPolishWorldPos = worldPosition.xyz;'
+    ].join('\n'));
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', [
+      '#include <common>',
+      '#define AA_CORE_VISUAL_MATERIAL_POLISH 1',
+      'uniform float aaPolishScale;',
+      'uniform float aaPolishColorBreakup;',
+      'uniform float aaPolishRoughnessNoise;',
+      'uniform float aaPolishGrime;',
+      'uniform float aaPolishRimStrength;',
+      'uniform float aaPolishRimPower;',
+      'uniform vec3 aaPolishRimColor;',
+      'varying vec3 vAaPolishWorldPos;',
+      'float aaPolishHash(vec2 p) {',
+      '  vec3 p3 = fract(vec3(p.xyx) * 0.1031);',
+      '  p3 += dot(p3, p3.yzx + 33.33);',
+      '  return fract((p3.x + p3.y) * p3.z);',
+      '}'
+    ].join('\n'))
+    .replace('#include <map_fragment>', [
+      '#include <map_fragment>',
+      'vec2 aaPolishUv = vAaPolishWorldPos.xz * max(aaPolishScale, 0.001);',
+      'float aaPolishFine = aaPolishHash(floor(aaPolishUv * 5.0));',
+      'float aaPolishLarge = aaPolishHash(floor(aaPolishUv * 1.45 + vec2(19.0, 7.0)));',
+      'float aaPolishLow = smoothstep(0.92, 0.18, vAaPolishWorldPos.y);',
+      'float aaPolishDirt = smoothstep(0.70, 1.0, aaPolishLarge) * (0.45 + aaPolishLow * 0.55);'
+    ].join('\n'))
+    .replace('#include <color_fragment>', [
+      '#include <color_fragment>',
+      'float aaPolishTone = (aaPolishFine - 0.5) * aaPolishColorBreakup - aaPolishDirt * aaPolishGrime;',
+      'diffuseColor.rgb *= clamp(1.0 + aaPolishTone, 0.72, 1.18);'
+    ].join('\n'))
+    .replace('#include <roughnessmap_fragment>', [
+      '#include <roughnessmap_fragment>',
+      'roughnessFactor = clamp(roughnessFactor + (aaPolishFine - 0.5) * aaPolishRoughnessNoise + aaPolishDirt * aaPolishGrime * 0.16, 0.035, 1.0);'
+    ].join('\n'))
+    .replace('#include <normal_fragment_begin>', [
+      '#include <normal_fragment_begin>',
+      'float aaPolishNdotV = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);',
+      'float aaPolishRim = pow(1.0 - aaPolishNdotV, aaPolishRimPower) * aaPolishRimStrength;'
+    ].join('\n'))
+    .replace('#include <emissivemap_fragment>', [
+      '#include <emissivemap_fragment>',
+      'totalEmissiveRadiance += aaPolishRimColor * aaPolishRim * (0.28 + (1.0 - roughnessFactor) * 0.85);'
+    ].join('\n'));
+  return true;
+}
+
+export function ensureCoreVisualMaterialPolish(THREE, material) {
+  const params = material && material.userData && material.userData.aaCoreVisualPolishParams;
+  if (!THREE || !material || !params) return material;
+  const previousCompile = material.onBeforeCompile;
+  const baseCompile = previousCompile && previousCompile._aaCoreVisualWrapper
+    ? previousCompile._aaCoreVisualBase
+    : previousCompile;
+  const previousKey = material.customProgramCacheKey;
+  const baseKey = previousKey && previousKey._aaCoreVisualWrapper
+    ? previousKey._aaCoreVisualBase
+    : previousKey;
+  const rimColor = new THREE.Color(params.rimColor);
+  const wrapper = function coreVisualMaterialPolish(shader, renderer) {
+    if (typeof baseCompile === 'function') baseCompile.call(this, shader, renderer);
+    shader.uniforms.aaPolishScale = { value: params.scale };
+    shader.uniforms.aaPolishColorBreakup = { value: params.colorBreakup };
+    shader.uniforms.aaPolishRoughnessNoise = { value: params.roughnessNoise };
+    shader.uniforms.aaPolishGrime = { value: params.grime };
+    shader.uniforms.aaPolishRimStrength = { value: params.rimStrength };
+    shader.uniforms.aaPolishRimPower = { value: params.rimPower };
+    shader.uniforms.aaPolishRimColor = { value: rimColor };
+    _injectCoreVisualMaterialPolish(shader);
+  };
+  wrapper._aaCoreVisualWrapper = true;
+  wrapper._aaCoreVisualBase = baseCompile;
+  material.onBeforeCompile = wrapper;
+  const keyWrapper = function coreVisualMaterialPolishKey() {
+    const prior = typeof baseKey === 'function' ? baseKey.call(this) : '';
+    return `${prior}|${params.variant}`;
+  };
+  keyWrapper._aaCoreVisualWrapper = true;
+  keyWrapper._aaCoreVisualBase = baseKey;
+  material.customProgramCacheKey = keyWrapper;
+  material.userData.aaCoreVisualShader = true;
+  material.userData.aaCoreVisualShaderProfile = params.family;
+  material.userData.aaCoreVisualShaderTier = params.quality;
+  material.userData.aaCoreVisualShaderVersion = params.version;
+  material.needsUpdate = true;
+  return material;
+}
+
 const MATERIAL_PRESETS = {
   concrete: {
     color: 0xffffff, roughness: 0.895, metalness: 0.02, normalScale: 0.42,
@@ -218,6 +372,11 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
                                   !!(roughnessMap && typeof (base.roughnessMap) === 'string') ||
                                   !!(metalnessMap && typeof (base.metalnessMap) === 'string') ||
                                   !!(aoMap && typeof (base.aoMap) === 'string');
+    const polishParams = _coreVisualPolishParams(name, mat, qualityName);
+    if (polishParams) {
+      mat.userData.aaCoreVisualPolishParams = polishParams;
+      ensureCoreVisualMaterialPolish(THREE, mat);
+    }
     return mat;
   }
   function disposeGeneratedMaps() {
@@ -230,6 +389,8 @@ export function createPbrMaterialLibrary(THREE, textures = {}, getSettings = () 
   }
   return {
     get,
+    shaderPolishVersion: () => CORE_VISUAL_MATERIAL_POLISH_VERSION,
+    shaderPolishProfiles: () => Object.keys(CORE_VISUAL_MATERIAL_POLISH_PROFILES),
     profile: (name) => profiles[name] || profiles.concrete,
     names: () => Object.keys(profiles),
     generatedMapCount: () => generatedMaps.size,

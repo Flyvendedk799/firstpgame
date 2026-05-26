@@ -97,7 +97,9 @@ for (const mode of modes) {
 
     const stats = dbg.visualRuntime();
     const rendererBudget = dbg.rendererBudget();
+    const visualBudgetHeadroom = stats.visualBudgetHeadroom || rendererBudget.visualBudgetHeadroom || dbg.visualBudgetHeadroom();
     const rendererInfo = dbg.rendererInfo();
+    const coreVisualPatchStatus = dbg.coreVisualPatchStatus ? dbg.coreVisualPatchStatus() : null;
     const characterStatus = dbg.characterVisualStatus();
     const materialStats = dbg.materialStats();
     const vfxBudget = dbg.vfxBudget();
@@ -116,6 +118,9 @@ for (const mode of modes) {
     check('scene.geometries', rendererBudget.geometries, budgets.scene.geometries);
     check('scene.textures', rendererBudget.textures, budgets.scene.textures);
     if (Number.isFinite(stats.shadowCasters)) check('scene.shadowCasters', stats.shadowCasters, budgets.environment.shadowCasters);
+    for (const breach of visualBudgetHeadroom?.breaches || []) {
+      breaches.push({ label: `visual.${breach.key}`, value: breach.value, cap: breach.cap, overBy: breach.overBy });
+    }
 
     return {
       preflight,
@@ -123,9 +128,11 @@ for (const mode of modes) {
       stats,
       rendererBudget,
       rendererInfo,
+      coreVisualPatchStatus,
       characterStatus,
       materialStats,
       vfxBudget,
+      visualBudgetHeadroom,
       breaches,
       budgets,
       counts: {
@@ -142,6 +149,8 @@ for (const mode of modes) {
 
   assert(errors.length === 0, `${mode}: browser errors: ${JSON.stringify(errors)}`);
   assert(report.preflight && report.preflight.summary, `${mode}: asset preflight missing`);
+  assert(report.coreVisualPatchStatus?.complete, `${mode}: core visual patch sequence ledger is incomplete`);
+  assert(report.coreVisualPatchStatus?.checks?.postCameraWired, `${mode}: post/camera polish finalization is not wired`);
   assert(report.preflight.validation.errors === 0, `${mode}: manifest validation errors: ${JSON.stringify(report.preflight.validation)}`);
   // The procedural fallback owns every entry today; failing on warnings only
   // would block the build until authored assets arrive. We accept warnings

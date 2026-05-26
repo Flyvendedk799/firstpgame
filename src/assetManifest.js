@@ -433,6 +433,137 @@ export const ASSET_BUDGETS = {
   }
 };
 
+export const CORE_VISUAL_BASELINE_BUILDINGS = Object.freeze([1, 3, 6, 8, 11]);
+export const CORE_VISUAL_PATCH_VERSION = 'core-visual-polish-v1';
+
+export const CORE_VISUAL_PATCH_SEQUENCES = Object.freeze([
+  Object.freeze({ sequence: '1', title: 'Baseline, Budgets, And Safety Rails', status: 'implemented' }),
+  Object.freeze({ sequence: '2', title: 'Shared PBR Shader Polish', status: 'implemented' }),
+  Object.freeze({ sequence: '3', title: 'Atmosphere And Light Readability Polish', status: 'implemented' }),
+  Object.freeze({ sequence: '4', title: 'Combat VFX Material And Lifetime Polish', status: 'implemented' }),
+  Object.freeze({ sequence: '5', title: 'Weapon And Viewmodel Visual Polish', status: 'implemented' }),
+  Object.freeze({ sequence: '6', title: 'Environment Prop And Decal Cohesion', status: 'implemented' }),
+  Object.freeze({ sequence: '7', title: 'Post/Camera Polish And Runtime Adaptation', status: 'implemented' }),
+  Object.freeze({ sequence: '8', title: 'Finalization Wiring', status: 'implemented' }),
+  Object.freeze({ sequence: '8.5', title: 'Final Testing', status: 'implemented' })
+]);
+
+export function summarizeCoreVisualPatchSequences(sequences = CORE_VISUAL_PATCH_SEQUENCES) {
+  const rows = Array.isArray(sequences) ? sequences.map((s) => Object.freeze({ ...s })) : [];
+  const statuses = rows.reduce((acc, row) => {
+    const key = row.status || 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const implemented = statuses.implemented || 0;
+  const active = statuses.active || 0;
+  const pending = statuses.pending || 0;
+  const complete = rows.length > 0 && implemented === rows.length && active === 0 && pending === 0;
+  return Object.freeze({
+    version: CORE_VISUAL_PATCH_VERSION,
+    total: rows.length,
+    implemented,
+    active,
+    pending,
+    complete,
+    statuses: Object.freeze(statuses),
+    sequences: Object.freeze(rows)
+  });
+}
+
+// Sequence 1 guardrails for the core visual polish patch. These lock the
+// current high-tier headroom so later polish work can make the scene richer
+// without quietly raising cost ceilings.
+export const CORE_VISUAL_BUDGET_LOCKS = Object.freeze({
+  low: Object.freeze({
+    budgetedWorldPointLights: 3,
+    visibleScenePointLights: 6,
+    b08TransparentSurfaces: 312
+  }),
+  medium: Object.freeze({
+    budgetedWorldPointLights: 4,
+    visibleScenePointLights: 7,
+    b08TransparentSurfaces: 312
+  }),
+  high: Object.freeze({
+    budgetedWorldPointLights: 5,
+    visibleScenePointLights: 8,
+    b08TransparentSurfaces: 312
+  }),
+  ultra: Object.freeze({
+    budgetedWorldPointLights: 8,
+    visibleScenePointLights: 10,
+    b08TransparentSurfaces: 312
+  })
+});
+
+function _budgetMetric(value, cap) {
+  const v = Number(value);
+  const c = Number(cap);
+  if (!Number.isFinite(v) || !Number.isFinite(c) || c <= 0) return null;
+  const remaining = c - v;
+  const usedRatio = v / c;
+  return {
+    value: v,
+    cap: c,
+    remaining,
+    usedRatio: Number(usedRatio.toFixed(4)),
+    percentUsed: Number((usedRatio * 100).toFixed(1)),
+    status: remaining < 0 ? 'breach' : usedRatio >= 0.9 ? 'warn' : 'ok'
+  };
+}
+
+function _addMetric(out, key, value, cap) {
+  const metric = _budgetMetric(value, cap);
+  if (metric) out[key] = metric;
+}
+
+export function computeVisualBudgetHeadroom(counts = {}, budgets = ASSET_BUDGETS, locks = CORE_VISUAL_BUDGET_LOCKS) {
+  const quality = counts.quality || 'high';
+  const vfxQuality = counts.vfxQuality || quality;
+  const decalQuality = counts.decalQuality || vfxQuality;
+  const lock = locks[quality] || locks.high || {};
+  const metrics = {};
+
+  _addMetric(metrics, 'scene.drawCalls', counts.drawCalls, budgets.scene.drawCalls);
+  _addMetric(metrics, 'scene.triangles', counts.triangles, budgets.scene.triangles);
+  _addMetric(metrics, 'scene.geometries', counts.geometries, budgets.scene.geometries);
+  _addMetric(metrics, 'scene.textures', counts.textures, budgets.scene.textures);
+  _addMetric(metrics, 'environment.shadowCasters', counts.shadowCasters, budgets.environment.shadowCasters);
+  _addMetric(metrics, 'vfx.particles', counts.particles, budgets.vfx.activeParticles[vfxQuality] || budgets.vfx.activeParticles.high);
+  _addMetric(metrics, 'vfx.decals', counts.decals, budgets.vfx.activeDecals[decalQuality] || budgets.vfx.activeDecals.high);
+  _addMetric(metrics, 'lighting.budgetedWorldPointLights', counts.budgetedWorldPointLights, lock.budgetedWorldPointLights);
+  _addMetric(metrics, 'lighting.visibleScenePointLights', counts.visibleScenePointLights, lock.visibleScenePointLights);
+  if ((counts.building | 0) === 8) {
+    _addMetric(metrics, 'visual.b08TransparentSurfaces', counts.transparentSurfaces, lock.b08TransparentSurfaces);
+  }
+
+  const entries = Object.entries(metrics);
+  const breaches = entries
+    .filter(([, metric]) => metric.status === 'breach')
+    .map(([key, metric]) => ({ key, value: metric.value, cap: metric.cap, overBy: -metric.remaining }));
+  const warnings = entries
+    .filter(([, metric]) => metric.status === 'warn')
+    .map(([key, metric]) => ({ key, value: metric.value, cap: metric.cap, remaining: metric.remaining, percentUsed: metric.percentUsed }));
+
+  return {
+    version: 1,
+    quality,
+    vfxQuality,
+    decalQuality,
+    building: counts.building == null ? null : counts.building | 0,
+    metrics,
+    breaches,
+    warnings,
+    ok: breaches.length === 0,
+    summary: {
+      metricCount: entries.length,
+      breachCount: breaches.length,
+      warningCount: warnings.length
+    }
+  };
+}
+
 export function listManifests() {
   return Object.fromEntries(
     Object.entries(ALL_MANIFESTS).map(([k, v]) => [k, Object.keys(v).length])
