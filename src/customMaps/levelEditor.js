@@ -10,6 +10,18 @@ import {
   normalizeCustomMapPack,
 } from './schema.js';
 import { collectCustomMapGeometry, partRuntimeTransform, partWorldAabb } from './customMapCompiler.js';
+import {
+  buildEditorAssetPreview,
+  buildLevelEditorAssetHealth,
+  findManifestEntry
+} from '../animation/assetPipeline.js';
+import {
+  ALL_MANIFESTS,
+  ANIMATION_MANIFEST,
+  CHARACTER_MANIFEST,
+  ENVIRONMENT_MANIFEST,
+  WEAPON_MANIFEST
+} from '../assetManifest.js';
 
 const LAYERS = ['geometry', 'gameplay', 'enemies', 'flow', 'lighting', 'template'];
 const VIEW_MODES = ['tactical', 'top', 'preview'];
@@ -54,6 +66,110 @@ function colorToInt(color, fallback = 0xffffff) {
 
 function customMarkerId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function profileSelectHtml(id, label, manifest, current = '', emptyLabel = 'DEFAULT') {
+  const ids = Object.keys(manifest || {}).sort();
+  const value = String(current || '');
+  if (value && !ids.includes(value)) ids.unshift(value);
+  return `<label>${label}<select id="${id}">
+    <option value="">${emptyLabel}</option>
+    ${ids.map((profileId) => `<option value="${escapeHtml(profileId)}"${profileId === value ? ' selected' : ''}>${escapeHtml(profileId)}</option>`).join('')}
+  </select></label>`;
+}
+
+function optionalTextInputHtml(id, label, current = '', placeholder = '') {
+  return `<label>${label}<input id="${id}" value="${escapeHtml(current || '')}" placeholder="${escapeHtml(placeholder)}"></label>`;
+}
+
+function setOptionalProfileId(target, key, value) {
+  if (!target) return;
+  const next = String(value || '').trim();
+  if (next) target[key] = next;
+  else delete target[key];
+}
+
+function assetProfileRefsForEntity(type, ent) {
+  if (!ent) return [];
+  const refs = [];
+  const add = (field, id, label) => {
+    if (id) refs.push({ field, id: String(id), label });
+  };
+  if (type === 'object') {
+    add('modelProfileId', ent.modelProfileId, 'MODEL');
+    add('visualProfileId', ent.visualProfileId, 'VISUAL');
+    add('animationProfileId', ent.animationProfileId, 'ANIMATION');
+    add('weaponProfileId', ent.weaponProfileId, 'WEAPON');
+    add('importedAssetId', ent.importedAssetId, 'IMPORT');
+  } else if (type === 'enemy') {
+    add('enemyAnimationProfileId', ent.enemyAnimationProfileId, 'ENEMY VISUAL');
+    add('enemyModelProfileId', ent.enemyModelProfileId, 'ENEMY MODEL');
+    add('visualProfileId', ent.visualProfileId, 'VISUAL');
+    add('animationProfileId', ent.animationProfileId, 'ANIMATION');
+    add('weaponProfileId', ent.weaponProfileId, 'WEAPON');
+    add('importedAssetId', ent.importedAssetId, 'IMPORT');
+  }
+  return refs;
+}
+
+function previewForAssetRef(ref) {
+  const resolved = findManifestEntry(ALL_MANIFESTS, ref.id);
+  if (resolved.entry) {
+    return Object.assign(buildEditorAssetPreview(resolved.entry), {
+      refField: ref.field,
+      refLabel: ref.label,
+      resolved: true,
+      manifestBucket: resolved.bucket
+    });
+  }
+  const source = ref.field === 'importedAssetId' || ref.id.startsWith('asset.')
+    ? ref.id
+    : 'editor-unregistered-profile';
+  return Object.assign(buildEditorAssetPreview({
+    id: ref.id,
+    kind: ref.field === 'importedAssetId' ? 'external-import' : 'external-profile',
+    source,
+    fallback: 'runtime.safe-default'
+  }), {
+    refField: ref.field,
+    refLabel: ref.label,
+    resolved: false,
+    manifestBucket: null
+  });
+}
+
+function assetPreviewsForEntity(type, ent) {
+  return assetProfileRefsForEntity(type, ent).map(previewForAssetRef);
+}
+
+function assetPreviewPanelHtml(type, ent) {
+  const previews = assetPreviewsForEntity(type, ent);
+  if (!previews.length) {
+    return `<div class="ce-asset-preview"><div class="ce-asset-preview-head"><b>ASSET PREVIEW</b><span>DEFAULTS</span></div><div class="ce-ins-hint">No custom profile IDs set. Runtime/editor defaults remain authoritative.</div></div>`;
+  }
+  const cards = previews.map((preview) => {
+    const issueCodes = preview.issues.concat(preview.warnings).map((row) => row.code).slice(0, 3);
+    const socketReady = preview.sockets ? Math.max(0, preview.sockets.required.length - preview.sockets.missingRequired.length) : 0;
+    const socketTotal = preview.sockets ? (preview.sockets.required.length || preview.sockets.available.length || 0) : 0;
+    const socketCount = `${socketReady}/${socketTotal}`;
+    const clipCount = preview.animation ? `${preview.animation.availablePreviewStates}/${preview.animation.previewStates.length}` : '0/0';
+    const status = preview.ok && preview.resolved ? 'ok' : 'warn';
+    return `<div class="ce-asset-card ${status}">
+      <div><b>${escapeHtml(preview.refLabel || preview.kind)}</b><span>${escapeHtml(preview.id || '')}</span></div>
+      <small>${escapeHtml(preview.kind || 'asset')} / ${escapeHtml(preview.sourceKind || 'manifest')} / ${escapeHtml(preview.runtimeStatus || 'fallback')}</small>
+      <em>SOCKETS ${escapeHtml(socketCount)} / CLIPS ${escapeHtml(clipCount)}</em>
+      ${issueCodes.length ? `<i>${issueCodes.map(escapeHtml).join(' / ')}</i>` : '<i>READY FOR EDITOR PREVIEW</i>'}
+    </div>`;
+  }).join('');
+  return `<div class="ce-asset-preview"><div class="ce-asset-preview-head"><b>ASSET PREVIEW</b><span>${previews.length} REF${previews.length === 1 ? '' : 'S'}</span></div>${cards}</div>`;
 }
 
 function isDoorPrefab(pf) {
@@ -774,6 +890,41 @@ export function createLevelEditorController(options = {}) {
     ], '#ffffff', 0.9);
   }
 
+  function addAssetSocketPreview(group, ent, type) {
+    if (!ent || !map || !layers.gameplay) return;
+    const previews = assetPreviewsForEntity(type, ent)
+      .filter((preview) => preview.sockets && preview.sockets.markers.length)
+      .slice(0, 3);
+    if (!previews.length) return;
+    const pos = entityPosition(type, ent);
+    const floorY = Number.isFinite(map.floorY) ? map.floorY : 0.4;
+    const markers = [];
+    for (const preview of previews) {
+      for (const socket of preview.sockets.markers) {
+        if (markers.length >= 16) break;
+        markers.push({ id: socket.id, required: socket.required, available: socket.available, source: preview.id });
+      }
+    }
+    const radius = type === 'enemy' ? 1.35 : 1.05;
+    markers.forEach((socket, index) => {
+      const a = (Math.PI * 2 * index) / Math.max(1, markers.length);
+      const x = pos.x + Math.sin(a) * radius;
+      const z = pos.z + Math.cos(a) * radius;
+      const y = floorY + 0.42 + (socket.required ? 0.08 : 0);
+      const color = socket.available ? (socket.required ? '#7cff86' : '#ffd060') : '#ff8060';
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(socket.required ? 0.085 : 0.065, 8, 8),
+        material(`asset-socket:${color}`, { kind: 'basic', color, opacity: socket.required ? 0.96 : 0.72, depthWrite: false }),
+      );
+      dot.position.set(x, y, z);
+      group.add(dot);
+      addLine(group, [
+        { x: pos.x, y: floorY + 0.28, z: pos.z },
+        { x, y, z },
+      ], color, socket.required ? 0.45 : 0.24);
+    });
+  }
+
   function partLayerVisible(part) {
     if (!part) return false;
     if (!layers.geometry && part.collision !== 'decorative_only') return false;
@@ -789,7 +940,10 @@ export function createLevelEditorController(options = {}) {
       if (!partLayerVisible(part)) continue;
       addPartMesh(group, obj, pf, part, { selected: objectSelected, ghost: options.ghost });
     }
-    if (!options.ghost && objectSelected) addSelectionCross(group, obj);
+    if (!options.ghost && objectSelected) {
+      addSelectionCross(group, obj);
+      addAssetSocketPreview(group, obj, 'object');
+    }
   }
 
   function addCompiledObjects(group) {
@@ -808,7 +962,10 @@ export function createLevelEditorController(options = {}) {
     }
     if (selected && selected.type === 'object') {
       const obj = (map.objects || []).find((candidate) => candidate.id === selected.id);
-      if (obj) addSelectionCross(group, obj);
+      if (obj) {
+        addSelectionCross(group, obj);
+        addAssetSocketPreview(group, obj, 'object');
+      }
     }
   }
 
@@ -884,6 +1041,7 @@ export function createLevelEditorController(options = {}) {
       for (const e of map.markers.enemySpawns || []) {
         addMarkerDisc(group, e, '#ff5048', 'enemy', 0.58);
         addGroundTriangle(group, e, 4.2, 0.38, '#ff5048', 0.22);
+        if (selected && selected.type === 'enemy' && selected.id === e.id) addAssetSocketPreview(group, e, 'enemy');
       }
     }
     if (layers.flow) {
@@ -1154,6 +1312,23 @@ export function createLevelEditorController(options = {}) {
     const doorAccess = normalizeDoorAccess(ent.doorAccess, 'player') || 'player';
     const pos = entityPosition(selected.type, ent);
     const yawDeg = Math.round((entityYaw(selected.type, ent) * 180) / Math.PI);
+    const objectAssetControls = selected.type === 'object' ? `
+      <div class="ce-ins-title">ASSET</div>
+      ${profileSelectHtml('ce-object-model-profile', 'MODEL PROFILE', ENVIRONMENT_MANIFEST, ent.modelProfileId)}
+      ${profileSelectHtml('ce-object-animation-profile', 'ANIMATION SET', ANIMATION_MANIFEST, ent.animationProfileId)}
+      ${profileSelectHtml('ce-object-weapon-profile', 'WEAPON VISUAL', WEAPON_MANIFEST, ent.weaponProfileId)}
+      ${optionalTextInputHtml('ce-object-imported-asset', 'IMPORTED ASSET', ent.importedAssetId, 'asset.meshy.example')}
+      ${assetPreviewPanelHtml(selected.type, ent)}
+    ` : '';
+    const enemyAssetControls = isEnemy ? `
+      <div class="ce-ins-title">ASSET</div>
+      ${profileSelectHtml('ce-enemy-visual-profile', 'ENEMY VISUAL', CHARACTER_MANIFEST, ent.enemyAnimationProfileId)}
+      ${profileSelectHtml('ce-enemy-model-profile', 'ENEMY MODEL', CHARACTER_MANIFEST, ent.enemyModelProfileId)}
+      ${profileSelectHtml('ce-enemy-animation-profile', 'ANIMATION SET', ANIMATION_MANIFEST, ent.animationProfileId)}
+      ${profileSelectHtml('ce-enemy-weapon-profile', 'WEAPON VISUAL', WEAPON_MANIFEST, ent.weaponProfileId)}
+      ${optionalTextInputHtml('ce-enemy-imported-asset', 'IMPORTED ASSET', ent.importedAssetId, 'asset.mixamo.or.meshy')}
+      ${assetPreviewPanelHtml(selected.type, ent)}
+    ` : '';
     inspector.innerHTML = `<div class="ce-ins-title">${selected.type.toUpperCase()}</div>
       <label>ID<input id="ce-ent-id" value="${ent.id || ''}" disabled></label>
       <label>X<input id="ce-ent-x" type="number" step="0.5" value="${fmt(pos.x)}"></label>
@@ -1184,19 +1359,32 @@ export function createLevelEditorController(options = {}) {
         <label>ROLE<select id="ce-enemy-role">${['anchor','lookout','flanker','breacher','patrol','marksman'].map((x) => `<option${ent.role === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
         <label>BEHAVIOR<select id="ce-enemy-behavior">${['hold_angle','peek_from_cover','ambush_on_crossing','push_after_contact','patrol_route','reposition'].map((x) => `<option${ent.behavior === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
       ` : ''}
+      ${objectAssetControls}
+      ${enemyAssetControls}
       ${selected.type !== 'spawn' ? '<button class="menu-cta ce-small" id="ce-duplicate">DUPLICATE</button><button class="menu-cta ce-small ce-danger" id="ce-delete">DELETE</button>' : '<div class="ce-ins-hint">Move the spawn marker instead of deleting it.</div>'}`;
-    const commit = () => {
+    const commit = (changedEl = null) => {
       saveHistory();
       const nextX = snapGrid(Number(inspector.querySelector('#ce-ent-x').value) || 0);
       const nextZ = snapGrid(Number(inspector.querySelector('#ce-ent-z').value) || 0);
       setEntityPosition(selected.type, ent, nextX, nextZ);
       setEntityYaw(selected.type, ent, ((Number(inspector.querySelector('#ce-ent-yaw').value) || 0) * Math.PI) / 180);
       if (selected.type === 'object') ent.scale = clamp(Number(inspector.querySelector('#ce-ent-scale').value) || 1, 0.25, 4);
+      if (selected.type === 'object') {
+        setOptionalProfileId(ent, 'modelProfileId', inspector.querySelector('#ce-object-model-profile')?.value);
+        setOptionalProfileId(ent, 'animationProfileId', inspector.querySelector('#ce-object-animation-profile')?.value);
+        setOptionalProfileId(ent, 'weaponProfileId', inspector.querySelector('#ce-object-weapon-profile')?.value);
+        setOptionalProfileId(ent, 'importedAssetId', inspector.querySelector('#ce-object-imported-asset')?.value);
+      }
       if (isOpenableDoor) ent.doorAccess = normalizeDoorAccess(inspector.querySelector('#ce-door-access').value, 'player') || 'player';
       if (isEnemy) {
         ent.enemyType = inspector.querySelector('#ce-enemy-type').value;
         ent.role = inspector.querySelector('#ce-enemy-role').value;
         ent.behavior = inspector.querySelector('#ce-enemy-behavior').value;
+        setOptionalProfileId(ent, 'enemyAnimationProfileId', inspector.querySelector('#ce-enemy-visual-profile')?.value);
+        setOptionalProfileId(ent, 'enemyModelProfileId', inspector.querySelector('#ce-enemy-model-profile')?.value);
+        setOptionalProfileId(ent, 'animationProfileId', inspector.querySelector('#ce-enemy-animation-profile')?.value);
+        setOptionalProfileId(ent, 'weaponProfileId', inspector.querySelector('#ce-enemy-weapon-profile')?.value);
+        setOptionalProfileId(ent, 'importedAssetId', inspector.querySelector('#ce-enemy-imported-asset')?.value);
       }
       if (selected.type === 'door') {
         ent.zoneId = Number(inspector.querySelector('#ce-door-zone').value) || 0;
@@ -1215,8 +1403,9 @@ export function createLevelEditorController(options = {}) {
       if (selected.type === 'pickup') ent.type = inspector.querySelector('#ce-pickup-type').value;
       scheduleAutosave();
       renderViewport();
+      if (changedEl && /profile|asset/i.test(changedEl.id || '')) renderInspector();
     };
-    inspector.querySelectorAll('input,select').forEach((el) => el.addEventListener('change', commit));
+    inspector.querySelectorAll('input,select').forEach((el) => el.addEventListener('change', () => commit(el)));
     inspector.querySelector('#ce-delete')?.addEventListener('click', deleteSelected);
     inspector.querySelector('#ce-duplicate')?.addEventListener('click', duplicateSelected);
   }
@@ -1951,6 +2140,16 @@ export function createLevelEditorController(options = {}) {
     renderViewport();
   }
 
+  function getAssetHealth() {
+    return Object.assign(buildLevelEditorAssetHealth(pack || map, ALL_MANIFESTS, {
+      editorReady: true,
+      editorOpen: !!(root && root.classList.contains('show'))
+    }), {
+      mapId: map && map.id || null,
+      packId: pack && pack.id || null
+    });
+  }
+
   canvas?.addEventListener('mousedown', (e) => {
     const world = screenToWorld(e.clientX, e.clientY);
     if (!world) return;
@@ -2174,6 +2373,7 @@ export function createLevelEditorController(options = {}) {
     hide,
     isOpen: () => !!(root && root.classList.contains('show')),
     getState: () => ({ pack, mapIndex }),
+    getAssetHealth,
     restoreAfterPlaytest: () => {
       root.classList.add('show');
       initViewport();

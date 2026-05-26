@@ -10,7 +10,7 @@
     "preview:share": "vite preview --host 0.0.0.0 --port 4173 --strictPort",
     "tunnel:preview": "node scripts/preview-tunnel-10m.mjs",
     "capture:baseline": "node scripts/aa-baseline-pack.mjs",
-    "test:acceptance": "npm run build:level-kit && npm run build && npm run validate:level-kit && npm run validate:custom-maps && npm run test:campaign && npm run test:custom-editor && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render && npm run test:assets:budget && npm run test:visual:regression",
+    "test:acceptance": "npm run build:level-kit && npm run build && npm run test:animation:pipeline && npm run test:level-editor:assets && npm run test:asset:preflight && npm run validate:level-kit && npm run validate:custom-maps && npm run test:campaign && npm run test:custom-editor && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render && npm run test:assets:budget && npm run test:visual:regression",
     "test:acceptance:full": "VISUAL_FULL=1 RENDER_FULL=1 npm run test:acceptance",
     "test:render": "node scripts/render-smoke.mjs",
     "test:visual:runtime": "node scripts/visual-runtime-acceptance.mjs",
@@ -34,15 +34,25 @@
     "validate:geometry": "node scripts/validate-level-geometry.mjs",
     "test:doorway:b01": "node scripts/b01-doorway-screenshot.mjs",
     "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs",
+    "test:animation:pipeline": "node scripts/animation-pipeline-probe.mjs",
+    "test:level-editor:assets": "node scripts/level-editor-asset-compat-probe.mjs",
+    "asset:preflight": "node scripts/asset-preflight.mjs",
+    "test:asset:preflight": "node scripts/asset-preflight.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon --strict --summary",
     "test:m4:viewmodel": "node scripts/m4-viewmodel-acceptance.mjs",
     "test:asset-registry": "node scripts/asset-registry-probe.mjs",
     "validate:assets:authored": "node scripts/validate-authored-assets.mjs",
     "validate:weapons": "node scripts/validate-weapon-glb.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon && node scripts/validate-weapon-glb.mjs public/assets/viewmodels/operative_hands.glb --type hands && npm run validate:assets:authored"
   },
   "dependencies": {
-    "three": "0.170.0"
+    "maath": "^0.10.8",
+    "three": "0.170.0",
+    "three-mesh-bvh": "^0.9.10"
   },
   "devDependencies": {
+    "@gltf-transform/cli": "^4.3.0",
+    "@gltf-transform/core": "^4.3.0",
+    "@gltf-transform/functions": "^4.3.0",
+    "gltf-validator": "^2.0.0-dev.3.10",
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0",
     "vite": "^5.4.0"

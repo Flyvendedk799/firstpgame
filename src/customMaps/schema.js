@@ -122,7 +122,8 @@ export function normalizeMarkers(markers = {}) {
   const out = Object.assign(base, cloneJson(markers));
   out.playerSpawn = Object.assign(base.playerSpawn, markers.playerSpawn || {});
   for (const key of ['exits', 'zoneDoors', 'enemySpawns', 'peekAngles', 'holdPositions', 'patrolRoutes', 'pickups', 'triggerVolumes']) {
-    out[key] = Array.isArray(markers[key]) ? markers[key].map((x) => Object.assign({}, x)) : base[key];
+    if (key === 'enemySpawns') out[key] = Array.isArray(markers[key]) ? markers[key].map(normalizeEnemySpawn) : base[key];
+    else out[key] = Array.isArray(markers[key]) ? markers[key].map((x) => Object.assign({}, x)) : base[key];
   }
   return out;
 }
@@ -173,6 +174,16 @@ export function normalizePlacedObject(obj = {}) {
     layer: obj.layer || 'geometry',
     label: obj.label || '',
   };
+  for (const key of [
+    'weaponProfileId',
+    'visualProfileId',
+    'modelProfileId',
+    'animationProfileId',
+    'importedAssetId',
+    'fallbackProfileId'
+  ]) {
+    if (obj[key] != null && String(obj[key]).trim()) out[key] = String(obj[key]).trim();
+  }
   const doorAccess = normalizeDoorAccess(obj.doorAccess ?? obj.openBy ?? obj.doorOpenMode, null);
   if (doorAccess) out.doorAccess = doorAccess;
   return out;
@@ -183,7 +194,7 @@ export function createPlacedObject(prefabId, x = 0, z = 0, options = {}) {
 }
 
 export function createEnemySpawn(x = 0, z = 0, options = {}) {
-  return Object.assign({
+  return normalizeEnemySpawn(Object.assign({
     id: customId('enemy'),
     x,
     z,
@@ -199,7 +210,39 @@ export function createEnemySpawn(x = 0, z = 0, options = {}) {
     peekAngleId: null,
     patrolRouteId: null,
     activation: 'zone_start',
-  }, options);
+  }, options));
+}
+
+export function normalizeEnemySpawn(spawn = {}) {
+  const out = {
+    id: spawn.id || customId('enemy'),
+    x: Number.isFinite(Number(spawn.x)) ? Number(spawn.x) : 0,
+    z: Number.isFinite(Number(spawn.z)) ? Number(spawn.z) : 0,
+    yaw: Number.isFinite(Number(spawn.yaw)) ? Number(spawn.yaw) : 0,
+    zoneId: Number.isFinite(Number(spawn.zoneId)) ? Number(spawn.zoneId) : null,
+    enemyType: ENEMY_TYPES.includes(spawn.enemyType) ? spawn.enemyType : 'soldier',
+    role: ENEMY_ROLES.includes(spawn.role) ? spawn.role : 'anchor',
+    behavior: ENEMY_BEHAVIORS.includes(spawn.behavior) ? spawn.behavior : 'hold_angle',
+    roomId: spawn.roomId || 'custom_room',
+    spawnWave: spawn.spawnWave || 'initial',
+    facingTarget: spawn.facingTarget || null,
+    coverHintId: spawn.coverHintId || null,
+    peekAngleId: spawn.peekAngleId || null,
+    patrolRouteId: spawn.patrolRouteId || null,
+    activation: spawn.activation || 'zone_start',
+  };
+  for (const key of [
+    'enemyAnimationProfileId',
+    'enemyModelProfileId',
+    'animationProfileId',
+    'weaponProfileId',
+    'visualProfileId',
+    'importedAssetId',
+    'fallbackProfileId'
+  ]) {
+    if (spawn[key] != null && String(spawn[key]).trim()) out[key] = String(spawn[key]).trim();
+  }
+  return out;
 }
 
 export function createPeekAngle(x = 0, z = 0, options = {}) {
