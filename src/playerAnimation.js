@@ -608,12 +608,15 @@ export function updatePlayerAnimInputs(state, ctx) {
     const footSign = s >= 0 ? 1 : -1;
     if (Math.abs(s) > 0.965 && state.flags.lastFootSign !== footSign) {
       state.flags.lastFootSign = footSign;
-      state.smoothed.footstepPulse = Math.max(state.smoothed.footstepPulse || 0, sprintBlend > 0.45 ? 0.18 : 0.15);
-      state.smoothed.footPlantPulse = Math.max(state.smoothed.footPlantPulse || 0, sprintBlend > 0.45 ? 0.38 : 0.28);
-      state.smoothed.footPlantRecover = Math.max(state.smoothed.footPlantRecover || 0, sprintBlend > 0.45 ? 0.30 : 0.22);
-      state.smoothed.toeOffPulse = Math.max(state.smoothed.toeOffPulse || 0, sprintBlend > 0.45 ? 0.26 : 0.20);
-      state.smoothed.stepReachPulse = Math.max(state.smoothed.stepReachPulse || 0, sprintBlend > 0.45 ? 0.28 : 0.22);
-      state.smoothed.footPlantSide = footSign;
+      state.smoothed.footstepPulse = Math.max(state.smoothed.footstepPulse || 0, sprintBlend > 0.45 ? 0.065 : 0.12);
+      state.smoothed.footPlantPulse = Math.max(state.smoothed.footPlantPulse || 0, sprintBlend > 0.45 ? 0.11 : 0.19);
+      state.smoothed.footPlantRecover = Math.max(state.smoothed.footPlantRecover || 0, sprintBlend > 0.45 ? 0.10 : 0.16);
+      state.smoothed.toeOffPulse = Math.max(state.smoothed.toeOffPulse || 0, sprintBlend > 0.45 ? 0.09 : 0.15);
+      state.smoothed.stepReachPulse = Math.max(state.smoothed.stepReachPulse || 0, sprintBlend > 0.45 ? 0.085 : 0.16);
+      {
+        const sideBlend = sprintBlend > 0.45 ? 0.42 : 0.68;
+        state.smoothed.footPlantSide = (state.smoothed.footPlantSide || 0) * (1 - sideBlend) + footSign * sideBlend;
+      }
       emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), footSign > 0 ? 'footstepRight' : 'footstepLeft', {
         slot: state.slot,
         sprint: sprintBlend > 0.45,
@@ -767,6 +770,7 @@ export function resolvePlayerAnimLayers(state, dt) {
   cam.dropkickForward = -dropkickChamber * 0.036 + dropkickExtend * 0.266 + dropkickStrike * 0.096 + dropkickStrikeArc * 0.046 + dropkickHitW * 0.132 - dropkickStopW * 0.070 + dropkickContactSnap * 0.020 - dropkickContactRebound * 0.126 - dropkickContactSettle * 0.020 - dropkickRecoverPose * 0.082 + dropkickGroundStomp * 0.030 - dropkickGroundSettle * 0.060;
   const runStep = Math.sin(sm.footPhase);
   const runStep2 = Math.cos(sm.footPhase * 0.5);
+  const gaitFootSide = Math.max(-1, Math.min(1, runStep));
   const plantWave = Math.max(0, -runStep);
   const stridePunch = plantWave * cadencePower + plantPulse * (0.18 + loc.sprint * 0.12) + stepReachPulse * 0.055;
   const heelStrike = Math.pow(Math.max(0, (Math.abs(runStep) - 0.72) / 0.28), 1.7) * cadencePower + plantPulse * (0.26 + loc.sprint * 0.18);
@@ -809,7 +813,7 @@ export function resolvePlayerAnimLayers(state, dt) {
   cam.adsSettleY = -adsShoulder * 0.006 - adsSettlePulse * 0.0018;
   cam.breathX = Math.sin(breathPhase * 1.12) * 0.0017 * breathDamp * (1 - adsHold * 0.42) + Math.sin(idlePhase * 0.71) * 0.0009 * idleMicro;
   cam.breathY = Math.cos(breathPhase * 0.94) * 0.0019 * breathDamp * (1 - adsHold * 0.55) + Math.sin(idlePhase * 0.53) * 0.0008 * idleMicro;
-  cam.gaitRoll = (gaitLean * 0.46 + Math.sin(sm.footPhase * 0.5 + 0.35) * gaitShoulder * 0.010 + footSide * heelStrike * 0.0048 + pivotSide * pivotPulse * 0.012) * adsDamp;
+  cam.gaitRoll = (gaitLean * 0.46 + Math.sin(sm.footPhase * 0.5 + 0.35) * gaitShoulder * 0.010 + gaitFootSide * heelStrike * 0.0048 + pivotSide * pivotPulse * 0.012) * adsDamp;
   cam.gaitPitch = (-toeOff * 0.008 + heelStrike * 0.005 + gaitShoulder * loc.sprint * -0.006 - plantPulse * 0.0028 + plantRecover * 0.0020) * adsDamp;
   cam.braceDip = -(adsHold * 0.0025 + combatReady * 0.0045 + weaponSettle * 0.0018 + fireSnap * 0.0018);
   cam.impactSettlePitch = fireSnap * 0.024 + fireRecover * 0.012 - fireTail * 0.004 + combatReady * 0.006 - threatPulse * 0.004;
@@ -861,7 +865,7 @@ export function resolvePlayerAnimLayers(state, dt) {
   vm.idleMicroRoll = Math.sin(idlePhase * 0.57 + 0.3) * 0.0055 * idleMicro * (1 - inp.ads * 0.55);
   vm.gaitLift = (heelStrike * -0.006 + toeOff * 0.004 + gaitShoulder * loc.sprint * -0.0035 - plantPulse * 0.0026 + plantRecover * 0.0020) * adsDamp;
   vm.gaitYaw = (gaitLean * -0.42 + Math.sin(sm.footPhase * 0.5) * gaitShoulder * 0.020 + pivotSide * pivotPulse * 0.030 + loc.slide * slideSideRaw * 0.070) * adsDamp;
-  vm.gaitRoll = (gaitLean * -0.70 + footSide * heelStrike * 0.012 + pivotSide * pivotPulse * 0.024 + Math.sin(sm.footPhase * 0.5 + 0.8) * gaitShoulder * 0.018 + loc.slide * slideStyleSide * 0.110) * adsDamp;
+  vm.gaitRoll = (gaitLean * -0.70 + gaitFootSide * heelStrike * 0.012 + pivotSide * pivotPulse * 0.024 + Math.sin(sm.footPhase * 0.5 + 0.8) * gaitShoulder * 0.018 + loc.slide * slideStyleSide * 0.110) * adsDamp;
   vm.weaponWeightX = -gaitLean * 0.075 - sm.turnInertia * 0.030 - combatReady * 0.002 + footSide * plantPulse * 0.006 + pivotSide * pivotPulse * 0.008 + loc.slide * slideSideRaw * 0.026;
   vm.weaponWeightY = -weaponSettle * 0.008 - heelStrike * 0.004 + toeOff * 0.0025 + adsHold * 0.002 - plantPulse * 0.0022 + plantRecover * 0.0018;
   vm.weaponWeightZ = -weaponSettle * 0.010 + loc.sprint * -0.006 + combatReady * -0.004 + toePulse * 0.0030 - plantPulse * 0.0024;

@@ -1,6 +1,8 @@
 import { DEFAULT_CUSTOM_MAP_BOUNDS, DEFAULT_CUSTOM_ZONE_BOUNDS, normalizeCustomMap } from './schema.js';
 
 const COLLISION_WALLS = new Set(['wall_aabb', 'cover_aabb', 'transparent_window_aabb']);
+const LEVEL_ONE_WALL_HEIGHT = 4.25;
+const KIT_AUTHORED_WALL_HEIGHT = 3.3;
 
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
@@ -16,15 +18,48 @@ function rotateXZ(x, z, yaw) {
   return { x: x * c - z * s, z: x * s + z * c };
 }
 
-export function partWorldAabb(part, object) {
+function wallHeightNormalized(part, prefab) {
+  if (!part || part.kind !== 'box' || part.collision !== 'wall_aabb') return false;
+  if (!prefab || !['walls', 'modules'].includes(prefab.category)) return false;
+  const h = Math.abs(Number(part.size && part.size[1]) || 0);
+  return h >= 2.85 && h <= 3.65;
+}
+
+function wallTopDecorRaised(part, prefab) {
+  if (!part || part.kind !== 'box' || part.collision !== 'decorative_only') return false;
+  if (!prefab || !['walls', 'modules'].includes(prefab.category)) return false;
+  const oy = Number(part.offset && part.offset[1]) || 0;
+  const sy = Math.abs(Number(part.size && part.size[1]) || 0);
+  return oy > 2.65 && sy <= 0.75;
+}
+
+export function partRuntimeTransform(part, object = {}, floorY = 0, prefab = null) {
   const scale = Number.isFinite(object.scale) ? object.scale : 1;
-  const yaw = Number.isFinite(object.yaw) ? object.yaw : 0;
   const sx = (part.size && part.size[0] ? part.size[0] : 0) * scale;
+  let sy = (part.size && part.size[1] ? part.size[1] : 0) * scale;
   const sz = (part.size && part.size[2] ? part.size[2] : 0) * scale;
   const ox = ((part.offset && part.offset[0]) || 0) * scale;
   const oz = ((part.offset && part.offset[2]) || 0) * scale;
-  const oy = ((part.offset && part.offset[1]) || 0) * scale + (object.y || 0);
-  const sy = (part.size && part.size[1] ? part.size[1] : 0) * scale;
+  let oy = ((part.offset && part.offset[1]) || 0) * scale;
+  if (wallHeightNormalized(part, prefab)) {
+    sy = LEVEL_ONE_WALL_HEIGHT * scale;
+    oy = sy / 2;
+  } else if (wallTopDecorRaised(part, prefab)) {
+    oy += (LEVEL_ONE_WALL_HEIGHT - KIT_AUTHORED_WALL_HEIGHT) * scale;
+  }
+  return {
+    sx,
+    sy,
+    sz,
+    ox,
+    oy: (Number(floorY) || 0) + (object.y || 0) + oy,
+    oz,
+  };
+}
+
+export function partWorldAabb(part, object, floorY = 0, prefab = null) {
+  const yaw = Number.isFinite(object.yaw) ? object.yaw : 0;
+  const { sx, sy, sz, ox, oy, oz } = partRuntimeTransform(part, object, floorY, prefab);
   const corners = [
     [-sx / 2, -sz / 2],
     [sx / 2, -sz / 2],
@@ -191,7 +226,7 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       continue;
     }
     for (const part of prefab.parts || []) {
-      const box = partWorldAabb(part, obj);
+        const box = partWorldAabb(part, obj, map.floorY, prefab);
       placedParts.push({ object: obj, prefab, part, box });
       if (part.collision === 'floor_aabb') {
         floorRegions.push({ x0: box.x0, x1: box.x1, z0: box.z0, z1: box.z1, floorY: map.floorY });
@@ -229,7 +264,7 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       scale: 1,
     };
     const doorPart = { size: [Number(marker.width) || 5.4, 3.1, Number(marker.depth) || 0.62], offset: [0, 1.55, 0] };
-    const box = partWorldAabb(doorPart, obj);
+    const box = partWorldAabb(doorPart, obj, map.floorY);
     const entry = {
       x0: box.x0,
       x1: box.x1,
@@ -289,7 +324,7 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
   const dims = {
     RW: Math.max(8, Math.abs((map.bounds.x1 || 0) - (map.bounds.x0 || 0))),
     RD: Math.max(8, Math.abs((map.bounds.z1 || 0) - (map.bounds.z0 || 0))),
-    RH: 5.6,
+    RH: LEVEL_ONE_WALL_HEIGHT,
   };
 
   const playerSpawn = repairPlayerSpawn(map.markers.playerSpawn, map, walls, exitZone, warnings);
@@ -335,16 +370,16 @@ function materialFor(THREE, kitManifest, cache, key) {
   return mat;
 }
 
-function createPartMesh(THREE, kitManifest, matCache, entry) {
-  const { object, part } = entry;
+function createPartMesh(THREE, kitManifest, matCache, entry, floorY = 0) {
+  const { object, prefab, part } = entry;
   if (part.kind !== 'box') return null;
-  const scale = Number.isFinite(object.scale) ? object.scale : 1;
+  const { sx, sy, sz, ox, oy, oz } = partRuntimeTransform(part, object, floorY, prefab);
   const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry((part.size[0] || 0.1) * scale, (part.size[1] || 0.1) * scale, (part.size[2] || 0.1) * scale),
+    new THREE.BoxGeometry(sx || 0.1, sy || 0.1, sz || 0.1),
     materialFor(THREE, kitManifest, matCache, part.material || 'wall_dark'),
   );
-  const off = rotateXZ(((part.offset && part.offset[0]) || 0) * scale, ((part.offset && part.offset[2]) || 0) * scale, object.yaw || 0);
-  mesh.position.set(object.x + off.x, (object.y || 0) + ((part.offset && part.offset[1]) || 0) * scale, object.z + off.z);
+  const off = rotateXZ(ox, oz, object.yaw || 0);
+  mesh.position.set(object.x + off.x, oy, object.z + off.z);
   mesh.rotation.y = object.yaw || 0;
   mesh.castShadow = part.collision !== 'floor_aabb' && part.collision !== 'decorative_only';
   mesh.receiveShadow = true;
@@ -403,7 +438,7 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
   solids.push(floor);
 
   for (const entry of geo.placedParts) {
-    const mesh = createPartMesh(THREE, kitManifest, matCache, entry);
+    const mesh = createPartMesh(THREE, kitManifest, matCache, entry, geo.map.floorY);
     if (!mesh) continue;
     root.add(mesh);
     if (entry.part.collision !== 'decorative_only' && entry.part.collision !== 'nonblocking_visual') solids.push(mesh);

@@ -13375,15 +13375,13 @@ armScreen.rotation.x=-Math.PI/2;
 armBandGrp.add(armScreen);
 lGrp.add(armBandGrp);
 armBandGrp.visible=true;
-_M4_LEFT_FOREARM_CROP_PARTS.push(armBandGrp);
 function _syncArmBandVisibility(){
   let show=true;
   try{show=!_isAuthoredHandRuntimeActive();}catch(_){show=true;}
   try{if(P&&P.weaponIdx===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)show=false;}catch(_){}
   try{
     const wi=P&&Number.isFinite(P.weaponIdx)?P.weaponIdx|0:-1;
-    if(wi===1||wi===6)show=false;
-    const adsSightline=!!(P&&!P.reloading&&(P.adsVis||0)>.42&&(wi===1||wi===3||wi===4||wi===6));
+    const adsSightline=!!(P&&!P.reloading&&(P.adsVis||0)>.42&&(wi===3||wi===4));
     if(adsSightline)show=false;
   }catch(_){}
   armBandGrp.visible=show;
@@ -24837,14 +24835,14 @@ function _consumePlayerAnimNotifies(st,pl=P,slot=0){
           PP.shakeY-=.0010*strength*(sprint?.70:.80);
           PP.shakeX+=side*.0012*strength;
         }
-        const visualStrength=strength*(sprint?.54:.62);
-        pl._strideImpact=Math.max(pl._strideImpact||0,visualStrength*(sprint?.18:.20));
+        const visualStrength=strength*(sprint?.34:.50);
+        pl._strideImpact=Math.max(pl._strideImpact||0,visualStrength*(sprint?.11:.16));
         pl._strideImpactSide=side;
         pl._strideImpactTimer=.085;
-        pl._locomotionSurge=Math.max(pl._locomotionSurge||0,visualStrength*.045);
-        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,visualStrength*(sprint?.105:.13));
+        pl._locomotionSurge=Math.max(pl._locomotionSurge||0,visualStrength*(sprint?.022:.036));
+        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,visualStrength*(sprint?.058:.095));
         pl._footPlantSide=side;
-        pl._bodyJolt=Math.max(pl._bodyJolt||0,visualStrength*(sprint ? .014 : .018));
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,visualStrength*(sprint ? .006 : .014));
         break;
       }
       case 'sprintStart':
@@ -29558,7 +29556,9 @@ function updateHands(dt){
   const _animVM=playerAnimState0.resolved&&playerAnimState0.resolved.viewmodel?playerAnimState0.resolved.viewmodel:null;
   const _vaultForearmCrop=!!(P.vaulting&&(P.vaultT||0)>.05&&(P.vaultT||0)<.78);
   const _adsVisForSight=P.adsVis||0;
-  const _cropPistolAdsForearm=(_wi===1||_wi===6)&&!P.reloading&&_adsVisForSight>.34;
+  // Pistol slots keep the procedural forearm/wristband visible; ADS alignment is
+  // handled by the hand pose instead of hiding the arm out from under the holo.
+  const _cropPistolAdsForearm=false;
   const _cropSupportAdsForearm=(_wi===3||_wi===4)&&!P.reloading&&_adsVisForSight>.52;
   const _cropM4RightForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop||_cropPistolAdsForearm;
   for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4RightForearm;

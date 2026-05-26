@@ -8,7 +8,7 @@ import {
   createPlacedObject,
   normalizeCustomMapPack,
 } from './schema.js';
-import { collectCustomMapGeometry, partWorldAabb } from './customMapCompiler.js';
+import { collectCustomMapGeometry, partRuntimeTransform, partWorldAabb } from './customMapCompiler.js';
 
 const LAYERS = ['geometry', 'gameplay', 'enemies', 'flow', 'lighting', 'template'];
 const VIEW_MODES = ['tactical', 'top', 'preview'];
@@ -655,12 +655,13 @@ export function createLevelEditorController(options = {}) {
 
   function addPartMesh(group, obj, pf, part, options = {}) {
     if (!part || part.kind !== 'box') return null;
-    const scale = Number.isFinite(obj.scale) ? obj.scale : 1;
-    const sx = Math.max(0.04, (part.size && part.size[0] ? part.size[0] : 0.1) * scale);
-    const sy = Math.max(0.04, (part.size && part.size[1] ? part.size[1] : 0.1) * scale);
-    const sz = Math.max(0.04, (part.size && part.size[2] ? part.size[2] : 0.1) * scale);
+    const floorY = map && Number.isFinite(Number(map.floorY)) ? Number(map.floorY) : 0;
+    const tx = partRuntimeTransform(part, obj, floorY, pf);
+    const sx = Math.max(0.04, tx.sx || 0.1);
+    const sy = Math.max(0.04, tx.sy || 0.1);
+    const sz = Math.max(0.04, tx.sz || 0.1);
     const yaw = Number.isFinite(obj.yaw) ? obj.yaw : 0;
-    const off = rotateXZ(((part.offset && part.offset[0]) || 0) * scale, ((part.offset && part.offset[2]) || 0) * scale, yaw);
+    const off = rotateXZ(tx.ox, tx.oz, yaw);
     const opacity = options.ghost ? 0.38 : (part.collision === 'transparent_window_aabb' ? 0.46 : 1);
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(sx, sy, sz),
@@ -672,7 +673,7 @@ export function createLevelEditorController(options = {}) {
         depthWrite: !options.ghost && part.collision !== 'transparent_window_aabb',
       }),
     );
-    mesh.position.set(obj.x + off.x, (obj.y || 0) + ((part.offset && part.offset[1]) || 0) * scale, obj.z + off.z);
+    mesh.position.set(obj.x + off.x, tx.oy, obj.z + off.z);
     mesh.rotation.y = yaw;
     mesh.name = `${pf.id}:${part.name || 'part'}`;
     if (!options.ghost) {
@@ -1176,7 +1177,7 @@ export function createLevelEditorController(options = {}) {
       const pf = prefab(obj.prefabId);
       if (!pf) continue;
       for (const part of pf.parts || []) {
-        const box = partWorldAabb(part, obj);
+        const box = partWorldAabb(part, obj, map.floorY, pf);
         if (world.x >= box.x0 && world.x <= box.x1 && world.z >= box.z0 && world.z <= box.z1) return { type: 'object', id: obj.id };
       }
     }
