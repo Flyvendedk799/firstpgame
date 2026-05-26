@@ -385,8 +385,108 @@ function repairPlayerSpawn(rawSpawn, map, walls, exitZone, warnings) {
   return { x, y: floorY, z, yaw, floorY: map.floorY };
 }
 
+function clonePoint2(point) {
+  return {
+    x: Number(point && point.x) || 0,
+    z: Number(point && point.z) || 0,
+    yaw: Number.isFinite(Number(point && point.yaw)) ? Number(point.yaw) : null,
+    pauseSeconds: Number.isFinite(Number(point && point.pauseSeconds)) ? Math.max(0, Number(point.pauseSeconds)) : null,
+  };
+}
+
+function rectCenter(rect) {
+  if (!rect) return null;
+  return {
+    x: ((Number(rect.x0) || 0) + (Number(rect.x1) || 0)) / 2,
+    z: ((Number(rect.z0) || 0) + (Number(rect.z1) || 0)) / 2,
+  };
+}
+
+function byId(rows) {
+  return Object.fromEntries((rows || []).filter((row) => row && row.id).map((row) => [row.id, row]));
+}
+
+function routeAssignedTo(route, enemyId) {
+  return !!(route && enemyId && Array.isArray(route.assignedEnemyIds) && route.assignedEnemyIds.includes(enemyId));
+}
+
+export function buildCustomMapTacticalGraph(inputMap) {
+  const map = normalizeCustomMap(inputMap);
+  const markers = map.markers || {};
+  const patrolRoutesById = byId(markers.patrolRoutes);
+  const flankRoutesById = byId(markers.flankRoutes);
+  const coverHintsById = byId(markers.coverHints);
+  const peekAnglesById = byId(markers.peekAngles);
+  const holdPositionsById = byId(markers.holdPositions);
+  const triggerVolumesById = byId(markers.triggerVolumes);
+  const combatZonesById = byId(markers.combatZones);
+  const breachPointsById = byId(markers.breachPoints);
+  const sniperPerchesById = byId(markers.sniperPerches);
+  const enemyTactics = {};
+
+  for (const spawn of markers.enemySpawns || []) {
+    if (!spawn || !spawn.id) continue;
+    const links = Object.assign({}, spawn.links || {});
+    if (!links.patrolRouteId) {
+      const assigned = (markers.patrolRoutes || []).find((route) => routeAssignedTo(route, spawn.id));
+      if (assigned) links.patrolRouteId = assigned.id;
+    }
+    if (!links.flankRouteId) {
+      const assigned = (markers.flankRoutes || []).find((route) => routeAssignedTo(route, spawn.id));
+      if (assigned) links.flankRouteId = assigned.id;
+    }
+    const patrolRoute = links.patrolRouteId ? patrolRoutesById[links.patrolRouteId] : null;
+    const flankRoute = links.flankRouteId ? flankRoutesById[links.flankRouteId] : null;
+    const coverHint = links.coverHintId ? (coverHintsById[links.coverHintId] || holdPositionsById[links.coverHintId]) : null;
+    const peekAngle = links.peekAngleId ? peekAnglesById[links.peekAngleId] : null;
+    const holdPosition = links.holdPositionId ? holdPositionsById[links.holdPositionId] : null;
+    const triggerVolume = links.triggerVolumeId ? triggerVolumesById[links.triggerVolumeId] : null;
+    const combatZone = links.combatZoneId ? combatZonesById[links.combatZoneId] : null;
+    enemyTactics[spawn.id] = {
+      links,
+      patrolRoute,
+      flankRoute,
+      coverHint,
+      peekAngle,
+      holdPosition,
+      triggerVolume,
+      combatZone,
+      patrolPoints: patrolRoute ? (patrolRoute.points || []).map(clonePoint2) : [],
+      flankPoints: flankRoute ? (flankRoute.points || []).map(clonePoint2) : [],
+      coverHintPoint: coverHint ? { x: Number(coverHint.x) || 0, z: Number(coverHint.z) || 0 } : null,
+      peekPoint: peekAngle ? { x: Number(peekAngle.x) || 0, z: Number(peekAngle.z) || 0, yaw: Number(peekAngle.yaw) || 0 } : null,
+      holdPoint: holdPosition ? { x: Number(holdPosition.x) || 0, z: Number(holdPosition.z) || 0, radius: Number(holdPosition.radius) || 1.2 } : null,
+      triggerCenter: rectCenter(triggerVolume),
+      combatZoneCenter: rectCenter(combatZone),
+    };
+  }
+
+  return {
+    patrolRoutesById,
+    flankRoutesById,
+    coverHintsById,
+    peekAnglesById,
+    holdPositionsById,
+    triggerVolumesById,
+    combatZonesById,
+    breachPointsById,
+    sniperPerchesById,
+    enemyTactics,
+    counts: {
+      patrolRoutes: (markers.patrolRoutes || []).length,
+      flankRoutes: (markers.flankRoutes || []).length,
+      combatZones: (markers.combatZones || []).length,
+      triggerVolumes: (markers.triggerVolumes || []).length,
+      coverHints: (markers.coverHints || []).length,
+      breachPoints: (markers.breachPoints || []).length,
+      sniperPerches: (markers.sniperPerches || []).length,
+    },
+  };
+}
+
 export function collectCustomMapGeometry(inputMap, kitManifest) {
   const map = normalizeCustomMap(inputMap);
+  const tacticalGraph = buildCustomMapTacticalGraph(map);
   const kit = prefabMap(kitManifest);
   const walls = [];
   const vaultables = [];
@@ -508,6 +608,10 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       warnings.push(`enemy_spawn_bad_zone:${spawn.id}`);
       continue;
     }
+    const tactics = tacticalGraph.enemyTactics[spawn.id] || {};
+    const links = Object.assign({}, spawn.links || {}, tactics.links || {});
+    const patrolRoute = tactics.patrolRoute || null;
+    const flankRoute = tactics.flankRoute || null;
     zoneSpawns[z].push({ x: Number(spawn.x) || 0, y: map.floorY, z: Number(spawn.z) || 0, yaw: Number(spawn.yaw) || 0 });
     zoneEnemyTypes[z].push(spawn.enemyType || 'soldier');
     zoneSpawnMeta[z].push({
@@ -519,9 +623,26 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       behavior: spawn.behavior || 'hold_angle',
       wave: spawn.spawnWave || 'initial',
       yaw: Number(spawn.yaw) || 0,
-      coverHintId: spawn.coverHintId || null,
-      peekAngleId: spawn.peekAngleId || null,
-      patrolRouteId: spawn.patrolRouteId || null,
+      links,
+      coverHintId: links.coverHintId || null,
+      peekAngleId: links.peekAngleId || null,
+      holdPositionId: links.holdPositionId || null,
+      patrolRouteId: links.patrolRouteId || null,
+      flankRouteId: links.flankRouteId || null,
+      triggerVolumeId: links.triggerVolumeId || null,
+      combatZoneId: links.combatZoneId || null,
+      patrolPoints: tactics.patrolPoints || [],
+      patrolLoop: patrolRoute ? patrolRoute.loop !== false : true,
+      patrolPauseSeconds: patrolRoute ? Number(patrolRoute.pauseSeconds) || 0.55 : 0,
+      patrolSpeed: patrolRoute ? Number(patrolRoute.speed) || 1 : 1,
+      patrolAlertBehavior: patrolRoute ? patrolRoute.alertBehavior || 'patrol_then_alarm' : null,
+      flankPoints: tactics.flankPoints || [],
+      flankSpeed: flankRoute ? Number(flankRoute.speed) || 1.2 : 1.2,
+      coverHintPoint: tactics.coverHintPoint || null,
+      peekPoint: tactics.peekPoint || null,
+      holdPoint: tactics.holdPoint || null,
+      triggerCenter: tactics.triggerCenter || null,
+      combatZoneCenter: tactics.combatZoneCenter || null,
     });
   }
 
@@ -556,6 +677,7 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
     dims,
     errors,
     warnings,
+    tacticalGraph,
   };
 }
 
@@ -881,6 +1003,7 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     zoneSpawns: geo.zoneSpawns.map((arr) => arr.map((p) => new THREE.Vector3(p.x, p.y, p.z))),
     zoneEnemyTypes: geo.zoneEnemyTypes,
     zoneSpawnMeta: geo.zoneSpawnMeta,
+    tacticalGraph: geo.tacticalGraph,
     zoneEnemyCounts: geo.zoneEnemyCounts,
     playerSpawn: geo.playerSpawn,
     zoneBounds: geo.zoneBounds,

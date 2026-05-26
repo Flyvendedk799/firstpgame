@@ -1,4 +1,4 @@
-export const CUSTOM_MAP_SCHEMA_VERSION = 1;
+export const CUSTOM_MAP_SCHEMA_VERSION = 2;
 export const CUSTOM_MAP_PACK_STORE = 'clearance_custom_map_packs_v1';
 export const CUSTOM_MAP_AUTOSAVE_KEY = 'clearance_custom_map_editor_autosave_v1';
 export const DEFAULT_KIT_ID = 'level-kit.b01-megaplex';
@@ -10,9 +10,29 @@ export const DEFAULT_CUSTOM_MAP_BOUNDS = { x0: -18, x1: 18, z0: -54, z1: 54 };
 export const DEFAULT_CUSTOM_ZONE_BOUNDS = { halfWidth: 18, halfDepth: 54, zSplit: 18 };
 
 export const ENEMY_TYPES = ['soldier', 'scout', 'heavy', 'pistolero', 'riot', 'marksman', 'sniper', 'shielded', 'demolitions'];
-export const ENEMY_ROLES = ['anchor', 'lookout', 'flanker', 'breacher', 'patrol', 'marksman', 'reinforcement'];
-export const ENEMY_BEHAVIORS = ['hold_angle', 'peek_from_cover', 'ambush_on_crossing', 'push_after_contact', 'patrol_route', 'reposition'];
+export const ENEMY_ROLES = ['anchor', 'lookout', 'flanker', 'breacher', 'patrol', 'marksman', 'sniper', 'reinforcement'];
+export const ENEMY_BEHAVIORS = [
+  'hold_angle',
+  'peek_from_cover',
+  'ambush_on_crossing',
+  'push_after_contact',
+  'patrol_route',
+  'patrol_then_alarm',
+  'flank_after_contact',
+  'suppress_lane',
+  'guard_objective',
+  'reposition',
+];
 export const DOOR_ACCESS_MODES = ['player', 'enemies', 'both', 'locked'];
+export const ENEMY_LINK_FIELDS = [
+  'peekAngleId',
+  'holdPositionId',
+  'coverHintId',
+  'patrolRouteId',
+  'flankRouteId',
+  'triggerVolumeId',
+  'combatZoneId',
+];
 
 export function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -68,6 +88,11 @@ export function defaultMarkers() {
     patrolRoutes: [],
     pickups: [],
     triggerVolumes: [],
+    combatZones: [],
+    flankRoutes: [],
+    coverHints: [],
+    breachPoints: [],
+    sniperPerches: [],
   };
 }
 
@@ -121,10 +146,17 @@ export function normalizeMarkers(markers = {}) {
   const base = defaultMarkers();
   const out = Object.assign(base, cloneJson(markers));
   out.playerSpawn = Object.assign(base.playerSpawn, markers.playerSpawn || {});
-  for (const key of ['exits', 'zoneDoors', 'enemySpawns', 'peekAngles', 'holdPositions', 'patrolRoutes', 'pickups', 'triggerVolumes']) {
-    if (key === 'enemySpawns') out[key] = Array.isArray(markers[key]) ? markers[key].map(normalizeEnemySpawn) : base[key];
-    else out[key] = Array.isArray(markers[key]) ? markers[key].map((x) => Object.assign({}, x)) : base[key];
-  }
+  for (const key of ['exits', 'zoneDoors', 'pickups']) out[key] = Array.isArray(markers[key]) ? markers[key].map((x) => Object.assign({}, x)) : base[key];
+  out.enemySpawns = Array.isArray(markers.enemySpawns) ? markers.enemySpawns.map(normalizeEnemySpawn) : base.enemySpawns;
+  out.peekAngles = Array.isArray(markers.peekAngles) ? markers.peekAngles.map(normalizePeekAngle) : base.peekAngles;
+  out.holdPositions = Array.isArray(markers.holdPositions) ? markers.holdPositions.map(normalizeHoldPosition) : base.holdPositions;
+  out.patrolRoutes = Array.isArray(markers.patrolRoutes) ? markers.patrolRoutes.map(normalizePatrolRoute) : base.patrolRoutes;
+  out.triggerVolumes = Array.isArray(markers.triggerVolumes) ? markers.triggerVolumes.map(normalizeTriggerVolume) : base.triggerVolumes;
+  out.combatZones = Array.isArray(markers.combatZones) ? markers.combatZones.map(normalizeCombatZone) : base.combatZones;
+  out.flankRoutes = Array.isArray(markers.flankRoutes) ? markers.flankRoutes.map(normalizeFlankRoute) : base.flankRoutes;
+  out.coverHints = Array.isArray(markers.coverHints) ? markers.coverHints.map(normalizeCoverHint) : base.coverHints;
+  out.breachPoints = Array.isArray(markers.breachPoints) ? markers.breachPoints.map(normalizeBreachPoint) : base.breachPoints;
+  out.sniperPerches = Array.isArray(markers.sniperPerches) ? markers.sniperPerches.map(normalizeSniperPerch) : base.sniperPerches;
   return out;
 }
 
@@ -206,14 +238,23 @@ export function createEnemySpawn(x = 0, z = 0, options = {}) {
     roomId: 'custom_room',
     spawnWave: 'initial',
     facingTarget: null,
-    coverHintId: null,
-    peekAngleId: null,
-    patrolRouteId: null,
+    links: {},
     activation: 'zone_start',
   }, options));
 }
 
+export function normalizeEnemyLinks(spawn = {}) {
+  const raw = spawn.links && typeof spawn.links === 'object' ? spawn.links : {};
+  const out = {};
+  for (const key of ENEMY_LINK_FIELDS) {
+    const value = spawn[key] ?? raw[key];
+    out[key] = value == null || String(value).trim() === '' ? null : String(value).trim();
+  }
+  return out;
+}
+
 export function normalizeEnemySpawn(spawn = {}) {
+  const links = normalizeEnemyLinks(spawn);
   const out = {
     id: spawn.id || customId('enemy'),
     x: Number.isFinite(Number(spawn.x)) ? Number(spawn.x) : 0,
@@ -226,9 +267,14 @@ export function normalizeEnemySpawn(spawn = {}) {
     roomId: spawn.roomId || 'custom_room',
     spawnWave: spawn.spawnWave || 'initial',
     facingTarget: spawn.facingTarget || null,
-    coverHintId: spawn.coverHintId || null,
-    peekAngleId: spawn.peekAngleId || null,
-    patrolRouteId: spawn.patrolRouteId || null,
+    links,
+    coverHintId: links.coverHintId,
+    peekAngleId: links.peekAngleId,
+    holdPositionId: links.holdPositionId,
+    patrolRouteId: links.patrolRouteId,
+    flankRouteId: links.flankRouteId,
+    triggerVolumeId: links.triggerVolumeId,
+    combatZoneId: links.combatZoneId,
     activation: spawn.activation || 'zone_start',
   };
   for (const key of [
@@ -246,9 +292,173 @@ export function normalizeEnemySpawn(spawn = {}) {
 }
 
 export function createPeekAngle(x = 0, z = 0, options = {}) {
-  return Object.assign({ id: customId('peek'), x, z, yaw: 0, arcDegrees: 70, range: 11, label: 'PEEK' }, options);
+  return normalizePeekAngle(Object.assign({ id: customId('peek'), x, z, yaw: 0, arcDegrees: 70, range: 11, label: 'PEEK' }, options));
 }
 
 export function createHoldPosition(x = 0, z = 0, options = {}) {
-  return Object.assign({ id: customId('hold'), x, z, yaw: 0, radius: 1.2, label: 'HOLD' }, options);
+  return normalizeHoldPosition(Object.assign({ id: customId('hold'), x, z, yaw: 0, radius: 1.2, label: 'HOLD' }, options));
+}
+
+function finiteNumber(value, fallback = 0) {
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function normalizePoint(point = {}) {
+  return {
+    x: finiteNumber(point.x, 0),
+    z: finiteNumber(point.z, 0),
+    yaw: Number.isFinite(Number(point.yaw)) ? Number(point.yaw) : null,
+    pauseSeconds: Number.isFinite(Number(point.pauseSeconds)) ? Math.max(0, Number(point.pauseSeconds)) : null,
+  };
+}
+
+function normalizeRoutePoints(points = []) {
+  return Array.isArray(points) ? points.map(normalizePoint) : [];
+}
+
+function normalizeRectMarker(marker = {}, defaults = {}) {
+  const cx = finiteNumber(marker.x, finiteNumber(defaults.x, 0));
+  const cz = finiteNumber(marker.z, finiteNumber(defaults.z, 0));
+  const width = Math.max(0.5, finiteNumber(marker.width, finiteNumber(defaults.width, 4)));
+  const depth = Math.max(0.5, finiteNumber(marker.depth, finiteNumber(defaults.depth, 4)));
+  const x0 = Number.isFinite(Number(marker.x0)) ? Number(marker.x0) : cx - width / 2;
+  const x1 = Number.isFinite(Number(marker.x1)) ? Number(marker.x1) : cx + width / 2;
+  const z0 = Number.isFinite(Number(marker.z0)) ? Number(marker.z0) : cz - depth / 2;
+  const z1 = Number.isFinite(Number(marker.z1)) ? Number(marker.z1) : cz + depth / 2;
+  return {
+    x0: Math.min(x0, x1),
+    x1: Math.max(x0, x1),
+    z0: Math.min(z0, z1),
+    z1: Math.max(z0, z1),
+  };
+}
+
+export function normalizePeekAngle(marker = {}) {
+  return {
+    id: marker.id || customId('peek'),
+    x: finiteNumber(marker.x, 0),
+    z: finiteNumber(marker.z, 0),
+    yaw: finiteNumber(marker.yaw, 0),
+    arcDegrees: Math.max(10, Math.min(160, finiteNumber(marker.arcDegrees, 70))),
+    range: Math.max(1, Math.min(80, finiteNumber(marker.range, 11))),
+    label: marker.label || 'PEEK',
+  };
+}
+
+export function normalizeHoldPosition(marker = {}) {
+  return {
+    id: marker.id || customId('hold'),
+    x: finiteNumber(marker.x, 0),
+    z: finiteNumber(marker.z, 0),
+    yaw: finiteNumber(marker.yaw, 0),
+    radius: Math.max(0.25, Math.min(12, finiteNumber(marker.radius, 1.2))),
+    label: marker.label || 'HOLD',
+  };
+}
+
+export function createPatrolRoute(points = [], options = {}) {
+  return normalizePatrolRoute(Object.assign({ points }, options));
+}
+
+export function normalizePatrolRoute(route = {}) {
+  return {
+    id: route.id || customId('patrol'),
+    label: route.label || 'PATROL',
+    points: normalizeRoutePoints(route.points),
+    loop: route.loop !== false,
+    pauseSeconds: Math.max(0, finiteNumber(route.pauseSeconds, 0.55)),
+    speed: Math.max(0.25, Math.min(3, finiteNumber(route.speed, 1))),
+    alertBehavior: route.alertBehavior || 'patrol_then_alarm',
+    assignedEnemyIds: Array.isArray(route.assignedEnemyIds) ? route.assignedEnemyIds.map(String).filter(Boolean) : [],
+  };
+}
+
+export function createFlankRoute(points = [], options = {}) {
+  return normalizeFlankRoute(Object.assign({ points }, options));
+}
+
+export function normalizeFlankRoute(route = {}) {
+  return {
+    id: route.id || customId('flank'),
+    label: route.label || 'FLANK',
+    points: normalizeRoutePoints(route.points),
+    activation: route.activation || 'after_contact',
+    speed: Math.max(0.25, Math.min(3, finiteNumber(route.speed, 1.2))),
+    assignedEnemyIds: Array.isArray(route.assignedEnemyIds) ? route.assignedEnemyIds.map(String).filter(Boolean) : [],
+  };
+}
+
+export function createCombatZone(x0 = -2, z0 = -2, x1 = 2, z1 = 2, options = {}) {
+  return normalizeCombatZone(Object.assign({ x0, z0, x1, z1 }, options));
+}
+
+export function normalizeCombatZone(zone = {}) {
+  const rect = normalizeRectMarker(zone, { width: 8, depth: 8 });
+  return Object.assign({
+    id: zone.id || customId('zone'),
+    label: zone.label || 'COMBAT ZONE',
+    zoneId: Number.isFinite(Number(zone.zoneId)) ? Number(zone.zoneId) : null,
+    intensity: zone.intensity || 'balanced',
+    activation: zone.activation || 'zone_start',
+  }, rect);
+}
+
+export function createTriggerVolume(x0 = -2, z0 = -2, x1 = 2, z1 = 2, options = {}) {
+  return normalizeTriggerVolume(Object.assign({ x0, z0, x1, z1 }, options));
+}
+
+export function normalizeTriggerVolume(volume = {}) {
+  const rect = normalizeRectMarker(volume, { width: 4, depth: 4 });
+  return Object.assign({
+    id: volume.id || customId('trigger'),
+    label: volume.label || 'TRIGGER',
+    activation: volume.activation || 'on_enter',
+    targetIds: Array.isArray(volume.targetIds) ? volume.targetIds.map(String).filter(Boolean) : [],
+  }, rect);
+}
+
+export function createCoverHint(x = 0, z = 0, options = {}) {
+  return normalizeCoverHint(Object.assign({ x, z }, options));
+}
+
+export function normalizeCoverHint(marker = {}) {
+  return {
+    id: marker.id || customId('cover'),
+    x: finiteNumber(marker.x, 0),
+    z: finiteNumber(marker.z, 0),
+    yaw: finiteNumber(marker.yaw, 0),
+    radius: Math.max(0.25, Math.min(12, finiteNumber(marker.radius, 1.5))),
+    label: marker.label || 'COVER HINT',
+  };
+}
+
+export function createBreachPoint(x = 0, z = 0, options = {}) {
+  return normalizeBreachPoint(Object.assign({ x, z }, options));
+}
+
+export function normalizeBreachPoint(marker = {}) {
+  return {
+    id: marker.id || customId('breach'),
+    x: finiteNumber(marker.x, 0),
+    z: finiteNumber(marker.z, 0),
+    yaw: finiteNumber(marker.yaw, 0),
+    radius: Math.max(0.25, Math.min(8, finiteNumber(marker.radius, 1.2))),
+    label: marker.label || 'BREACH',
+  };
+}
+
+export function createSniperPerch(x = 0, z = 0, options = {}) {
+  return normalizeSniperPerch(Object.assign({ x, z }, options));
+}
+
+export function normalizeSniperPerch(marker = {}) {
+  return {
+    id: marker.id || customId('sniper'),
+    x: finiteNumber(marker.x, 0),
+    z: finiteNumber(marker.z, 0),
+    yaw: finiteNumber(marker.yaw, 0),
+    range: Math.max(4, Math.min(120, finiteNumber(marker.range, 22))),
+    arcDegrees: Math.max(8, Math.min(120, finiteNumber(marker.arcDegrees, 42))),
+    label: marker.label || 'SNIPER PERCH',
+  };
 }

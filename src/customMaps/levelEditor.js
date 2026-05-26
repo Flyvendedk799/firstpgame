@@ -1,11 +1,22 @@
 import * as THREE from 'three';
 import {
   cloneJson,
+  createBreachPoint,
+  createCombatZone,
+  createCoverHint,
   createDefaultCustomMapPack,
   createEnemySpawn,
+  createFlankRoute,
   createHoldPosition,
+  createPatrolRoute,
   createPeekAngle,
   createPlacedObject,
+  createSniperPerch,
+  createTriggerVolume,
+  ENEMY_BEHAVIORS,
+  ENEMY_LINK_FIELDS,
+  ENEMY_ROLES,
+  ENEMY_TYPES,
   normalizeDoorAccess,
   normalizeCustomMapPack,
 } from './schema.js';
@@ -32,6 +43,28 @@ const COMBAT_STAMPS = [
   { id: 'sniper', label: 'SNIPER' },
   { id: 'final', label: 'FINAL' },
 ];
+const SINGLE_TACTICAL_TOOLS = ['enemy', 'peek', 'hold', 'cover', 'breach', 'sniper', 'spawn', 'exit', 'door', 'pickup'];
+const DRAW_TACTICAL_TOOLS = ['patrol', 'flank', 'zone', 'trigger'];
+const PLACEMENT_TOOLS = [...SINGLE_TACTICAL_TOOLS, ...DRAW_TACTICAL_TOOLS];
+const TOOL_LABELS = {
+  select: 'SELECT',
+  pan: 'PAN',
+  place: 'PLACE',
+  enemy: 'ENEMY',
+  peek: 'PEEK',
+  hold: 'HOLD',
+  cover: 'COVER HINT',
+  breach: 'BREACH',
+  sniper: 'SNIPER',
+  patrol: 'PATROL',
+  flank: 'FLANK',
+  zone: 'ZONE',
+  trigger: 'TRIGGER',
+  spawn: 'SPAWN',
+  exit: 'EXIT',
+  door: 'DOOR',
+  pickup: 'PICKUP',
+};
 
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
@@ -213,6 +246,7 @@ export function createLevelEditorController(options = {}) {
   let activeCategory = 'modules';
   let activeTool = 'select';
   let activePrefabId = null;
+  let activeDraw = null;
   let drag = null;
   let hoverWorld = null;
   let viewMode = 'tactical';
@@ -282,8 +316,103 @@ export function createLevelEditorController(options = {}) {
     };
   }
 
+  function isDrawTool(tool = activeTool) {
+    return DRAW_TACTICAL_TOOLS.includes(tool);
+  }
+
+  function isPlacementTool(tool = activeTool) {
+    return PLACEMENT_TOOLS.includes(tool);
+  }
+
+  function ensureMarkerArrays() {
+    if (!map) return;
+    map.markers = map.markers || {};
+    for (const key of [
+      'enemySpawns',
+      'peekAngles',
+      'holdPositions',
+      'patrolRoutes',
+      'pickups',
+      'triggerVolumes',
+      'combatZones',
+      'flankRoutes',
+      'coverHints',
+      'breachPoints',
+      'sniperPerches',
+      'zoneDoors',
+      'exits',
+    ]) {
+      if (!Array.isArray(map.markers[key])) map.markers[key] = [];
+    }
+  }
+
+  function markerArrayForType(type) {
+    ensureMarkerArrays();
+    if (!map || !map.markers) return [];
+    if (type === 'enemy') return map.markers.enemySpawns;
+    if (type === 'peek') return map.markers.peekAngles;
+    if (type === 'hold') return map.markers.holdPositions;
+    if (type === 'patrol') return map.markers.patrolRoutes;
+    if (type === 'flank') return map.markers.flankRoutes;
+    if (type === 'cover') return map.markers.coverHints;
+    if (type === 'breach') return map.markers.breachPoints;
+    if (type === 'sniper') return map.markers.sniperPerches;
+    if (type === 'trigger') return map.markers.triggerVolumes;
+    if (type === 'zone') return map.markers.combatZones;
+    if (type === 'pickup') return map.markers.pickups;
+    if (type === 'door') return map.markers.zoneDoors;
+    if (type === 'exit') return map.markers.exits;
+    return [];
+  }
+
+  function pointToAabbDist2(px, pz, box) {
+    const cx = Math.max(box.x0, Math.min(box.x1, px));
+    const cz = Math.max(box.z0, Math.min(box.z1, pz));
+    const dx = px - cx;
+    const dz = pz - cz;
+    return dx * dx + dz * dz;
+  }
+
+  function placementQuality(pos, radius = 0.46) {
+    if (!pos || !map || !kit()) return { tone: 'ok', color: '#7cff86', reason: 'READY' };
+    const b = map.bounds || { x0: -18, x1: 18, z0: -54, z1: 54 };
+    if (pos.x < b.x0 || pos.x > b.x1 || pos.z < b.z0 || pos.z > b.z1) {
+      return { tone: 'bad', color: '#ff5048', reason: 'OUT OF BOUNDS' };
+    }
+    const geo = collectCustomMapGeometry(map, kit());
+    for (const wall of geo.walls || []) {
+      if (!wall || wall.broken || wall.isWindow) continue;
+      if (pointToAabbDist2(pos.x, pos.z, wall) < radius * radius) return { tone: 'bad', color: '#ff5048', reason: 'COLLISION' };
+    }
+    return { tone: 'ok', color: '#7cff86', reason: 'VALID' };
+  }
+
+  function snapTacticalPlacement(tool, world) {
+    const base = snapPlacement(null, world);
+    if (!base) return base;
+    if (['spawn', 'enemy', 'peek', 'hold', 'cover', 'breach', 'sniper', 'patrol', 'flank', 'zone', 'trigger'].includes(tool)) {
+      const bounded = clampToPlayableBounds(base.x, base.z, tool === 'zone' || tool === 'trigger' ? 0.1 : 0.55);
+      return Object.assign({}, base, bounded);
+    }
+    return base;
+  }
+
   function entityPosition(type, ent) {
     if (!ent) return { x: 0, z: 0 };
+    if (type === 'patrol' || type === 'flank') {
+      const pts = Array.isArray(ent.points) ? ent.points : [];
+      if (!pts.length) return { x: 0, z: 0 };
+      return {
+        x: pts.reduce((sum, p) => sum + (Number(p.x) || 0), 0) / pts.length,
+        z: pts.reduce((sum, p) => sum + (Number(p.z) || 0), 0) / pts.length,
+      };
+    }
+    if (type === 'trigger' || type === 'zone') {
+      return {
+        x: ((Number(ent.x0) || 0) + (Number(ent.x1) || 0)) / 2,
+        z: ((Number(ent.z0) || 0) + (Number(ent.z1) || 0)) / 2,
+      };
+    }
     if (type === 'exit') {
       return {
         x: ((Number(ent.x0) || 0) + (Number(ent.x1) || 0)) / 2,
@@ -295,6 +424,23 @@ export function createLevelEditorController(options = {}) {
 
   function setEntityPosition(type, ent, x, z) {
     if (!ent) return;
+    if (type === 'patrol' || type === 'flank') {
+      const current = entityPosition(type, ent);
+      const dx = x - current.x;
+      const dz = z - current.z;
+      ent.points = (ent.points || []).map((point) => ({ ...point, x: snapGrid((Number(point.x) || 0) + dx), z: snapGrid((Number(point.z) || 0) + dz) }));
+      return;
+    }
+    if (type === 'trigger' || type === 'zone') {
+      const current = entityPosition(type, ent);
+      const dx = x - current.x;
+      const dz = z - current.z;
+      ent.x0 = snapGrid((Number(ent.x0) || 0) + dx);
+      ent.x1 = snapGrid((Number(ent.x1) || 0) + dx);
+      ent.z0 = snapGrid((Number(ent.z0) || 0) + dz);
+      ent.z1 = snapGrid((Number(ent.z1) || 0) + dz);
+      return;
+    }
     if (type === 'spawn') {
       const bounded = clampToPlayableBounds(x, z);
       ent.x = bounded.x;
@@ -322,7 +468,7 @@ export function createLevelEditorController(options = {}) {
   }
 
   function setEntityYaw(type, ent, yaw) {
-    if (!ent || type === 'exit') return;
+    if (!ent || type === 'exit' || type === 'patrol' || type === 'flank' || type === 'trigger' || type === 'zone') return;
     ent.yaw = yaw;
   }
 
@@ -687,6 +833,10 @@ export function createLevelEditorController(options = {}) {
       covers: geo?.vaultables?.length || 0,
       walls: geo?.walls?.filter((w) => !w.perimeter).length || 0,
       doors: (map?.markers?.zoneDoors?.length || 0) + assetDoors,
+      patrols: map?.markers?.patrolRoutes?.length || 0,
+      flanks: map?.markers?.flankRoutes?.length || 0,
+      zones: map?.markers?.combatZones?.length || 0,
+      triggers: map?.markers?.triggerVolumes?.length || 0,
       exits: map?.markers?.exits?.length || 0,
       navCells: geo?.navGrid?.cells || 0,
       geo,
@@ -716,6 +866,8 @@ export function createLevelEditorController(options = {}) {
         <div><b>${stats.enemies}</b><span>ENEMIES</span></div>
         <div><b>${stats.covers}</b><span>COVER</span></div>
         <div><b>${stats.doors}</b><span>DOORS</span></div>
+        <div><b>${stats.patrols}</b><span>PATROLS</span></div>
+        <div><b>${stats.flanks}</b><span>FLANKS</span></div>
       </div>
       ${tactical}
       <div class="ce-analysis-row"><span>OVERLAY</span><b>${analysis.enabled ? 'ON' : 'OFF'}</b></div>
@@ -1034,6 +1186,123 @@ export function createLevelEditorController(options = {}) {
     addLine(group, pts, color, 0.68);
   }
 
+  function addRectOverlay(group, rect, color, type, options = {}) {
+    if (!rect || !map) return;
+    const floorY = Number.isFinite(map.floorY) ? map.floorY : 0.4;
+    const x0 = Number(rect.x0) || 0;
+    const x1 = Number(rect.x1) || 0;
+    const z0 = Number(rect.z0) || 0;
+    const z1 = Number(rect.z1) || 0;
+    const w = Math.max(0.2, Math.abs(x1 - x0));
+    const d = Math.max(0.2, Math.abs(z1 - z0));
+    const cx = (x0 + x1) / 2;
+    const cz = (z0 + z1) / 2;
+    const selectedRect = selected && selected.type === type && selected.id === rect.id;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, d),
+      material(`rect:${type}:${color}:${options.ghost ? 'ghost' : selectedRect ? 'selected' : 'idle'}`, {
+        kind: 'basic',
+        color,
+        opacity: options.ghost ? 0.16 : selectedRect ? 0.28 : 0.14,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(cx, floorY + (options.ghost ? 0.095 : 0.07), cz);
+    if (!options.ghost) {
+      mesh.userData.editorPick = { type, id: rect.id };
+      hitMeshes.push(mesh);
+    }
+    group.add(mesh);
+    addLine(group, [
+      { x: x0, y: floorY + 0.14, z: z0 },
+      { x: x1, y: floorY + 0.14, z: z0 },
+      { x: x1, y: floorY + 0.14, z: z1 },
+      { x: x0, y: floorY + 0.14, z: z1 },
+      { x: x0, y: floorY + 0.14, z: z0 },
+    ], selectedRect ? '#ffffff' : color, selectedRect ? 0.92 : 0.62);
+  }
+
+  function addRouteOverlay(group, route, color, type, options = {}) {
+    if (!route || !map) return;
+    const floorY = Number.isFinite(map.floorY) ? map.floorY : 0.4;
+    const pts = (route.points || []).map((p) => ({ x: Number(p.x) || 0, y: floorY + 0.14, z: Number(p.z) || 0 }));
+    if (pts.length > 1) {
+      const drawPts = route.loop !== false && pts.length > 2 ? pts.concat([pts[0]]) : pts;
+      addLine(group, drawPts, color, options.ghost ? 0.52 : 0.82);
+      for (let i = 1; i < drawPts.length; i++) {
+        const a = drawPts[i - 1];
+        const b = drawPts[i];
+        const mx = (a.x + b.x) / 2;
+        const mz = (a.z + b.z) / 2;
+        const yaw = Math.atan2(b.x - a.x, b.z - a.z);
+        addLine(group, [
+          { x: mx, y: floorY + 0.2, z: mz },
+          { x: mx + Math.sin(yaw) * 0.55, y: floorY + 0.2, z: mz + Math.cos(yaw) * 0.55 },
+        ], color, options.ghost ? 0.42 : 0.66);
+      }
+    }
+    pts.forEach((p, index) => {
+      const selectedRoute = selected && selected.type === type && selected.id === route.id;
+      const dot = new THREE.Mesh(
+        new THREE.CylinderGeometry(selectedRoute ? 0.33 : 0.26, selectedRoute ? 0.33 : 0.26, 0.08, 20),
+        material(`route-dot:${type}:${color}:${index}:${selectedRoute ? 'selected' : 'idle'}`, {
+          color: selectedRoute ? '#ffffff' : color,
+          opacity: options.ghost ? 0.42 : 0.9,
+          emissive: selectedRoute ? color : null,
+          depthWrite: !options.ghost,
+        }),
+      );
+      dot.position.set(p.x, floorY + 0.1, p.z);
+      if (!options.ghost) {
+        dot.userData.editorPick = { type, id: route.id };
+        hitMeshes.push(dot);
+      }
+      group.add(dot);
+      if (index > 0) {
+        const prev = pts[index - 1];
+        const blocked = kit() && collectCustomMapGeometry(map, kit()).walls.some((wall) => {
+          if (!wall || wall.broken || wall.isWindow || wall.perimeter) return false;
+          return segmentIntersectsBox({ x: prev.x, z: prev.z }, { x: p.x, z: p.z }, wall, 0.08);
+        });
+        if (blocked) addLine(group, [prev, p], '#ff5048', 0.86);
+      }
+    });
+  }
+
+  function markerByTypeAndId(type, id) {
+    if (!id) return null;
+    return markerArrayForType(type).find((row) => row && row.id === id) || null;
+  }
+
+  function addEnemyLinks(group) {
+    if (!map || !layers.flow) return;
+    const floorY = Number.isFinite(map.floorY) ? map.floorY : 0.4;
+    const linkMap = [
+      ['peekAngleId', 'peek', '#ffd060'],
+      ['holdPositionId', 'hold', '#5fcb52'],
+      ['coverHintId', 'cover', '#40e0ff'],
+      ['patrolRouteId', 'patrol', '#66ccff'],
+      ['flankRouteId', 'flank', '#ff8f40'],
+      ['triggerVolumeId', 'trigger', '#d58cff'],
+      ['combatZoneId', 'zone', '#8da0ff'],
+    ];
+    for (const enemy of map.markers.enemySpawns || []) {
+      const links = enemy.links || {};
+      for (const [field, type, color] of linkMap) {
+        const id = links[field] || enemy[field];
+        const target = markerByTypeAndId(type, id);
+        if (!target) continue;
+        const targetPos = entityPosition(type, target);
+        addLine(group, [
+          { x: enemy.x, y: floorY + 0.24, z: enemy.z },
+          { x: targetPos.x, y: floorY + 0.24, z: targetPos.z },
+        ], color, selected && selected.id === enemy.id ? 0.62 : 0.28);
+      }
+    }
+  }
+
   function addMarkers(group) {
     if (!map || !layers.enemies && !layers.flow && !layers.gameplay) return;
     const floorY = Number.isFinite(map.floorY) ? map.floorY : 0.4;
@@ -1054,8 +1323,27 @@ export function createLevelEditorController(options = {}) {
         addMarkerDisc(group, h, '#5fcb52', 'hold', h.radius || 0.7);
       }
       for (const route of map.markers.patrolRoutes || []) {
-        const pts = Array.isArray(route.points) ? route.points.map((p) => ({ x: Number(p.x) || 0, y: floorY + 0.13, z: Number(p.z) || 0 })) : [];
-        if (pts.length > 1) addLine(group, pts, '#66ccff', 0.78);
+        addRouteOverlay(group, route, '#66ccff', 'patrol');
+      }
+      for (const route of map.markers.flankRoutes || []) {
+        addRouteOverlay(group, route, '#ff8f40', 'flank');
+      }
+      for (const c of map.markers.coverHints || []) {
+        addMarkerDisc(group, c, '#40e0ff', 'cover', c.radius || 0.6);
+      }
+      for (const b of map.markers.breachPoints || []) {
+        addMarkerDisc(group, b, '#ffb050', 'breach', b.radius || 0.62);
+      }
+      for (const s of map.markers.sniperPerches || []) {
+        addMarkerDisc(group, s, '#a0c8ff', 'sniper', 0.62);
+        addGroundTriangle(group, s, s.range || 18, ((s.arcDegrees || 42) * Math.PI / 180) / 2, '#a0c8ff', 0.14);
+        addArc(group, s, s.range || 18, ((s.arcDegrees || 42) * Math.PI / 180) / 2, '#a0c8ff');
+      }
+      for (const zone of map.markers.combatZones || []) {
+        addRectOverlay(group, zone, '#8da0ff', 'zone');
+      }
+      for (const trigger of map.markers.triggerVolumes || []) {
+        addRectOverlay(group, trigger, '#d58cff', 'trigger');
       }
     }
     if (layers.gameplay) {
@@ -1101,6 +1389,7 @@ export function createLevelEditorController(options = {}) {
         hitMeshes.push(door);
       }
     }
+    addEnemyLinks(group);
   }
 
   function addCursorReticle(group, pos, color = '#ffd060') {
@@ -1134,6 +1423,28 @@ export function createLevelEditorController(options = {}) {
 
   function addGhost(group) {
     if (!hoverWorld || activeTool === 'select' || activeTool === 'pan') return;
+    if (activeDraw) {
+      const pos = snapTacticalPlacement(activeDraw.type, hoverWorld);
+      if (activeDraw.type === 'patrol' || activeDraw.type === 'flank') {
+        const route = {
+          id: '__draw',
+          points: (activeDraw.points || []).concat(pos ? [{ x: pos.x, z: pos.z }] : []),
+          loop: activeDraw.type === 'patrol',
+        };
+        addRouteOverlay(group, route, activeDraw.type === 'patrol' ? '#66ccff' : '#ff8f40', activeDraw.type, { ghost: true });
+      } else if ((activeDraw.type === 'zone' || activeDraw.type === 'trigger') && activeDraw.start && pos) {
+        const rect = {
+          id: '__draw_rect',
+          x0: Math.min(activeDraw.start.x, pos.x),
+          x1: Math.max(activeDraw.start.x, pos.x),
+          z0: Math.min(activeDraw.start.z, pos.z),
+          z1: Math.max(activeDraw.start.z, pos.z),
+        };
+        addRectOverlay(group, rect, activeDraw.type === 'zone' ? '#8da0ff' : '#d58cff', activeDraw.type, { ghost: true });
+      }
+      if (pos) addCursorReticle(group, pos, '#ffffff');
+      return;
+    }
     if (activePrefabId) {
       const pos = snapPlacement(activePrefabId, hoverWorld, { yaw: placementYaw });
       const yaw = Number.isFinite(pos.yaw) ? pos.yaw : placementYaw;
@@ -1142,25 +1453,34 @@ export function createLevelEditorController(options = {}) {
       addCursorReticle(group, pos);
       return;
     }
-    const pos = snapPlacement(null, hoverWorld);
+    const pos = snapTacticalPlacement(activeTool, hoverWorld);
+    const quality = placementQuality(pos, activeTool === 'spawn' ? 0.35 : 0.46);
+    const ghostColor = quality.color || '#ffd060';
     if (activeTool === 'enemy') {
-      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, '#ff5048', 'enemy', 0.58, { ghost: true });
-      addGroundTriangle(group, { x: pos.x, z: pos.z, yaw: placementYaw }, 4.2, 0.38, '#ff5048', 0.14);
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'enemy', 0.58, { ghost: true });
+      addGroundTriangle(group, { x: pos.x, z: pos.z, yaw: placementYaw }, 4.2, 0.38, ghostColor, 0.14);
     } else if (activeTool === 'peek') {
-      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw, range: 8, arcDegrees: 70 }, '#ffd060', 'peek', 0.48, { ghost: true });
-      addArc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, 8, (70 * Math.PI / 180) / 2, '#ffd060');
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw, range: 8, arcDegrees: 70 }, ghostColor, 'peek', 0.48, { ghost: true });
+      addArc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, 8, (70 * Math.PI / 180) / 2, ghostColor);
     } else if (activeTool === 'hold') {
-      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, '#5fcb52', 'hold', 0.7, { ghost: true });
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'hold', 0.7, { ghost: true });
+    } else if (activeTool === 'cover') {
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'cover', 0.65, { ghost: true });
+    } else if (activeTool === 'breach') {
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'breach', 0.65, { ghost: true });
+    } else if (activeTool === 'sniper') {
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'sniper', 0.65, { ghost: true });
+      addGroundTriangle(group, { x: pos.x, z: pos.z, yaw: placementYaw }, 18, (42 * Math.PI / 180) / 2, ghostColor, 0.12);
     } else if (activeTool === 'spawn') {
-      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, '#5ab4ff', 'spawn', 0.64, { ghost: true });
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'spawn', 0.64, { ghost: true });
     } else if (activeTool === 'exit') {
       addExitGhost(group, pos);
     } else if (activeTool === 'door') {
       addDoorGhost(group, pos);
     } else if (activeTool === 'pickup') {
-      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, '#6bb6ff', 'pickup', 0.45, { ghost: true });
+      addMarkerDisc(group, { x: pos.x, z: pos.z, yaw: placementYaw }, ghostColor, 'pickup', 0.45, { ghost: true });
     }
-    addCursorReticle(group, pos);
+    addCursorReticle(group, pos, ghostColor);
   }
 
   function renderViewport() {
@@ -1219,6 +1539,11 @@ export function createLevelEditorController(options = {}) {
     if (markerType === 'enemy_spawn') return 'enemy';
     if (markerType === 'peek_angle') return 'peek';
     if (markerType === 'hold_position') return 'hold';
+    if (markerType === 'cover_hint') return 'cover';
+    if (markerType === 'patrol_node') return 'patrol';
+    if (markerType === 'trigger_volume') return 'trigger';
+    if (markerType === 'sniper_perch') return 'sniper';
+    if (markerType === 'breach_point') return 'breach';
     if (markerType === 'exit_zone') return 'exit';
     if (pf && pf.category === 'pickups') return 'pickup';
     return null;
@@ -1249,6 +1574,7 @@ export function createLevelEditorController(options = {}) {
       const badge = (pf.tags || []).find((t) => ['cover', 'doorway', 'window', 'vehicle', 'route', 'pickup', 'module', 'wall'].includes(t)) || pf.category;
       button.innerHTML = `<img alt="" src="${thumb}"><span>${pf.label}</span><small>${pf.footprint[0]} x ${pf.footprint[1]}m</small><em>${badge}</em>`;
       button.addEventListener('click', () => {
+        activeDraw = null;
         const tool = toolForPalettePrefab(pf);
         if (tool) {
           activeTool = tool;
@@ -1263,6 +1589,7 @@ export function createLevelEditorController(options = {}) {
         renderViewport();
       });
       button.addEventListener('dragstart', (e) => {
+        activeDraw = null;
         const tool = toolForPalettePrefab(pf);
         if (tool) {
           e.dataTransfer.setData('application/x-clearance-editor-tool', tool);
@@ -1285,11 +1612,43 @@ export function createLevelEditorController(options = {}) {
     if (selected.type === 'enemy') return map.markers.enemySpawns.find((o) => o.id === selected.id) || null;
     if (selected.type === 'peek') return map.markers.peekAngles.find((o) => o.id === selected.id) || null;
     if (selected.type === 'hold') return map.markers.holdPositions.find((o) => o.id === selected.id) || null;
+    if (selected.type === 'patrol') return (map.markers.patrolRoutes || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'flank') return (map.markers.flankRoutes || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'cover') return (map.markers.coverHints || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'breach') return (map.markers.breachPoints || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'sniper') return (map.markers.sniperPerches || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'trigger') return (map.markers.triggerVolumes || []).find((o) => o.id === selected.id) || null;
+    if (selected.type === 'zone') return (map.markers.combatZones || []).find((o) => o.id === selected.id) || null;
     if (selected.type === 'pickup') return (map.markers.pickups || []).find((o) => o.id === selected.id) || null;
     if (selected.type === 'door') return (map.markers.zoneDoors || []).find((o) => o.id === selected.id) || null;
     if (selected.type === 'exit') return (map.markers.exits || []).find((o) => (o.id || 'exit_main') === selected.id) || null;
     if (selected.type === 'spawn') return map.markers.playerSpawn;
     return null;
+  }
+
+  function optionsHtml(options, current = '') {
+    const value = String(current || '');
+    return options.map((option) => {
+      const pair = Array.isArray(option) ? option : [option, option];
+      return `<option value="${escapeHtml(pair[0])}"${String(pair[0]) === value ? ' selected' : ''}>${escapeHtml(pair[1])}</option>`;
+    }).join('');
+  }
+
+  function markerSelectHtml(id, label, type, current = '', emptyLabel = 'NONE') {
+    const rows = markerArrayForType(type);
+    const value = String(current || '');
+    return `<label>${label}<select id="${id}">
+      <option value="">${emptyLabel}</option>
+      ${rows.map((row) => `<option value="${escapeHtml(row.id)}"${row.id === value ? ' selected' : ''}>${escapeHtml(row.label || row.id)}</option>`).join('')}
+    </select></label>`;
+  }
+
+  function setEnemyLink(ent, key, value) {
+    if (!ent || !ENEMY_LINK_FIELDS.includes(key)) return;
+    ent.links = ent.links || {};
+    const next = String(value || '').trim();
+    ent.links[key] = next || null;
+    ent[key] = next || null;
   }
 
   function renderInspector() {
@@ -1307,11 +1666,15 @@ export function createLevelEditorController(options = {}) {
       return;
     }
     const isEnemy = selected.type === 'enemy';
+    const isRoute = selected.type === 'patrol' || selected.type === 'flank';
+    const isRect = selected.type === 'trigger' || selected.type === 'zone';
+    const isTacticalPoint = ['peek', 'hold', 'cover', 'breach', 'sniper'].includes(selected.type);
     const selectedPrefab = selected.type === 'object' ? prefab(ent.prefabId) : null;
     const isOpenableDoor = selected.type === 'object' && isDoorPrefab(selectedPrefab);
     const doorAccess = normalizeDoorAccess(ent.doorAccess, 'player') || 'player';
     const pos = entityPosition(selected.type, ent);
     const yawDeg = Math.round((entityYaw(selected.type, ent) * 180) / Math.PI);
+    const yawDisabled = selected.type === 'exit' || isRoute || isRect;
     const objectAssetControls = selected.type === 'object' ? `
       <div class="ce-ins-title">ASSET</div>
       ${profileSelectHtml('ce-object-model-profile', 'MODEL PROFILE', ENVIRONMENT_MANIFEST, ent.modelProfileId)}
@@ -1329,11 +1692,45 @@ export function createLevelEditorController(options = {}) {
       ${optionalTextInputHtml('ce-enemy-imported-asset', 'IMPORTED ASSET', ent.importedAssetId, 'asset.mixamo.or.meshy')}
       ${assetPreviewPanelHtml(selected.type, ent)}
     ` : '';
+    const enemyLinks = isEnemy ? `
+      <div class="ce-ins-title">TACTICAL LINKS</div>
+      ${markerSelectHtml('ce-link-peek', 'PEEK ANGLE', 'peek', ent.links?.peekAngleId || ent.peekAngleId)}
+      ${markerSelectHtml('ce-link-hold', 'HOLD POINT', 'hold', ent.links?.holdPositionId || ent.holdPositionId)}
+      ${markerSelectHtml('ce-link-cover', 'COVER HINT', 'cover', ent.links?.coverHintId || ent.coverHintId)}
+      ${markerSelectHtml('ce-link-patrol', 'PATROL ROUTE', 'patrol', ent.links?.patrolRouteId || ent.patrolRouteId)}
+      ${markerSelectHtml('ce-link-flank', 'FLANK ROUTE', 'flank', ent.links?.flankRouteId || ent.flankRouteId)}
+      ${markerSelectHtml('ce-link-trigger', 'TRIGGER', 'trigger', ent.links?.triggerVolumeId || ent.triggerVolumeId)}
+      ${markerSelectHtml('ce-link-zone', 'COMBAT ZONE', 'zone', ent.links?.combatZoneId || ent.combatZoneId)}
+    ` : '';
+    const routeControls = isRoute ? `
+      <div class="ce-ins-title">${selected.type === 'patrol' ? 'PATROL ROUTE' : 'FLANK ROUTE'}</div>
+      <label>LABEL<input id="ce-route-label" value="${escapeHtml(ent.label || '')}"></label>
+      <label>POINTS<input value="${(ent.points || []).length}" disabled></label>
+      ${selected.type === 'patrol' ? `<label>LOOP<select id="ce-route-loop">${optionsHtml([['true', 'LOOP'], ['false', 'OPEN / PING-PONG']], String(ent.loop !== false))}</select></label>` : ''}
+      ${selected.type === 'patrol' ? `<label>PAUSE SEC<input id="ce-route-pause" type="number" min="0" step="0.1" value="${Number(ent.pauseSeconds || 0).toFixed(1)}"></label>` : ''}
+      <label>SPEED<input id="ce-route-speed" type="number" min="0.25" max="3" step="0.05" value="${Number(ent.speed || 1).toFixed(2)}"></label>
+      ${selected.type === 'patrol' ? `<label>ALERT<select id="ce-route-alert">${optionsHtml(['patrol_then_alarm', 'peek_from_cover', 'hold_angle', 'push_after_contact'], ent.alertBehavior || 'patrol_then_alarm')}</select></label>` : `<label>ACTIVATION<select id="ce-route-activation">${optionsHtml(['after_contact', 'zone_start', 'on_trigger'], ent.activation || 'after_contact')}</select></label>`}
+      <label>ASSIGNED IDS<input id="ce-route-assigned" value="${escapeHtml((ent.assignedEnemyIds || []).join(', '))}" placeholder="enemy_1, enemy_2"></label>
+    ` : '';
+    const rectControls = isRect ? `
+      <div class="ce-ins-title">${selected.type === 'zone' ? 'COMBAT ZONE' : 'TRIGGER'}</div>
+      <label>LABEL<input id="ce-rect-label" value="${escapeHtml(ent.label || '')}"></label>
+      <label>WIDTH<input id="ce-rect-width" type="number" step="0.5" value="${fmt(Math.abs((Number(ent.x1) || 0) - (Number(ent.x0) || 0)))}"></label>
+      <label>DEPTH<input id="ce-rect-depth" type="number" step="0.5" value="${fmt(Math.abs((Number(ent.z1) || 0) - (Number(ent.z0) || 0)))}"></label>
+      ${selected.type === 'zone' ? `<label>INTENSITY<select id="ce-zone-intensity">${optionsHtml(['balanced', 'hold', 'push', 'flank', 'sniper'], ent.intensity || 'balanced')}</select></label>` : `<label>TARGET IDS<input id="ce-trigger-targets" value="${escapeHtml((ent.targetIds || []).join(', '))}" placeholder="enemy_1, patrol_1"></label>`}
+      <label>ACTIVATION<select id="ce-rect-activation">${optionsHtml(selected.type === 'zone' ? ['zone_start', 'on_trigger', 'on_enter'] : ['on_enter', 'on_clear', 'on_interact'], ent.activation || (selected.type === 'zone' ? 'zone_start' : 'on_enter'))}</select></label>
+    ` : '';
+    const tacticalPointControls = isTacticalPoint ? `
+      <label>LABEL<input id="ce-point-label" value="${escapeHtml(ent.label || '')}"></label>
+      ${selected.type === 'peek' || selected.type === 'sniper' ? `<label>RANGE<input id="ce-point-range" type="number" min="1" step="0.5" value="${fmt(ent.range || (selected.type === 'sniper' ? 22 : 11))}"></label>` : ''}
+      ${selected.type === 'peek' || selected.type === 'sniper' ? `<label>ARC DEG<input id="ce-point-arc" type="number" min="8" max="160" step="1" value="${Math.round(ent.arcDegrees || (selected.type === 'sniper' ? 42 : 70))}"></label>` : ''}
+      ${selected.type === 'hold' || selected.type === 'cover' || selected.type === 'breach' ? `<label>RADIUS<input id="ce-point-radius" type="number" min="0.25" step="0.1" value="${Number(ent.radius || 1.2).toFixed(1)}"></label>` : ''}
+    ` : '';
     inspector.innerHTML = `<div class="ce-ins-title">${selected.type.toUpperCase()}</div>
       <label>ID<input id="ce-ent-id" value="${ent.id || ''}" disabled></label>
       <label>X<input id="ce-ent-x" type="number" step="0.5" value="${fmt(pos.x)}"></label>
       <label>Z<input id="ce-ent-z" type="number" step="0.5" value="${fmt(pos.z)}"></label>
-      <label>YAW<input id="ce-ent-yaw" type="number" step="15" value="${yawDeg}"${selected.type === 'exit' ? ' disabled' : ''}></label>
+      <label>YAW<input id="ce-ent-yaw" type="number" step="15" value="${yawDeg}"${yawDisabled ? ' disabled' : ''}></label>
       ${selected.type === 'object' ? `<label>PREFAB<input value="${ent.prefabId}" disabled></label>` : ''}
       ${selected.type === 'object' ? `<label>SCALE<input id="ce-ent-scale" type="number" min="0.25" max="4" step="0.05" value="${Number(ent.scale || 1).toFixed(2)}"></label>` : ''}
       ${isOpenableDoor ? `<label>OPENED BY<select id="ce-door-access">${[
@@ -1355,10 +1752,16 @@ export function createLevelEditorController(options = {}) {
         <label>TYPE<select id="ce-pickup-type">${['ammo','med'].map((x) => `<option value="${x}"${ent.type === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
       ` : ''}
       ${isEnemy ? `
-        <label>TYPE<select id="ce-enemy-type">${['soldier','scout','heavy','pistolero','riot','marksman','sniper','shielded','demolitions'].map((x) => `<option${ent.enemyType === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label>ROLE<select id="ce-enemy-role">${['anchor','lookout','flanker','breacher','patrol','marksman'].map((x) => `<option${ent.role === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label>BEHAVIOR<select id="ce-enemy-behavior">${['hold_angle','peek_from_cover','ambush_on_crossing','push_after_contact','patrol_route','reposition'].map((x) => `<option${ent.behavior === x ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label>TYPE<select id="ce-enemy-type">${optionsHtml(ENEMY_TYPES, ent.enemyType)}</select></label>
+        <label>ROLE<select id="ce-enemy-role">${optionsHtml(ENEMY_ROLES, ent.role)}</select></label>
+        <label>BEHAVIOR<select id="ce-enemy-behavior">${optionsHtml(ENEMY_BEHAVIORS, ent.behavior)}</select></label>
+        <label>WAVE<input id="ce-enemy-wave" value="${escapeHtml(ent.spawnWave || 'initial')}"></label>
+        <label>ACTIVATION<select id="ce-enemy-activation">${optionsHtml(['zone_start', 'on_trigger', 'reinforcement', 'manual'], ent.activation || 'zone_start')}</select></label>
       ` : ''}
+      ${tacticalPointControls}
+      ${routeControls}
+      ${rectControls}
+      ${enemyLinks}
       ${objectAssetControls}
       ${enemyAssetControls}
       ${selected.type !== 'spawn' ? '<button class="menu-cta ce-small" id="ce-duplicate">DUPLICATE</button><button class="menu-cta ce-small ce-danger" id="ce-delete">DELETE</button>' : '<div class="ce-ins-hint">Move the spawn marker instead of deleting it.</div>'}`;
@@ -1380,11 +1783,59 @@ export function createLevelEditorController(options = {}) {
         ent.enemyType = inspector.querySelector('#ce-enemy-type').value;
         ent.role = inspector.querySelector('#ce-enemy-role').value;
         ent.behavior = inspector.querySelector('#ce-enemy-behavior').value;
+        ent.spawnWave = inspector.querySelector('#ce-enemy-wave')?.value || 'initial';
+        ent.activation = inspector.querySelector('#ce-enemy-activation')?.value || 'zone_start';
+        setEnemyLink(ent, 'peekAngleId', inspector.querySelector('#ce-link-peek')?.value);
+        setEnemyLink(ent, 'holdPositionId', inspector.querySelector('#ce-link-hold')?.value);
+        setEnemyLink(ent, 'coverHintId', inspector.querySelector('#ce-link-cover')?.value);
+        setEnemyLink(ent, 'patrolRouteId', inspector.querySelector('#ce-link-patrol')?.value);
+        setEnemyLink(ent, 'flankRouteId', inspector.querySelector('#ce-link-flank')?.value);
+        setEnemyLink(ent, 'triggerVolumeId', inspector.querySelector('#ce-link-trigger')?.value);
+        setEnemyLink(ent, 'combatZoneId', inspector.querySelector('#ce-link-zone')?.value);
         setOptionalProfileId(ent, 'enemyAnimationProfileId', inspector.querySelector('#ce-enemy-visual-profile')?.value);
         setOptionalProfileId(ent, 'enemyModelProfileId', inspector.querySelector('#ce-enemy-model-profile')?.value);
         setOptionalProfileId(ent, 'animationProfileId', inspector.querySelector('#ce-enemy-animation-profile')?.value);
         setOptionalProfileId(ent, 'weaponProfileId', inspector.querySelector('#ce-enemy-weapon-profile')?.value);
         setOptionalProfileId(ent, 'importedAssetId', inspector.querySelector('#ce-enemy-imported-asset')?.value);
+      }
+      if (isTacticalPoint) {
+        ent.label = inspector.querySelector('#ce-point-label')?.value || ent.label || selected.type.toUpperCase();
+        if (inspector.querySelector('#ce-point-range')) ent.range = Math.max(1, Number(inspector.querySelector('#ce-point-range').value) || ent.range || 8);
+        if (inspector.querySelector('#ce-point-arc')) ent.arcDegrees = Math.max(8, Math.min(160, Number(inspector.querySelector('#ce-point-arc').value) || ent.arcDegrees || 70));
+        if (inspector.querySelector('#ce-point-radius')) ent.radius = Math.max(0.25, Number(inspector.querySelector('#ce-point-radius').value) || ent.radius || 1.2);
+      }
+      if (isRoute) {
+        ent.label = inspector.querySelector('#ce-route-label')?.value || ent.label || selected.type.toUpperCase();
+        if (selected.type === 'patrol') {
+          ent.loop = inspector.querySelector('#ce-route-loop')?.value !== 'false';
+          ent.pauseSeconds = Math.max(0, Number(inspector.querySelector('#ce-route-pause')?.value) || 0);
+          ent.alertBehavior = inspector.querySelector('#ce-route-alert')?.value || 'patrol_then_alarm';
+        } else {
+          ent.activation = inspector.querySelector('#ce-route-activation')?.value || 'after_contact';
+        }
+        ent.speed = clamp(Number(inspector.querySelector('#ce-route-speed')?.value) || 1, 0.25, 3);
+        ent.assignedEnemyIds = String(inspector.querySelector('#ce-route-assigned')?.value || '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+      if (isRect) {
+        ent.label = inspector.querySelector('#ce-rect-label')?.value || ent.label || selected.type.toUpperCase();
+        const width = Math.max(0.5, Number(inspector.querySelector('#ce-rect-width')?.value) || Math.abs((Number(ent.x1) || 0) - (Number(ent.x0) || 0)) || 4);
+        const depth = Math.max(0.5, Number(inspector.querySelector('#ce-rect-depth')?.value) || Math.abs((Number(ent.z1) || 0) - (Number(ent.z0) || 0)) || 4);
+        const center = entityPosition(selected.type, ent);
+        ent.x0 = center.x - width / 2;
+        ent.x1 = center.x + width / 2;
+        ent.z0 = center.z - depth / 2;
+        ent.z1 = center.z + depth / 2;
+        ent.activation = inspector.querySelector('#ce-rect-activation')?.value || ent.activation || 'on_enter';
+        if (selected.type === 'zone') ent.intensity = inspector.querySelector('#ce-zone-intensity')?.value || 'balanced';
+        if (selected.type === 'trigger') {
+          ent.targetIds = String(inspector.querySelector('#ce-trigger-targets')?.value || '')
+            .split(',')
+            .map((x) => x.trim())
+            .filter(Boolean);
+        }
       }
       if (selected.type === 'door') {
         ent.zoneId = Number(inspector.querySelector('#ce-door-zone').value) || 0;
@@ -1423,10 +1874,12 @@ export function createLevelEditorController(options = {}) {
 
   function updateHud() {
     if (!hud || !map) return;
-    const pos = hoverWorld ? snapPlacement(activePrefabId && activeTool !== 'select' && activeTool !== 'pan' ? activePrefabId : null, hoverWorld, { yaw: placementYaw }) : null;
+    const pos = hoverWorld ? (activePrefabId && activeTool !== 'select' && activeTool !== 'pan'
+      ? snapPlacement(activePrefabId, hoverWorld, { yaw: placementYaw })
+      : isPlacementTool(activeTool) ? snapTacticalPlacement(activeTool, hoverWorld) : snapPlacement(null, hoverWorld, { yaw: placementYaw })) : null;
     const ent = selectedEntity();
     const selectedLabel = selected && ent ? selected.type.toUpperCase() : 'NONE';
-    const prefabLabel = activePrefabId ? (prefab(activePrefabId)?.label || activePrefabId) : activeTool.toUpperCase();
+    const prefabLabel = activeDraw ? `${TOOL_LABELS[activeDraw.type] || activeDraw.type} ${(activeDraw.points || []).length || ''}`.trim() : activePrefabId ? (prefab(activePrefabId)?.label || activePrefabId) : (TOOL_LABELS[activeTool] || activeTool.toUpperCase());
     hud.innerHTML = `
       <span>TOOL <b>${prefabLabel}</b></span>
       <span>VIEW <b>${viewMode.toUpperCase()}</b></span>
@@ -1454,6 +1907,21 @@ export function createLevelEditorController(options = {}) {
     if (layers.flow) {
       for (const e of map.markers.peekAngles || []) if (Math.hypot(e.x - world.x, e.z - world.z) < 0.9) return { type: 'peek', id: e.id };
       for (const e of map.markers.holdPositions || []) if (Math.hypot(e.x - world.x, e.z - world.z) < 0.9) return { type: 'hold', id: e.id };
+      for (const e of map.markers.coverHints || []) if (Math.hypot(e.x - world.x, e.z - world.z) < 0.9) return { type: 'cover', id: e.id };
+      for (const e of map.markers.breachPoints || []) if (Math.hypot(e.x - world.x, e.z - world.z) < 0.9) return { type: 'breach', id: e.id };
+      for (const e of map.markers.sniperPerches || []) if (Math.hypot(e.x - world.x, e.z - world.z) < 0.9) return { type: 'sniper', id: e.id };
+      for (const route of map.markers.patrolRoutes || []) {
+        for (const point of route.points || []) if (Math.hypot((Number(point.x) || 0) - world.x, (Number(point.z) || 0) - world.z) < 0.75) return { type: 'patrol', id: route.id };
+      }
+      for (const route of map.markers.flankRoutes || []) {
+        for (const point of route.points || []) if (Math.hypot((Number(point.x) || 0) - world.x, (Number(point.z) || 0) - world.z) < 0.75) return { type: 'flank', id: route.id };
+      }
+      for (const zone of map.markers.combatZones || []) {
+        if (world.x >= zone.x0 && world.x <= zone.x1 && world.z >= zone.z0 && world.z <= zone.z1) return { type: 'zone', id: zone.id };
+      }
+      for (const trigger of map.markers.triggerVolumes || []) {
+        if (world.x >= trigger.x0 && world.x <= trigger.x1 && world.z >= trigger.z0 && world.z <= trigger.z1) return { type: 'trigger', id: trigger.id };
+      }
     }
     if (layers.gameplay && map.markers.playerSpawn && Math.hypot(map.markers.playerSpawn.x - world.x, map.markers.playerSpawn.z - world.z) < 0.9) {
       return { type: 'spawn', id: map.markers.playerSpawn.id };
@@ -1505,8 +1973,9 @@ export function createLevelEditorController(options = {}) {
 
   function placeAt(world, options = {}) {
     if (!world || !map) return;
-    if (!['enemy', 'peek', 'hold', 'spawn', 'exit', 'door', 'pickup'].includes(activeTool) && !activePrefabId) return;
-    const pos = snapPlacement(activePrefabId || null, world, { yaw: placementYaw });
+    if (!SINGLE_TACTICAL_TOOLS.includes(activeTool) && !activePrefabId) return;
+    ensureMarkerArrays();
+    const pos = activePrefabId ? snapPlacement(activePrefabId || null, world, { yaw: placementYaw }) : snapTacticalPlacement(activeTool, world);
     const yaw = Number.isFinite(pos.yaw) ? pos.yaw : placementYaw;
     const kind = activePrefabId ? 'object' : activeTool;
     const key = placementKey(kind, activePrefabId || activeTool, pos, yaw);
@@ -1528,6 +1997,21 @@ export function createLevelEditorController(options = {}) {
       const marker = createHoldPosition(pos.x, pos.z, { yaw });
       map.markers.holdPositions.push(marker);
       selected = { type: 'hold', id: marker.id };
+      placed = selected;
+    } else if (activeTool === 'cover') {
+      const marker = createCoverHint(pos.x, pos.z, { yaw });
+      map.markers.coverHints.push(marker);
+      selected = { type: 'cover', id: marker.id };
+      placed = selected;
+    } else if (activeTool === 'breach') {
+      const marker = createBreachPoint(pos.x, pos.z, { yaw });
+      map.markers.breachPoints.push(marker);
+      selected = { type: 'breach', id: marker.id };
+      placed = selected;
+    } else if (activeTool === 'sniper') {
+      const marker = createSniperPerch(pos.x, pos.z, { yaw });
+      map.markers.sniperPerches.push(marker);
+      selected = { type: 'sniper', id: marker.id };
       placed = selected;
     } else if (activeTool === 'spawn') {
       const bounded = clampToPlayableBounds(pos.x, pos.z);
@@ -1570,6 +2054,89 @@ export function createLevelEditorController(options = {}) {
     return placed ? { ...placed, key, x: pos.x, z: pos.z, yaw } : null;
   }
 
+  function rectFromPoints(a, b) {
+    return {
+      x0: Math.min(a.x, b.x),
+      x1: Math.max(a.x, b.x),
+      z0: Math.min(a.z, b.z),
+      z1: Math.max(a.z, b.z),
+    };
+  }
+
+  function finishActiveDraw() {
+    if (!activeDraw || !map) return false;
+    ensureMarkerArrays();
+    const draw = activeDraw;
+    activeDraw = null;
+    let marker = null;
+    if (draw.type === 'patrol') {
+      if ((draw.points || []).length < 2) {
+        setStatus('Patrol needs at least two waypoints.', 'bad');
+        renderViewport();
+        return false;
+      }
+      marker = createPatrolRoute(draw.points, { label: 'PATROL' });
+      map.markers.patrolRoutes.push(marker);
+      selected = { type: 'patrol', id: marker.id };
+    } else if (draw.type === 'flank') {
+      if ((draw.points || []).length < 2) {
+        setStatus('Flank route needs at least two waypoints.', 'bad');
+        renderViewport();
+        return false;
+      }
+      marker = createFlankRoute(draw.points, { label: 'FLANK' });
+      map.markers.flankRoutes.push(marker);
+      selected = { type: 'flank', id: marker.id };
+    } else if (draw.type === 'zone') {
+      if (!draw.rect) return false;
+      marker = createCombatZone(draw.rect.x0, draw.rect.z0, draw.rect.x1, draw.rect.z1, { label: 'COMBAT ZONE', zoneId: zoneForZ((draw.rect.z0 + draw.rect.z1) / 2) });
+      map.markers.combatZones.push(marker);
+      selected = { type: 'zone', id: marker.id };
+    } else if (draw.type === 'trigger') {
+      if (!draw.rect) return false;
+      marker = createTriggerVolume(draw.rect.x0, draw.rect.z0, draw.rect.x1, draw.rect.z1, { label: 'TRIGGER' });
+      map.markers.triggerVolumes.push(marker);
+      selected = { type: 'trigger', id: marker.id };
+    }
+    if (!marker) return false;
+    scheduleAutosave();
+    renderAll();
+    setStatus(`${TOOL_LABELS[draw.type] || draw.type} created.`, 'ok');
+    return true;
+  }
+
+  function cancelActiveDraw() {
+    if (!activeDraw) return false;
+    activeDraw = null;
+    setStatus('Placement cancelled.', '');
+    renderViewport();
+    return true;
+  }
+
+  function handleDrawClick(world) {
+    if (!world || !isDrawTool(activeTool)) return false;
+    const pos = snapTacticalPlacement(activeTool, world);
+    if (!activeDraw || activeDraw.type !== activeTool) {
+      saveHistory();
+      activeDraw = { type: activeTool, points: [], start: null, rect: null };
+    }
+    if (activeTool === 'patrol' || activeTool === 'flank') {
+      activeDraw.points.push({ x: pos.x, z: pos.z });
+      setStatus(`${TOOL_LABELS[activeTool]} waypoint ${activeDraw.points.length}. Enter/double-click to finish.`, 'ok');
+      renderViewport();
+      return true;
+    }
+    if (!activeDraw.start) {
+      activeDraw.start = { x: pos.x, z: pos.z };
+      setStatus(`${TOOL_LABELS[activeTool]} start set. Click opposite corner.`, 'ok');
+      renderViewport();
+      return true;
+    }
+    activeDraw.rect = rectFromPoints(activeDraw.start, pos);
+    finishActiveDraw();
+    return true;
+  }
+
   function canPaintObjects() {
     return activeTool === 'place' && !!activePrefabId;
   }
@@ -1595,6 +2162,13 @@ export function createLevelEditorController(options = {}) {
     if (selected.type === 'enemy') map.markers.enemySpawns = map.markers.enemySpawns.filter((o) => o.id !== selected.id);
     if (selected.type === 'peek') map.markers.peekAngles = map.markers.peekAngles.filter((o) => o.id !== selected.id);
     if (selected.type === 'hold') map.markers.holdPositions = map.markers.holdPositions.filter((o) => o.id !== selected.id);
+    if (selected.type === 'patrol') map.markers.patrolRoutes = (map.markers.patrolRoutes || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'flank') map.markers.flankRoutes = (map.markers.flankRoutes || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'cover') map.markers.coverHints = (map.markers.coverHints || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'breach') map.markers.breachPoints = (map.markers.breachPoints || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'sniper') map.markers.sniperPerches = (map.markers.sniperPerches || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'trigger') map.markers.triggerVolumes = (map.markers.triggerVolumes || []).filter((o) => o.id !== selected.id);
+    if (selected.type === 'zone') map.markers.combatZones = (map.markers.combatZones || []).filter((o) => o.id !== selected.id);
     if (selected.type === 'pickup') map.markers.pickups = (map.markers.pickups || []).filter((o) => o.id !== selected.id);
     if (selected.type === 'door') map.markers.zoneDoors = (map.markers.zoneDoors || []).filter((o) => o.id !== selected.id);
     if (selected.type === 'exit') map.markers.exits = (map.markers.exits || []).filter((o) => (o.id || 'exit_main') !== selected.id);
@@ -1614,6 +2188,13 @@ export function createLevelEditorController(options = {}) {
       copy.x1 += 1;
       copy.z0 += 1;
       copy.z1 += 1;
+    } else if (selected.type === 'trigger' || selected.type === 'zone') {
+      copy.x0 += 1;
+      copy.x1 += 1;
+      copy.z0 += 1;
+      copy.z1 += 1;
+    } else if (selected.type === 'patrol' || selected.type === 'flank') {
+      copy.points = (copy.points || []).map((p) => ({ ...p, x: (Number(p.x) || 0) + 1, z: (Number(p.z) || 0) + 1 }));
     } else {
       copy.x += 1;
       copy.z += 1;
@@ -1622,6 +2203,13 @@ export function createLevelEditorController(options = {}) {
     if (selected.type === 'enemy') map.markers.enemySpawns.push(copy);
     if (selected.type === 'peek') map.markers.peekAngles.push(copy);
     if (selected.type === 'hold') map.markers.holdPositions.push(copy);
+    if (selected.type === 'patrol') map.markers.patrolRoutes.push(copy);
+    if (selected.type === 'flank') map.markers.flankRoutes.push(copy);
+    if (selected.type === 'cover') map.markers.coverHints.push(copy);
+    if (selected.type === 'breach') map.markers.breachPoints.push(copy);
+    if (selected.type === 'sniper') map.markers.sniperPerches.push(copy);
+    if (selected.type === 'trigger') map.markers.triggerVolumes.push(copy);
+    if (selected.type === 'zone') map.markers.combatZones.push(copy);
     if (selected.type === 'pickup') {
       map.markers.pickups = map.markers.pickups || [];
       map.markers.pickups.push(copy);
@@ -1656,6 +2244,13 @@ export function createLevelEditorController(options = {}) {
       copy.x1 += gridSize;
       copy.z0 += gridSize;
       copy.z1 += gridSize;
+    } else if (clipboard.type === 'trigger' || clipboard.type === 'zone') {
+      copy.x0 += gridSize;
+      copy.x1 += gridSize;
+      copy.z0 += gridSize;
+      copy.z1 += gridSize;
+    } else if (clipboard.type === 'patrol' || clipboard.type === 'flank') {
+      copy.points = (copy.points || []).map((p) => ({ ...p, x: snapGrid((Number(p.x) || 0) + gridSize), z: snapGrid((Number(p.z) || 0) + gridSize) }));
     } else {
       copy.x = snapGrid((Number(copy.x) || 0) + gridSize);
       copy.z = snapGrid((Number(copy.z) || 0) + gridSize);
@@ -1664,6 +2259,13 @@ export function createLevelEditorController(options = {}) {
     if (clipboard.type === 'enemy') map.markers.enemySpawns.push(copy);
     if (clipboard.type === 'peek') map.markers.peekAngles.push(copy);
     if (clipboard.type === 'hold') map.markers.holdPositions.push(copy);
+    if (clipboard.type === 'patrol') map.markers.patrolRoutes.push(copy);
+    if (clipboard.type === 'flank') map.markers.flankRoutes.push(copy);
+    if (clipboard.type === 'cover') map.markers.coverHints.push(copy);
+    if (clipboard.type === 'breach') map.markers.breachPoints.push(copy);
+    if (clipboard.type === 'sniper') map.markers.sniperPerches.push(copy);
+    if (clipboard.type === 'trigger') map.markers.triggerVolumes.push(copy);
+    if (clipboard.type === 'zone') map.markers.combatZones.push(copy);
     if (clipboard.type === 'pickup') {
       map.markers.pickups = map.markers.pickups || [];
       map.markers.pickups.push(copy);
@@ -1775,7 +2377,7 @@ export function createLevelEditorController(options = {}) {
         { id: 'zone_gate_mid_back', zoneId: 1, x: 0, z: -18, width: 5.8, depth: 0.62, yaw: 0 },
       ],
     });
-    for (const key of ['enemySpawns', 'peekAngles', 'holdPositions', 'patrolRoutes', 'pickups', 'triggerVolumes']) {
+    for (const key of ['enemySpawns', 'peekAngles', 'holdPositions', 'patrolRoutes', 'pickups', 'triggerVolumes', 'combatZones', 'flankRoutes', 'coverHints', 'breachPoints', 'sniperPerches']) {
       if (!Array.isArray(map.markers[key])) map.markers[key] = [];
     }
   }
@@ -1820,6 +2422,12 @@ export function createLevelEditorController(options = {}) {
     map.markers.holdPositions = [];
     map.markers.patrolRoutes = [];
     map.markers.pickups = [];
+    map.markers.flankRoutes = [];
+    map.markers.combatZones = [];
+    map.markers.triggerVolumes = [];
+    map.markers.coverHints = [];
+    map.markers.breachPoints = [];
+    map.markers.sniperPerches = [];
     pushHold('front_hold_left', -7.5, 37, { yaw: 2.9, radius: 1.3, label: 'FRONT HOLD L' });
     pushHold('front_hold_right', 7.5, 32, { yaw: 3.25, radius: 1.3, label: 'FRONT HOLD R' });
     pushHold('mid_hold_left', -7, -7, { yaw: 2.85, radius: 1.4, label: 'MID HOLD L' });
@@ -1861,8 +2469,25 @@ export function createLevelEditorController(options = {}) {
     });
     map.markers.patrolRoutes.push({
       id: 'mid_sweep_patrol',
+      label: 'MID SWEEP PATROL',
       points: [{ x: -8, z: 7 }, { x: 8, z: 5 }, { x: 7, z: -8 }, { x: -7, z: -10 }],
+      loop: true,
+      pauseSeconds: 0.6,
+      speed: 1,
+      alertBehavior: 'patrol_then_alarm',
+      assignedEnemyIds: ['mid_flanker_02'],
     });
+    map.markers.flankRoutes.push({
+      id: 'rear_wide_flank',
+      label: 'REAR WIDE FLANK',
+      points: [{ x: 10.5, z: -43 }, { x: 13, z: -38 }, { x: 8, z: -31 }],
+      activation: 'after_contact',
+      speed: 1.2,
+      assignedEnemyIds: ['rear_flanker_04'],
+    });
+    map.markers.coverHints.push(createCoverHint(-7.5, -6, { id: 'mid_push_cover_hint', label: 'MID PUSH COVER' }));
+    const midPush = map.markers.enemySpawns.find((enemy) => enemy.id === 'mid_push_03');
+    if (midPush) setEnemyLink(midPush, 'coverHintId', 'mid_push_cover_hint');
     pushPickup('ammo_front', 0, 24, 'ammo');
     pushPickup('med_mid', -2.5, -11, 'med');
     pushPickup('ammo_rear', 3, -34, 'ammo');
@@ -2010,7 +2635,7 @@ export function createLevelEditorController(options = {}) {
   }
 
   function isPlacementModeActive() {
-    return !!activePrefabId || ['enemy', 'peek', 'hold', 'spawn', 'exit', 'door', 'pickup'].includes(activeTool);
+    return !!activePrefabId || isPlacementTool(activeTool);
   }
 
   function placementYawDegrees() {
@@ -2102,6 +2727,7 @@ export function createLevelEditorController(options = {}) {
     history = [];
     redo = [];
     selected = null;
+    activeDraw = null;
     hoverWorld = null;
     placementYaw = 0;
     analysis = { enabled: false, result: map.validation || null, at: 0 };
@@ -2165,6 +2791,10 @@ export function createLevelEditorController(options = {}) {
       drag = { kind: 'paint', keys, count: painted ? 1 : 0 };
       return;
     }
+    if (e.button === 0 && isDrawTool(activeTool)) {
+      handleDrawClick(world);
+      return;
+    }
     if (activeTool !== 'select' && activeTool !== 'pan') {
       placeAt(world);
       return;
@@ -2183,6 +2813,12 @@ export function createLevelEditorController(options = {}) {
   });
 
   canvas?.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas?.addEventListener('dblclick', (e) => {
+    if (!root || !root.classList.contains('show')) return;
+    if (!activeDraw || (activeDraw.type !== 'patrol' && activeDraw.type !== 'flank')) return;
+    e.preventDefault();
+    finishActiveDraw();
+  });
 
   window.addEventListener('mousemove', (e) => {
     if (!root || !root.classList.contains('show')) return;
@@ -2241,10 +2877,12 @@ export function createLevelEditorController(options = {}) {
       activeTool = 'place';
     }
     hoverWorld = screenToWorld(e.clientX, e.clientY);
-    placeAt(hoverWorld);
+    if (isDrawTool(activeTool)) handleDrawClick(hoverWorld);
+    else placeAt(hoverWorld);
   });
 
   document.querySelectorAll('.ce-tool').forEach((button) => button.addEventListener('click', () => {
+    if (activeDraw) activeDraw = null;
     activeTool = button.dataset.tool || 'select';
     if (activeTool !== 'place') activePrefabId = null;
     renderToolbar();
@@ -2330,6 +2968,16 @@ export function createLevelEditorController(options = {}) {
     }
     if (editingText) {
       if (e.code === 'Escape') { e.preventDefault(); canvas?.focus?.(); }
+      return;
+    }
+    if (activeDraw && e.code === 'Enter') {
+      e.preventDefault();
+      finishActiveDraw();
+      return;
+    }
+    if (activeDraw && e.code === 'Escape') {
+      e.preventDefault();
+      cancelActiveDraw();
       return;
     }
     if (e.code === 'Digit1') { e.preventDefault(); viewMode = 'tactical'; renderAll(); }

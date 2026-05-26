@@ -8523,6 +8523,23 @@ class Enemy{
     return _findClearEnemySpawn(new THREE.Vector3(px,WT||.4,pz),walls,.36,null,{zoneId,requireNav:true,peerR:0,strictZone:false})
       ||new THREE.Vector3(px,0,pz);
   }
+  _pickAuthoredFlankTarget(pp,walls){
+    if(!this._encFlankWaypoints||!this._encFlankWaypoints.length)return null;
+    const zoneId=Number.isFinite(this.zoneId)?this.zoneId:(typeof getZoneOf==='function'?getZoneOf(this.group.position):null);
+    const start=this._encFlankIdx|0;
+    for(let i=0;i<this._encFlankWaypoints.length;i++){
+      const idx=(start+i)%this._encFlankWaypoints.length;
+      const wp=this._encFlankWaypoints[idx];
+      if(!wp)continue;
+      const dx=wp.x-this.group.position.x,dz=wp.z-this.group.position.z;
+      if(dx*dx+dz*dz<1.2*1.2)continue;
+      if(!this._patrolPointOk(wp.x,wp.z,walls,zoneId))continue;
+      if(!this._patrolPathOk(wp.x,wp.z))continue;
+      this._encFlankIdx=(idx+1)%this._encFlankWaypoints.length;
+      return new THREE.Vector3(wp.x,0,wp.z);
+    }
+    return null;
+  }
   _patrol(dt,walls){
     if(this.patrolPauseTimer>0){
       this.patrolPauseTimer=Math.max(0,this.patrolPauseTimer-dt);
@@ -8553,13 +8570,27 @@ class Enemy{
       const px=this.group.position.x,pz=this.group.position.z;
       const dx=wp.x-px,dz=wp.z-pz;
       if(dx*dx+dz*dz<0.55*0.55){
-        this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        if(this._encPatrolLoop===false){
+          const last=this._encPatrolWaypoints.length-1;
+          let dir=this._encPatrolDir||1;
+          if((this._encPatrolIdx|0)>=last)dir=-1;
+          else if((this._encPatrolIdx|0)<=0)dir=1;
+          this._encPatrolDir=dir;
+          this._encPatrolIdx=Math.max(0,Math.min(last,(this._encPatrolIdx|0)+dir));
+        }else this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
         this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
         this.patrolPauseTimer=.45+Math.random()*1.10;
         this._patrolStopYaw=this.group.rotation.y||0;
         return false;
       }else if((this._blockedMoveHits||0)>9){
-        this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        if(this._encPatrolLoop===false){
+          const last=this._encPatrolWaypoints.length-1;
+          let dir=this._encPatrolDir||1;
+          if((this._encPatrolIdx|0)>=last)dir=-1;
+          else if((this._encPatrolIdx|0)<=0)dir=1;
+          this._encPatrolDir=dir;
+          this._encPatrolIdx=Math.max(0,Math.min(last,(this._encPatrolIdx|0)+dir));
+        }else this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
         this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;this._blockedMoveHits=0;
       }
       this.patrolTarget=this._encPatrolWaypoints[this._encPatrolIdx|0];
@@ -8567,7 +8598,7 @@ class Enemy{
         this.patrolLookTimer=1.6+Math.random()*2.4;
         this.patrolLookAngle=(Math.random()-.5)*Math.PI*.75;
       }
-      this._pathToTarget(this.patrolTarget,dt*.55,walls);
+      this._pathToTarget(this.patrolTarget,dt*.55*(this._encPatrolSpeed||1),walls);
       this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
       this.hMesh.rotation.y=this.headLookY;
       return true;
@@ -8800,7 +8831,7 @@ class Enemy{
       const dx=pp.x-this.group.position.x,dz=pp.z-this.group.position.z;
       const d=Math.hypot(dx,dz)||1;
       const nx=dx/d,nz=dz/d,side=Math.random()<.5?-1:1;
-      this.flankTarget=new THREE.Vector3(pp.x+(-nz*side)*(6+Math.random()*4),0,pp.z+(nx*side)*(6+Math.random()*4));
+      this.flankTarget=this._pickAuthoredFlankTarget(pp,walls)||new THREE.Vector3(pp.x+(-nz*side)*(6+Math.random()*4),0,pp.z+(nx*side)*(6+Math.random()*4));
       this.flankTimer=2.7+Math.random()*1.4;
       this.state=FLANK;
       this._flankTellUntil=performance.now()+260;
@@ -9287,7 +9318,7 @@ class Enemy{
         if(!this.flankTarget||this.flankTimer<=0){this.state=ATTACK;this.flankTarget=null;break;}
         // Phase 3 paired-flank speed boost
         const _flankTellMul=(this._flankTellUntil&&performance.now()<this._flankTellUntil)?.35:1.0;
-        const _flankMul=((this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0)*_flankTellMul;
+        const _flankMul=((this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0)*_flankTellMul*(this._encFlankSpeed||1);
         this._pathToTarget(this.flankTarget,dt*_flankMul,walls);moving=true;
         this._faceYaw(Math.atan2(pdx,pdz),dt,9);
         const fdx=this.flankTarget.x-this.group.position.x,fdz=this.flankTarget.z-this.group.position.z;
@@ -9311,7 +9342,7 @@ class Enemy{
           if(Math.random()<_flankChance){
             const ang=Math.atan2(pdx,pdz)+Math.PI*.5*this.strafeDir;
             const fd=7+Math.random()*4;
-            this.flankTarget=new THREE.Vector3(
+            this.flankTarget=this._pickAuthoredFlankTarget(pp,walls)||new THREE.Vector3(
               this.group.position.x+Math.sin(ang)*fd,0,
               this.group.position.z+Math.cos(ang)*fd
             );
@@ -10041,11 +10072,28 @@ class EnemyManager{
           if(authoredMeta.encounterId)enemy.encounterId=authoredMeta.encounterId;
           if(authoredMeta.role)enemy.encounterRole=authoredMeta.role;
           if(authoredMeta.behavior)enemy.encounterBehavior=authoredMeta.behavior;
+	          if(authoredMeta.coverHintId)enemy.encounterCoverHint=authoredMeta.coverHintId;
+	          if(authoredMeta.coverHintPoint)enemy.encounterCoverHintPoint=authoredMeta.coverHintPoint;
+	          if(authoredMeta.patrolRouteId)enemy.encounterPatrolTag=authoredMeta.patrolRouteId;
+	          if(authoredMeta.flankRouteId)enemy.encounterFlankRouteId=authoredMeta.flankRouteId;
 	          if(authoredMeta.wave)enemy.spawnWave=authoredMeta.wave;
 	          if(authoredMeta.id)enemy.encounterSpecId=authoredMeta.id;
 	          if(Number.isFinite(authoredMeta.yaw))enemy.group.rotation.y=authoredMeta.yaw;
 	          if(authoredMeta.role)applyEncounterRole(enemy,authoredMeta.role);
-          _initEncounterPatrolFromTag(enemy);
+	          if(Array.isArray(authoredMeta.flankPoints)&&authoredMeta.flankPoints.length){
+	            enemy._encFlankWaypoints=authoredMeta.flankPoints.map(p=>new THREE.Vector3(Number(p.x)||0,0,Number(p.z)||0));
+	            enemy._encFlankIdx=0;
+	            enemy._encFlankSpeed=Number(authoredMeta.flankSpeed)||1.2;
+	            enemy._encFlankAfterContact=true;
+	          }
+	          if(Array.isArray(authoredMeta.patrolPoints)&&authoredMeta.patrolPoints.length){
+	            _initEncounterPatrolFromPoints(enemy,authoredMeta.patrolPoints,{
+	              loop:authoredMeta.patrolLoop!==false,
+	              pauseSeconds:authoredMeta.patrolPauseSeconds,
+	              speed:authoredMeta.patrolSpeed
+	            });
+	            if(!enemy.encounterBehavior)enemy.encounterBehavior=authoredMeta.patrolAlertBehavior||'patrol_then_alarm';
+	          }else _initEncounterPatrolFromTag(enemy);
         }
         if(doorUsed)enemy.spawnIntro={t:0,door:doorUsed};
         this._list.push(enemy);
@@ -10094,6 +10142,23 @@ class EnemyManager{
       const zbHint=_zoneBounds();
       for(const e of this._list){
         if(e.encounterCoverHint)rescoreCoverSlotForEncounterHint(e,slotPool,zbHint,G.building|0);
+        if(e.encounterCoverHintPoint&&e.peekRate>0){
+          const ax=Number(e.encounterCoverHintPoint.x)||0,az=Number(e.encounterCoverHintPoint.z)||0;
+          let best=null,bestScore=Infinity;
+          for(const s of slotPool){
+            if(s.claimedBy&&s.claimedBy!==e)continue;
+            const dx=s.x-e.group.position.x,dz=s.z-e.group.position.z;
+            const hx=s.x-ax,hz=s.z-az;
+            const score=dx*dx+dz*dz+(hx*hx+hz*hz)*0.42;
+            if(score<bestScore){bestScore=score;best=s;}
+          }
+          if(best){
+            if(e.coverSlot&&e.coverSlot!==best&&e.coverSlot.claimedBy===e)e.coverSlot.claimedBy=null;
+            best.claimedBy=e;
+            e.coverSlot=best;
+            e.coverPoint={x:best.x,z:best.z};
+          }
+        }
       }
     }
     const coverWalls=_walls.filter(w=>(w.x1-w.x0)<5 && (w.z1-w.z0)<5);
@@ -10237,7 +10302,7 @@ class EnemyManager{
       const szPartner=partner.group.position.z-pp.z;
       const sign=(sxPartner*-nz+szPartner*nx)>=0?-1:1;
       const fd=7.5;
-      partner.flankTarget=new THREE.Vector3(pp.x+(-nz*sign*fd),0,pp.z+(nx*sign*fd));
+      partner.flankTarget=(partner._pickAuthoredFlankTarget&&partner._pickAuthoredFlankTarget(pp,walls))||new THREE.Vector3(pp.x+(-nz*sign*fd),0,pp.z+(nx*sign*fd));
       partner.flankTimer=3.65;
       partner.state=FLANK;
       partner._flankTellUntil=nowMs+300;
@@ -26049,6 +26114,17 @@ function _initEncounterPatrolFromTag(enemy){
   if(!raw||!raw.length)return;
   enemy._encPatrolWaypoints=raw.map(([x,z])=>new THREE.Vector3(x,0,z));
   enemy._encPatrolIdx=0;
+  enemy.patrolTimer=0.35;
+  enemy.patrolTarget=enemy._encPatrolWaypoints[0].clone();
+}
+function _initEncounterPatrolFromPoints(enemy,points,opts={}){
+  if(!enemy||!Array.isArray(points)||!points.length)return;
+  enemy._encPatrolWaypoints=points.map(p=>new THREE.Vector3(Number(p.x)||0,0,Number(p.z)||0));
+  enemy._encPatrolIdx=0;
+  enemy._encPatrolDir=1;
+  enemy._encPatrolLoop=opts.loop!==false;
+  enemy._encPatrolSpeed=Number(opts.speed)||1;
+  enemy.patrolPauseTimer=Math.max(0,Number(opts.pauseSeconds)||0);
   enemy.patrolTimer=0.35;
   enemy.patrolTarget=enemy._encPatrolWaypoints[0].clone();
 }
