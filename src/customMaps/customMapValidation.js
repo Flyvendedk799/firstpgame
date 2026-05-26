@@ -21,6 +21,50 @@ function clearOfWalls(px, pz, walls, radius, skipWindow = false) {
   return true;
 }
 
+function segmentIntersectsBox(a, b, box, pad = 0.06) {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const tests = [
+    [-dx, a.x - (box.x0 - pad)],
+    [dx, (box.x1 + pad) - a.x],
+    [-dz, a.z - (box.z0 - pad)],
+    [dz, (box.z1 + pad) - a.z],
+  ];
+  for (const [p, q] of tests) {
+    if (Math.abs(p) < 1e-6) {
+      if (q < 0) return false;
+    } else {
+      const r = q / p;
+      if (p < 0) {
+        if (r > t1) return false;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return false;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  return true;
+}
+
+function routeSegmentBlocked(a, b, walls) {
+  for (const wall of walls || []) {
+    if (!wall || wall.broken || wall.isWindow || wall.perimeter) continue;
+    if (segmentIntersectsBox(a, b, wall, 0.08)) return wall;
+  }
+  return null;
+}
+
+function idSet(rows) {
+  return new Set((rows || []).map((row) => row && row.id).filter(Boolean));
+}
+
+function rectValid(rect) {
+  return rect && Number.isFinite(Number(rect.x0)) && Number.isFinite(Number(rect.x1)) && Number.isFinite(Number(rect.z0)) && Number.isFinite(Number(rect.z1)) && Number(rect.x1) > Number(rect.x0) && Number(rect.z1) > Number(rect.z0);
+}
+
 function buildValidationNav(bounds, walls, cellSize = 0.5) {
   const pad = 1.0;
   const xMin = bounds.x0 - pad;
@@ -49,6 +93,11 @@ function navCell(nav, x, z) {
 
 function navOpen(nav, ix, iz) {
   return ix >= 0 && iz >= 0 && ix < nav.nx && iz < nav.nz && nav.blocked[ix + iz * nav.nx] === 0;
+}
+
+function playerCanOpenWall(wall) {
+  if (!wall || !wall.openableDoor) return false;
+  return !wall.doorAccess || wall.doorAccess === 'player' || wall.doorAccess === 'both';
 }
 
 function findOpenNear(nav, ix, iz) {
@@ -125,7 +174,7 @@ export function validateCustomMap(map, kitManifest, options = {}) {
       if (!clearOfWalls(spawn.x, spawn.z, geo.walls, ENEMY_R, true)) errors.push(`enemy_spawn_inside_collision:${z}:${spawn.x.toFixed(1)},${spawn.z.toFixed(1)}`);
     }
   }
-  const routeWalls = geo.walls.map((w) => (w && w.zoneDoorId != null ? Object.assign({}, w, { broken: true }) : w));
+  const routeWalls = geo.walls.map((w) => (w && (w.zoneDoorId != null || playerCanOpenWall(w)) ? Object.assign({}, w, { broken: true }) : w));
   const nav = buildValidationNav(geo.map.bounds, routeWalls);
   const route = reachBox(nav, geo.playerSpawn, geo.exitZone);
   if (!route.ok) errors.push(`spawn_to_exit_unreachable:${route.reason}`);
@@ -140,6 +189,92 @@ export function validateCustomMap(map, kitManifest, options = {}) {
   }
   if (!geo.vaultables.length) warnings.push('no_vaultable_cover');
   if (geo.walls.length > (options.maxWalls || 260)) warnings.push(`wall_count_high:${geo.walls.length}`);
+  const markers = geo.map.markers || {};
+  const ids = {
+    peekAngleId: idSet(markers.peekAngles),
+    holdPositionId: idSet(markers.holdPositions),
+    coverHintId: idSet(markers.coverHints),
+    patrolRouteId: idSet(markers.patrolRoutes),
+    flankRouteId: idSet(markers.flankRoutes),
+    triggerVolumeId: idSet(markers.triggerVolumes),
+    combatZoneId: idSet(markers.combatZones),
+  };
+  const actualCoverHintIds = new Set(ids.coverHintId);
+  for (const id of ids.holdPositionId) ids.coverHintId.add(id);
+  const used = Object.fromEntries(Object.keys(ids).map((key) => [key, new Set()]));
+  for (const enemy of markers.enemySpawns || []) {
+    const links = enemy.links || {};
+    for (const [field, set] of Object.entries(ids)) {
+      const value = links[field] || enemy[field];
+      if (!value) continue;
+      used[field].add(value);
+      if (field === 'coverHintId' && ids.holdPositionId.has(value)) used.holdPositionId.add(value);
+      if (!set.has(value)) errors.push(`enemy_link_missing:${enemy.id}:${field}:${value}`);
+    }
+  }
+  for (const route of markers.patrolRoutes || []) {
+    for (const enemyId of route.assignedEnemyIds || []) {
+      const enemy = (markers.enemySpawns || []).find((row) => row && row.id === enemyId);
+      if (!enemy) errors.push(`patrol_assigned_enemy_missing:${route.id}:${enemyId}`);
+      else used.patrolRouteId.add(route.id);
+    }
+  }
+  for (const route of markers.flankRoutes || []) {
+    for (const enemyId of route.assignedEnemyIds || []) {
+      const enemy = (markers.enemySpawns || []).find((row) => row && row.id === enemyId);
+      if (!enemy) errors.push(`flank_assigned_enemy_missing:${route.id}:${enemyId}`);
+      else used.flankRouteId.add(route.id);
+    }
+  }
+  const validateRoute = (route, kind, isUsed) => {
+    const pts = Array.isArray(route && route.points) ? route.points : [];
+    if (pts.length < 2) {
+      (isUsed ? errors : warnings).push(`${kind}_too_short:${route && route.id}`);
+      return;
+    }
+    pts.forEach((pt, index) => {
+      if (!clearOfWalls(Number(pt.x) || 0, Number(pt.z) || 0, geo.walls, ENEMY_R, true)) {
+        warnings.push(`${kind}_point_inside_collision:${route.id}:${index}`);
+      }
+    });
+    for (let i = 1; i < pts.length; i++) {
+      const wall = routeSegmentBlocked(pts[i - 1], pts[i], geo.walls);
+      if (wall) warnings.push(`${kind}_segment_blocked:${route.id}:${i - 1}-${i}:${wall.geometryId || 'wall'}`);
+    }
+    if (kind === 'patrol' && route.loop !== false && pts.length > 2) {
+      const wall = routeSegmentBlocked(pts[pts.length - 1], pts[0], geo.walls);
+      if (wall) warnings.push(`patrol_loop_segment_blocked:${route.id}:${wall.geometryId || 'wall'}`);
+    }
+  };
+  for (const route of markers.patrolRoutes || []) validateRoute(route, 'patrol', used.patrolRouteId.has(route.id));
+  for (const route of markers.flankRoutes || []) validateRoute(route, 'flank', used.flankRouteId.has(route.id));
+  for (const volume of markers.triggerVolumes || []) {
+    if (!rectValid(volume)) errors.push(`trigger_volume_invalid:${volume && volume.id}`);
+    for (const targetId of volume.targetIds || []) {
+      const known =
+        ids.patrolRouteId.has(targetId) ||
+        ids.flankRouteId.has(targetId) ||
+        ids.combatZoneId.has(targetId) ||
+        (markers.enemySpawns || []).some((enemy) => enemy && enemy.id === targetId);
+      if (!known) errors.push(`trigger_target_missing:${volume.id}:${targetId}`);
+    }
+  }
+  for (const zone of markers.combatZones || []) {
+    if (!rectValid(zone)) errors.push(`combat_zone_invalid:${zone && zone.id}`);
+  }
+  const unusedChecks = [
+    ['peekAngleId', 'peek_unused'],
+    ['holdPositionId', 'hold_unused'],
+    ['coverHintId', 'cover_hint_unused'],
+    ['patrolRouteId', 'patrol_unused'],
+    ['flankRouteId', 'flank_unused'],
+    ['triggerVolumeId', 'trigger_unused'],
+    ['combatZoneId', 'combat_zone_unused'],
+  ];
+  for (const [field, code] of unusedChecks) {
+    const candidates = field === 'coverHintId' ? actualCoverHintIds : ids[field];
+    for (const id of candidates) if (!used[field].has(id)) warnings.push(`${code}:${id}`);
+  }
   return {
     ok: errors.length === 0,
     errors,

@@ -72,6 +72,15 @@ export const ANIMATION_CLIPS = {
   ]
 };
 
+export const HUMANOID_SEMANTIC_ANIMATION_CLIPS = [
+  'idle', 'walk', 'run', 'strafeLeft', 'strafeRight',
+  'crouchIdle', 'crouchWalk',
+  'jumpStart', 'fallLoop', 'landLight', 'landHeavy',
+  'vault', 'reload', 'fireAdditive',
+  'hitHead', 'hitBody', 'hitLeg',
+  'deathForward', 'deathBack', 'deathSide'
+];
+
 export const WEAPON_SOCKETS = [
   'muzzle', 'optic', 'magazine', 'ejectionPort',
   'gripLeft', 'gripRight', 'muzzleFlash', 'scopeCamera',
@@ -126,6 +135,10 @@ function characterEntry(id, type, label, accent, options = {}) {
     weakPoints: options.weakPoints || ['head', 'chestPlate'],
     hitboxBindings: options.hitboxBindings || ['head', 'torso', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'],
     fallback: options.fallback || 'enemy.procedural.archetype',
+    source: options.source || (options.src ? 'authored-glb' : 'procedural-fallback'),
+    skeletonType: options.skeletonType || 'humanoid',
+    retargetProfile: options.retargetProfile || 'project.shared-humanoid.v1',
+    scalePolicy: options.scalePolicy || 'meters-applied-scale-1',
     triangleBudgets: options.triangleBudgets || CHARACTER_LODS.reduce((m, l) => (m[l.id] = l.triangleBudget, m), {}),
     boss: !!options.boss,
     drone: !!options.drone
@@ -202,6 +215,10 @@ function weaponEntry(id, type, label, options = {}) {
     clips: options.clips || ['idle', 'fire', 'reload', 'ads', 'inspect'],
     triangleBudget: options.triangleBudget ?? 8000,
     fallback: options.fallback || `weapon.procedural.${type}`,
+    source: options.source || (options.src ? 'authored-glb' : 'procedural-fallback'),
+    weaponAnimationProfile: options.weaponAnimationProfile || `weapon.${type}`,
+    socketContract: options.socketContract || 'weapon-viewmodel.v1',
+    scalePolicy: options.scalePolicy || 'meters-applied-scale-1',
     attachments: options.attachments || ['scope', 'muzzle', 'magazine', 'foregrip']
   };
 }
@@ -343,6 +360,25 @@ export const ANIMATION_MANIFEST = {
       { id: 'inspect', playback: 'oneshot', additive: false, markers: [{ t: 0.5, name: 'inspectFocusPoint' }] }
     ],
     gripValidationSockets: ['gripLeft', 'gripRight', 'magazine']
+  },
+  'animation.mixamo.humanoid': {
+    id: 'animation.mixamo.humanoid',
+    kind: 'animation-set',
+    skeleton: SHARED_HUMANOID_SKELETON,
+    skeletonType: 'humanoid',
+    source: 'mixamo-import',
+    retargetProfile: 'project.shared-humanoid.v1',
+    clips: HUMANOID_SEMANTIC_ANIMATION_CLIPS,
+    layers: ['locomotion', 'upperBodyAim', 'weaponPose', 'hitReactionAdditive', 'deathOverride'],
+    fallback: 'animation.procedural.humanoid',
+    rootMotionPolicy: 'ignore',
+    clipMeta: HUMANOID_SEMANTIC_ANIMATION_CLIPS.map((id) => ({
+      id,
+      playback: id.startsWith('death') || id.startsWith('hit') || id.startsWith('land') || id === 'vault' || id === 'reload' ? 'oneshot' : 'loop',
+      additive: id === 'fireAdditive' || id.startsWith('hit'),
+      retargetedOffline: true,
+      fallbackProcedure: `procedural.${id}`
+    }))
   }
 };
 

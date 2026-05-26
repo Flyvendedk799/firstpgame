@@ -9,7 +9,17 @@
 
 import * as THREE_NS         from 'three';
 import { GLTFLoader }        from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader }        from 'three/addons/loaders/KTX2Loader.js';
+import { DRACOLoader }       from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder }    from 'three/addons/libs/meshopt_decoder.module.js';
+import { CCDIKSolver }       from 'three/addons/animation/CCDIKSolver.js';
 import * as SkeletonUtils    from 'three/addons/utils/SkeletonUtils.js';
+import * as MaathEasing from 'maath/easing/dist/maath-easing.esm.js';
+import {
+  acceleratedRaycast as bvhAcceleratedRaycast,
+  computeBoundsTree as bvhComputeBoundsTree,
+  disposeBoundsTree as bvhDisposeBoundsTree,
+} from 'three-mesh-bvh';
 import { EffectComposer }    from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass }   from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -100,6 +110,30 @@ import {
   playerAnimEmitNotify,
   getMovementAnimState
 } from './playerAnimation.js';
+import {
+  ANIMATION_PIPELINE_VERSION,
+  TOOLING_CAPABILITIES,
+  WEAPON_ANIMATION_PROFILES,
+  ENEMY_ANIMATION_PROFILES,
+  PLAYER_LOCOMOTION_STATES,
+  SEMANTIC_MIXAMO_CLIPS,
+  animationTuningDebug,
+  animationFeatureFlags,
+  weaponTypeFromIndex
+} from './animation/profiles.js';
+import { createAnimationGraphState, updateAnimationGraphState, animationGraphDebug } from './animation/graph.js';
+import { createWeaponAnimationController, updateWeaponAnimationController, applyWeaponPoseToObject, weaponAnimationDebug } from './animation/weaponAnimationController.js';
+import { createHandGripState, updateHandGripState, handGripDebug } from './animation/handGripController.js';
+import { createLocomotionFeelState, updateLocomotionFeelState, applyLocomotionFeelToPlayerAnim, locomotionFeelDebug } from './animation/locomotionFeelController.js';
+import { enemyAnimationDebugList, resolveEnemyAnimationStatus } from './animation/enemyAnimationController.js';
+import { buildAnimationHealthReport } from './animation/health.js';
+import {
+  buildAssetPipelineReport,
+  buildEditorAssetPreview,
+  buildImportHandoffGuide,
+  buildLevelEditorAssetHealth,
+  preflightManifestEntry
+} from './animation/assetPipeline.js';
 import { reloadShouldDropMag, reloadHoloVisualProgress, reloadMagHidden, getReloadTimelineSpec } from './reloadTimelines.js';
 import {
   spawnAaaMuzzleWorldSpill,
@@ -213,6 +247,10 @@ THREE_NS.ColorManagement.enabled = true;
 THREE.ColorManagement = THREE_NS.ColorManagement;
 
 THREE.GLTFLoader      = GLTFLoader;
+THREE.KTX2Loader      = KTX2Loader;
+THREE.DRACOLoader     = DRACOLoader;
+THREE.MeshoptDecoder  = MeshoptDecoder;
+THREE.CCDIKSolver     = CCDIKSolver;
 THREE.SkeletonUtils   = SkeletonUtils;
 THREE.EffectComposer  = EffectComposer;
 THREE.RenderPass      = RenderPass;
@@ -221,7 +259,30 @@ THREE.ShaderPass      = ShaderPass;
 THREE.GTAOPass        = GTAOPass;
 THREE.SMAAPass        = SMAAPass;
 THREE.OutputPass      = OutputPass;
+THREE.MaathEasing     = MaathEasing;
+THREE.MeshBVHRuntime  = {
+  acceleratedRaycast: bvhAcceleratedRaycast,
+  computeBoundsTree: bvhComputeBoundsTree,
+  disposeBoundsTree: bvhDisposeBoundsTree
+};
 window.THREE = THREE;
+
+const ANIMATION_MIDDLEWARE_RUNTIME = Object.freeze({
+  version: ANIMATION_PIPELINE_VERSION,
+  threeAddons: {
+    GLTFLoader: !!GLTFLoader,
+    KTX2Loader: !!KTX2Loader,
+    DRACOLoader: !!DRACOLoader,
+    MeshoptDecoder: !!MeshoptDecoder,
+    SkeletonUtils: !!SkeletonUtils,
+    CCDIKSolver: !!CCDIKSolver
+  },
+  libraries: {
+    maath: !!MaathEasing,
+    threeMeshBvh: !!(bvhAcceleratedRaycast && bvhComputeBoundsTree && bvhDisposeBoundsTree)
+  },
+  tooling: TOOLING_CAPABILITIES
+});
 
 // ─── Light-intensity bridge (r155+ physically-correct mode) ────────────────
 // The old π boost made every authored source feel like a blown-out work light
@@ -6798,6 +6859,28 @@ class Enemy{
       else next.fadeIn(fade);
       this._curAction=name;
     }
+    _applyImportedClipPlan(plan){
+      if(!this.actions||!plan||plan.enabled===false)return false;
+      const baseName=plan.base&&(plan.base.actionName||plan.base.clip);
+      if(baseName&&this.actions[baseName])this._meshyDriveClip(baseName,.18);
+      if(Array.isArray(plan.additive)){
+        this._importedAdditives=this._importedAdditives||{};
+        for(const row of plan.additive){
+          const name=row&&row.actionName||row&&row.clip;
+          const action=name&&this.actions[name];
+          if(!action)continue;
+          const weight=THREE.MathUtils.clamp(Number(row.weight)||0,0,1);
+          action.enabled=true;
+          action.setEffectiveWeight(weight);
+          if(!this._importedAdditives[name]){
+            action.reset().fadeIn(.045).play();
+            this._importedAdditives[name]=true;
+          }
+        }
+      }
+      this.group.userData.importedClipPlan=plan;
+      return !!(baseName&&this.actions[baseName]);
+    }
 
     get position(){return this.group.position;}
     _stabilizeProceduralHitboxes(dt=1/60){
@@ -7118,6 +7201,12 @@ class Enemy{
     this.dead=true;this.deathTimer=0;
     if(this.coverSlot&&this.coverSlot.claimedBy===this)this.coverSlot.claimedBy=null;
     this.deathStartY=this.group.position.y;
+    this.animationState='death';
+    if(this.group)this.group.userData.animationState='death';
+    try{
+      this.animationStatus=resolveEnemyAnimationStatus(this,{importedAnimationEnabled:animationFeatureFlags(SETTINGS).importedAnimationEnabled});
+      if(this.actions&&this.animationStatus&&this.animationStatus.clipPlan)this._applyImportedClipPlan(this.animationStatus.clipPlan);
+    }catch(_){}
     if(this.actions&&this.actions.Dead)this._meshyDriveClip('Dead',.10);
     // Voice bark — non-drone death grunt
     if(this.type!=='drone'&&typeof sfxVoiceBark==='function'){
@@ -7333,6 +7422,12 @@ class Enemy{
       poseState==='flank'||poseState==='reposition'?'flanking':
       isAttacking?'combat':'idle'
     ]||ENEMY_POSE_STATES.idle;
+    const enemyGraphActive=SETTINGS.enemyGraphEnabled!==false;
+    const enemyAnimStatus=enemyGraphActive?resolveEnemyAnimationStatus(this,{importedAnimationEnabled:animationFeatureFlags(SETTINGS).importedAnimationEnabled}):null;
+    const enemyIntentCue=enemyAnimStatus&&enemyAnimStatus.intentCue?enemyAnimStatus.intentCue:null;
+    this.animationStatus=enemyAnimStatus;
+    this.group.userData.animationIntentCue=enemyIntentCue;
+    if(enemyAnimStatus&&enemyAnimStatus.clipPlan)this._applyImportedClipPlan(enemyAnimStatus.clipPlan);
 
 	    // Base limb targets (computed below)
 	    let lARX=0,rARX=0,lLRX=0,rLRX=0,bodyRZ=0,bodyRX=0,bodyRY=0;
@@ -7749,6 +7844,32 @@ class Enemy{
 
     // Tactical overlays: reloads, vaults, reposition sprints, and suppression
     // all get distinct body language so the player can read intent instantly.
+    if(enemyIntentCue){
+      const cue=enemyIntentCue;
+      const side=this._peekSideSign||this._shotRecoverSide||this.strafeDir||1;
+      bodyRX-=cue.torsoCompression*.045+cue.weaponRaise*.020;
+      bodyRZ-=side*cue.headLead*.035;
+      bodyRY+=side*(cue.headLead*.026+cue.shoulderCommit*.018);
+      lElbRX+=cue.weaponRaise*.120+cue.shoulderCommit*.070;
+      rElbRX+=cue.weaponRaise*.110+cue.shoulderCommit*.080;
+      lARX-=cue.weaponRaise*.070+cue.reloadReach*.120+cue.hitReact*.090;
+      rARX-=cue.weaponRaise*.075+cue.hitReact*.075;
+      lElbRX+=cue.reloadReach*.380+cue.hitReact*.120+cue.vaultReach*.180;
+      rElbRX+=cue.reloadReach*.160+cue.hitReact*.105+cue.vaultReach*.140;
+      bodyRX-=cue.hitReact*.050+cue.vaultReach*.060;
+      bodyRY+=side*(cue.aimTension*.014+cue.vaultReach*.030);
+      if(this.hMesh){
+        this.hMesh.rotation.y+=side*cue.headLead*.040;
+        this.hMesh.rotation.x-=cue.torsoCompression*.018+cue.hitReact*.040+cue.vaultReach*.020;
+        this.hMesh.rotation.z-=side*(cue.peekSide||side)*cue.hitReact*.025;
+      }
+      if(this.weaponGrp){
+        this.weaponGrp.position.y+=cue.weaponRaise*.010-cue.torsoCompression*.006-cue.reloadReach*.045+cue.aimTension*.006;
+        this.weaponGrp.position.z-=cue.reloadReach*.024+cue.vaultReach*.020;
+        this.weaponGrp.rotation.x-=cue.aimTension*.030+cue.hitReact*.045;
+        this.weaponGrp.rotation.z+=side*(cue.shoulderCommit*.018-cue.headLead*.012+cue.vaultReach*.030)-cue.reloadReach*.120;
+      }
+    }
     if(this.enemyReloadTimer>0){
       const rp=1-Math.max(0,this.enemyReloadTimer)/Math.max(.1,this.enemyReloadDur||1.2);
       const e=Math.sin(Math.min(1,rp)*Math.PI);
@@ -8190,6 +8311,9 @@ class Enemy{
   _tryMove(dx,dz,walls,opts=null){
     const R=.38,nx=this.group.position.x+dx,nz=this.group.position.z+dz;
     const cx=this.group.position.x,cz=this.group.position.z;
+    if(!(opts&&opts.separation)&&typeof G!=='undefined'&&G.levelData&&typeof G.levelData.tryOpenDoorFor==='function'){
+      G.levelData.tryOpenDoorFor('enemy',{x:nx,z:nz},this);
+    }
     let okX=true,okZ=true;
     // Phase BA: spatial index — only check walls in the agent's current cell
     // and the candidate-move cell. Falls back to linear walk if no index.
@@ -8399,6 +8523,23 @@ class Enemy{
     return _findClearEnemySpawn(new THREE.Vector3(px,WT||.4,pz),walls,.36,null,{zoneId,requireNav:true,peerR:0,strictZone:false})
       ||new THREE.Vector3(px,0,pz);
   }
+  _pickAuthoredFlankTarget(pp,walls){
+    if(!this._encFlankWaypoints||!this._encFlankWaypoints.length)return null;
+    const zoneId=Number.isFinite(this.zoneId)?this.zoneId:(typeof getZoneOf==='function'?getZoneOf(this.group.position):null);
+    const start=this._encFlankIdx|0;
+    for(let i=0;i<this._encFlankWaypoints.length;i++){
+      const idx=(start+i)%this._encFlankWaypoints.length;
+      const wp=this._encFlankWaypoints[idx];
+      if(!wp)continue;
+      const dx=wp.x-this.group.position.x,dz=wp.z-this.group.position.z;
+      if(dx*dx+dz*dz<1.2*1.2)continue;
+      if(!this._patrolPointOk(wp.x,wp.z,walls,zoneId))continue;
+      if(!this._patrolPathOk(wp.x,wp.z))continue;
+      this._encFlankIdx=(idx+1)%this._encFlankWaypoints.length;
+      return new THREE.Vector3(wp.x,0,wp.z);
+    }
+    return null;
+  }
   _patrol(dt,walls){
     if(this.patrolPauseTimer>0){
       this.patrolPauseTimer=Math.max(0,this.patrolPauseTimer-dt);
@@ -8429,13 +8570,27 @@ class Enemy{
       const px=this.group.position.x,pz=this.group.position.z;
       const dx=wp.x-px,dz=wp.z-pz;
       if(dx*dx+dz*dz<0.55*0.55){
-        this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        if(this._encPatrolLoop===false){
+          const last=this._encPatrolWaypoints.length-1;
+          let dir=this._encPatrolDir||1;
+          if((this._encPatrolIdx|0)>=last)dir=-1;
+          else if((this._encPatrolIdx|0)<=0)dir=1;
+          this._encPatrolDir=dir;
+          this._encPatrolIdx=Math.max(0,Math.min(last,(this._encPatrolIdx|0)+dir));
+        }else this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
         this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
         this.patrolPauseTimer=.45+Math.random()*1.10;
         this._patrolStopYaw=this.group.rotation.y||0;
         return false;
       }else if((this._blockedMoveHits||0)>9){
-        this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        if(this._encPatrolLoop===false){
+          const last=this._encPatrolWaypoints.length-1;
+          let dir=this._encPatrolDir||1;
+          if((this._encPatrolIdx|0)>=last)dir=-1;
+          else if((this._encPatrolIdx|0)<=0)dir=1;
+          this._encPatrolDir=dir;
+          this._encPatrolIdx=Math.max(0,Math.min(last,(this._encPatrolIdx|0)+dir));
+        }else this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
         this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;this._blockedMoveHits=0;
       }
       this.patrolTarget=this._encPatrolWaypoints[this._encPatrolIdx|0];
@@ -8443,7 +8598,7 @@ class Enemy{
         this.patrolLookTimer=1.6+Math.random()*2.4;
         this.patrolLookAngle=(Math.random()-.5)*Math.PI*.75;
       }
-      this._pathToTarget(this.patrolTarget,dt*.55,walls);
+      this._pathToTarget(this.patrolTarget,dt*.55*(this._encPatrolSpeed||1),walls);
       this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
       this.hMesh.rotation.y=this.headLookY;
       return true;
@@ -8676,7 +8831,7 @@ class Enemy{
       const dx=pp.x-this.group.position.x,dz=pp.z-this.group.position.z;
       const d=Math.hypot(dx,dz)||1;
       const nx=dx/d,nz=dz/d,side=Math.random()<.5?-1:1;
-      this.flankTarget=new THREE.Vector3(pp.x+(-nz*side)*(6+Math.random()*4),0,pp.z+(nx*side)*(6+Math.random()*4));
+      this.flankTarget=this._pickAuthoredFlankTarget(pp,walls)||new THREE.Vector3(pp.x+(-nz*side)*(6+Math.random()*4),0,pp.z+(nx*side)*(6+Math.random()*4));
       this.flankTimer=2.7+Math.random()*1.4;
       this.state=FLANK;
       this._flankTellUntil=performance.now()+260;
@@ -9163,7 +9318,7 @@ class Enemy{
         if(!this.flankTarget||this.flankTimer<=0){this.state=ATTACK;this.flankTarget=null;break;}
         // Phase 3 paired-flank speed boost
         const _flankTellMul=(this._flankTellUntil&&performance.now()<this._flankTellUntil)?.35:1.0;
-        const _flankMul=((this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0)*_flankTellMul;
+        const _flankMul=((this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0)*_flankTellMul*(this._encFlankSpeed||1);
         this._pathToTarget(this.flankTarget,dt*_flankMul,walls);moving=true;
         this._faceYaw(Math.atan2(pdx,pdz),dt,9);
         const fdx=this.flankTarget.x-this.group.position.x,fdz=this.flankTarget.z-this.group.position.z;
@@ -9187,7 +9342,7 @@ class Enemy{
           if(Math.random()<_flankChance){
             const ang=Math.atan2(pdx,pdz)+Math.PI*.5*this.strafeDir;
             const fd=7+Math.random()*4;
-            this.flankTarget=new THREE.Vector3(
+            this.flankTarget=this._pickAuthoredFlankTarget(pp,walls)||new THREE.Vector3(
               this.group.position.x+Math.sin(ang)*fd,0,
               this.group.position.z+Math.cos(ang)*fd
             );
@@ -9908,16 +10063,37 @@ class EnemyManager{
         const enemy=new Enemy(this.scene,pos,diff,type);
         enemy.zoneId=lvl&&lvl.zoneIdByPosition?getZoneOf(pos):z;
         if(lvl&&lvl.isMegaplexB01)applyMegaplexB01EnemyPresentation(enemy,type);
+        else if(lvl&&lvl.isCustomMap){
+          enemy.visualScale=Math.max(enemy.visualScale||1,megaplexB01EnemyVisualScale(type));
+          enemy.group.userData.customMapScale=enemy.visualScale;
+        }
         if(authoredMeta){
           if(authoredMeta.roomId)enemy.roomId=authoredMeta.roomId;
           if(authoredMeta.encounterId)enemy.encounterId=authoredMeta.encounterId;
           if(authoredMeta.role)enemy.encounterRole=authoredMeta.role;
           if(authoredMeta.behavior)enemy.encounterBehavior=authoredMeta.behavior;
+	          if(authoredMeta.coverHintId)enemy.encounterCoverHint=authoredMeta.coverHintId;
+	          if(authoredMeta.coverHintPoint)enemy.encounterCoverHintPoint=authoredMeta.coverHintPoint;
+	          if(authoredMeta.patrolRouteId)enemy.encounterPatrolTag=authoredMeta.patrolRouteId;
+	          if(authoredMeta.flankRouteId)enemy.encounterFlankRouteId=authoredMeta.flankRouteId;
 	          if(authoredMeta.wave)enemy.spawnWave=authoredMeta.wave;
 	          if(authoredMeta.id)enemy.encounterSpecId=authoredMeta.id;
 	          if(Number.isFinite(authoredMeta.yaw))enemy.group.rotation.y=authoredMeta.yaw;
 	          if(authoredMeta.role)applyEncounterRole(enemy,authoredMeta.role);
-          _initEncounterPatrolFromTag(enemy);
+	          if(Array.isArray(authoredMeta.flankPoints)&&authoredMeta.flankPoints.length){
+	            enemy._encFlankWaypoints=authoredMeta.flankPoints.map(p=>new THREE.Vector3(Number(p.x)||0,0,Number(p.z)||0));
+	            enemy._encFlankIdx=0;
+	            enemy._encFlankSpeed=Number(authoredMeta.flankSpeed)||1.2;
+	            enemy._encFlankAfterContact=true;
+	          }
+	          if(Array.isArray(authoredMeta.patrolPoints)&&authoredMeta.patrolPoints.length){
+	            _initEncounterPatrolFromPoints(enemy,authoredMeta.patrolPoints,{
+	              loop:authoredMeta.patrolLoop!==false,
+	              pauseSeconds:authoredMeta.patrolPauseSeconds,
+	              speed:authoredMeta.patrolSpeed
+	            });
+	            if(!enemy.encounterBehavior)enemy.encounterBehavior=authoredMeta.patrolAlertBehavior||'patrol_then_alarm';
+	          }else _initEncounterPatrolFromTag(enemy);
         }
         if(doorUsed)enemy.spawnIntro={t:0,door:doorUsed};
         this._list.push(enemy);
@@ -9966,6 +10142,23 @@ class EnemyManager{
       const zbHint=_zoneBounds();
       for(const e of this._list){
         if(e.encounterCoverHint)rescoreCoverSlotForEncounterHint(e,slotPool,zbHint,G.building|0);
+        if(e.encounterCoverHintPoint&&e.peekRate>0){
+          const ax=Number(e.encounterCoverHintPoint.x)||0,az=Number(e.encounterCoverHintPoint.z)||0;
+          let best=null,bestScore=Infinity;
+          for(const s of slotPool){
+            if(s.claimedBy&&s.claimedBy!==e)continue;
+            const dx=s.x-e.group.position.x,dz=s.z-e.group.position.z;
+            const hx=s.x-ax,hz=s.z-az;
+            const score=dx*dx+dz*dz+(hx*hx+hz*hz)*0.42;
+            if(score<bestScore){bestScore=score;best=s;}
+          }
+          if(best){
+            if(e.coverSlot&&e.coverSlot!==best&&e.coverSlot.claimedBy===e)e.coverSlot.claimedBy=null;
+            best.claimedBy=e;
+            e.coverSlot=best;
+            e.coverPoint={x:best.x,z:best.z};
+          }
+        }
       }
     }
     const coverWalls=_walls.filter(w=>(w.x1-w.x0)<5 && (w.z1-w.z0)<5);
@@ -10109,7 +10302,7 @@ class EnemyManager{
       const szPartner=partner.group.position.z-pp.z;
       const sign=(sxPartner*-nz+szPartner*nx)>=0?-1:1;
       const fd=7.5;
-      partner.flankTarget=new THREE.Vector3(pp.x+(-nz*sign*fd),0,pp.z+(nx*sign*fd));
+      partner.flankTarget=(partner._pickAuthoredFlankTarget&&partner._pickAuthoredFlankTarget(pp,walls))||new THREE.Vector3(pp.x+(-nz*sign*fd),0,pp.z+(nx*sign*fd));
       partner.flankTimer=3.65;
       partner.state=FLANK;
       partner._flankTellUntil=nowMs+300;
@@ -11481,6 +11674,7 @@ function _frameProfileEnd(reason='frame'){
 // loaded GLB or the existing procedural archetype's spawn helper.
 const _ASSET_TEX_LOADER=new THREE.TextureLoader();
 const _ASSET_GLTF_LOADER=new GLTFLoader();
+try{_ASSET_GLTF_LOADER.setMeshoptDecoder(MeshoptDecoder);}catch(_){}
 const _ASSET_REGISTRY=createAssetRegistry({
   THREE,
   gltfLoader:_ASSET_GLTF_LOADER,
@@ -12562,6 +12756,54 @@ function _selectedWeaponMeshList(){
   if(P.weaponIdx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive))return null;
   if(P.weaponIdx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig)return null;
   return ({0:M4_MESHES,1:DE_MESHES,3:SG_MESHES,4:SM_MESHES,5:DMR_MESHES,6:SPP_MESHES,7:SNI_MESHES})[P.weaponIdx]||null;
+}
+function _usesAuthoredWeaponParts(){
+  try{
+    if(P.weaponIdx===0&&_isAuthoredM4RuntimeActive())return true;
+    if(P.weaponIdx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig)return true;
+  }catch(_){}
+  return false;
+}
+function _activeWeaponSocketNames(){
+  try{
+    if(P.weaponIdx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.nodes&&typeof m4AuthoredWeapon.nodes.keys==='function'){
+      return Array.from(m4AuthoredWeapon.nodes.keys());
+    }
+    if((P.weaponIdx===1||P.weaponIdx===6)&&deagleGlbRig&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){
+      return Object.keys(deagleGlbRig.userData.uspNodes);
+    }
+  }catch(_){}
+  return [];
+}
+function _viewmodelPartRest(mesh){
+  if(!mesh)return null;
+  mesh.userData=mesh.userData||{};
+  if(!mesh.userData.weaponAnimRest){
+    mesh.userData.weaponAnimRest={
+      x:mesh.position.x,y:mesh.position.y,z:mesh.position.z,
+      rx:mesh.rotation.x,ry:mesh.rotation.y,rz:mesh.rotation.z
+    };
+  }
+  return mesh.userData.weaponAnimRest;
+}
+function _poseViewmodelPart(mesh,delta={}){
+  const r=_viewmodelPartRest(mesh);
+  if(!mesh||!r)return false;
+  mesh.position.set(
+    r.x+(Number(delta.x)||0),
+    r.y+(Number(delta.y)||0),
+    r.z+(Number(delta.z)||0)
+  );
+  mesh.rotation.set(
+    r.rx+(Number(delta.rx)||0),
+    r.ry+(Number(delta.ry)||0),
+    r.rz+(Number(delta.rz)||0)
+  );
+  return true;
+}
+function _poseViewmodelParts(list,delta){
+  if(!Array.isArray(list))return;
+  for(const mesh of list)_poseViewmodelPart(mesh,delta);
 }
 function _applyWeaponQuality(){
   const q=(SETTINGS&&SETTINGS.weaponQuality)||'high';
@@ -14988,6 +15230,11 @@ _applyWeaponHandFit(START_WEAPON_IDX,true);
 let _playerAnimFrameSeq=0;
 const playerAnimState0=createPlayerAnimState({slot:0});
 const playerAnimState1=createPlayerAnimState({slot:1});
+const _ANIMATION_GRAPH_STATE=createAnimationGraphState();
+const _WEAPON_ANIM_CONTROLLER=createWeaponAnimationController({enabled:true});
+const _HAND_GRIP_STATE=createHandGripState({enabled:true});
+const _LOCOMOTION_FEEL_STATE0=createLocomotionFeelState({slot:0,enabled:true});
+const _LOCOMOTION_FEEL_STATE1=createLocomotionFeelState({slot:1,enabled:true});
 let _animDebugHud=false;
 const EYE=1.7,PR=0.35;
 const G=createGameState();
@@ -14999,6 +15246,96 @@ let CUSTOM_MAP_MENU=null;
 let CUSTOM_LEVEL_EDITOR=null;
 _gameRefForRenderExtras=G;
 try{_configureRenderStack();}catch(_){}
+function _updateAnimationCoordinator(dt,nowSec){
+  const flags=animationFeatureFlags(SETTINGS);
+  if(!flags.animationGraphEnabled&&!flags.weaponGraphEnabled){
+    updateHandGripState(_HAND_GRIP_STATE,{enabled:false,dt,now:nowSec});
+    return;
+  }
+  const animDebug=getPlayerAnimDebug(playerAnimState0);
+  const movement=getMovementAnimState(playerAnimState0);
+  const speed=Number.isFinite(P._moveSpeedSmooth)?P._moveSpeedSmooth:Math.hypot(P.vx||0,P.vz||0);
+  const locomotionInput=Object.assign({},movement,{
+    speed,
+    sprint:P.sprintAmt||P.sprintBlend||0,
+    crouch:P.crouchAmt||0,
+    crouching:!!P.crouching,
+    sliding:!!P.sliding,
+    slide:P.slideAmt||0,
+    vaulting:!!P.vaulting,
+    dropkickActive:!!P.dropkickActive,
+    wallJumpTimer:P.wallJumpTimer||0,
+    grounded:!!P.grounded,
+    forward:(K['KeyW']?1:0)+(K['KeyS']?-1:0),
+    strafe:(K['KeyD']?1:0)+(K['KeyA']?-1:0),
+    land:playerAnimState0.smoothed&&playerAnimState0.smoothed.landEnv||0
+  });
+  if(flags.animationGraphEnabled){
+    updateAnimationGraphState(_ANIMATION_GRAPH_STATE,{
+      settings:SETTINGS,
+      frame:_playerAnimFrameSeq,
+      movement:locomotionInput,
+      weaponIdx:P.weaponIdx,
+      weaponType:weaponTypeFromIndex(P.weaponIdx),
+      ads:P.adsVis||P.ads||0,
+      sprint:P.sprintAmt||0,
+      reloading:!!P.reloading,
+      notifies:animDebug.recentNotifies||[],
+      enemyState:(G.enemyMgr&&G.enemyMgr.aliveCount>0)?'active':'idle'
+    });
+  }
+  if(flags.weaponGraphEnabled){
+    const reloadProgress=P.reloading&&P.RELOAD_TIME>0?1-P.reloadTimer/P.RELOAD_TIME:0;
+    updateWeaponAnimationController(_WEAPON_ANIM_CONTROLLER,{
+      dt,
+      now:nowSec,
+      weaponIdx:P.weaponIdx,
+      weaponType:weaponTypeFromIndex(P.weaponIdx),
+      ads:P.adsVis||P.ads||0,
+      sprint:P.sprintAmt||0,
+      reloading:!!P.reloading,
+      reloadProgress,
+      shotImpulse:P._shotImpulse||0,
+      dryFire:P._dryFirePulse||0,
+      emptyClick:P._emptyClickPulse||0,
+      lastRound:P._lastRoundPulse||0,
+      footstepKick:playerAnimState0.resolved?.viewmodel?.footstepKick||0,
+      fireSide:playerAnimState0.resolved?.viewmodel?.fireSide||1,
+      hasAuthoredParts:_usesAuthoredWeaponParts(),
+      notifies:animDebug.recentNotifies||[]
+    });
+  }
+  const reloadProgress=P.reloading&&P.RELOAD_TIME>0?1-P.reloadTimer/P.RELOAD_TIME:0;
+  updateHandGripState(_HAND_GRIP_STATE,{
+    enabled:flags.animationGraphEnabled,
+    dt,
+    now:nowSec,
+    weaponIdx:P.weaponIdx,
+    weaponType:weaponTypeFromIndex(P.weaponIdx),
+    ads:P.adsVis||P.ads||0,
+    sprint:P.sprintAmt||0,
+    reloading:!!P.reloading,
+    reloadProgress,
+    shotImpulse:P._shotImpulse||0,
+    partMotion:_WEAPON_ANIM_CONTROLLER.partMotion||{},
+    hasAuthoredWeaponParts:_usesAuthoredWeaponParts(),
+    limitedIKEnabled:flags.limitedIKEnabled,
+    socketReadiness:P.weaponIdx===0?M4_AUTHORED_STATUS.socketReadiness:null,
+    availableSockets:_activeWeaponSocketNames()
+  });
+}
+function _updateLocomotionFeel(playerAnimState,feelState,dt,nowSec,slot=0){
+  const flags=animationFeatureFlags(SETTINGS);
+  updateLocomotionFeelState(feelState,{
+    enabled:flags.animationGraphEnabled,
+    playerAnimation:playerAnimState,
+    dt,
+    now:nowSec,
+    slot
+  });
+  applyLocomotionFeelToPlayerAnim(playerAnimState,feelState);
+  return feelState;
+}
 function _nearestPlayerWorldPosForAi(wx,wz){
   if(G.playMode!=='coop'||!G.splitScreenActive)return P.pos;
   const d0=(wx-P.pos.x)*(wx-P.pos.x)+(wz-P.pos.z)*(wz-P.pos.z);
@@ -15469,6 +15806,14 @@ document.addEventListener('keydown',e=>{
   }
   if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
   if(e.code==='KeyF'&&!P.dead&&P.nearPickup){e.preventDefault();tryEquipPickup(P.nearPickup);return;}
+  if(e.code==='KeyF'&&!P.dead&&P.nearOpenableDoor&&G.levelData&&typeof G.levelData.openCustomDoor==='function'){
+    e.preventDefault();
+    if(G.levelData.openCustomDoor(P.nearOpenableDoor,'player')){
+      P.nearOpenableDoor=null;
+      P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,.8);
+    }
+    return;
+  }
   if(e.code==='KeyH'&&!P.dead)useHealPack();
   if(e.code==='KeyG'&&!P.dead)tryThrowGrenade();
   if(e.code==='KeyB'&&!P.dead){e.preventDefault();toggleShop();}
@@ -16039,6 +16384,16 @@ const SETTINGS=(()=>{
     playerLeanAntiClip:true,
     playerLeanBodyRig:true,
     authoredCampaignEncounters:true,
+    animationGraphEnabled:true,
+    weaponGraphEnabled:true,
+    enemyGraphEnabled:true,
+    importedAnimationEnabled:false,
+    limitedIKEnabled:false,
+    bvhQueriesEnabled:false,
+    animationDebugOverlayEnabled:false,
+    editorAnimationPreviewEnabled:true,
+    editorAssetPreflightEnabled:true,
+    animationImportGuardVersion:1,
     // Phase 2 — expensive cinematic passes stay opt-in; high should be stable by default.
     phase2SSR:false,phase2LUT:false,phase2DoF:false,phase2Volumetrics:false,phase2PlanarReflections:false,phase2Adaptive:false,
     phase2Sharpen:0,phase2TAA:false,ssrIntensityMul:0,
@@ -16076,6 +16431,16 @@ const SETTINGS=(()=>{
   if(s.aiTacticalEnabled==null)s.aiTacticalEnabled=true;
   if(s.playerLeanAntiClip==null)s.playerLeanAntiClip=true;
   if(s.playerLeanBodyRig==null)s.playerLeanBodyRig=true;
+  if(s.animationGraphEnabled==null)s.animationGraphEnabled=true;
+  if(s.weaponGraphEnabled==null)s.weaponGraphEnabled=true;
+  if(s.enemyGraphEnabled==null)s.enemyGraphEnabled=true;
+  if(s.animationImportGuardVersion!==1){s.importedAnimationEnabled=false;s.animationImportGuardVersion=1;}
+  if(s.importedAnimationEnabled==null)s.importedAnimationEnabled=false;
+  if(s.limitedIKEnabled==null)s.limitedIKEnabled=false;
+  if(s.bvhQueriesEnabled==null)s.bvhQueriesEnabled=false;
+  if(s.animationDebugOverlayEnabled==null)s.animationDebugOverlayEnabled=false;
+  if(s.editorAnimationPreviewEnabled==null)s.editorAnimationPreviewEnabled=true;
+  if(s.editorAssetPreflightEnabled==null)s.editorAssetPreflightEnabled=true;
   if(s.phase2SSR==null)s.phase2SSR=false;
   if(s.phase2LUT==null)s.phase2LUT=false;
   if(s.phase2DoF==null)s.phase2DoF=false;
@@ -25752,6 +26117,17 @@ function _initEncounterPatrolFromTag(enemy){
   enemy.patrolTimer=0.35;
   enemy.patrolTarget=enemy._encPatrolWaypoints[0].clone();
 }
+function _initEncounterPatrolFromPoints(enemy,points,opts={}){
+  if(!enemy||!Array.isArray(points)||!points.length)return;
+  enemy._encPatrolWaypoints=points.map(p=>new THREE.Vector3(Number(p.x)||0,0,Number(p.z)||0));
+  enemy._encPatrolIdx=0;
+  enemy._encPatrolDir=1;
+  enemy._encPatrolLoop=opts.loop!==false;
+  enemy._encPatrolSpeed=Number(opts.speed)||1;
+  enemy.patrolPauseTimer=Math.max(0,Number(opts.pauseSeconds)||0);
+  enemy.patrolTimer=0.35;
+  enemy.patrolTarget=enemy._encPatrolWaypoints[0].clone();
+}
 /** Data-driven reinforcement spawn — extend with new squad ids as needed. */
 function _spawnCampaignReinforcement(squad,enemyMgr,scene,bn,walls,entry){
   if(!squad)return;
@@ -28807,7 +29183,8 @@ async function startCustomMapLevel(pack,mapIndex=0,opts={}){
         bakeCornerEdges:_bakeCornerEdges,
         bakeCoverSlots:_bakeCoverSlots,
         flagSsrSolidsDirty:_flagSsrSolidsDirty,
-        isExitUnlocked:()=>G.exitUnlocked
+        isExitUnlocked:()=>G.exitUnlocked,
+        onDoorOpen:()=>{try{sfxInvOpen();}catch(_){}}
       });
     });
     await _deploySpan('lighting probes',72,async()=>{_applyShadowQuality();_syncEncounterDirectorFromLevel();_flagSsrSolidsDirty();});
@@ -29489,6 +29866,18 @@ function updateHands(dt){
   let vaultHandOpen=0;
   let shotgunPump=0;
   let sniperBolt=0;
+  const _weaponParts=(SETTINGS.weaponGraphEnabled!==false&&_WEAPON_ANIM_CONTROLLER&&_WEAPON_ANIM_CONTROLLER.enabled!==false)?(_WEAPON_ANIM_CONTROLLER.partMotion||{}):{};
+  const _weaponPartValue=(key)=>{
+    const v=Number(_weaponParts[key]);
+    return Number.isFinite(v)?THREE.MathUtils.clamp(v,0,1):0;
+  };
+  const _weaponTriggerMotion=_weaponPartValue('trigger');
+  const _weaponSlideMotion=_weaponPartValue('slide');
+  const _weaponBoltMotion=_weaponPartValue('bolt');
+  const _weaponPumpMotion=_weaponPartValue('pump');
+  const _weaponMagMotion=_weaponPartValue('magazine');
+  const _weaponChamberMotion=_weaponPartValue('chamber');
+  const _handGrip=(SETTINGS.animationGraphEnabled!==false&&_HAND_GRIP_STATE&&_HAND_GRIP_STATE.enabled!==false)?_HAND_GRIP_STATE:null;
   // ── ADS: pull hands together and up — gun rises to eye level along sight line
   const a=P.adsVis;
   const adsFocus=THREE.MathUtils.smoothstep(a,.12,.94);
@@ -29723,6 +30112,20 @@ function updateHands(dt){
     }
     vaultHandOpen=Math.max(vaultHandOpen,THREE.MathUtils.clamp(fallDrop*4+landPunch*3,0,.32));
   }
+  if(_handGrip&&_handGrip.offsets){
+    const rh=_handGrip.offsets.right||{};
+    const lh=_handGrip.offsets.left||{};
+    rTX+=rh.x||0;rTY+=rh.y||0;rTZ+=rh.z||0;
+    rTRX+=rh.rx||0;rTRY+=rh.ry||0;rTRZ+=rh.rz||0;
+    if(lGrp.visible){
+      lTX+=lh.x||0;lTY+=lh.y||0;lTZ+=lh.z||0;
+      lTRX+=lh.rx||0;lTRY+=lh.ry||0;lTRZ+=lh.rz||0;
+    }
+    const fg=_handGrip.fingers||{};
+    idxTRX-=fg.triggerCurl||0;
+    fingerSnap=Math.max(fingerSnap,fg.triggerSnap||0);
+    vaultHandOpen=Math.max(vaultHandOpen,fg.handOpen||0);
+  }
   // ── MANTLE / VAULT HAND PLANT — hands lead the body, then the weapon
   // follows. This mirrors the reference clip's ledge-climb readability.
   if(P.vaulting){
@@ -29839,6 +30242,33 @@ function updateHands(dt){
     }
     rTRY-=snap*recoilProf.kickRZ*.14*P.adsVis;
   }
+  if(_weaponTriggerMotion>0.001){
+    fingerSnap=Math.max(fingerSnap,Math.min(1,_weaponTriggerMotion*.82));
+    idxTRX-=_weaponTriggerMotion*.18;
+    rTRX-=_weaponTriggerMotion*.010;
+  }
+  if(_wi===3&&_weaponPumpMotion>shotgunPump){
+    const extra=_weaponPumpMotion-shotgunPump;
+    lTZ+=extra*.048;
+    lTY-=extra*.006;
+    lTRX+=extra*.085;
+    lTRY-=extra*.030;
+    vaultHandOpen=Math.max(vaultHandOpen,extra*.28);
+    shotgunPump=_weaponPumpMotion;
+  }else if(_wi===3){
+    shotgunPump=Math.max(shotgunPump,_weaponPumpMotion);
+  }
+  if(_wi===7&&_weaponBoltMotion>sniperBolt){
+    const extra=_weaponBoltMotion-sniperBolt;
+    rTZ+=extra*.036;
+    rTY+=extra*.006;
+    rTRX-=extra*.070;
+    rTRY+=extra*.050;
+    idxTRX+=extra*.080;
+    sniperBolt=_weaponBoltMotion;
+  }else if(_wi===7){
+    sniperBolt=Math.max(sniperBolt,_weaponBoltMotion);
+  }
   const hitKick=_viewmodelHitKickEnvelope(H);
   if(hitKick>0){
     const hkSide=H.hitKickSide||1;
@@ -29863,16 +30293,27 @@ function updateHands(dt){
   if(H.hitKickT>0)H.hitKickT=Math.max(0,H.hitKickT-dt);
   if(typeof sgPump!=='undefined'){
     const p=P.weaponIdx===3?shotgunPump:0;
-    sgPump.position.z=-.20+p*.050;
-    sgPumpRid1.position.z=-.18+p*.050;
-    sgPumpRid2.position.z=-.21+p*.050;
-    sgPumpRid3.position.z=-.24+p*.050;
+    _poseViewmodelPart(sgPump,{z:p*.050,y:-p*.002,rx:p*.018});
+    _poseViewmodelPart(sgPumpRid1,{z:p*.050,y:-p*.002,rx:p*.018});
+    _poseViewmodelPart(sgPumpRid2,{z:p*.050,y:-p*.002,rx:p*.018});
+    _poseViewmodelPart(sgPumpRid3,{z:p*.050,y:-p*.002,rx:p*.018});
   }
   if(typeof snBolt!=='undefined'){
     const b=P.weaponIdx===7?sniperBolt:0;
-    snBolt.position.z=.018+b*.042;
-    snBoltKnob.position.z=.020+b*.042;
-    snBoltKnob.position.y=.032+b*.004;
+    _poseViewmodelPart(snBolt,{z:b*.042,y:b*.004,rx:-b*.020});
+    _poseViewmodelPart(snBoltKnob,{z:b*.042,y:b*.004,rx:-b*.020});
+  }
+  const _triggerVisual=THREE.MathUtils.clamp(_weaponTriggerMotion+fingerSnap*.35,0,1);
+  if(_triggerVisual>0.001||_wi===0)_poseViewmodelPart(gTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.22});
+  if(_triggerVisual>0.001||_wi===1)_poseViewmodelPart(deTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.24});
+  if(_triggerVisual>0.001||_wi===3)_poseViewmodelPart(sgTrig,{z:-_triggerVisual*.004,rx:-_triggerVisual*.20});
+  if(_triggerVisual>0.001||_wi===4)_poseViewmodelPart(smTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.18});
+  if(_triggerVisual>0.001||_wi===5)_poseViewmodelPart(dmrTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.20});
+  if(_triggerVisual>0.001||_wi===6)_poseViewmodelPart(sppTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.23});
+  if(_triggerVisual>0.001||_wi===7)_poseViewmodelPart(snTrig,{z:-_triggerVisual*.003,rx:-_triggerVisual*.20});
+  if(typeof smCharge!=='undefined'){
+    const c=P.weaponIdx===4?Math.max(_weaponBoltMotion*.42,_weaponChamberMotion*.75):0;
+    _poseViewmodelPart(smCharge,{z:c*.020,y:c*.002,rx:-c*.012});
   }
   // ── RELOAD ANIMATION — hide gun-mounted mag during phases 1-3 so it
   // visually matches the dropped-mag spawn, restore at phase 4 (insert).
@@ -29882,12 +30323,17 @@ function updateHands(dt){
     if(typeof gMag1!=='undefined'){
       gMag1.visible=!inP1to3;gMag2.visible=!inP1to3;
       if(typeof gMagCurve!=='undefined')gMagCurve.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(gMag1,{y:-magW*.006,z:magW*.004,rx:magW*.025,rz:Math.sin(ip*8.0)*magW*.010});
+      _poseViewmodelPart(gMag2,{y:-magW*.007,z:magW*.005,rx:magW*.030,rz:Math.sin(ip*8.0)*magW*.012});
+      if(typeof gMagCurve!=='undefined')_poseViewmodelPart(gMagCurve,{y:-magW*.006,z:magW*.004,rx:magW*.026,rz:Math.sin(ip*8.0)*magW*.010});
     }
     // Charging handle pulls back during phase 4
     if(typeof gCharge!=='undefined'){
       const rt=P.reloading?1-(P.reloadTimer/P.RELOAD_TIME):0;
       const rack=(rt>.85)?Math.sin((rt-.85)/.15*Math.PI):0;
-      gCharge.position.z=.080+rack*.026;
+      const charge=Math.max(rack,_weaponChamberMotion*.85);
+      _poseViewmodelPart(gCharge,{z:charge*.026,y:charge*.002,rx:-charge*.018});
     }
   }
   if(P.weaponIdx===1){
@@ -29897,6 +30343,10 @@ function updateHands(dt){
       deMag.visible=!inP1to3;
       if(typeof deMagLip!=='undefined')deMagLip.visible=!inP1to3;
       if(typeof deMagPlate!=='undefined')deMagPlate.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(deMag,{y:-magW*.008,z:magW*.004,rx:magW*.035,rz:-magW*.015});
+      if(typeof deMagLip!=='undefined')_poseViewmodelPart(deMagLip,{y:-magW*.008,z:magW*.004,rx:magW*.035,rz:-magW*.015});
+      if(typeof deMagPlate!=='undefined')_poseViewmodelPart(deMagPlate,{y:-magW*.010,z:magW*.004,rx:magW*.040,rz:-magW*.018});
     }
   }
   if(P.weaponIdx===3){
@@ -29905,6 +30355,9 @@ function updateHands(dt){
     if(typeof sgMagTube!=='undefined'){
       sgMagTube.visible=!inP1to3;
       if(typeof sgMagCap!=='undefined')sgMagCap.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(sgMagTube,{z:-magW*.006,rx:magW*.010});
+      if(typeof sgMagCap!=='undefined')_poseViewmodelPart(sgMagCap,{z:-magW*.007,rx:magW*.012});
     }
   }
   if(P.weaponIdx===4){
@@ -29914,6 +30367,9 @@ function updateHands(dt){
     if(typeof smMag!=='undefined'){
       smMag.visible=!inP1to3;
       if(typeof smMagBase!=='undefined')smMagBase.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(smMag,{y:-magW*.010,z:magW*.005,rx:magW*.035,rz:magW*.014});
+      if(typeof smMagBase!=='undefined')_poseViewmodelPart(smMagBase,{y:-magW*.012,z:magW*.005,rx:magW*.040,rz:magW*.016});
     }
   }
   if(P.weaponIdx===5||P.weaponIdx===6||P.weaponIdx===7){
@@ -29921,12 +30377,20 @@ function updateHands(dt){
     const inP1to3=P.reloading&&reloadMagHidden(rt,P.weaponIdx);
     if(P.weaponIdx===5&&typeof dmrMag!=='undefined'){
       dmrMag.visible=!inP1to3;dmrMagBase.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(dmrMag,{y:-magW*.010,z:magW*.006,rx:magW*.036,rz:-magW*.010});
+      _poseViewmodelPart(dmrMagBase,{y:-magW*.012,z:magW*.006,rx:magW*.040,rz:-magW*.012});
     }
     if(P.weaponIdx===6&&typeof sppMag!=='undefined'){
       sppMag.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(sppMag,{y:-magW*.009,z:magW*.004,rx:magW*.034,rz:-magW*.014});
     }
     if(P.weaponIdx===7&&typeof snMag!=='undefined'){
       snMag.visible=!inP1to3;if(typeof snMagBase!=='undefined')snMagBase.visible=!inP1to3;
+      const magW=!inP1to3?_weaponMagMotion:0;
+      _poseViewmodelPart(snMag,{y:-magW*.008,z:magW*.006,rx:magW*.030,rz:magW*.010});
+      if(typeof snMagBase!=='undefined')_poseViewmodelPart(snMagBase,{y:-magW*.010,z:magW*.006,rx:magW*.034,rz:magW*.012});
     }
   }
   // ── RELOAD ANIMATION (synced to P.reloadTimer / P.RELOAD_TIME)
@@ -30036,9 +30500,10 @@ function updateHands(dt){
   const adsTrigFlat=a*.034;
   const ipf=ip;
   const vOpen=THREE.MathUtils.clamp(vaultHandOpen||0,0,1);
-  const animGrip=THREE.MathUtils.clamp((_animVM&&_animVM.fingerCurl)||0,0,1);
+  const _handGripFingers=_handGrip&&_handGrip.fingers?_handGrip.fingers:null;
+  const animGrip=THREE.MathUtils.clamp(((_animVM&&_animVM.fingerCurl)||0)+((_handGripFingers&&_handGripFingers.gripCurl)||0),0,1);
   const animTrigger=THREE.MathUtils.clamp((_animVM&&_animVM.triggerSqueeze)||0,0,1);
-  const animBrace=THREE.MathUtils.clamp((_animVM&&_animVM.supportBrace)||0,0,1);
+  const animBrace=THREE.MathUtils.clamp(((_animVM&&_animVM.supportBrace)||0)+((_handGripFingers&&_handGripFingers.supportCurl)||0),0,1);
   const rMidT=Math.sin(ipf*.73)*.07*fAds+Math.sin(ipf*1.27+.4)*.026+adsTight+relDig*.1+relRack*.095+animGrip*.055+animBrace*.030;
   const rRingT=Math.sin(ipf*.67)*.065*fAds+Math.sin(ipf*1.19)*.023+adsTight*.92+relDig*.085+relRack*.088+animGrip*.052+animBrace*.026;
   const rPinkT=Math.sin(ipf*.81)*.078*fAds+Math.sin(ipf*1.41+.6)*.029+adsTight*.85+relDig*.07+relRack*.078+animGrip*.048+animBrace*.020;
@@ -30083,6 +30548,7 @@ function updateHands(dt){
     // Sharp rearward kick (0→.30), slower forward return (.30→.85)
     slideOff = raw<.30 ? (raw/.30) : Math.max(0, 1 - (raw-.30)/.55);
   }
+  if(P.weaponIdx===1)slideOff=Math.max(slideOff,_weaponSlideMotion);
   if(P.weaponIdx===1){
     if(deagleGlbRig){
       const nodes=deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes;
@@ -30132,6 +30598,12 @@ function updateHands(dt){
       deHammer.position.z  =  .082 - slideOff*.012;
       deHammer.rotation.x  = -slideOff*.55;
     }
+  }
+  if(P.weaponIdx===6){
+    const s=_weaponSlideMotion;
+    _poseViewmodelParts([sppSlide,sppSlide2,sppSer1,sppSer2,sppSer3,sppRsight],{z:s*.016,y:s*.001,rx:-s*.012});
+    _poseViewmodelParts([sppBarrel,sppSuppr,sppSupRib1,sppSupRib2,sppSupRib3,sppSupRib4,sppFsight],{z:s*.004,rx:s*.006});
+    _poseViewmodelPart(sppHammer,{z:-s*.012,rx:-s*.48});
   }
   // ── Barrel heat — accumulate on fire, decay over time. Glow scales emissive.
   H.heat=Math.max(0,H.heat-dt*0.55);
@@ -30531,6 +31003,8 @@ function _weaponVisualStatus(){
     triggerBufferReason:P._triggerBufferReason||'',
     triggerBufferBlock:P._triggerBufferBlock||'',
     triggerBufferTicks:P._triggerBufferTicks||0,
+    animation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
+    handGrip:handGripDebug(_HAND_GRIP_STATE),
     emptyClickPulse:P._emptyClickPulse||0,
     dryFirePulse:P._dryFirePulse||0,
     lastRoundPulse:P._lastRoundPulse||0,
@@ -30624,6 +31098,12 @@ function _characterVisualStatus(){
       silhouette:profile.silhouette,
       lod:e.characterLod||e.group?.userData?.characterLod||'unknown',
       animationState:e.animationState||e.group?.userData?.animationState||'idle',
+      animationClipPlan:e.animationStatus&&e.animationStatus.clipPlan?{
+        base:e.animationStatus.clipPlan.base||null,
+        upper:e.animationStatus.clipPlan.upper||null,
+        additive:e.animationStatus.clipPlan.additive||[],
+        fallbackReasons:e.animationStatus.clipPlan.fallbackReasons||[]
+      }:null,
       humanParts:humanParts.length,
       visibleHumanParts,
 	      hasHumanShell,
@@ -30656,6 +31136,94 @@ function _characterVisualStatus(){
     playerProxy:{enabled:PLAYER_PROXY.enabled,visible:PLAYER_PROXY.group.visible,parts:PLAYER_PROXY.parts.length,state:PLAYER_PROXY.group.userData.proxyState||null},
     viewmodel:gunGrp.userData.viewmodelProfile||_VIEWMODEL_PROFILE
   };
+}
+function _enemyAnimationStatus(){
+  const list=(G.enemyMgr&&Array.isArray(G.enemyMgr._list))?G.enemyMgr._list.filter(e=>e&&!e.dead):[];
+  return enemyAnimationDebugList(list,{importedAnimationEnabled:animationFeatureFlags(SETTINGS).importedAnimationEnabled});
+}
+function _assetPreflightDebug(idOrPath=null){
+  const base=_ASSET_REGISTRY.preflight();
+  const importHandoff=buildImportHandoffGuide();
+  if(idOrPath==null||idOrPath==='')return Object.assign({},base,{importHandoff});
+  const key=String(idOrPath);
+  const entry=_ASSET_REGISTRY.lookup(key);
+  if(entry){
+    const targetPreview=buildEditorAssetPreview(entry,{requireMixamoSemanticClips:entry.kind==='animation-set'});
+    return Object.assign({},base,{
+      target:key,
+      targetKind:'manifest-entry',
+      targetPreflight:preflightManifestEntry(entry,{requireMixamoSemanticClips:entry.kind==='animation-set'}),
+      targetPreview,
+      importChecklist:targetPreview.importChecklist,
+      importHandoff
+    });
+  }
+  const manifestReport=buildAssetPipelineReport(ALL_MANIFESTS);
+  const targetPreview=buildEditorAssetPreview({
+    id:key,
+    kind:key.endsWith('.glb')||key.endsWith('.gltf')?'external-import':'external-profile',
+    src:key.endsWith('.glb')||key.endsWith('.gltf')?key:null,
+    source:key,
+    fallback:'runtime.safe-default'
+  });
+  return Object.assign({},base,{
+    target:key,
+    targetKind:key.endsWith('.glb')||key.endsWith('.gltf')?'external-path':'unknown',
+    targetPreflight:{
+      ok:false,
+      issues:[{code:'runtime-path-preflight-requires-node-tooling',level:'warning'}],
+      warnings:[{code:'use-scripts-animation-pipeline-probe-or-gltf-transform-cli',level:'warning'}],
+      summary:{id:key,kind:'external',src:key,fallback:null,contract:'editor-safe-warning'}
+    },
+    targetPreview,
+    importChecklist:targetPreview.importChecklist,
+    importHandoff,
+    assetPipeline:{ok:manifestReport.ok,errors:manifestReport.errors,warnings:manifestReport.warnings}
+  });
+}
+function _levelEditorAssetHealth(){
+  const editor=CUSTOM_LEVEL_EDITOR;
+  if(editor&&typeof editor.getAssetHealth==='function')return editor.getAssetHealth();
+  return Object.assign(buildLevelEditorAssetHealth(null,ALL_MANIFESTS,{
+    editorReady:!!editor,
+    editorOpen:!!(editor&&editor.isOpen&&editor.isOpen())
+  }),{
+    ok:true,
+    editorReady:!!editor,
+    editorOpen:!!(editor&&editor.isOpen&&editor.isOpen()),
+    note:'level editor controller has not been opened yet',
+    requiredCompatibility:[
+      'existing levels load',
+      'profile fields are optional',
+      'missing profiles fall back at runtime'
+    ]
+  });
+}
+function _animationProfilesDebug(){
+  return {
+    version:ANIMATION_PIPELINE_VERSION,
+    flags:animationFeatureFlags(SETTINGS),
+    playerLocomotion:PLAYER_LOCOMOTION_STATES.slice(),
+    semanticMixamoClips:SEMANTIC_MIXAMO_CLIPS.slice(),
+    weaponProfiles:WEAPON_ANIMATION_PROFILES,
+    enemyProfiles:ENEMY_ANIMATION_PROFILES,
+    tuning:animationTuningDebug(),
+    tooling:ANIMATION_MIDDLEWARE_RUNTIME
+  };
+}
+function _animationHealthStatus(){
+  return buildAnimationHealthReport({
+    settings:SETTINGS,
+    manifests:ALL_MANIFESTS,
+    registryPreflight:_ASSET_REGISTRY.preflight(),
+    playerAnimation:getPlayerAnimDebug(playerAnimState0),
+    weaponAnimation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
+    handGrip:handGripDebug(_HAND_GRIP_STATE),
+    locomotionFeel:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE0),
+    enemyAnimation:_enemyAnimationStatus(),
+    channels:_ANIMATION_GRAPH_STATE.channels,
+    levelEditorHealth:_levelEditorAssetHealth()
+  });
 }
 function _rendererMetadataSnapshot(){
   const src=_renderStack?_renderStack.metadata:{backend:'webgl',postEnabled:false};
@@ -31788,10 +32356,13 @@ renderer.setAnimationLoop(()=>{
   const _nowSecAnim=performance.now()/1000;
   updatePlayerAnimInputs(playerAnimState0,{P,dt,now:_nowSecAnim,keys:K,mouseDx:P._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
   resolvePlayerAnimLayers(playerAnimState0,dt);
+  _updateLocomotionFeel(playerAnimState0,_LOCOMOTION_FEEL_STATE0,dt,_nowSecAnim,0);
   _consumePlayerAnimNotifies(playerAnimState0,P,0);
+  _updateAnimationCoordinator(dt,_nowSecAnim);
   if(typeof _splitVsActive==='function'&&_splitVsActive()){
     updatePlayerAnimInputs(playerAnimState1,{P:P2,dt,now:_nowSecAnim,keys:K2,mouseDx:P2._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
     resolvePlayerAnimLayers(playerAnimState1,dt);
+    _updateLocomotionFeel(playerAnimState1,_LOCOMOTION_FEEL_STATE1,dt,_nowSecAnim,1);
     _consumePlayerAnimNotifies(playerAnimState1,P2,1);
   }
   if(_animDebugHud){
@@ -32197,6 +32768,9 @@ renderer.setAnimationLoop(()=>{
 	          gunGrp.rotation.y-=gSide*gAmt*((.064+.020*gReady)*hipW+(.024+.010*gReady)*adsLock);
 	          gunGrp.rotation.z+=gSide*gAmt*((.108+.028*gReady)*hipW+(.032+.012*gReady)*adsLock);
 	        }
+	      }
+	      if(SETTINGS.weaponGraphEnabled!==false&&_WEAPON_ANIM_CONTROLLER&&_WEAPON_ANIM_CONTROLLER.enabled!==false){
+	        applyWeaponPoseToObject(gunGrp,_WEAPON_ANIM_CONTROLLER.pose,{ads:P.adsVis||P.ads||0,scale:1});
 	      }
 	      _keepCombatViewmodelInFrame(dt);
 	      _alignIronSightToAimCenter(dt);
@@ -32711,6 +33285,26 @@ renderer.setAnimationLoop(()=>{
   } else {
     P.nearPickup=null;P._pickupSticky=null;P._pickupStickyUntil=0;P._lastPickupPromptId=null;
     const pp=$e('pickup-prompt');if(pp){pp.style.opacity='0';pp.style.transform='translate(-50%,-50%) scale(1)';}
+  }
+  const _nearOpenableDoor=(G.levelData&&typeof G.levelData.findOpenableDoorFor==='function')
+    ?G.levelData.findOpenableDoorFor('player',P.pos,1.9):null;
+  P.nearOpenableDoor=_nearOpenableDoor;
+  if(!P.nearPickup&&_nearOpenableDoor&&!P.dead){
+    const pp=$e('pickup-prompt');
+    if(pp){
+      const promptId=`door:${_nearOpenableDoor.id||'open'}`;
+      if(P._lastDoorPromptId!==promptId){
+        P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,.85);
+        P._lastDoorPromptId=promptId;
+      }
+      $e('pickup-prompt-text').textContent='OPEN DOOR';
+      $e('pickup-prompt-sub').innerHTML='<span style="color:#ffd060">ACCESS READY</span>';
+      const pulse=THREE.MathUtils.clamp(P._pickupPromptPulse||0,0,1);
+      pp.style.opacity=String(0.76+pulse*.22);
+      pp.style.transform=`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`;
+    }
+  }else if(!_nearOpenableDoor){
+    P._lastDoorPromptId=null;
   }
   // Trails / FX — category budgets keep decals, smoke, shells, and flashes
   // independently bounded so one noisy system cannot evict every other effect.
@@ -33358,7 +33952,7 @@ installDebugApi({
       };
       return kind?(map[kind]||null):map;
     },
-    assetPreflight:()=>_ASSET_REGISTRY.preflight(),
+    assetPreflight:(idOrPath)=>_assetPreflightDebug(idOrPath),
     assetRegistryStatus:()=>_ASSET_REGISTRY.status(),
     loadAsset:(id)=>_ASSET_REGISTRY.load(id),
     disposeAsset:(id)=>_ASSET_REGISTRY.dispose(id),
@@ -33395,6 +33989,20 @@ installDebugApi({
     weaponSocketSpec:(type)=>type?(WEAPON_SOCKETS_SPEC[type]||null):WEAPON_SOCKETS_SPEC,
     vfxProfiles:()=>VFX_PROFILES,
     vfxProfile:(cat,key)=>getVfxProfile(cat,key),
+    animationProfiles:()=>_animationProfilesDebug(),
+    animationGraph:()=>animationGraphDebug(_ANIMATION_GRAPH_STATE),
+    animationHealth:()=>_animationHealthStatus(),
+    weaponAnimation:()=>weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
+    handGripStatus:()=>handGripDebug(_HAND_GRIP_STATE),
+    locomotionFeelStatus:()=>({player:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE0),player2:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE1)}),
+    enemyAnimationStatus:()=>_enemyAnimationStatus(),
+    levelEditorAssetHealth:()=>_levelEditorAssetHealth(),
+    forceAnimationState:(target,state,options={})=>{
+      const key=String(target||'locomotion');
+      _ANIMATION_GRAPH_STATE.activeStates[key]=String(state||'idle');
+      _ANIMATION_GRAPH_STATE.lastForced={target:key,state:String(state||'idle'),options,at:performance.now()};
+      return animationGraphDebug(_ANIMATION_GRAPH_STATE);
+    },
     textureCategories:()=>TEXTURE_CATEGORIES.slice(),
     decalLayers:()=>DECAL_LAYERS.slice(),
     visualProfile:()=>_activeVisualProfile(),
