@@ -24,13 +24,23 @@ main{display:block;position:fixed;inset:0;width:100%;height:100%;margin:0;paddin
 #xhair .r{height:2px;width:7px;right:0;top:9px}
 #xhair.ads .t,#xhair.ads .b,#xhair.ads .l,#xhair.ads .r{opacity:.35}
 #xhair.ads::after{content:'';position:absolute;width:4px;height:4px;background:#ffe;border-radius:50%;top:8px;left:8px;box-shadow:0 0 6px #ff3}
-#hitmark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0;transition:opacity .1s}
-#hitmark span{position:absolute;width:3px;height:10px;background:#ff3232;box-shadow:0 0 5px #f00}
+#hitmark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0;transition:opacity .07s,filter .07s;will-change:transform,opacity,filter}
+#hitmark::after{content:'';position:absolute;left:50%;top:50%;width:7px;height:7px;border-radius:50%;background:#fff;transform:translate(-50%,-50%) scale(.75);opacity:0;box-shadow:0 0 14px rgba(255,255,255,.85)}
+#hitmark span{position:absolute;width:3px;height:10px;border-radius:2px;background:#ff3232;box-shadow:0 0 5px #f00;transform-origin:center}
 #hitmark span:nth-child(1){transform:translate(-8px,-5px) rotate(45deg)}
 #hitmark span:nth-child(2){transform:translate(5px,-5px) rotate(-45deg)}
 #hitmark span:nth-child(3){transform:translate(-8px,1px) rotate(-45deg)}
 #hitmark span:nth-child(4){transform:translate(5px,1px) rotate(45deg)}
-#hitmark.hs span{background:#ff0;box-shadow:0 0 8px #ff0}
+#hitmark.hm-body span{background:#ff4a3d;box-shadow:0 0 7px rgba(255,64,48,.95)}
+#hitmark.hm-head span,#hitmark.hs span{background:#ffe66a;box-shadow:0 0 10px rgba(255,230,80,1),0 0 18px rgba(255,120,40,.42)}
+#hitmark.hm-kill span{width:4px;height:13px;background:#ff6848;box-shadow:0 0 10px rgba(255,88,48,1),0 0 22px rgba(255,50,20,.55)}
+#hitmark.hm-headkill span{width:4px;height:13px;background:#fff2a0;box-shadow:0 0 13px rgba(255,246,170,1),0 0 26px rgba(255,120,30,.65)}
+#hitmark.hm-kill::after,#hitmark.hm-headkill::after{opacity:.85}
+#hitmark.hm-headkill::after{background:#fff4b0}
+#hitmark.hm-kill span:nth-child(1),#hitmark.hm-headkill span:nth-child(1){transform:translate(-10px,-7px) rotate(45deg)}
+#hitmark.hm-kill span:nth-child(2),#hitmark.hm-headkill span:nth-child(2){transform:translate(6px,-7px) rotate(-45deg)}
+#hitmark.hm-kill span:nth-child(3),#hitmark.hm-headkill span:nth-child(3){transform:translate(-10px,1px) rotate(-45deg)}
+#hitmark.hm-kill span:nth-child(4),#hitmark.hm-headkill span:nth-child(4){transform:translate(6px,1px) rotate(45deg)}
 #bottom{position:absolute;bottom:28px;left:0;right:0;display:flex;justify-content:space-between;padding:0 36px;align-items:flex-end}
 .hud-label{font-size:10px;letter-spacing:.18em;color:rgba(255,255,255,.4);font-weight:600;text-transform:uppercase}
 .hud-val{font-size:28px;font-weight:700;letter-spacing:.04em;line-height:1.1}
@@ -99,9 +109,12 @@ main{display:block;position:fixed;inset:0;width:100%;height:100%;margin:0;paddin
 #reload-track{width:100%;height:3px;background:rgba(255,255,255,.15);border-radius:2px}
 #reload-fill{height:100%;background:#fff;width:0%;border-radius:2px;transition:width .04s linear}
 #lean-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}
-#scope-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:6;--scope-tint:rgba(80,180,255,.12);background:radial-gradient(ellipse at 50% 50%,transparent 20%,var(--scope-tint) 54%,rgba(0,0,0,.52) 69%,rgba(0,0,0,.82) 100%);transition:opacity .10s ease}
+#scope-vignette{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:6;--scope-tint:rgba(80,180,255,.12);--scope-reticle-opacity:.36;background:radial-gradient(ellipse at 50% 50%,transparent 20%,var(--scope-tint) 54%,rgba(0,0,0,.52) 69%,rgba(0,0,0,.82) 100%);transition:opacity .10s ease}
 #scope-vignette::before{content:'';position:absolute;left:50%;top:50%;width:min(82vmin,760px);height:min(82vmin,760px);transform:translate(-50%,-50%);border:1px solid rgba(190,230,255,.22);border-radius:50%;box-shadow:inset 0 0 42px rgba(120,210,255,.10),0 0 24px rgba(80,180,255,.08)}
 #scope-vignette::after{content:'';position:absolute;left:50%;top:50%;width:min(54vmin,520px);height:min(54vmin,520px);transform:translate(-50%,-50%);background:linear-gradient(90deg,transparent calc(50% - 1px),rgba(210,240,255,.18) 50%,transparent calc(50% + 1px)),linear-gradient(0deg,transparent calc(50% - 1px),rgba(210,240,255,.18) 50%,transparent calc(50% + 1px));mask-image:radial-gradient(circle,#000 0 56%,transparent 57%);-webkit-mask-image:radial-gradient(circle,#000 0 56%,transparent 57%)}
+#scope-vignette.screen-scope{background:radial-gradient(circle at 50% 50%,rgba(0,0,0,0) 0 35vmin,rgba(0,0,0,.34) 37vmin,rgba(0,0,0,.92) 43vmin,rgba(0,0,0,.98) 100%),radial-gradient(circle at 50% 50%,rgba(130,205,255,.08) 0 27vmin,rgba(80,180,255,.06) 31vmin,rgba(0,0,0,0) 36vmin)}
+#scope-vignette.screen-scope::before{width:min(74vmin,700px);height:min(74vmin,700px);border:2px solid rgba(205,235,255,.34);box-shadow:inset 0 0 34px rgba(95,190,255,.18),inset 0 0 110px rgba(0,0,0,.32),0 0 0 5px rgba(0,0,0,.44),0 0 34px rgba(70,180,255,.10)}
+#scope-vignette.screen-scope::after{width:min(58vmin,548px);height:min(58vmin,548px);opacity:var(--scope-reticle-opacity);background:radial-gradient(circle at 50% 50%,rgba(230,250,255,.95) 0 2px,transparent 2.8px),linear-gradient(90deg,transparent 0 6%,rgba(220,245,255,.00) 6% 13%,rgba(220,245,255,.50) 13% calc(50% - 11px),transparent calc(50% - 11px) calc(50% + 11px),rgba(220,245,255,.50) calc(50% + 11px) 87%,rgba(220,245,255,.00) 87% 94%,transparent 94% 100%),linear-gradient(0deg,transparent 0 7%,rgba(220,245,255,.00) 7% 15%,rgba(220,245,255,.46) 15% calc(50% - 11px),transparent calc(50% - 11px) calc(50% + 11px),rgba(220,245,255,.46) calc(50% + 11px) 85%,rgba(220,245,255,.00) 85% 93%,transparent 93% 100%),radial-gradient(circle at 50% 50%,transparent 0 16%,rgba(220,245,255,.16) 16.2% 16.6%,transparent 16.8% 100%);mask-image:radial-gradient(circle,#000 0 57%,transparent 57.6%);-webkit-mask-image:radial-gradient(circle,#000 0 57%,transparent 57.6%)}
 /* Cinematic color grade — soft light wash only; no scanline/noise animation. */
 #color-grade{position:fixed;inset:0;pointer-events:none;z-index:4;mix-blend-mode:soft-light;opacity:.12;background:linear-gradient(180deg,rgba(20,55,95,.12) 0%,rgba(0,0,0,0) 40%,rgba(0,0,0,0) 62%,rgba(120,55,25,.08) 100%)}
 #post-grain{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;mix-blend-mode:soft-light;background-image:radial-gradient(circle at 18% 22%,rgba(255,255,255,.14) 0 1px,transparent 1.5px),radial-gradient(circle at 72% 64%,rgba(0,0,0,.12) 0 1px,transparent 1.6px);background-size:149px 131px,191px 173px}
@@ -193,18 +206,30 @@ body.stable-render #low-hp{
 .pause-match-hint a:hover{text-decoration:underline}
 .pause-match-status{font-size:10px;line-height:1.45;color:#9dd88a;margin:0;min-height:1.4em}
 /* ── FOCUS MODE ─────────────────────────────────────────────────────────── */
-#focus-bar{position:absolute;top:50%;right:36px;transform:translateY(-50%);width:6px;height:120px;background:rgba(40,80,140,.20);border:1px solid rgba(64,200,255,.32);border-radius:3px;overflow:hidden;display:flex;flex-direction:column-reverse;z-index:9}
-#focus-bar.active{box-shadow:0 0 16px #40c8ff;border-color:#40c8ff}
-#focus-fill{width:100%;background:linear-gradient(0deg,#40c8ff,#a0e0ff);border-radius:2px;transition:width .12s}
+#focus-bar{position:absolute;top:50%;right:36px;transform:translateY(-50%);width:7px;height:126px;background:linear-gradient(180deg,rgba(9,14,24,.56),rgba(28,62,104,.22));border:1px solid rgba(64,200,255,.34);border-radius:3px;overflow:hidden;display:flex;flex-direction:column-reverse;z-index:9;box-shadow:inset 0 0 12px rgba(0,0,0,.55)}
+#focus-bar.active{box-shadow:0 0 18px rgba(64,200,255,.78),0 0 46px rgba(64,200,255,.18),inset 0 0 14px rgba(120,235,255,.20);border-color:#8eeaff}
+#focus-bar.warn{border-color:#ffd060;box-shadow:0 0 18px rgba(255,208,96,.72),0 0 44px rgba(255,96,64,.22),inset 0 0 12px rgba(255,208,96,.18)}
+#focus-fill{width:100%;height:100%;background:linear-gradient(0deg,#3bd6ff 0%,#e8fbff 68%,#fff3c0 100%);border-radius:2px;transition:height .08s linear;box-shadow:0 0 14px rgba(80,220,255,.76)}
+#focus-bar.warn #focus-fill{background:linear-gradient(0deg,#ff9d40 0%,#ffe08a 100%);box-shadow:0 0 16px rgba(255,176,64,.85)}
 #focus-label{position:absolute;top:50%;right:50px;transform:translateY(-50%);font-size:9px;letter-spacing:.32em;color:rgba(64,200,255,.55);font-weight:700;writing-mode:vertical-rl;text-orientation:mixed;z-index:9;text-shadow:0 0 6px rgba(64,200,255,.45)}
-/* FOCUS: clear, unmistakable blue edge vignette so the player knows focus is on.
-   Two stacked overlays — soft outer haze on ::after, hard luminous rim on ::before,
-   plus a subtle breath pulse animation so it reads as "active" rather than ambient. */
-body.focus-on::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:7;background:radial-gradient(ellipse at 50% 50%,transparent 28%,rgba(40,140,255,.55) 70%,rgba(8,60,180,.78) 92%,rgba(2,30,100,.92) 100%);mix-blend-mode:screen;animation:focus-pulse 1.4s ease-in-out infinite}
-body.focus-on::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:8;box-shadow:inset 0 0 80px 22px rgba(80,200,255,.55),inset 0 0 240px 60px rgba(40,140,255,.30);animation:focus-rim 1.4s ease-in-out infinite}
-body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80,170,255,.40) 0%,rgba(40,100,200,.18) 50%,rgba(30,80,180,.30) 100%)}
-@keyframes focus-pulse{0%,100%{opacity:.82}50%{opacity:1}}
-@keyframes focus-rim{0%,100%{box-shadow:inset 0 0 80px 22px rgba(80,200,255,.55),inset 0 0 240px 60px rgba(40,140,255,.30)}50%{box-shadow:inset 0 0 110px 30px rgba(120,220,255,.75),inset 0 0 280px 80px rgba(60,160,255,.45)}}
+/* FOCUS: sequenced cinematic layer driven by JS variables. */
+body.focus-on::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:7;background:radial-gradient(ellipse at 50% 50%,transparent 22%,rgba(28,170,255,.28) 58%,rgba(8,72,170,.62) 86%,rgba(1,16,48,.88) 100%);mix-blend-mode:screen;animation:focus-pulse 1.22s ease-in-out infinite}
+body.focus-on::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:8;box-shadow:inset 0 0 74px 20px rgba(112,235,255,.55),inset 0 0 230px 54px rgba(35,145,255,.24);animation:focus-rim 1.22s ease-in-out infinite}
+body.focus-on #color-grade{opacity:.70;background:linear-gradient(180deg,rgba(80,190,255,.34) 0%,rgba(30,100,180,.16) 50%,rgba(8,20,48,.34) 100%)}
+#focus-cinema{--focus-overlay:.28;--focus-scan:.10;--focus-shift:0px;--focus-tunnel-scale:1.02;--focus-letter:18px;--focus-radial-scale:1.10;--focus-radial-opacity:0;--focus-ring-inner:.86;--focus-rift-scale:.30;--focus-rift-opacity:0;--focus-speed-opacity:0;--focus-speed-scale:1.12;--focus-speed-rot:0deg;position:fixed;inset:0;z-index:10;pointer-events:none;opacity:0;transition:opacity .10s linear;mix-blend-mode:screen;overflow:hidden}
+#focus-cinema.active{opacity:1}
+#focus-cinema::before{content:'';position:absolute;inset:-4%;background:radial-gradient(ellipse at 50% 50%,rgba(230,255,255,.10) 0%,rgba(60,220,255,.10) 18%,transparent 34%,rgba(28,160,255,.22) 72%,rgba(2,12,32,.78) 100%);opacity:var(--focus-overlay);transform:scale(var(--focus-tunnel-scale));filter:saturate(1.35)}
+#focus-cinema::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(180deg,rgba(255,255,255,.045) 0 1px,transparent 1px 5px),linear-gradient(90deg,rgba(40,220,255,.16),transparent 17%,transparent 83%,rgba(255,208,96,.10));opacity:var(--focus-scan);transform:translateY(var(--focus-shift))}
+.focus-letterbox{position:absolute;left:0;right:0;height:var(--focus-letter);background:linear-gradient(180deg,rgba(0,0,0,.54),rgba(0,0,0,.02));opacity:var(--focus-overlay);z-index:1}
+.focus-letterbox.top{top:0}
+.focus-letterbox.bottom{bottom:0;transform:rotate(180deg)}
+#focus-radial{position:absolute;left:50%;top:50%;width:22vmin;height:22vmin;border:1px solid rgba(180,250,255,.48);border-radius:50%;transform:translate(-50%,-50%) scale(var(--focus-radial-scale));opacity:var(--focus-radial-opacity);box-shadow:0 0 28px rgba(80,230,255,.45),inset 0 0 30px rgba(80,230,255,.18)}
+#focus-radial::before,#focus-radial::after{content:'';position:absolute;inset:-22%;border:1px solid rgba(255,230,150,.32);border-radius:50%;transform:scale(var(--focus-ring-inner))}
+#focus-radial::after{inset:34%;border-color:rgba(255,255,255,.35);opacity:.75}
+#focus-rift{position:absolute;left:50%;top:50%;width:120vw;height:2px;background:linear-gradient(90deg,transparent,rgba(120,235,255,.0) 20%,rgba(240,255,255,.62),rgba(255,208,96,.46),rgba(120,235,255,.0) 80%,transparent);transform:translate(-50%,-50%) rotate(-7deg) scaleX(var(--focus-rift-scale));opacity:var(--focus-rift-opacity);filter:blur(.2px)}
+#focus-speedlines{position:absolute;inset:-8%;background:conic-gradient(from 0deg at 50% 52%,transparent 0 8deg,rgba(90,235,255,.16) 9deg 10deg,transparent 11deg 32deg,rgba(255,210,120,.11) 33deg 34deg,transparent 35deg 360deg);opacity:var(--focus-speed-opacity);transform:scale(var(--focus-speed-scale)) rotate(var(--focus-speed-rot));filter:blur(.8px)}
+@keyframes focus-pulse{0%,100%{opacity:.70}50%{opacity:.96}}
+@keyframes focus-rim{0%,100%{box-shadow:inset 0 0 74px 20px rgba(112,235,255,.50),inset 0 0 230px 54px rgba(35,145,255,.22)}50%{box-shadow:inset 0 0 112px 30px rgba(146,250,255,.76),inset 0 0 300px 78px rgba(70,175,255,.38)}}
 /* ── COMPASS ──────────────────────────────────────────────────────────── */
 #compass{position:absolute;top:62px;left:50%;transform:translateX(-50%);width:340px;height:18px;border-top:1px solid rgba(255,255,255,.25);border-bottom:1px solid rgba(255,255,255,.10);overflow:hidden;pointer-events:none;mask-image:linear-gradient(90deg,transparent 0%,#000 18%,#000 82%,transparent 100%);-webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 18%,#000 82%,transparent 100%)}
 #compass-strip{position:absolute;top:0;left:0;height:100%;width:1440px;will-change:transform}
@@ -295,6 +320,104 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
 .ls-time{font-size:11px;letter-spacing:.20em;color:rgba(255,200,80,.65);font-weight:600}
 .ls-target{font-size:12px;color:rgba(255,255,255,.55);font-weight:600;margin-top:4px}
 .ls-status{font-size:10px;letter-spacing:.20em;color:rgba(255,255,255,.40);margin-top:6px}
+/* ── CUSTOM MAPS / EDITOR ───────────────────────────────────── */
+#custom-maps-panel{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.82);backdrop-filter:blur(7px);z-index:112;opacity:0;pointer-events:none;transition:opacity .22s;font-family:'Rajdhani',sans-serif}
+#custom-maps-panel.show{opacity:1;pointer-events:auto}
+.cm-frame{width:min(1080px,96vw);height:min(760px,90vh);background:linear-gradient(180deg,rgba(14,16,22,.97),rgba(8,10,14,.97));border:1px solid rgba(255,200,80,.50);display:grid;grid-template-columns:340px 1fr;gap:0;overflow:hidden}
+.cm-side{border-right:1px solid rgba(255,200,80,.22);padding:24px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.cm-title,.ce-title{font-size:22px;font-weight:900;letter-spacing:.30em;color:#ffd060;text-transform:uppercase}
+.cm-sub,.ce-sub{font-size:11px;letter-spacing:.26em;color:rgba(255,255,255,.42);font-weight:700;text-transform:uppercase}
+#cm-list{display:flex;flex-direction:column;gap:10px;overflow:auto;padding-right:4px}
+.cm-pack{width:100%;text-align:left;background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.22);color:#fff;padding:12px 13px;cursor:pointer;font-family:'Rajdhani',sans-serif}
+.cm-pack.active,.cm-pack:hover{border-color:#ffd060;background:rgba(45,34,14,.78)}
+.cm-pack-top{display:flex;justify-content:space-between;font-size:9px;letter-spacing:.22em;color:rgba(255,200,80,.68);font-weight:800}
+.cm-pack-title{font-size:17px;letter-spacing:.08em;font-weight:900;text-transform:uppercase;margin-top:5px}
+.cm-pack-meta{font-size:10px;letter-spacing:.16em;color:rgba(255,255,255,.42);margin-top:4px}
+.cm-main{padding:28px 32px;display:flex;flex-direction:column;gap:18px;min-width:0}
+.cm-detail-title{font-size:34px;font-weight:900;letter-spacing:.16em;color:#fff;text-transform:uppercase}
+.cm-detail-meta{font-size:11px;letter-spacing:.22em;color:rgba(255,255,255,.46);font-weight:700}
+.cm-validation{display:inline-block;width:max-content;padding:8px 12px;border:1px solid rgba(255,200,80,.28);color:#ffd060;font-size:11px;letter-spacing:.22em;font-weight:800}
+.cm-validation.ok{border-color:rgba(95,203,82,.50);color:#7cff86}
+.cm-validation.bad{border-color:rgba(255,80,72,.50);color:#ff8060}
+.cm-map-preview{min-height:180px;border:1px solid rgba(255,255,255,.10);background:linear-gradient(180deg,rgba(25,30,36,.70),rgba(8,10,14,.72));display:flex;flex-direction:column;justify-content:flex-end;padding:20px;position:relative;overflow:hidden}
+.cm-map-preview::before{content:'';position:absolute;inset:0;background-image:linear-gradient(rgba(255,200,80,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(255,200,80,.07) 1px,transparent 1px);background-size:34px 34px;mask-image:radial-gradient(circle at 50% 50%,#000 0%,transparent 76%)}
+.cm-map-name{position:relative;font-size:24px;font-weight:900;letter-spacing:.16em;color:#fff;text-transform:uppercase}
+.cm-map-sub{position:relative;font-size:11px;letter-spacing:.22em;color:rgba(255,200,80,.70);font-weight:700}
+.cm-actions{display:flex;flex-wrap:wrap;gap:10px}
+.cm-actions .menu-cta{padding:11px 16px;font-size:12px}
+.cm-actions .menu-cta:disabled{opacity:.35;cursor:not-allowed}
+.cm-danger{color:#ff8060;border-color:rgba(255,80,72,.32)}
+.cm-issues{font-size:11px;line-height:1.45;color:rgba(255,255,255,.48);letter-spacing:.08em;max-height:120px;overflow:auto}
+#cm-status,#ce-status{min-height:16px;font-size:11px;letter-spacing:.18em;color:rgba(255,255,255,.48);font-weight:700}
+#cm-status[data-tone=ok],#ce-status[data-tone=ok]{color:#7cff86}
+#cm-status[data-tone=bad],#ce-status[data-tone=bad]{color:#ff8060}
+#custom-editor{position:fixed;inset:0;background:#07090d;z-index:114;opacity:0;pointer-events:none;transition:opacity .18s;font-family:'Rajdhani',sans-serif;color:#fff;display:grid;grid-template-rows:auto minmax(0,1fr)}
+#custom-editor.show{opacity:1;pointer-events:auto}
+.ce-top{min-height:68px;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:14px;border-bottom:1px solid rgba(255,200,80,.24);padding:0 14px;background:linear-gradient(180deg,rgba(18,22,28,.98),rgba(8,10,14,.98));min-width:0}
+.ce-top-left{display:flex;align-items:center;gap:16px;min-width:0}
+#ce-title-input{width:clamp(180px,22vw,320px);background:rgba(255,255,255,.06);border:1px solid rgba(255,200,80,.24);color:#fff;font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:800;letter-spacing:.10em;padding:9px 11px;text-transform:uppercase}
+.ce-actions{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;justify-content:flex-start;overflow-x:auto;overflow-y:hidden;min-width:0;padding:10px 2px;scrollbar-width:thin;scrollbar-color:rgba(255,208,96,.50) rgba(255,255,255,.06)}
+.ce-actions .menu-cta,.ce-small{padding:9px 13px;font-size:11px;letter-spacing:.16em;flex:0 0 auto;white-space:nowrap}
+.ce-body{display:grid;grid-template-columns:clamp(300px,24vw,380px) minmax(420px,1fr) clamp(300px,24vw,360px);min-height:0;overflow:hidden}
+.ce-left,.ce-right{background:rgba(10,13,18,.96);border-right:1px solid rgba(255,255,255,.08);min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.ce-right{border-right:0;border-left:1px solid rgba(255,255,255,.08);overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,208,96,.42) rgba(255,255,255,.05)}
+.ce-toolrow{display:flex;flex-wrap:nowrap;gap:7px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08);overflow-x:auto;scrollbar-width:thin;scrollbar-color:rgba(255,208,96,.42) rgba(255,255,255,.05)}
+.ce-tool,.ce-tab{background:rgba(20,24,32,.75);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.72);font-family:'Rajdhani',sans-serif;font-weight:800;letter-spacing:.14em;padding:8px 9px;cursor:pointer;text-transform:uppercase}
+.ce-tool{flex:0 0 auto;white-space:nowrap}
+.ce-tool.active,.ce-tool:hover,.ce-tab.active,.ce-tab:hover,#ce-analyze.active{border-color:#ffd060;color:#ffd060;background:rgba(42,31,12,.84)}
+.ce-asset-tools{display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
+#ce-search{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#fff;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:800;letter-spacing:.10em;padding:9px 10px;text-transform:uppercase}
+#ce-tabs{display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08);flex:0 0 auto;scrollbar-width:thin;scrollbar-color:rgba(255,208,96,.42) rgba(255,255,255,.05)}
+.ce-tab{font-size:10px;white-space:nowrap;flex:0 0 auto}
+.ce-tab small{display:inline-block;margin-left:6px;color:rgba(255,255,255,.38);font-size:9px;letter-spacing:.08em}
+#ce-palette{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));align-content:start;gap:9px;padding:12px;overflow:auto;min-height:0;flex:1 1 auto;scrollbar-width:thin;scrollbar-color:rgba(255,208,96,.42) rgba(255,255,255,.05)}
+.ce-empty-palette{grid-column:1/-1;padding:18px 10px;color:rgba(255,255,255,.42);font-size:11px;font-weight:900;letter-spacing:.16em;text-align:center;border:1px dashed rgba(255,255,255,.12)}
+.ce-prefab{min-width:0;background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.16);color:#fff;font-family:'Rajdhani',sans-serif;cursor:pointer;padding:8px;text-align:left;display:flex;flex-direction:column;gap:5px}
+.ce-prefab.active,.ce-prefab:hover{border-color:#ffd060;background:rgba(44,34,14,.78)}
+.ce-prefab img{width:100%;aspect-ratio:1/1;object-fit:cover;background:#090b0f}
+.ce-prefab span{font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;line-height:1.15}
+.ce-prefab small{font-size:9px;color:rgba(255,255,255,.42);letter-spacing:.12em}
+.ce-prefab em{align-self:flex-start;border:1px solid rgba(255,208,96,.24);color:rgba(255,208,96,.72);font-size:8px;letter-spacing:.16em;font-style:normal;font-weight:900;padding:2px 5px;text-transform:uppercase}
+.ce-canvas-wrap{position:relative;min-width:0;min-height:0;background:radial-gradient(circle at 50% 42%,#151a20 0%,#05070a 72%)}
+#ce-canvas{width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+#ce-canvas[data-tool=select]{cursor:default}
+#ce-canvas[data-tool=pan]{cursor:grab}
+.ce-viewmodes{position:absolute;left:14px;top:14px;display:flex;gap:7px;z-index:2;background:rgba(5,7,10,.72);border:1px solid rgba(255,255,255,.10);padding:6px;backdrop-filter:blur(6px)}
+.ce-view{background:rgba(20,24,32,.78);border:1px solid rgba(255,255,255,.14);color:rgba(255,255,255,.72);font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:900;letter-spacing:.16em;padding:7px 9px;cursor:pointer;text-transform:uppercase}
+.ce-view.active,.ce-view:hover{border-color:#ffd060;color:#ffd060;background:rgba(42,31,12,.88)}
+.ce-viewhint{position:absolute;right:14px;bottom:12px;z-index:2;font-size:10px;letter-spacing:.16em;color:rgba(255,255,255,.38);font-weight:800;background:rgba(5,7,10,.55);border:1px solid rgba(255,255,255,.08);padding:7px 9px;pointer-events:none}
+#ce-hud{position:absolute;left:14px;bottom:12px;z-index:2;display:flex;gap:7px;flex-wrap:wrap;max-width:min(680px,65%);pointer-events:none}
+#ce-hud span{background:rgba(5,7,10,.68);border:1px solid rgba(255,255,255,.08);padding:7px 9px;font-size:10px;letter-spacing:.14em;color:rgba(255,255,255,.44);font-weight:800}
+#ce-hud b{color:#ffd060;font-weight:900}
+.ce-layer-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08)}
+.ce-layer-list label{display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.14em;color:rgba(255,255,255,.62);font-weight:800;text-transform:uppercase}
+.ce-snap-panel{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08)}
+.ce-snap-panel label{display:flex;flex-direction:column;gap:5px;font-size:10px;letter-spacing:.14em;color:rgba(255,200,80,.66);font-weight:800;text-transform:uppercase}
+.ce-snap-panel select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#fff;font-family:'Rajdhani',sans-serif;font-size:13px;padding:7px}
+.ce-snap-panel .ce-check{flex-direction:row;align-items:center;color:rgba(255,255,255,.62)}
+.ce-gen-panel{border-bottom:1px solid rgba(255,255,255,.08);padding:12px;display:flex;flex-direction:column;gap:9px}
+.ce-gen-title{font-size:11px;font-weight:900;letter-spacing:.18em;color:#ffd060}
+.ce-gen-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.ce-gen-grid .menu-cta{padding:8px 7px;font-size:10px;letter-spacing:.12em;width:100%}
+.ce-gen-wide{grid-column:1/-1}
+.ce-analysis-panel{border-bottom:1px solid rgba(255,255,255,.08);padding:12px;color:rgba(255,255,255,.62);font-size:11px}
+.ce-analysis-head{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:900;letter-spacing:.16em;color:#ffd060;margin-bottom:10px}
+.ce-analysis-head b.ok{color:#7cff86}.ce-analysis-head b.bad{color:#ff8060}
+.ce-analysis-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:9px}
+.ce-analysis-grid div{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);padding:8px}
+.ce-analysis-grid b{display:block;color:#fff;font-size:17px;line-height:1;font-variant-numeric:tabular-nums}
+.ce-analysis-grid span,.ce-analysis-row span{font-size:9px;letter-spacing:.15em;color:rgba(255,255,255,.42);font-weight:900}
+.ce-analysis-row{display:flex;justify-content:space-between;gap:8px;border-top:1px solid rgba(255,255,255,.06);padding:7px 0}
+.ce-analysis-row b{color:#ffd060;font-size:11px}
+.ce-analysis-issues{max-height:72px;overflow:auto;margin-top:4px;color:rgba(255,255,255,.44);line-height:1.35}
+#ce-inspector{padding:14px;overflow:visible;display:flex;flex-direction:column;gap:10px;flex:0 0 auto}
+#ce-inspector label{display:flex;flex-direction:column;gap:4px;font-size:10px;letter-spacing:.18em;color:rgba(255,200,80,.66);font-weight:800;text-transform:uppercase}
+#ce-inspector input,#ce-inspector select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#fff;font-family:'Rajdhani',sans-serif;font-size:14px;padding:8px}
+.ce-ins-title{font-size:16px;font-weight:900;letter-spacing:.22em;color:#ffd060}
+.ce-ins-hint{font-size:12px;line-height:1.45;color:rgba(255,255,255,.46)}
+.ce-danger{color:#ff8060;border-color:rgba(255,80,72,.36)}
+@media (max-width:1100px){.ce-top{grid-template-columns:1fr}.ce-top-left{padding-top:10px}.ce-actions{justify-content:flex-start;padding-top:0}.ce-body{grid-template-columns:280px minmax(360px,1fr) 286px}.ce-gen-grid{grid-template-columns:1fr}.ce-gen-wide{grid-column:auto}}
+@media (max-width:900px){.cm-frame{grid-template-columns:1fr;height:94vh}.cm-side{border-right:0;border-bottom:1px solid rgba(255,200,80,.22);max-height:260px}.ce-body{grid-template-columns:1fr}.ce-left,.ce-right{display:none}.ce-actions{gap:5px}.ce-actions .menu-cta{padding:8px 9px;font-size:10px}}
 /* ── ONBOARD CARD ─────────────────────────────────────────── */
 #onboard-card{position:absolute;bottom:170px;left:36px;background:rgba(8,12,20,.85);border-left:3px solid #ffd060;padding:10px 18px;font-family:'Rajdhani',sans-serif;font-size:13px;color:rgba(255,255,255,.85);max-width:380px;opacity:0;pointer-events:none;transition:opacity .3s,transform .15s;z-index:14;backdrop-filter:blur(2px)}
 #onboard-card.show{opacity:1}
@@ -497,6 +620,7 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
       <button class="pause-btn" id="pause-skills-btn">▣ SKILLS</button>
       <button class="pause-btn" id="pause-ach-btn">★ ACHIEVEMENTS</button>
       <button class="pause-btn" id="pause-settings-btn">SETTINGS</button>
+      <button class="pause-btn" id="pause-return-editor" style="display:none">RETURN TO EDITOR</button>
       <button class="pause-btn pause-quit" id="pause-quit">QUIT TO MAIN MENU</button>
     </div>
     <div id="pause-settings" style="display:none">
@@ -617,6 +741,13 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
 </div>
 <div id="focus-bar"><div id="focus-fill"></div></div>
 <div id="focus-label">FOCUS · F</div>
+<div id="focus-cinema" aria-hidden="true">
+  <div class="focus-letterbox top"></div>
+  <div class="focus-letterbox bottom"></div>
+  <div id="focus-speedlines"></div>
+  <div id="focus-rift"></div>
+  <div id="focus-radial"></div>
+</div>
 <div id="compass"><div id="compass-strip"></div></div>
 <div id="waypoint-arrow"></div>
 <div id="dmg-indicators"></div>
@@ -637,15 +768,122 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
 </div>
 <div id="onboard-card"><div class="ob-text">Move with WASD</div><div class="ob-skip">[<kbd>?</kbd> to skip]</div></div>
 <div id="loadout-viewer"><div class="lv-frame"><div class="lv-content"></div><button class="menu-cta" id="lv-back">CLOSE</button></div></div>
-<div id="level-select">
-  <div class="ls-frame">
-    <div class="ls-title">▣ LEVEL SELECT</div>
-    <div class="ls-sub">REPLAY ANY CLEARED BUILDING</div>
-    <div id="ls-grid"></div>
-    <button class="menu-cta" id="ls-back">← BACK</button>
-  </div>
-</div>
-<div id="radial"></div>
+	<div id="level-select">
+	  <div class="ls-frame">
+	    <div class="ls-title">▣ LEVEL SELECT</div>
+	    <div class="ls-sub">REPLAY ANY CLEARED BUILDING</div>
+	    <div id="ls-grid"></div>
+	    <button class="menu-cta" id="ls-back">← BACK</button>
+	  </div>
+	</div>
+	<div id="custom-maps-panel">
+	  <div class="cm-frame">
+	    <div class="cm-side">
+	      <div>
+	        <div class="cm-title">CUSTOM MAPS</div>
+	        <div class="cm-sub">LOCAL PACKS · BUILT-IN TEMPLATES</div>
+	      </div>
+	      <div id="cm-list"></div>
+	      <div class="cm-actions">
+	        <button class="menu-cta" id="cm-import">IMPORT</button>
+	        <button class="menu-cta" id="cm-back">← BACK</button>
+	        <input id="cm-import-file" type="file" accept="application/json,.json" style="display:none"/>
+	      </div>
+	      <div id="cm-status"></div>
+	    </div>
+	    <div class="cm-main">
+	      <div id="cm-detail"></div>
+	    </div>
+	  </div>
+	</div>
+	<div id="custom-editor">
+	  <div class="ce-top">
+	    <div class="ce-top-left">
+	      <div>
+	        <div class="ce-title">EDITOR</div>
+	        <div class="ce-sub">B01 MEGAPLEX KIT</div>
+	      </div>
+	      <input id="ce-title-input" value="CUSTOM MAP"/>
+	    </div>
+	    <div class="ce-actions">
+	      <button class="menu-cta" id="ce-undo">UNDO</button>
+	      <button class="menu-cta" id="ce-redo">REDO</button>
+	      <button class="menu-cta" id="ce-copy">COPY</button>
+	      <button class="menu-cta" id="ce-paste">PASTE</button>
+	      <button class="menu-cta" id="ce-rotate">ROTATE</button>
+	      <button class="menu-cta ce-danger" id="ce-delete-btn">DELETE</button>
+	      <button class="menu-cta" id="ce-validate">VALIDATE</button>
+	      <button class="menu-cta" id="ce-analyze">ANALYZE</button>
+	      <button class="menu-cta" id="ce-save">SAVE</button>
+	      <button class="menu-cta" id="ce-save-copy">SAVE COPY</button>
+	      <button class="menu-cta" id="ce-import">IMPORT</button>
+	      <button class="menu-cta" id="ce-export">EXPORT</button>
+	      <button class="menu-cta menu-cta-go" id="ce-playtest">PLAYTEST</button>
+	      <button class="menu-cta" id="ce-back">MENU</button>
+	      <input id="ce-import-file" type="file" accept="application/json,.json" style="display:none"/>
+	    </div>
+	  </div>
+	  <div class="ce-body">
+	    <div class="ce-left">
+	      <div class="ce-toolrow">
+	        <button class="ce-tool active" data-tool="select">SELECT</button>
+	        <button class="ce-tool" data-tool="pan">PAN</button>
+	        <button class="ce-tool" data-tool="place">PLACE</button>
+	        <button class="ce-tool" data-tool="spawn">SPAWN</button>
+	        <button class="ce-tool" data-tool="exit">EXIT</button>
+	        <button class="ce-tool" data-tool="door">DOOR</button>
+	        <button class="ce-tool" data-tool="enemy">ENEMY</button>
+	        <button class="ce-tool" data-tool="peek">PEEK</button>
+	        <button class="ce-tool" data-tool="hold">HOLD</button>
+	        <button class="ce-tool" data-tool="pickup">PICKUP</button>
+	      </div>
+	      <div class="ce-asset-tools"><input id="ce-search" placeholder="SEARCH ASSETS, TAGS, COMBAT ROLES"/></div>
+	      <div id="ce-tabs"></div>
+	      <div id="ce-palette"></div>
+	    </div>
+	    <div class="ce-canvas-wrap">
+	      <canvas id="ce-canvas"></canvas>
+	      <div class="ce-viewmodes">
+	        <button class="ce-view active" data-view="tactical">3D</button>
+	        <button class="ce-view" data-view="top">TOP</button>
+	        <button class="ce-view" data-view="preview">PREVIEW</button>
+	      </div>
+	      <div id="ce-hud"></div>
+	      <div class="ce-viewhint">RIGHT/ALT DRAG PAN · WHEEL ZOOM · Q/E ROTATE · F FRAME</div>
+	    </div>
+	    <div class="ce-right">
+	      <div class="ce-layer-list">
+	        <label><input class="ce-layer" data-layer="geometry" type="checkbox" checked/>Geometry</label>
+	        <label><input class="ce-layer" data-layer="gameplay" type="checkbox" checked/>Gameplay</label>
+	        <label><input class="ce-layer" data-layer="enemies" type="checkbox" checked/>Enemies</label>
+	        <label><input class="ce-layer" data-layer="flow" type="checkbox" checked/>Flow</label>
+	        <label><input class="ce-layer" data-layer="lighting" type="checkbox" checked/>Lighting</label>
+	        <label><input class="ce-layer" data-layer="template" type="checkbox" checked/>Template</label>
+	      </div>
+	      <div class="ce-snap-panel">
+	        <label>Grid<select id="ce-grid-size"><option value="0.25">0.25M</option><option value="0.5" selected>0.5M</option><option value="1">1M</option><option value="2">2M</option></select></label>
+	        <label class="ce-check"><input id="ce-socket-snap" type="checkbox" checked/>Socket Snap</label>
+	      </div>
+	      <div class="ce-gen-panel">
+	        <div class="ce-gen-title">BUILD ASSIST</div>
+	        <div class="ce-gen-grid">
+	          <button class="menu-cta ce-gen-wide" id="ce-generate-map">GENERATE MAP</button>
+	          <button class="menu-cta" id="ce-auto-tactics">AUTO TACTICS</button>
+	          <button class="menu-cta" id="ce-quality-fix">FIX FLOW</button>
+	          <button class="menu-cta ce-stamp" data-stamp="breach">BREACH</button>
+	          <button class="menu-cta ce-stamp" data-stamp="crossfire">CROSSFIRE</button>
+	          <button class="menu-cta ce-stamp" data-stamp="push">PUSH</button>
+	          <button class="menu-cta ce-stamp" data-stamp="sniper">SNIPER</button>
+	          <button class="menu-cta ce-stamp" data-stamp="final">FINAL</button>
+	        </div>
+	      </div>
+	      <div id="ce-analysis-panel" class="ce-analysis-panel"></div>
+	      <div id="ce-inspector"></div>
+	      <div style="padding:0 14px 14px"><div id="ce-status"></div></div>
+	    </div>
+	  </div>
+	</div>
+	<div id="radial"></div>
 <div id="full-map"><div class="fm-frame"><div class="fm-title">▣ TACTICAL MAP</div><canvas id="full-map-canvas" width="540" height="420"></canvas><button class="menu-cta" id="fm-back">CLOSE</button></div></div>
 <div id="breath-bar"><div class="bb-row"><span class="bb-label">SHIFT</span></div><div class="bb-track"><div class="bb-fill"></div></div></div>
 <div id="setpiece-bar">
@@ -781,8 +1019,10 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
       <button class="menu-cta" id="menu-continue-btn" style="display:none">▶ CONTINUE</button>
       <button class="menu-cta" id="menu-tutorial-btn">▷ RANGE</button>
       <button class="menu-cta" id="menu-demo-map-btn">◇ DEMO MAP</button>
-      <button class="menu-cta" id="menu-endless-btn">∞ ENDLESS</button>
-      <button class="menu-cta" id="menu-mp-btn">⎘ MULTIPLAYER</button>
+	      <button class="menu-cta" id="menu-endless-btn">∞ ENDLESS</button>
+	      <button class="menu-cta" id="menu-custom-maps-btn">▣ CUSTOM MAPS</button>
+	      <button class="menu-cta" id="menu-editor-btn">◇ EDITOR</button>
+	      <button class="menu-cta" id="menu-mp-btn">⎘ MULTIPLAYER</button>
       <button class="menu-cta" id="menu-levelsel-btn">▣ LEVEL SELECT</button>
       <button class="menu-cta" id="menu-skills-btn">▣ SKILLS</button>
       <button class="menu-cta" id="menu-ach-btn">★ ACHIEVE</button>
@@ -795,7 +1035,7 @@ body.focus-on #color-grade{opacity:.85;background:linear-gradient(180deg,rgba(80
       <button class="menu-cta" id="menu-mp-back" style="opacity:.75">← BACK</button>
     </div>
     <div id="menu-controls-hint" style="margin-top:18px;font-size:11px;letter-spacing:.18em;color:rgba(255,255,255,.32);text-align:center;line-height:1.7">
-      <div><span class="kb">WASD</span> Move &nbsp; <span class="kb">SHIFT</span> Run &nbsp; <span class="kb">CTRL</span> Slide &nbsp; <span class="kb">SPACE</span> Vault &nbsp; <span class="kb">Q/E</span> Lean</div>
+      <div><span class="kb">WASD</span> Move &nbsp; <span class="kb">SHIFT</span> Run &nbsp; <span class="kb">CTRL</span> Slide &nbsp; <span class="kb">ALT</span> Guard &nbsp; <span class="kb">SPACE</span> Vault &nbsp; <span class="kb">Q/E</span> Lean</div>
       <div><span class="kb">LMB</span> Shoot &nbsp; <span class="kb">RMB</span> ADS &nbsp; <span class="kb">R</span> Reload &nbsp; <span class="kb">F</span> Focus &nbsp; <span class="kb">V</span> Melee &nbsp; <span class="kb">G</span> Grenade &nbsp; <span class="kb">H</span> Heal</div>
       <div><span class="kb">1</span> USP-T &nbsp; <span class="kb">2</span> Knife &nbsp; <span class="kb">3</span> Shotgun &nbsp; <span class="kb">4</span> SMG &nbsp; <span class="kb">5</span> DMR &nbsp; <span class="kb">B</span> Shop &nbsp; <span class="kb">Tab</span> Loadout</div>
     </div>

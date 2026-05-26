@@ -149,7 +149,115 @@ const result = await page.evaluate(async () => {
       }
     };
   }
-  return { m0, m1, a0, wallJump, finiteM0: Number.isFinite(m0.footPhase) && Number.isFinite(m0.velLX) };
+  let dropkick = { ok: false, error: 'debug hook missing' };
+  let targetedDropkick = { ok: false, error: 'debug hook missing' };
+  if (dbg.dropkickState && dbg.viewmodelPose && dbg.spawnAt) {
+    if (G.enemyMgr) G.enemyMgr.clear();
+    P.pos.set(0, 0.2, 18);
+    P.jumpH = 1.0;
+    P.grounded = false;
+    P.vy = -0.45;
+    P.yaw = 0;
+    P.pitch = 0;
+    P.vaulting = false;
+    P.nearVault = null;
+    P.wallJumpTimer = 0;
+    P.wallJumpVx = 0;
+    P.wallJumpVz = 0;
+    P.dropkickActive = false;
+    P.dropkickCooldown = 0;
+    P.dropkickLandTimer = 0;
+    for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) {
+      document.dispatchEvent(new KeyboardEvent('keyup', { code, key: '', bubbles: true }));
+    }
+    dbg.spawnAt('soldier', 0, 16.7);
+    const enemy = G.enemyMgr?._list?.[0] || null;
+    const beforeHp = enemy?.hp ?? 0;
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
+    const immediate = dbg.dropkickState();
+    let feetSeen = false;
+    let earlyAnim = null;
+    let hpMin = beforeHp;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const pose = dbg.viewmodelPose();
+      feetSeen = feetSeen || !!pose.dropkickFeet?.visible;
+      if (enemy) hpMin = Math.min(hpMin, enemy.hp || 0);
+      if (i === 2) earlyAnim = JSON.parse(JSON.stringify(dbg.playerAnimation()));
+    }
+    document.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }));
+    const aw = earlyAnim || dbg.playerAnimation();
+    const finalState = dbg.dropkickState();
+    dropkick = {
+      ok: true,
+      immediate,
+      finalState,
+      feetSeen,
+      beforeHp,
+      afterHp: enemy?.hp ?? 0,
+      killed: !!enemy?.dead,
+      hpDelta: beforeHp - hpMin,
+      anim: {
+        input: aw.inputs.dropkick,
+        phase: aw.inputs.dropkickPhase,
+        land: aw.inputs.dropkickLand,
+        locomotion: aw.layerWeights.locomotion.dropkick,
+        cameraPitch: aw.resolved.camera.dropkickPitch,
+        viewmodelTuck: aw.resolved.viewmodel.dropkickTuck,
+        viewmodelKick: aw.resolved.viewmodel.dropkickKick,
+        proxyDropkick: aw.resolved.proxy.dropkickPose,
+        notifies: (aw.recentNotifies || []).map((n) => n.name)
+      }
+    };
+    if (G.enemyMgr) G.enemyMgr.clear();
+    P.pos.set(0, 0.2, 18);
+    P.jumpH = 1.2;
+    P.grounded = false;
+    P.vy = -0.10;
+    P.yaw = 0;
+    P.pitch = -0.55;
+    P.vaulting = false;
+    P.nearVault = null;
+    P.wallJumpTimer = 0;
+    P.wallJumpVx = 0;
+    P.wallJumpVz = 0;
+    P.dropkickActive = false;
+    P.dropkickCooldown = 0;
+    P.dropkickLandTimer = 0;
+    P.dropkickTargeted = false;
+    for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) {
+      document.dispatchEvent(new KeyboardEvent('keyup', { code, key: '', bubbles: true }));
+    }
+    dbg.spawnAt('soldier', 0, 14.7);
+    await new Promise((r) => requestAnimationFrame(r));
+    const targetEnemy = G.enemyMgr?._list?.[0] || null;
+    const targetBeforeHp = targetEnemy?.hp ?? 0;
+    const targetStart = { x: P.pos.x, z: P.pos.z };
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
+    const targetImmediate = dbg.dropkickState();
+    let targetHpMin = targetBeforeHp;
+    let targetFeetSeen = false;
+    let targetMaxTravel = 0;
+    for (let i = 0; i < 28; i++) {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      targetFeetSeen = targetFeetSeen || !!dbg.viewmodelPose().dropkickFeet?.visible;
+      targetMaxTravel = Math.max(targetMaxTravel, Math.hypot(P.pos.x - targetStart.x, P.pos.z - targetStart.z));
+      if (targetEnemy) targetHpMin = Math.min(targetHpMin, targetEnemy.hp || 0);
+    }
+    document.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }));
+    targetedDropkick = {
+      ok: true,
+      immediate: targetImmediate,
+      finalState: dbg.dropkickState(),
+      feetSeen: targetFeetSeen,
+      travel: targetMaxTravel,
+      beforeHp: targetBeforeHp,
+      afterHp: targetEnemy?.hp ?? 0,
+      killed: !!targetEnemy?.dead,
+      hpDelta: targetBeforeHp - targetHpMin
+    };
+  }
+  return { m0, m1, a0, wallJump, dropkick, targetedDropkick, finiteM0: Number.isFinite(m0.footPhase) && Number.isFinite(m0.velLX) };
 });
 
 if (errors.length) throw new Error(errors.join('\n'));
@@ -168,6 +276,17 @@ for (const [key, value] of Object.entries(result.wallJump.anim)) {
 if (!(Math.abs(result.wallJump.anim.viewmodelZ) > 0.02)) throw new Error(`wall jump viewmodel kick too weak: ${JSON.stringify(result.wallJump.anim)}`);
 if (!(Math.abs(result.wallJump.anim.proxyJumpPose) > 0.05 || Math.abs(result.wallJump.anim.proxyArmSwing) > 0.01)) throw new Error(`proxy movement animation too weak: ${JSON.stringify(result.wallJump.anim)}`);
 if (!result.wallJump.anim.notifies.includes('wallJump')) throw new Error(`wallJump notify missing: ${JSON.stringify(result.wallJump.anim.notifies)}`);
+if (!result.dropkick?.ok) throw new Error(`dropkick setup failed: ${result.dropkick?.error || 'unknown'}`);
+if (!result.dropkick.immediate?.active) throw new Error(`dropkick did not activate in air: ${JSON.stringify(result.dropkick)}`);
+if (!(result.dropkick.feetSeen && result.dropkick.finalState?.feetMeshes >= 2)) throw new Error(`dropkick feet did not render: ${JSON.stringify(result.dropkick)}`);
+if (!(result.dropkick.hpDelta > 50 || result.dropkick.killed)) throw new Error(`dropkick did not damage enemy: ${JSON.stringify(result.dropkick)}`);
+if (!(result.dropkick.anim.input || result.dropkick.anim.locomotion > 0.05)) throw new Error(`dropkick animation did not activate: ${JSON.stringify(result.dropkick.anim)}`);
+if (!(result.dropkick.anim.viewmodelKick > 0.05 && result.dropkick.anim.proxyDropkick > 0.05)) throw new Error(`dropkick pose channels too weak: ${JSON.stringify(result.dropkick.anim)}`);
+if (!result.dropkick.anim.notifies.includes('dropkickStart')) throw new Error(`dropkickStart notify missing: ${JSON.stringify(result.dropkick.anim.notifies)}`);
+if (!result.targetedDropkick?.ok) throw new Error(`targeted dropkick setup failed: ${result.targetedDropkick?.error || 'unknown'}`);
+if (!result.targetedDropkick.immediate?.targeted) throw new Error(`crosshair-targeted dropkick did not acquire target: ${JSON.stringify(result.targetedDropkick)}`);
+if (!(result.targetedDropkick.travel > 2.4)) throw new Error(`targeted dropkick did not lunge far enough: ${JSON.stringify(result.targetedDropkick)}`);
+if (!(result.targetedDropkick.hpDelta > 50 || result.targetedDropkick.killed)) throw new Error(`targeted dropkick did not damage enemy: ${JSON.stringify(result.targetedDropkick)}`);
 fs.writeFileSync(path.join(OUT_DIR, 'player-animation-movement-probe.json'), JSON.stringify({ ok: true, result }, null, 2));
 console.log(JSON.stringify({ ok: true, out: 'screenshots/player-animation-movement-probe.json' }));
 

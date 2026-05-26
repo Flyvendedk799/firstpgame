@@ -408,7 +408,7 @@ def build_usp() -> None:
     reset_scene()
     scene = bpy.context.scene
     scene.frame_start = 1
-    scene.frame_end = 88
+    scene.frame_end = 96
     col = collection("USP_VIEWMODEL_ASSET")
     root = empty("WeaponRoot", (0, 0, 0), col, None, 0.10, "ARROWS")
     visual = empty("visual", (0, 0, 0), col, root, 0.045)
@@ -419,32 +419,94 @@ def build_usp() -> None:
     grip_mat = material("USP_ribbed_grip_rubber", (0.006, 0.007, 0.009, 1), 0.90, 0.0)
     accent_mat = material("USP_oiled_controls", (0.020, 0.021, 0.024, 1), 0.44, 0.55)
     wear_mat = material("USP_worn_edges", (0.42, 0.40, 0.35, 1), 0.58, 0.25)
+    shadow_mat = material("USP_deep_cut_shadow", (0.001, 0.001, 0.002, 1), 0.96, 0.0)
+    sight_mat = material("USP_tritium_sight_paint", (0.72, 0.92, 0.78, 1), 0.32, 0.0)
 
     # Author +Y forward in Blender. glTF export maps that to game-forward -Z.
     slide = cube("chargingHandle", (0, 0.22, 0.19), (0.22, 0.76, 0.15), slide_mat, col, visual, bevel=0.018)
     cube("slide_top_flat", (0, 0.22, 0.29), (0.17, 0.66, 0.026), accent_mat, col, visual, bevel=0.004)
     cube("rear_sight", (0, -0.18, 0.32), (0.15, 0.045, 0.055), accent_mat, col, visual, bevel=0.004)
     cube("front_sight", (0, 0.58, 0.32), (0.075, 0.030, 0.045), accent_mat, col, visual, bevel=0.004)
+    cube("rear_sight_dot_l", (-0.038, -0.202, 0.352), (0.018, 0.006, 0.010), sight_mat, col, visual, bevel=0.001)
+    cube("rear_sight_dot_r", (0.038, -0.202, 0.352), (0.018, 0.006, 0.010), sight_mat, col, visual, bevel=0.001)
+    cube("front_sight_dot", (0, 0.561, 0.348), (0.022, 0.006, 0.010), sight_mat, col, visual, bevel=0.001)
+    cube("slide_chamfer_l", (-0.088, 0.22, 0.262), (0.014, 0.62, 0.020), wear_mat, col, visual, rot=(0, 0, math.radians(-8)), bevel=0.002)
+    cube("slide_chamfer_r", (0.088, 0.22, 0.262), (0.014, 0.62, 0.020), wear_mat, col, visual, rot=(0, 0, math.radians(8)), bevel=0.002)
+    cube("slide_side_flat_l", (-0.114, 0.205, 0.190), (0.006, 0.58, 0.100), slide_mat, col, visual, bevel=0.002)
+    cube("slide_side_flat_r", (0.114, 0.205, 0.190), (0.006, 0.58, 0.100), slide_mat, col, visual, bevel=0.002)
     cube("ejection_port_cut", (-0.113, 0.18, 0.225), (0.010, 0.19, 0.060), wear_mat, col, visual, bevel=0.002)
+    cube("ejection_port_shadow", (-0.120, 0.185, 0.222), (0.006, 0.150, 0.043), shadow_mat, col, visual, bevel=0.001)
+    cube("barrel_chamber_glint", (-0.122, 0.150, 0.236), (0.005, 0.075, 0.026), wear_mat, col, visual, bevel=0.001)
+    for side, sx in (("l", -1), ("r", 1)):
+        for i in range(5):
+            cube(
+                f"rear_slide_serration_{side}_{i}",
+                (sx * 0.119, -0.185 + i * 0.028, 0.202),
+                (0.010, 0.008, 0.112),
+                wear_mat,
+                col,
+                visual,
+                rot=(0, 0, math.radians(15 * -sx)),
+                bevel=0.0015,
+            )
+        for i in range(4):
+            cube(
+                f"front_slide_serration_{side}_{i}",
+                (sx * 0.119, 0.430 + i * 0.026, 0.202),
+                (0.010, 0.007, 0.104),
+                wear_mat,
+                col,
+                visual,
+                rot=(0, 0, math.radians(12 * sx)),
+                bevel=0.0015,
+            )
 
     cube("frame", (0, 0.03, 0.045), (0.235, 0.62, 0.20), frame_mat, col, visual, bevel=0.020)
     cube("dust_cover", (0, 0.34, 0.015), (0.205, 0.34, 0.10), frame_mat, col, visual, bevel=0.012)
     for i in range(4):
         cube(f"accessory_rail_notch_{i}", (0, 0.20 + i * 0.075, -0.050), (0.175, 0.018, 0.020), accent_mat, col, visual, bevel=0.002)
+    for i in range(3):
+        cube(f"dust_cover_side_groove_l_{i}", (-0.106, 0.235 + i * 0.085, 0.018), (0.006, 0.052, 0.015), shadow_mat, col, visual, bevel=0.001)
+        cube(f"dust_cover_side_groove_r_{i}", (0.106, 0.235 + i * 0.085, 0.018), (0.006, 0.052, 0.015), shadow_mat, col, visual, bevel=0.001)
 
-    cylinder("barrel", (0, 0.58, 0.19), 0.043, 0.30, accent_mat, col, visual, "Y", 32)
-    cylinder("suppressor", (0, 0.91, 0.19), 0.070, 0.58, accent_mat, col, visual, "Y", 32)
+    barrel = cylinder("barrel", (0, 0.58, 0.19), 0.043, 0.30, accent_mat, col, visual, "Y", 32)
+    suppressor = cylinder("suppressor", (0, 0.91, 0.19), 0.070, 0.58, accent_mat, col, visual, "Y", 32)
+    for i, y in enumerate((0.655, 0.725, 0.795, 0.865, 0.935, 1.005, 1.075, 1.145)):
+        cylinder(f"suppressor_grip_ring_{i}", (0, y, 0.19), 0.0735, 0.010, shadow_mat if i % 2 else wear_mat, col, visual, "Y", 40)
+    cube("suppressor_serial_plate", (-0.059, 0.920, 0.234), (0.004, 0.185, 0.018), wear_mat, col, visual, bevel=0.001)
     cylinder("suppressor_front_cap", (0, 1.22, 0.19), 0.074, 0.024, wear_mat, col, visual, "Y", 32)
+    cylinder("suppressor_bore_shadow", (0, 1.236, 0.19), 0.034, 0.006, shadow_mat, col, visual, "Y", 32)
 
     grip = cube("pistolGrip", (0, -0.20, -0.22), (0.215, 0.24, 0.56), grip_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.026)
+    for sx in (-1, 1):
+        cube(f"grip_side_panel_{'l' if sx < 0 else 'r'}", (sx * 0.113, -0.205, -0.270), (0.006, 0.178, 0.360), grip_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.004)
+        cylinder(f"grip_screw_top_{'l' if sx < 0 else 'r'}", (sx * 0.119, -0.268, -0.150), 0.011, 0.006, accent_mat, col, visual, "X", 18)
+        cylinder(f"grip_screw_bottom_{'l' if sx < 0 else 'r'}", (sx * 0.119, -0.140, -0.392), 0.010, 0.006, accent_mat, col, visual, "X", 18)
+        for row in range(5):
+            for col_i in range(3):
+                cube(
+                    f"grip_stipple_{'l' if sx < 0 else 'r'}_{row}_{col_i}",
+                    (sx * 0.119, -0.280 + row * 0.040, -0.352 + col_i * 0.070),
+                    (0.004, 0.010, 0.013),
+                    frame_mat,
+                    col,
+                    visual,
+                    rot=(math.radians(-9), 0, 0),
+                    bevel=0.001,
+                )
     for i in range(6):
         cube(f"grip_rib_{i}", (0, -0.305 + i * 0.042, -0.185), (0.225, 0.010, 0.030), frame_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.0015)
     mag = cube("mag", (0, -0.26, -0.47), (0.185, 0.19, 0.32), accent_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.012)
+    for i in range(3):
+        cube(f"mag_witness_hole_{i}", (-0.096, -0.295 + i * 0.050, -0.475 + i * 0.035), (0.005, 0.020, 0.038), shadow_mat, col, visual, rot=(math.radians(-9), 0, 0), bevel=0.001)
     cube("mag_plate", (0, -0.305, -0.65), (0.225, 0.12, 0.065), wear_mat, col, visual, bevel=0.012)
     cube("triggerGuard", (0, -0.080, -0.075), (0.225, 0.14, 0.13), frame_mat, col, visual, bevel=0.009)
+    cube("trigger_guard_inner_shadow", (0, -0.086, -0.087), (0.155, 0.092, 0.070), shadow_mat, col, visual, bevel=0.004)
     trigger = cube("trigger", (0, -0.105, -0.060), (0.045, 0.045, 0.13), accent_mat, col, visual, rot=(math.radians(-8), 0, 0), bevel=0.004)
     cube("slide_release", (-0.123, -0.02, 0.095), (0.016, 0.17, 0.030), accent_mat, col, visual, bevel=0.003)
     cube("safety_decocker", (-0.128, -0.16, 0.125), (0.020, 0.11, 0.040), accent_mat, col, visual, bevel=0.003)
+    cube("slide_release_right", (0.123, -0.018, 0.090), (0.014, 0.115, 0.022), accent_mat, col, visual, bevel=0.003)
+    cube("takedown_pin", (0.126, 0.032, 0.050), (0.015, 0.030, 0.030), wear_mat, col, visual, bevel=0.003)
     cube("beavertail", (0, -0.31, 0.095), (0.205, 0.14, 0.055), frame_mat, col, visual, bevel=0.012)
 
     socket_positions = {
@@ -464,13 +526,15 @@ def build_usp() -> None:
     for name, loc in socket_positions.items():
         empty(name, loc, col, sockets, 0.036, "SPHERE")
 
-    anim_objs = [root, visual, slide, mag, trigger]
+    anim_objs = [root, visual, slide, mag, trigger, barrel, suppressor]
     key_data = {
         "root": (root, (0, 0, 0), (0, 0, 0), (1, 1, 1)),
         "visual": (visual, (0, 0, 0), (0, 0, 0), (1, 1, 1)),
         "slide": (slide, slide.location.copy(), slide.rotation_euler.copy(), slide.scale.copy()),
         "mag": (mag, mag.location.copy(), mag.rotation_euler.copy(), mag.scale.copy()),
         "trigger": (trigger, trigger.location.copy(), trigger.rotation_euler.copy(), trigger.scale.copy()),
+        "barrel": (barrel, barrel.location.copy(), barrel.rotation_euler.copy(), barrel.scale.copy()),
+        "suppressor": (suppressor, suppressor.location.copy(), suppressor.rotation_euler.copy(), suppressor.scale.copy()),
     }
 
     def set_key(name, frame, loc=None, rot=None, scale=None):
@@ -488,25 +552,40 @@ def build_usp() -> None:
     clip("idle", [(1, rest), (40, {
         "visual": {"loc": (0.0, 0.004, 0.002), "rot": (math.radians(0.7), 0, math.radians(-0.6))},
     }), (80, rest)])
-    clip("fire", [(1, rest), (4, {
-        "root": {"loc": (0, -0.016, -0.006), "rot": (math.radians(-2.2), 0, math.radians(-1.4))},
-        "slide": {"loc": (0, 0.115, 0.19)},
-        "trigger": {"rot": (math.radians(-22), 0, 0)},
-    }), (13, rest)])
+    clip("fire", [(1, rest), (3, {
+        "root": {"loc": (0.010, -0.030, -0.012), "rot": (math.radians(-4.6), math.radians(0.7), math.radians(-2.8))},
+        "visual": {"loc": (0.004, -0.010, -0.004), "rot": (math.radians(-1.4), math.radians(0.4), math.radians(-0.8))},
+        "slide": {"loc": (0, 0.078, 0.192), "rot": (math.radians(1.1), 0, 0)},
+        "trigger": {"rot": (math.radians(-30), 0, 0)},
+        "barrel": {"loc": (0, 0.572, 0.190), "rot": (math.radians(0.6), 0, 0)},
+        "suppressor": {"loc": (0.002, 0.902, 0.193), "rot": (math.radians(0.5), 0, math.radians(-0.5))},
+    }), (7, {
+        "root": {"loc": (-0.004, -0.018, -0.006), "rot": (math.radians(1.8), 0, math.radians(1.0))},
+        "slide": {"loc": (0, 0.165, 0.190), "rot": (math.radians(0.3), 0, 0)},
+        "trigger": {"rot": (math.radians(-12), 0, 0)},
+    }), (18, rest)])
     clip("reload", [(1, rest), (20, {
         "root": {"loc": (0.018, -0.030, -0.024), "rot": (math.radians(8), 0, math.radians(-8))},
         "mag": {"loc": (0, -0.30, -0.72), "rot": (math.radians(-16), 0, math.radians(3))},
     }), (54, {
         "root": {"loc": (-0.010, -0.018, -0.010), "rot": (math.radians(4), 0, math.radians(5))},
         "mag": {"loc": (0, -0.25, -0.46)},
-    }), (78, rest)])
+    }), (66, {
+        "root": {"loc": (-0.012, -0.026, -0.014), "rot": (math.radians(-3), 0, math.radians(4))},
+        "slide": {"loc": (0, 0.110, 0.190), "rot": (math.radians(0.8), 0, 0)},
+        "trigger": {"rot": (math.radians(-8), 0, 0)},
+    }), (88, rest)])
     clip("ads", [(1, rest), (34, {
         "root": {"loc": (-0.020, 0.010, 0.036), "rot": (math.radians(-2), 0, math.radians(1.2))},
     })])
-    clip("inspect", [(1, rest), (32, {
-        "root": {"loc": (0.035, -0.022, 0.020), "rot": (math.radians(12), math.radians(-10), math.radians(-18))},
-        "visual": {"rot": (math.radians(0), math.radians(-4), math.radians(0))},
-    }), (72, rest)])
+    clip("inspect", [(1, rest), (26, {
+        "root": {"loc": (0.040, -0.028, 0.022), "rot": (math.radians(13), math.radians(-12), math.radians(-20))},
+        "visual": {"rot": (math.radians(0), math.radians(-5), math.radians(0))},
+    }), (54, {
+        "root": {"loc": (-0.028, -0.016, 0.034), "rot": (math.radians(7), math.radians(13), math.radians(14))},
+        "visual": {"rot": (math.radians(1), math.radians(6), math.radians(0))},
+        "slide": {"loc": (0, 0.176, 0.190)},
+    }), (88, rest)])
 
     bpy.ops.wm.save_as_mainfile(filepath=str(USP_SRC))
     export_selected_glb(USP_GLB, col)
@@ -530,8 +609,10 @@ def build_hands() -> None:
     cyan = material("VM_holo_cyan", (0.060, 0.720, 1.000, 0.34), 0.16, 0.0)
     cyan_ray = material("VM_holo_ray_cyan", (0.260, 0.900, 1.000, 0.24), 0.12, 0.0)
     amber = material("VM_holo_amber", (1.000, 0.650, 0.140, 0.30), 0.18, 0.0)
+    stitch = material("VM_glove_stitching", (0.055, 0.060, 0.064, 1), 0.92, 0.0)
 
     nodes = {}
+    finger_anim_objs = []
 
     def node(name, loc, parent):
         nodes[name] = empty(name, loc, col, parent, 0.035)
@@ -595,12 +676,38 @@ def build_hands() -> None:
     hand_mesh("right", rw, rp, 1)
     hand_mesh("left", lw, lp, -1)
 
+    def articulated_finger_meshes(prefix, side, sx):
+        for fname, xo in (("index", 0.018), ("middle", 0.006), ("ring", -0.006), ("pinky", -0.018)):
+            base = nodes[f"{fname}_{side}_01"]
+            finger_anim_objs.append(base)
+            capsule(f"{prefix}_{fname}_live_base", (0.0, -0.013, 0.002), 0.0048 * hand_visual_scale, 0.030 * hand_visual_scale, glove, col, base, "Y", (math.radians(-6), 0, math.radians((xo * 150) * sx)), 12)
+            capsule(f"{prefix}_{fname}_live_tip", (sx * 0.0015, -0.038, -0.002), 0.0045 * hand_visual_scale, 0.024 * hand_visual_scale, glove, col, base, "Y", (math.radians(-22 if prefix == "right" else -28), 0, math.radians((xo * 90) * sx)), 12)
+            ellipsoid(f"{prefix}_{fname}_fingertip_pad", (sx * 0.002, -0.052, -0.004), (0.0052 * hand_visual_scale, 0.0060 * hand_visual_scale, 0.0042 * hand_visual_scale), rubber, col, base, segments=10, rings=5)
+            cube(f"{prefix}_{fname}_knuckle_plate", (0.0, 0.002, 0.012), (0.011, 0.006, 0.0045), rubber, col, base, bevel=0.001)
+        thumb = nodes[f"thumb_{side}_01"]
+        finger_anim_objs.append(thumb)
+        capsule(f"{prefix}_thumb_live_base", (0.000, -0.014, 0.002), 0.0052 * hand_visual_scale, 0.030 * hand_visual_scale, glove, col, thumb, "Y", (math.radians(-12), 0, math.radians(22 * sx)), 12)
+        capsule(f"{prefix}_thumb_live_tip", (sx * 0.003, -0.038, -0.002), 0.0048 * hand_visual_scale, 0.026 * hand_visual_scale, glove, col, thumb, "Y", (math.radians(-24), 0, math.radians(34 * sx)), 12)
+        ellipsoid(f"{prefix}_thumb_fingertip_pad", (sx * 0.006, -0.052, -0.004), (0.0058 * hand_visual_scale, 0.0062 * hand_visual_scale, 0.0044 * hand_visual_scale), rubber, col, thumb, segments=10, rings=5)
+
+        palm = nodes[f"palm_{side}"]
+        cube(f"{prefix}_palm_stitch_center", (0, -0.002, 0.027), (0.006, 0.058, 0.003), stitch, col, palm, rot=(0, 0, math.radians(4 * sx)), bevel=0.001)
+        cube(f"{prefix}_palm_stitch_thumb", (0.025 * sx, -0.015, 0.020), (0.004, 0.044, 0.003), stitch, col, palm, rot=(0, 0, math.radians(28 * sx)), bevel=0.001)
+        for i, y in enumerate((-0.018, 0.006, 0.030)):
+            cube(f"{prefix}_palm_crease_{i}", (-0.006 * sx, y, 0.025), (0.040, 0.0035, 0.003), stitch, col, palm, rot=(0, 0, math.radians((i - 1) * 4 * sx)), bevel=0.001)
+
+    articulated_finger_meshes("right", "r", 1)
+    articulated_finger_meshes("left", "l", -1)
+
     # Authored forearm mass. These stay narrow and low in the camera so the
     # weapon remains the first-read silhouette while still feeling like arms.
     cylinder("right_forearm_sleeve_round", scaled_tuple((0.0, 0.104, -0.012), forearm_visual_scale), 0.018 * forearm_visual_scale, 0.108 * forearm_visual_scale, fabric, col, rw, "Y", 20)
     cylinder("left_forearm_sleeve_round", scaled_tuple((-0.010, 0.092, 0.008), forearm_visual_scale), 0.020 * forearm_visual_scale, 0.118 * forearm_visual_scale, fabric, col, lw, "Y", 20)
     cube("right_forearm_armor_plate", scaled_tuple((0.0, 0.124, 0.018), forearm_visual_scale), scaled_tuple((0.038, 0.034, 0.006), forearm_visual_scale), rubber, col, rw, bevel=0.002)
     cube("left_forearm_armor_plate", scaled_tuple((-0.010, 0.110, 0.040), forearm_visual_scale), scaled_tuple((0.040, 0.038, 0.006), forearm_visual_scale), rubber, col, lw, bevel=0.002)
+    for i, y in enumerate((0.060, 0.084, 0.108, 0.132)):
+        cube(f"right_sleeve_fold_{i}", scaled_tuple((0.0, y, 0.021), forearm_visual_scale), scaled_tuple((0.050, 0.004, 0.004), forearm_visual_scale), stitch, col, rw, rot=(0, 0, math.radians(3)), bevel=0.001)
+        cube(f"left_sleeve_fold_{i}", scaled_tuple((-0.010, y * 0.94, 0.041), forearm_visual_scale), scaled_tuple((0.054, 0.004, 0.004), forearm_visual_scale), stitch, col, lw, rot=(0, 0, math.radians(-5)), bevel=0.001)
 
     # Always-on left wrist computer. Meshes are authored here; runtime swaps
     # the screen/panel materials to live CanvasTextures.
@@ -628,7 +735,7 @@ def build_hands() -> None:
         wband, wscreen, wemitter, wholo_mount,
         holo_inventory, holo_reload, holo_shop,
         ray_inventory, ray_reload, ray_idle
-    ]
+    ] + finger_anim_objs
 
     def hand_clip(name, frames):
         clear_active_actions(anim_objs)
@@ -644,48 +751,72 @@ def build_hands() -> None:
         "wrist_r": {"loc": (0.13, -0.42, -0.10), "rot": (math.radians(8), 0, math.radians(-7)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.145, 0.315, 0.055), "rot": (math.radians(6), 0, math.radians(9)), "scale": (1, 1, 1)},
     }
-    hand_clip("idle", [(1, rest), (40, {
+    def pose(*maps):
+        out = {}
+        for mp in maps:
+            out.update(mp)
+        return out
+
+    def finger_pose(r_curl=-4, l_curl=-6, r_spread=0, l_spread=0, r_thumb=-4, l_thumb=-6):
+        out = {}
+        fingers = ("index", "middle", "ring", "pinky")
+        for i, fname in enumerate(fingers):
+            out[f"{fname}_r_01"] = {"rot": (math.radians(r_curl - i * 1.8), 0, math.radians((i - 1.5) * 2.2 + r_spread)), "scale": (1, 1, 1)}
+            out[f"{fname}_l_01"] = {"rot": (math.radians(l_curl - i * 2.0), 0, math.radians(-(i - 1.5) * 2.0 + l_spread)), "scale": (1, 1, 1)}
+        out["thumb_r_01"] = {"rot": (math.radians(r_thumb), 0, math.radians(10)), "scale": (1, 1, 1)}
+        out["thumb_l_01"] = {"rot": (math.radians(l_thumb), 0, math.radians(-10)), "scale": (1, 1, 1)}
+        return out
+
+    finger_rest = finger_pose(-4, -7, 0, 0, -5, -7)
+    finger_idle = finger_pose(-7, -10, 1, -1, -8, -10)
+    finger_grip = finger_pose(-18, -24, 0, 0, -14, -18)
+    finger_fire = finger_pose(-30, -31, -1, 1, -18, -22)
+    finger_reload_open = finger_pose(5, 8, 4, -4, 3, 6)
+    finger_inspect = finger_pose(2, 3, 5, -5, 1, 4)
+    finger_sprint = finger_pose(-26, -30, -2, 2, -20, -24)
+
+    hand_clip("idle", [(1, pose(rest, finger_rest)), (40, pose({
         "wrist_r": {"loc": (0.13, -0.422, -0.095), "rot": (math.radians(9), 0, math.radians(-6)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.145, 0.313, 0.060), "rot": (math.radians(7), 0, math.radians(8)), "scale": (1, 1, 1)},
-    }), (80, rest)])
-    hand_clip("walkSway", [(1, rest), (20, {
+    }, finger_idle)), (80, pose(rest, finger_rest))])
+    hand_clip("walkSway", [(1, pose(rest, finger_idle)), (20, pose({
         "wrist_r": {"loc": (0.145, -0.43, -0.10), "rot": (math.radians(10), 0, math.radians(-10)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.158, 0.325, 0.055), "rot": (math.radians(8), 0, math.radians(12)), "scale": (1, 1, 1)},
-    }), (40, rest)])
-    hand_clip("sprint", [(1, rest), (26, {
+    }, finger_grip)), (40, pose(rest, finger_idle))])
+    hand_clip("sprint", [(1, pose(rest, finger_grip)), (26, pose({
         "wrist_r": {"loc": (0.16, -0.30, -0.18), "rot": (math.radians(34), 0, math.radians(-18)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.160, 0.135, -0.115), "rot": (math.radians(38), 0, math.radians(16)), "scale": (1, 1, 1)},
-    })])
-    hand_clip("ads", [(1, rest), (20, {
+    }, finger_sprint))])
+    hand_clip("ads", [(1, pose(rest, finger_grip)), (20, pose({
         "wrist_r": {"loc": (0.085, -0.47, -0.075), "rot": (math.radians(2), 0, math.radians(-2)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.086, 0.390, 0.100), "rot": (math.radians(1), 0, math.radians(3)), "scale": (1, 1, 1)},
-    })])
-    hand_clip("reloadRifle", [(1, rest), (18, {
+    }, finger_grip))])
+    hand_clip("reloadRifle", [(1, pose(rest, finger_grip)), (18, pose({
         "wrist_r": {"loc": (0.13, -0.42, -0.10), "rot": (math.radians(11), 0, math.radians(-12)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.150, 0.105, -0.205), "rot": (math.radians(36), math.radians(-5), math.radians(16)), "scale": (1, 1, 1)},
-    }), (44, {
+    }, finger_grip)), (44, pose({
         "wrist_l": {"loc": (-0.125, -0.060, -0.285), "rot": (math.radians(46), math.radians(-7), math.radians(-14)), "scale": (1, 1, 1)}
-    }), (66, {
+    }, finger_reload_open)), (66, pose({
         "wrist_r": {"loc": (0.18, -0.50, -0.08), "rot": (math.radians(-4), 0, math.radians(-18)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.125, 0.205, -0.010), "rot": (math.radians(20), math.radians(-4), math.radians(10)), "scale": (1, 1, 1)},
-    }), (84, rest)])
-    hand_clip("fireRifle", [(1, rest), (5, {
+    }, finger_grip)), (84, pose(rest, finger_rest))])
+    hand_clip("fireRifle", [(1, pose(rest, finger_grip)), (5, pose({
         "wrist_r": {"loc": (0.14, -0.45, -0.12), "rot": (math.radians(-8), 0, math.radians(-10)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.145, 0.295, 0.045), "rot": (math.radians(11), 0, math.radians(6)), "scale": (1, 1, 1)},
-    }), (14, rest)])
-    hand_clip("inspect", [(1, rest), (36, {
+    }, finger_fire)), (14, pose(rest, finger_grip))])
+    hand_clip("inspect", [(1, pose(rest, finger_rest)), (36, pose({
         "wrist_r": {"loc": (0.22, -0.30, 0.02), "rot": (math.radians(18), math.radians(8), math.radians(-30)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.190, 0.135, 0.155), "rot": (math.radians(18), math.radians(-10), math.radians(22)), "scale": (1, 1, 1)},
-    }), (88, rest)])
-    hand_clip("weaponSwap", [(1, rest), (18, {
+    }, finger_inspect)), (88, pose(rest, finger_rest))])
+    hand_clip("weaponSwap", [(1, pose(rest, finger_grip)), (18, pose({
         "wrist_r": {"loc": (0.13, -0.18, -0.34), "rot": (math.radians(45), 0, math.radians(-18)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.145, 0.115, -0.205), "rot": (math.radians(40), 0, math.radians(16)), "scale": (1, 1, 1)},
-    }), (42, rest)])
-    hand_clip("tacticalLean", [(1, rest), (20, {
+    }, finger_sprint)), (42, pose(rest, finger_rest))])
+    hand_clip("tacticalLean", [(1, pose(rest, finger_grip)), (20, pose({
         "cameraRoot": {"loc": (0, 0, 0), "rot": (0, 0, math.radians(-8)), "scale": (1, 1, 1)},
         "wrist_r": {"loc": (0.15, -0.42, -0.10), "rot": (math.radians(8), 0, math.radians(-13)), "scale": (1, 1, 1)},
         "wrist_l": {"loc": (-0.126, 0.315, 0.055), "rot": (math.radians(6), 0, math.radians(3)), "scale": (1, 1, 1)},
-    }), (40, rest)])
+    }, finger_grip)), (40, pose(rest, finger_rest))])
     wrist_rest = {
         "wristband_root": {"loc": (-0.070, 0.020, 0.096), "rot": (0, 0, 0), "scale": (1, 1, 1)},
         "wristband_screen": {"loc": (0.0, 0.020, 0.047), "rot": (0, 0, 0), "scale": (1, 1, 1)},

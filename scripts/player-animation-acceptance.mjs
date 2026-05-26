@@ -28,6 +28,16 @@ const ok = await page.evaluate(async () => {
   const ld = dbg.buildLevel(1);
   const G = dbg.G();
   const P = dbg.P();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitUntil = async (fn, timeout = 2000, step = 50) => {
+    const start = performance.now();
+    let value = fn();
+    while (!value && performance.now() - start < timeout) {
+      await sleep(step);
+      value = fn();
+    }
+    return value || fn();
+  };
   G.levelData = ld;
   G.building = 1;
   G.started = true;
@@ -52,7 +62,7 @@ const ok = await page.evaluate(async () => {
     P.hp = 0;
     document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, repeat: true }));
     document.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }));
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    setTimeout(() => {
       const after = { building: G.building, started: G.started, dead: P.dead };
       G.building = prev.building;
       G.started = prev.started;
@@ -63,7 +73,7 @@ const ok = await page.evaluate(async () => {
         blocked: after.building === 4 && after.started === true && after.dead === true,
         after
       });
-    }));
+    }, 50);
   });
   P.dead = false;
   G.started = true;
@@ -90,9 +100,10 @@ const ok = await page.evaluate(async () => {
   if (dbg.equipScope && dbg.setAds && dbg.povState) {
     dbg.equipScope(4);
     dbg.setAds(1);
-    for (let i = 0; i < 30; i++) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
+    await waitUntil(() => {
+      const pov = dbg.povState();
+      return !!(pov && pov.targetFov < pov.baseFov - 30 && pov.fov < pov.baseFov - 20);
+    }, 2200);
     const pov = dbg.povState();
     scopedPov = {
       present: !!pov,
@@ -105,6 +116,98 @@ const ok = await page.evaluate(async () => {
       optic: pov?.optic,
       vignette: pov?.scopeVignetteOpacity
     };
+    dbg.setAds(0);
+  }
+  const materialDepthStats = (root) => {
+    const seen = new Set();
+    const stats = { total: 0, depthTestFalse: 0, depthWriteFalse: 0, maxRenderOrder: 0 };
+    root?.traverse?.((o) => {
+      if (!o?.isMesh) return;
+      stats.maxRenderOrder = Math.max(stats.maxRenderOrder, o.renderOrder || 0);
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m || seen.has(m)) continue;
+        seen.add(m);
+        stats.total++;
+        if (m.depthTest === false) stats.depthTestFalse++;
+        if (m.depthWrite === false) stats.depthWriteFalse++;
+      }
+    });
+    return stats;
+  };
+  let slideDepth = { present: false };
+  let guardSideLeanDepth = { present: false };
+  let pistolComposition = { present: false };
+  let ironSightShot = { present: false };
+  if (dbg.gunGrp && dbg.switchWeapon && dbg.setAds && dbg.fireCurrentWeapon) {
+    const weaponComposition = () => {
+      const s = dbg.weaponVisualStatus?.();
+      return s ? {
+        weaponIdx: s.weaponIdx,
+        visibleProceduralMeshes: s.visibleProceduralMeshes,
+        visibleGlbMeshes: s.visibleGlbMeshes,
+        gunVisible: !!s.gunVisible
+      } : null;
+    };
+    dbg.switchWeapon(1);
+    dbg.setAds(1);
+    P.lastShot = 0;
+    P.ammo = Math.max(P.ammo || 0, 2);
+    P.ammoRes = Math.max(P.ammoRes || 0, 12);
+    await sleep(500);
+    const baseline = materialDepthStats(dbg.gunGrp());
+    P.sliding = true;
+    P.slideTarget = 1;
+    P.slideAmt = 1;
+    P.slideTimer = 0.12;
+    P.slideLocalR = 0.65;
+    P.slideLocalF = 0.75;
+    await sleep(220);
+    const during = materialDepthStats(dbg.gunGrp());
+    const slideDuringWeapon = weaponComposition();
+    P.sliding = false;
+    P.slideTarget = 0;
+    P.slideAmt = 0;
+    P.slideTimer = 0;
+    P.slideExitGrace = 0;
+    P.slideCarryTimer = 0;
+    P._slidePresentationUntil = 0;
+    P._slideLegVis = 0;
+    await sleep(360);
+    const restored = materialDepthStats(dbg.gunGrp());
+    const slideRestoredWeapon = weaponComposition();
+    slideDepth = { present: true, baseline, during, restored };
+    const guardBaseline = materialDepthStats(dbg.gunGrp());
+    P.guardMode = 'wall';
+    P._guardVisualMode = 'wall';
+    P.guardBehindHeld = true;
+    P.guardBehindActive = true;
+    P.guardBehindAmt = 1;
+    P.guardPeekSide = 1;
+    await sleep(260);
+    const guardDuring = materialDepthStats(dbg.gunGrp());
+    const guardDuringWeapon = weaponComposition();
+    P.guardBehindHeld = false;
+    P.guardBehindActive = false;
+    P.guardBehindAmt = 0;
+    P.guardPeekSide = 0;
+    P.guardMode = 'none';
+    P._guardVisualMode = 'none';
+    await sleep(360);
+    const guardRestored = materialDepthStats(dbg.gunGrp());
+    const guardRestoredWeapon = weaponComposition();
+    guardSideLeanDepth = { present: true, baseline: guardBaseline, during: guardDuring, restored: guardRestored };
+    pistolComposition = {
+      present: true,
+      slideDuring: slideDuringWeapon,
+      slideRestored: slideRestoredWeapon,
+      guardDuring: guardDuringWeapon,
+      guardRestored: guardRestoredWeapon
+    };
+    P.lastShot = 0;
+    P.ammo = Math.max(P.ammo || 0, 2);
+    dbg.fireCurrentWeapon();
+    ironSightShot = { present: true, shot: P._lastPlayerShotAim };
     dbg.setAds(0);
   }
   for (let i = 0; i < 8; i++) {
@@ -126,6 +229,10 @@ const ok = await page.evaluate(async () => {
         grip: wv && wv.gripPose,
         handFits,
         scopedPov,
+        slideDepth,
+        guardSideLeanDepth,
+        pistolComposition,
+        ironSightShot,
         restartGate
       });
     }, 800);
@@ -142,6 +249,18 @@ if (!ok.scopedPov?.present) throw new Error('povState missing');
 if (!(Number.isFinite(ok.scopedPov.fov) && Number.isFinite(ok.scopedPov.targetFov) && Number.isFinite(ok.scopedPov.baseFov))) throw new Error(`scoped POV has non-finite FOV ${JSON.stringify(ok.scopedPov)}`);
 if (!(ok.scopedPov.scoped > 0.9 && ok.scopedPov.scopeSettle > 0.85)) throw new Error(`scoped POV did not settle ${JSON.stringify(ok.scopedPov)}`);
 if (!(ok.scopedPov.targetFov < ok.scopedPov.baseFov - 30 && ok.scopedPov.fov < ok.scopedPov.baseFov - 20)) throw new Error(`scoped FOV did not tighten ${JSON.stringify(ok.scopedPov)}`);
+if (!ok.slideDepth?.present) throw new Error('slide depth restoration probe missing');
+if (!(ok.slideDepth.during.depthTestFalse === ok.slideDepth.baseline.depthTestFalse && ok.slideDepth.during.depthWriteFalse === ok.slideDepth.baseline.depthWriteFalse)) throw new Error(`pistol ADS gun depth changed during slide ${JSON.stringify(ok.slideDepth)}`);
+if (!(ok.slideDepth.restored.depthTestFalse === ok.slideDepth.baseline.depthTestFalse && ok.slideDepth.restored.depthWriteFalse === ok.slideDepth.baseline.depthWriteFalse)) throw new Error(`slide depth override leaked after slide ${JSON.stringify(ok.slideDepth)}`);
+if (!ok.guardSideLeanDepth?.present) throw new Error('guard sidelean depth restoration probe missing');
+if (!(ok.guardSideLeanDepth.during.depthTestFalse === ok.guardSideLeanDepth.baseline.depthTestFalse && ok.guardSideLeanDepth.during.depthWriteFalse === ok.guardSideLeanDepth.baseline.depthWriteFalse)) throw new Error(`pistol ADS gun depth changed during guard sidelean ${JSON.stringify(ok.guardSideLeanDepth)}`);
+if (!(ok.guardSideLeanDepth.restored.depthTestFalse === ok.guardSideLeanDepth.baseline.depthTestFalse && ok.guardSideLeanDepth.restored.depthWriteFalse === ok.guardSideLeanDepth.baseline.depthWriteFalse)) throw new Error(`guard sidelean depth override leaked after guard ${JSON.stringify(ok.guardSideLeanDepth)}`);
+if (!ok.pistolComposition?.present) throw new Error('pistol composition probe missing');
+for (const [phase, state] of Object.entries(ok.pistolComposition)) {
+  if (phase === 'present' || !state || state.weaponIdx !== 1 || !(state.visibleGlbMeshes > 0)) continue;
+  if (state.visibleProceduralMeshes !== 0) throw new Error(`authored pistol was mixed with procedural meshes during ${phase}: ${JSON.stringify(ok.pistolComposition)}`);
+}
+if (!(ok.ironSightShot?.shot?.precision && ok.ironSightShot.shot.spread === 0)) throw new Error(`iron-sight ADS shot was not precise ${JSON.stringify(ok.ironSightShot)}`);
 
 fs.writeFileSync(path.join(OUT_DIR, 'player-animation-acceptance.json'), JSON.stringify({ ok: true, ok }, null, 2));
 console.log(JSON.stringify({ ok: true, summary: 'screenshots/player-animation-acceptance.json' }));

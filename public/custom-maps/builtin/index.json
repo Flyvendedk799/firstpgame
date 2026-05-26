@@ -1,0 +1,8 @@
+{
+  "packs": [
+    {
+      "id": "builtin.b01-standard-custom",
+      "url": "/custom-maps/builtin/b01-standard-custom.json"
+    }
+  ]
+}

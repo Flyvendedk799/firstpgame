@@ -69,17 +69,19 @@ export function locomotionStrafeBobTuning(keys, isRunning, moving) {
     ampCapMul = isRunning ? 1.12 : 1.06;
     ampBuildMul = 1.05;
   } else if (strafeHeavy) {
-    phaseMul = isRunning ? 1.12 : 1.05;
-    ampCapMul = 1.04;
+    phaseMul = isRunning ? 1.16 : 1.05;
+    ampCapMul = isRunning ? 1.08 : 1.04;
+    ampBuildMul = isRunning ? 1.08 : 1.0;
   } else if (isRunning) {
-    phaseMul = 1;
-    ampCapMul = 1;
+    phaseMul = 1.06;
+    ampCapMul = 1.10;
+    ampBuildMul = 1.10;
   } else {
     phaseMul = 0.94;
   }
   const sign = d > a ? 1 : a > d ? -1 : 0;
   const camRollStrafe =
-    moving && sign !== 0 ? sign * (isRunning ? 0.019 : 0.012) * (onlyStrafe ? 1.25 : 1) : 0;
+    moving && sign !== 0 ? sign * (isRunning ? 0.009 : 0.006) * (onlyStrafe ? 1.06 : 1) : 0;
   return { phaseMul, ampCapMul, ampBuildMul, camRollStrafe };
 }
 

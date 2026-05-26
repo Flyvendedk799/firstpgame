@@ -159,6 +159,12 @@ import {
 } from './weaponViewmodelLoader.js';
 // Phase G: small audio module — first piece of main.js modularization.
 import { getAC, sfxHit as _sfxHit, sfxReload as _sfxReload, sfxDamage as _sfxDamage, sfxWaveClear as _sfxWaveClear } from './audio.js';
+import { createCustomMapStore } from './customMaps/customMapStore.js';
+import { createLevelKitRegistry } from './customMaps/levelKitRegistry.js';
+import { compileCustomMapToLevelData } from './customMaps/customMapCompiler.js';
+import { createCustomMapMenuController } from './customMaps/customMapMenu.js';
+import { createLevelEditorController } from './customMaps/levelEditor.js';
+import { validateCustomMapPack } from './customMaps/customMapValidation.js';
 // Phase AC: cover-graph helpers — pure functions extracted out of main.js
 // to slim the monolith. Local wrappers below preserve the existing names.
 import {
@@ -875,10 +881,12 @@ function _finishOptionalPub(kind, ok) {
   try { window.__OPTIONAL_PUB_ASSET_STATE[kind] = ok ? 'ok' : 'miss'; } catch (_) {}
 }
 function _effectiveBulletHoleDiffuse() {
-  return _optionalPubAssets.bulletholeAlbedo || _bulletHoleTex;
+  // Keep first-person aim feedback alpha-safe. Some optional decal albedos are
+  // opaque square PNGs, which makes precise iron-sight wall tests look wrong.
+  return _bulletHoleTex;
 }
 function _effectiveBulletHoleNormal() {
-  return _optionalPubAssets.bulletholeNormal;
+  return null;
 }
 function _effectiveBloodPoolDiffuse() {
   return _optionalPubAssets.bloodPool || _bloodPoolTex;
@@ -5556,12 +5564,84 @@ const ENEMY_TACTICS={
   drone:{mag:18,reload:.85,aim:.16,repositionEvery:1.9,coverSeek:.00,flank:.72,advance:.95,juke:.90,closeBreak:1.5},
   marksman:{mag:8,reload:1.90,aim:.82,repositionEvery:5.8,coverSeek:.92,flank:.18,advance:.16,juke:.05,closeBreak:7.0,relocateAfterShot:true}
 };
+const ENEMY_LOCOMOTION_FEEL={
+  patrolAccel:7.2,
+  combatAccel:11.5,
+  jukeAccel:18.0,
+  decel:18.5,
+  turnPlantAngle:.42,
+  arriveSlowRadius:1.85,
+  unstickStep:.075
+};
+const ENEMY_LIMB_SCHEMA={
+  torso:{label:'torso',side:0,damageMul:1.00,healthMul:1.00,breakable:false,kind:'core',hitSize:[.50,1.04,.30]},
+  head:{label:'head',side:0,damageMul:1.00,healthMul:.42,breakable:false,kind:'core',hitSize:[.28,.28,.28]},
+  neck:{label:'neck',side:0,damageMul:1.12,healthMul:.32,breakable:false,kind:'connector',hitSize:[.14,.14,.14]},
+  leftUpperArm:{label:'left upper arm',side:1,damageMul:.78,healthMul:.38,breakable:true,kind:'upperArm',hitSize:[.18,.30,.18]},
+  leftForearm:{label:'left forearm',side:1,damageMul:.72,healthMul:.34,breakable:true,kind:'forearm',hitSize:[.16,.28,.16]},
+  rightUpperArm:{label:'right upper arm',side:-1,damageMul:.78,healthMul:.38,breakable:true,kind:'upperArm',hitSize:[.18,.30,.18]},
+  rightForearm:{label:'right forearm',side:-1,damageMul:.72,healthMul:.34,breakable:true,kind:'forearm',hitSize:[.16,.28,.16]},
+  leftThigh:{label:'left thigh',side:1,damageMul:.86,healthMul:.48,breakable:true,kind:'thigh',hitSize:[.20,.30,.18]},
+  leftShin:{label:'left shin',side:1,damageMul:.80,healthMul:.42,breakable:true,kind:'shin',hitSize:[.18,.26,.17]},
+  rightThigh:{label:'right thigh',side:-1,damageMul:.86,healthMul:.48,breakable:true,kind:'thigh',hitSize:[.20,.30,.18]},
+  rightShin:{label:'right shin',side:-1,damageMul:.80,healthMul:.42,breakable:true,kind:'shin',hitSize:[.18,.26,.17]}
+};
+let _ENEMY_LIMB_HIT_M=null;
+const _ENEMY_LIMB_HIT_GEOS={};
+function _enemyLimbHitMaterial(){
+  if(!_ENEMY_LIMB_HIT_M){
+    _ENEMY_LIMB_HIT_M=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,depthWrite:false});
+    _ENEMY_LIMB_HIT_M.colorWrite=false;
+  }
+  return _ENEMY_LIMB_HIT_M;
+}
+function _enemyLimbHitGeo(id){
+  if(_ENEMY_LIMB_HIT_GEOS[id])return _ENEMY_LIMB_HIT_GEOS[id];
+  const s=(ENEMY_LIMB_SCHEMA[id]&&ENEMY_LIMB_SCHEMA[id].hitSize)||[.16,.24,.16];
+  return _ENEMY_LIMB_HIT_GEOS[id]=new THREE.BoxGeometry(s[0],s[1],s[2]);
+}
+function _primeEnemyHitZone(id='torso',object=null){
+  const zone=ENEMY_LIMB_SCHEMA[id]?id:'torso';
+  const spec=ENEMY_LIMB_SCHEMA[zone]||ENEMY_LIMB_SCHEMA.torso;
+  Enemy._nextHitLimb={id:zone,spec,object:object||null};
+  return Enemy._nextHitLimb;
+}
+function _primeEnemyHitFromObject(obj,fallbackId='torso'){
+  if(!obj||!obj.userData)return _primeEnemyHitZone(fallbackId,null);
+  const id=obj.userData.limbId||fallbackId;
+  const spec=ENEMY_LIMB_SCHEMA[id]||ENEMY_LIMB_SCHEMA[fallbackId]||ENEMY_LIMB_SCHEMA.torso;
+  Enemy._nextHitLimb={id,spec,object:obj};
+  return Enemy._nextHitLimb;
+}
+function _coarseLimbEffectFromZone(id){
+  if(!id)return null;
+  if(/Arm|Forearm/i.test(id))return 'arm';
+  if(/Thigh|Shin/i.test(id))return 'leg';
+  return null;
+}
 function _pickEnemyPersonality(type,diff){
   const ids=ENEMY_PERSONALITY_WEIGHTS[type]||ENEMY_PERSONALITY_WEIGHTS.soldier;
   let id=ids[Math.floor(Math.random()*ids.length)];
   if((diff||1)>=4&&Math.random()<.22)id='veteran';
   if(type==='boss')id='veteran';
   return ENEMY_PERSONALITIES[id]||ENEMY_PERSONALITIES.disciplined;
+}
+function _enemyMotionProfile(type){
+  const map={
+    soldier:{stride:1.00,inertia:1.00,turnLean:1.00,peekLean:1.00,peekLead:1.00,recoil:1.00,muzzle:1.00,aimSway:1.00},
+    heavy:{stride:.78,inertia:1.26,turnLean:.72,peekLean:.84,peekLead:.82,recoil:.74,muzzle:1.18,aimSway:.70},
+    sniper:{stride:.86,inertia:.86,turnLean:.78,peekLean:1.08,peekLead:.92,recoil:1.28,muzzle:1.20,aimSway:.48},
+    scout:{stride:1.25,inertia:.86,turnLean:1.32,peekLean:1.20,peekLead:1.16,recoil:.82,muzzle:.88,aimSway:1.24},
+    pistolero:{stride:1.14,inertia:.92,turnLean:1.18,peekLean:1.14,peekLead:1.12,recoil:.72,muzzle:.82,aimSway:1.18},
+    shielded:{stride:.76,inertia:1.18,turnLean:.64,peekLean:.60,peekLead:.62,recoil:.82,muzzle:.96,aimSway:.68},
+    riot:{stride:.82,inertia:1.20,turnLean:.68,peekLean:.70,peekLead:.66,recoil:.86,muzzle:1.02,aimSway:.70},
+    demolitions:{stride:.88,inertia:1.12,turnLean:.82,peekLean:.88,peekLead:.80,recoil:1.10,muzzle:1.08,aimSway:.80},
+    drone:{stride:1.35,inertia:.55,turnLean:1.45,peekLean:.70,peekLead:1.00,recoil:.44,muzzle:.70,aimSway:1.35},
+    marksman:{stride:.82,inertia:.82,turnLean:.70,peekLean:1.18,peekLead:.94,recoil:1.36,muzzle:1.26,aimSway:.42},
+    lieutenant:{stride:.98,inertia:1.04,turnLean:.92,peekLean:1.04,peekLead:1.02,recoil:1.08,muzzle:1.12,aimSway:.82},
+    boss:{stride:.94,inertia:1.18,turnLean:.78,peekLean:.92,peekLead:.88,recoil:.94,muzzle:1.22,aimSway:.62}
+  };
+  return map[String(type||'soldier')]||map.soldier;
 }
 class Enemy{
   constructor(scene,pos,diff,type){
@@ -5589,6 +5669,7 @@ class Enemy{
     const ts=TS[this.type]||TS.soldier;
     this.personality=_pickEnemyPersonality(this.type,diff);
     this.tactic=ENEMY_TACTICS[this.type]||ENEMY_TACTICS.soldier;
+    this.motionProfile=_enemyMotionProfile(this.type);
     this.personaId=this.personality.id;
     this.hp=ts.hp;this.maxHp=ts.hp;this.dead=false;this.removeNeeded=false;
     this.state=PATROL;this.alertTimer=0;
@@ -5600,6 +5681,8 @@ class Enemy{
     this.staggerTimer=0;this.staggerDur=0.1;this.staggerAmt=0;
     this.staggerDir=new THREE.Vector3(0,0,1);
     this.lastPlayerDir=new THREE.Vector3(0,0,1);
+    this._dropkickFlyImpulse=null;
+    this._dropkickDeathLift=0;
     this.meleeHitTimer=0;this.shootRecoilTimer=0;this.bulletHitTimer=0;
     this.aimLeadTimer=0;
     // Cover anchor — picked at spawn time. Enemy gravitates toward it and
@@ -5609,6 +5692,7 @@ class Enemy{
     this.spawnIntro=null;
     this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
     this.patrolTarget=null;this.patrolTimer=0;
+    this.patrolPauseTimer=0;this._patrolStopLook=0;this._patrolStopYaw=0;
     // Extended AI
     this.lastKnownPos=null;this.searchTimer=0;
     this.flankTarget=null;this.flankTimer=0;
@@ -5656,6 +5740,13 @@ class Enemy{
     this._jukeTimer=0;
     this._jukeVec=null;
     this._combatSeed=Math.random()*Math.PI*2;
+    this._animLastX=pos.x;this._animLastZ=pos.z;this._animLastYaw=0;
+    this._moveSpeedVis=0;this._forwardSpeedVis=0;this._lateralSpeedVis=0;this._moveAccelVis=0;this._turnRateVis=0;
+    this._moveVelX=0;this._moveVelZ=0;this._aimTrackQuality=0;this._aimYawError=0;this._aimYawErrorSigned=0;
+    this._pivotPulse=0;this._pivotSide=1;this._lastFootPlantSide=0;
+    this._peekPrepPulse=0;this._peekCommitPulse=0;this._peekSideSign=Math.random()<.5?-1:1;
+    this._shotRecoverTimer=0;this._shotRecoverDur=.20;this._shotVisualStrength=1;this._shotRecoverSide=1;
+    this._lastShotType='';this._muzzleFlashScale=1;this._muzzleFlashWarmth=0;this._fireBlinkTimer=0;
     // Weapon aim & head look
     this.aimPitch=0;this.headLookY=0;this.patrolLookTimer=0;this.patrolLookAngle=0;
 
@@ -6102,15 +6193,15 @@ class Enemy{
     const _lTh=new THREE.Mesh(new THREE.BoxGeometry(.14,.185,.13),this.bM);_lTh.position.y=-.0925;this.lLegGrp.add(_lTh);
     // Lower leg pivot (knee) — rotates independently for natural knee bend during walk
     this.lKneeGrp=new THREE.Group();this.lKneeGrp.position.y=-.185;
-    const _lKp=new THREE.Mesh(new THREE.BoxGeometry(.108,.062,.072),_kpadM);_lKp.position.set(0,.033,.066);this.lKneeGrp.add(_lKp);
-    const _lBt=new THREE.Mesh(new THREE.BoxGeometry(.148,.072,.182),_bootM2);_lBt.position.set(0,-.029,.024);this.lKneeGrp.add(_lBt);
+    const _lKp=new THREE.Mesh(new THREE.BoxGeometry(.108,.062,.072),_kpadM);_lKp.position.set(0,.033,.066);this.lKneeGrp.add(_lKp);this.lKneePadMesh=_lKp;
+    const _lBt=new THREE.Mesh(new THREE.BoxGeometry(.148,.072,.182),_bootM2);_lBt.position.set(0,-.029,.024);this.lKneeGrp.add(_lBt);this.lBootMesh=_lBt;
     this.lLegGrp.add(this.lKneeGrp);
     // Right leg — mirror, with separate knee group
     this.rLegGrp=new THREE.Group();this.rLegGrp.position.set(-.13,.22,0);
     const _rTh=new THREE.Mesh(new THREE.BoxGeometry(.14,.185,.13),this.bM);_rTh.position.y=-.0925;this.rLegGrp.add(_rTh);
     this.rKneeGrp=new THREE.Group();this.rKneeGrp.position.y=-.185;
-    const _rKp=new THREE.Mesh(new THREE.BoxGeometry(.108,.062,.072),_kpadM);_rKp.position.set(0,.033,.066);this.rKneeGrp.add(_rKp);
-    const _rBt=new THREE.Mesh(new THREE.BoxGeometry(.148,.072,.182),_bootM2);_rBt.position.set(0,-.029,.024);this.rKneeGrp.add(_rBt);
+    const _rKp=new THREE.Mesh(new THREE.BoxGeometry(.108,.062,.072),_kpadM);_rKp.position.set(0,.033,.066);this.rKneeGrp.add(_rKp);this.rKneePadMesh=_rKp;
+    const _rBt=new THREE.Mesh(new THREE.BoxGeometry(.148,.072,.182),_bootM2);_rBt.position.set(0,-.029,.024);this.rKneeGrp.add(_rBt);this.rBootMesh=_rBt;
     this.rLegGrp.add(this.rKneeGrp);
 
       // Enemy weapon — distinct model per enemy type, all oriented along +Z (enemy forward)
@@ -6455,6 +6546,7 @@ class Enemy{
 	        if(m){m.transparent=true;m.opacity=Math.min(m.opacity==null?1:m.opacity,.08);m.colorWrite=false;}
 	      }
 	      this._buildCharacterVisualLodSets();
+	      this._buildLimbRigRegistry();
 	    }
 	    _buildCharacterVisualLodSets(){
 	      if(!this.group||!this.humanLodBuckets)return;
@@ -6511,6 +6603,82 @@ class Enemy{
 	      for(const m of [this.muzzleFlashH,this.muzzleFlashV,this.muzzleFlashD])if(m&&m.material&&m.material.opacity<=0)m.visible=false;
 	      this.characterLod=lod;
 	      this.group.userData.characterLod=lod;
+	    }
+	    _buildLimbRigRegistry(){
+	      if(this.type==='drone'||!this.group)return;
+	      if(Array.isArray(this.limbHitMeshes)){
+	        for(const m of this.limbHitMeshes){
+	          if(m&&m.parent)m.parent.remove(m);
+	        }
+	      }
+	      this.limbRig={};
+	      this.limbHitMeshes=[];
+	      this.limbTrauma={};
+	      const addRecord=(id,pivot,visuals=[],opts={})=>{
+	        if(!pivot)return null;
+	        const spec=ENEMY_LIMB_SCHEMA[id]||ENEMY_LIMB_SCHEMA.torso;
+	        const rec={id,label:spec.label,kind:spec.kind,side:spec.side||0,breakable:!!spec.breakable,damageMul:spec.damageMul||1,health:(this.maxHp||100)*(spec.healthMul||.35),maxHealth:(this.maxHp||100)*(spec.healthMul||.35),pivot,visuals:visuals.filter(Boolean),hitProxy:null,hits:0,disabled:false};
+	        this.limbRig[id]=rec;
+	        pivot.userData.enemy=this;
+	        pivot.userData.limbId=id;
+	        pivot.userData.damageZone=id;
+	        if(pivot.isMesh){
+	          pivot.userData.isHead=id==='head';
+	          pivot.userData.limbRigRecord=rec;
+	        }
+	        if(opts.proxy!==false){
+	          const proxy=new THREE.Mesh(_enemyLimbHitGeo(id),_enemyLimbHitMaterial());
+	          proxy.name=`${this.type}_${id}_hit_proxy`;
+	          proxy.position.set(opts.x||0,opts.y||0,opts.z||0);
+	          proxy.rotation.set(opts.rx||0,opts.ry||0,opts.rz||0);
+	          proxy.visible=true;
+	          proxy.frustumCulled=false;
+	          proxy.userData.enemy=this;
+	          proxy.userData.isHead=id==='head';
+	          proxy.userData.limbId=id;
+	          proxy.userData.damageZone=id;
+	          proxy.userData.limbRigRecord=rec;
+	          proxy.userData.futureDetachReady=rec.breakable;
+	          pivot.add(proxy);
+	          this.limbHitMeshes.push(proxy);
+	          rec.hitProxy=proxy;
+	        }
+	        for(const v of rec.visuals){
+	          v.userData.enemy=this;
+	          v.userData.limbId=id;
+	          v.userData.damageZone=id;
+	          v.userData.futureDetachReady=rec.breakable;
+	        }
+	        return rec;
+	      };
+	      addRecord('torso',this.bMesh,[this.torsoShell,this.pelvisShell,this.chestPlane,this.vestMesh,this.strapMesh],{proxy:false});
+	      addRecord('head',this.hMesh,[this.headShell,this.jawShell,this.hlMesh,this.visorMesh,this.visorGlow],{proxy:false});
+	      addRecord('neck',this.neckMesh,[this.neckColumn,this.throatMesh],{x:0,y:0,z:0});
+	      addRecord('leftUpperArm',this.lArmGrp,[this.leftUpperArmShell,this.lShoulderPad],{x:0,y:-.118,z:0});
+	      addRecord('leftForearm',this.lElbowGrp,[this.leftForearmShell],{x:0,y:-.108,z:0});
+	      addRecord('rightUpperArm',this.rArmGrp,[this.rightUpperArmShell,this.rShoulderPad],{x:0,y:-.118,z:0});
+	      addRecord('rightForearm',this.rElbowGrp,[this.rightForearmShell],{x:0,y:-.108,z:0});
+	      addRecord('leftThigh',this.lLegGrp,[this.leftThighShell,this.thighPlateL],{x:0,y:-.094,z:0});
+	      addRecord('leftShin',this.lKneeGrp,[this.leftShinShell,this.leftBootShell],{x:0,y:-.074,z:.012});
+	      addRecord('rightThigh',this.rLegGrp,[this.rightThighShell,this.thighPlateR],{x:0,y:-.094,z:0});
+	      addRecord('rightShin',this.rKneeGrp,[this.rightShinShell,this.rightBootShell],{x:0,y:-.074,z:.012});
+	      this.group.userData.limbSchema=Object.keys(this.limbRig);
+	      this.group.userData.futureDismembermentReady=true;
+	    }
+	    _applyLimbHit(limbId,dmg,isMelee=false){
+	      const id=limbId||'torso';
+	      const rec=this.limbRig&&this.limbRig[id];
+	      if(!rec)return;
+	      rec.hits++;
+	      rec.health=Math.max(0,(rec.health||0)-Math.max(1,dmg||1));
+	      const strength=THREE.MathUtils.clamp((dmg||20)/120+(isMelee?.35:0),.22,1.8);
+	      this.limbTrauma=this.limbTrauma||{};
+	      this.limbTrauma[id]=Math.max(this.limbTrauma[id]||0,strength);
+	      if(rec.breakable&&rec.health<=0&&!rec.disabled){
+	        rec.disabled=true;
+	        for(const v of rec.visuals)if(v&&v.material&&v.material.color)v.material.color.multiplyScalar(.72);
+	      }
+	      this.group.userData.lastHitLimb=id;
 	    }
     applyMeshyRig(){
       if(this.meshyRig||!SOLDIER_GLTF||!THREE.SkeletonUtils||this.type!=='soldier')return;
@@ -6609,7 +6777,48 @@ class Enemy{
     }
 
     get position(){return this.group.position;}
-    getMeshes(){return[this.bMesh,this.hMesh];}
+    _stabilizeProceduralHitboxes(dt=1/60){
+      if(this.type==='drone')return;
+      const a=Math.min(Math.max(dt,0)*18,1);
+      if(this.hMesh){
+        this.hMesh.position.x+=(0-this.hMesh.position.x)*a;
+        this.hMesh.position.y+=(1.48-this.hMesh.position.y)*a;
+        this.hMesh.position.z+=(0-this.hMesh.position.z)*a;
+      }
+      if(this.neckMesh){
+        this.neckMesh.position.x+=(0-this.neckMesh.position.x)*a;
+        this.neckMesh.position.y+=(1.325-this.neckMesh.position.y)*a;
+        this.neckMesh.position.z+=(0-this.neckMesh.position.z)*a;
+      }
+    }
+    _syncMeshyHitboxesToBones(){
+      if(!this.meshyRig||!this.meshyRig.visible||!this.bones||!this.group)return;
+      this.group.updateMatrixWorld(true);
+      const headBone=this.bones.Head||this.bones.Neck;
+      const spineBone=this.bones.Spine2||this.bones.Spine1||this.bones.Spine||this.bones.Hips;
+      const v=this._meshHitTmpV||(this._meshHitTmpV=new THREE.Vector3());
+      if(headBone&&this.hMesh){
+        headBone.getWorldPosition(v);
+        this.group.worldToLocal(v);
+        this.hMesh.position.copy(v);
+        this.hMesh.rotation.set(0,0,0);
+        this.hMesh.updateMatrixWorld(true);
+      }
+      if(spineBone&&this.bMesh){
+        spineBone.getWorldPosition(v);
+        this.group.worldToLocal(v);
+        this.bMesh.position.x=v.x;
+        this.bMesh.position.y=v.y-.08;
+        this.bMesh.position.z=v.z;
+        this.bMesh.updateMatrixWorld(true);
+      }
+    }
+    getMeshes(){
+      if(this.meshyRig&&this.meshyRig.visible)this._syncMeshyHitboxesToBones();
+      const out=[this.bMesh,this.hMesh];
+      if(Array.isArray(this.limbHitMeshes)&&!(this.meshyRig&&this.meshyRig.visible))out.push(...this.limbHitMeshes);
+      return out.filter(Boolean);
+    }
     getMuzzlePos(){
       const v=new THREE.Vector3(0,.012,this.muzzleZ||.40);
       this.weaponGrp.localToWorld(v);return v;
@@ -6626,7 +6835,9 @@ class Enemy{
   _spawnDamageOverlay(isHead,isMelee){
     if(this.type==='drone')return;
     if(!isHead&&!isMelee&&Math.random()<.55)return;
-    const parent=isHead?this.hMesh:this.bMesh;
+    const limbId=this._lastHitLimbId||(isHead?'head':'torso');
+    const limbRec=this.limbRig&&this.limbRig[limbId];
+    const parent=isHead?this.hMesh:(limbRec&&limbRec.pivot)||this.bMesh;
     if(!parent)return;
     if(!this.damageOverlays)this.damageOverlays=[];
     const blood=isHead||isMelee;
@@ -6655,24 +6866,117 @@ class Enemy{
         depthWrite:false
       });
     }
-    const size=isHead?0.105:(isMelee?0.20:0.145);
+    const limbSmall=/Arm|Forearm|Shin/.test(limbId);
+    const size=isHead?0.105:(isMelee?0.20:(limbSmall?.105:.145));
     const mesh=new THREE.Mesh(new THREE.PlaneGeometry(size,size*(isMelee?1.45:1.0)),mat);
-    const px=(Math.random()-.5)*(isHead?0.12:0.28);
-    const py=isHead?((Math.random()-.5)*.10):((Math.random()-.5)*.48);
-    const pz=isHead?0.162:0.176;
+    const px=(Math.random()-.5)*(isHead?0.12:(limbSmall?.08:.28));
+    const py=isHead?((Math.random()-.5)*.10):((Math.random()-.5)*(limbSmall?.18:.48));
+    const pz=isHead?0.162:(limbSmall?.088:.176);
     mesh.position.set(px,py,pz);
     mesh.rotation.z=(Math.random()-.5)*.9;
     mesh.userData.damageOverlay=true;
-    mesh.userData.hitZone=isHead?'head':isMelee?'melee':'torso';
+    mesh.userData.hitZone=isHead?'head':isMelee?'melee':limbId;
     mesh.userData.aaMaterial='damage-decal';
     parent.add(mesh);
     this.damageOverlays.push(mesh);
     const cap=(SETTINGS&&SETTINGS.characterQuality)==='low'?3:6;
     while(this.damageOverlays.length>cap)this._disposeDamageOverlay(this.damageOverlays.shift());
   }
+  _showDropkickContactMark(side=1,killed=false){
+    if(this.type==='drone'||!this.bMesh)return;
+    if(!this.dropkickContactMark){
+      const g=new THREE.Group();
+      g.name='dropkick_enemy_contact_mark';
+      const soleM=new THREE.MeshBasicMaterial({color:0x090604,transparent:true,opacity:0,depthWrite:false,depthTest:true,side:THREE.DoubleSide});
+      const soleM2=soleM.clone();
+      const hotM=new THREE.MeshBasicMaterial({color:0xffc078,transparent:true,opacity:0,depthWrite:false,depthTest:true,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+      const soleA=new THREE.Mesh(new THREE.PlaneGeometry(.064,.220),soleM);
+      const soleB=new THREE.Mesh(new THREE.PlaneGeometry(.046,.150),soleM2);
+      const toe=new THREE.Mesh(new THREE.PlaneGeometry(.086,.052),soleM.clone());
+      const heel=new THREE.Mesh(new THREE.PlaneGeometry(.074,.050),soleM.clone());
+      const slash=new THREE.Mesh(new THREE.PlaneGeometry(.230,.018),hotM.clone());
+      const burst=new THREE.Mesh(new THREE.RingGeometry(.050,.118,20),hotM);
+      soleA.position.set(-.026,.010,.004);
+      soleB.position.set(.044,-.014,.006);
+      toe.position.set(.002,.132,.007);
+      heel.position.set(-.018,-.130,.007);
+      slash.position.set(.020,.006,.010);
+      soleA.rotation.z=-.10;
+      soleB.rotation.z=.12;
+      toe.rotation.z=-.04;
+      heel.rotation.z=-.12;
+      slash.rotation.z=.18;
+      burst.position.z=.008;
+      g.add(soleA,soleB,toe,heel,slash,burst);
+      g.visible=false;
+      g.userData.parts={soleA,soleB,toe,heel,slash,burst};
+      this.bMesh.add(g);
+      this.dropkickContactMark=g;
+    }
+    const g=this.dropkickContactMark;
+    g.visible=true;
+    g.userData.timer=killed?.85:.70;
+    g.userData.dur=killed?.85:.70;
+    g.userData.side=Math.sign(side)||1;
+    g.userData.killed=!!killed;
+    g.position.set((Math.sign(side)||1)*.045,.090,.188);
+    this._updateDropkickContactMark(0);
+  }
+  _updateDropkickContactMark(dt){
+    const g=this.dropkickContactMark;
+    if(!g||!g.userData||!g.userData.parts)return;
+    const dur=Math.max(.001,g.userData.dur||.20);
+    const timer=Math.max(0,(g.userData.timer||0)-dt);
+    g.userData.timer=timer;
+    if(timer<=0){
+      g.visible=false;
+      return;
+    }
+    const age=THREE.MathUtils.clamp(1-timer/dur,0,1);
+    const side=g.userData.side||1;
+    const snap=1-THREE.MathUtils.smoothstep(age,.000,.180);
+    const fade=1-THREE.MathUtils.smoothstep(age,.430,1.000);
+    const skid=THREE.MathUtils.smoothstep(age,.060,.260)*(1-THREE.MathUtils.smoothstep(age,.340,.780));
+    const burst=1-THREE.MathUtils.smoothstep(age,.015,.300);
+    g.rotation.z=side*(.130+snap*.090);
+    g.scale.set(1+snap*.20+skid*.10+age*.05,1-snap*.07+skid*.05+age*.035,1);
+    const p=g.userData.parts;
+    p.soleA.material.opacity=fade*(g.userData.killed?.56:.48);
+    p.soleB.material.opacity=fade*(g.userData.killed?.48:.39);
+    if(p.toe)p.toe.material.opacity=fade*(g.userData.killed?.50:.42);
+    if(p.heel)p.heel.material.opacity=fade*(g.userData.killed?.44:.34);
+    if(p.slash)p.slash.material.opacity=skid*(g.userData.killed?.34:.26);
+    p.burst.material.opacity=burst*(g.userData.killed?.50:.40);
+  }
+  _applyDropkickFlyImpulse(dt,death=false){
+    const fly=this._dropkickFlyImpulse;
+    if(!fly||!this.group)return 0;
+    const nowMs=performance.now();
+    const dur=Math.max(1,fly.dur||520);
+    const pt=THREE.MathUtils.clamp((nowMs-(fly.start||nowMs))/dur,0,1);
+    if(nowMs>=fly.until||pt>=1){
+      this._dropkickFlyImpulse=null;
+      return 0;
+    }
+    const snap=1-THREE.MathUtils.smoothstep(pt,.000,.165);
+    const carry=1-THREE.MathUtils.smoothstep(pt,.105,1.000);
+    const bounce=Math.sin(THREE.MathUtils.clamp((pt-.020)/.820,0,1)*Math.PI)*(1-THREE.MathUtils.smoothstep(pt,.580,1.000));
+    const shove=(snap*.62+carry*.48+bounce*.18)*(fly.power||1)*(death?1.16:1.0);
+    const speed=fly.speedMul||(death?5.9:5.2);
+    this.group.position.x+=(fly.x||0)*shove*dt*speed;
+    this.group.position.z+=(fly.z||0)*shove*dt*speed;
+    return Math.max(0,Math.sin(Math.min(1,pt)*Math.PI))*(fly.lift||0);
+  }
   takeDamage(dmg,isHead,isMelee){
     if(this.dead)return false;
     if(this._roomFlowDormant)return false;
+    this._deathByDropkick=false;
+    const limbInfo=Enemy._nextHitLimb||null;
+    Enemy._nextHitLimb=null;
+    const limbId=isHead?'head':(limbInfo&&limbInfo.id)||'torso';
+    const limbSpec=(limbInfo&&limbInfo.spec)||ENEMY_LIMB_SCHEMA[limbId]||ENEMY_LIMB_SCHEMA.torso;
+    this._lastHitLimbId=limbId;
+    if(!isHead&&limbSpec&&Number.isFinite(limbSpec.damageMul))dmg*=limbSpec.damageMul;
     // Phase W: boss-phase I-frames — brief invulnerability during phase
     // transitions (so the phase telegraph lands before the player can shred).
     if(this._invulnUntil&&performance.now()<this._invulnUntil){
@@ -6709,35 +7013,74 @@ class Enemy{
       // Phase T: headshot stagger is shorter but sharper; record the hit
       // location so the flinch animation can branch on it.
       const flags=this._lastHitFlags||{};
+      const nowMs=performance.now();
+      const weaponIdx=Number.isFinite(flags.weaponIdx)?flags.weaponIdx:-1;
+      const profile=(typeof _weaponCombatProfile==='function')?_weaponCombatProfile(weaponIdx):COMBAT_FEEL_BASE;
+      const impactWeight=THREE.MathUtils.clamp(Number.isFinite(flags.impactWeight)?flags.impactWeight:_weaponImpactWeight(weaponIdx),.72,1.72);
+      const chainAge=nowMs-(this._lastBulletHitAt||0);
+      const hitChain=chainAge<520?Math.min(5,(this._bulletHitChain||0)+1):1;
+      this._bulletHitChain=hitChain;
+      this._lastBulletHitAt=nowMs;
       const armorResist=(this.type==='heavy'||this.type==='riot'||this.type==='shielded')?.55:1.0;
-      const heavyHit=dmg>=70||flags.shotgun||flags.sniper||isHead;
-      const staggerMul=(flags.shotgun?2.6:flags.sniper?1.8:isHead?1.4:dmg>45?1.25:1.0)*armorResist;
+      const pistolHeavy=!!flags.pistolHeavy;
+      const heavyHit=dmg>=68||flags.shotgun||flags.sniper||pistolHeavy||isHead||impactWeight>1.32||(hitChain>=3&&dmg>20);
+      const staggerBase=flags.shotgun?2.7:(flags.sniper?2.05:(flags.dmr?1.48:(pistolHeavy?1.45:(isHead?1.50:(dmg>45?1.30:1.0)))));
+      const chainMul=1+Math.min(.28,(hitChain-1)*.075);
+      const staggerMul=THREE.MathUtils.clamp(staggerBase*impactWeight*(profile.enemyStagger||flags.enemyStagger||1)*chainMul*armorResist,.65,3.85);
       this.staggerTimer=0.14*staggerMul;
       this.staggerDur=0.14*staggerMul;
-      this.staggerAmt=1.6*staggerMul;
-      this.hitFlashTimer=0.20;
-      this.bulletHitTimer=isHead?0.22:0.16;
+      this.staggerAmt=1.8*staggerMul;
+      this.hitFlashTimer=heavyHit?0.26:0.20;
+      this.bulletHitTimer=isHead?0.26:(heavyHit?0.22:0.17);
       this._lastHitWasHead=!!isHead;
+      this._hitImpactStrength=Math.max(.9,Math.min(2.75,staggerMul*(heavyHit?1.12:1)*(flags.smg ? .88 : 1)));
+      const snapDur=flags.shotgun?.095:(flags.sniper?.080:(heavyHit?.066:.052));
+      const snapStrength=THREE.MathUtils.clamp((heavyHit?.92:.62)*(isHead?1.16:1)*(flags.shotgun?1.18:1)*impactWeight,.45,1.55);
+      this._hitSnapTimer=Math.max(this._hitSnapTimer||0,snapDur);
+      this._hitSnapDur=snapDur;
+      this._hitSnapStrength=Math.max(this._hitSnapStrength||0,snapStrength);
+      if(isHead){
+        const hsDur=flags.sniper?.150:(pistolHeavy?.130:.115);
+        this._headshotHitStopTimer=Math.max(this._headshotHitStopTimer||0,hsDur);
+        this._headshotHitStopDur=hsDur;
+        this._headshotPunch=Math.max(this._headshotPunch||0,THREE.MathUtils.clamp(1.05+impactWeight*.34,.95,1.75));
+        this.bulletHitTimer=Math.max(this.bulletHitTimer,.34);
+        this.hitFlashTimer=Math.max(this.hitFlashTimer,.34);
+        this.staggerTimer=Math.max(this.staggerTimer,.24*impactWeight);
+        this.staggerDur=Math.max(this.staggerDur||0,.24*impactWeight);
+        this.staggerAmt=Math.max(this.staggerAmt||0,2.15*impactWeight);
+        this._hitSnapTimer=Math.max(this._hitSnapTimer||0,.125);
+        this._hitSnapDur=Math.max(this._hitSnapDur||0,.125);
+        this._hitSnapStrength=Math.max(this._hitSnapStrength||0,THREE.MathUtils.clamp(1.72*impactWeight,.95,2.35));
+        this.shootTimer=Math.max(this.shootTimer||0,.42);
+        this.burstCooldown=Math.max(this.burstCooldown||0,.32);
+      }
       // Gameplay-feel pass: taking a committed hit should buy the player a
       // readable beat. Armored enemies resist displacement but still lose aim.
-      const nowMs=performance.now();
-      const delay=heavyHit?(this.type==='heavy'||this.type==='riot'?260:360):(this.type==='scout'?90:150);
+      const delayBase=heavyHit?(this.type==='heavy'||this.type==='riot'?290:390):(this.type==='scout'?105:165);
+      const aimPressure=(profile.enemyAimBreak||flags.enemyAimBreak||1)*(1+Math.min(.22,(hitChain-1)*.055));
+      const delay=Math.min(620,delayBase*aimPressure);
       this.shootTimer=Math.max(this.shootTimer||0,delay/1000);
       this.burstCooldown=Math.max(this.burstCooldown||0,(delay*.72)/1000);
-      this.aimReady=Math.max(0,(this.aimReady||0)-(heavyHit?.40:.22));
-      this._suppressedUntil=Math.max(this._suppressedUntil||0,nowMs+(heavyHit?360:190));
-      if(this.type==='marksman'||this.type==='sniper')this._chargeT=Math.max(0,(this._chargeT||0)-(heavyHit?.55:.25));
+      this.aimReady=Math.max(0,(this.aimReady||0)-((heavyHit?.42:.23)*aimPressure));
+      this._suppressedUntil=Math.max(this._suppressedUntil||0,nowMs+((heavyHit?410:220)*(profile.suppressionMul||1)));
+      if(this.type==='marksman'||this.type==='sniper')this._chargeT=Math.max(0,(this._chargeT||0)-((heavyHit?.62:.30)*aimPressure));
       // Phase T: directional pushback impulse — visibly nudge the body in
       // the bullet direction over ~120ms. Heavies/shielded resist more.
       const resist=this.type==='heavy'?0.2:this.type==='shielded'?0.15:this.type==='riot'?0.25:0.6;
-      const push=(flags.shotgun?0.30:flags.sniper?0.22:0.14)*resist;
+      const pushBase=flags.shotgun?0.42:(flags.sniper?0.33:(flags.dmr?0.24:(pistolHeavy?0.22:(flags.smg?0.12:0.16))));
+      const push=pushBase*resist*impactWeight*(profile.enemyPush||flags.enemyPush||1)*(isHead ? .80 : 1);
+      const pushDur=Math.round(130+(heavyHit?40:0)+(flags.shotgun?45:0)+(flags.sniper?35:0));
       this._pushImpulse={
         x: -this.staggerDir.x*push,
         z: -this.staggerDir.z*push,
-        until: performance.now()+120,
-        start: performance.now(),
+        dur:pushDur,
+        until: nowMs+pushDur,
+        start: nowMs,
       };
+      if(this.hp<=0)this._deathImpactPower=THREE.MathUtils.clamp(1+push*3.4+impactWeight*.15+(flags.shotgun ? .22 : 0)+(flags.sniper ? .18 : 0),.85,2.25);
     }
+    this._applyLimbHit(limbId,dmg,isMelee);
     this._spawnDamageOverlay(isHead,isMelee);
     if(this.hp<=0){this.die();return true;}
     if(this.state===PATROL)this.state=CHASE;
@@ -6805,8 +7148,8 @@ class Enemy{
   // shears the mesh), so we use FORWARD-ONLY alternating leg lifts ("march"
   // pattern) and small positive arm offsets — visually a confident walk without
   // skin-weight artifacts.
-  _meshyPose(dt,isMoving){
-    const B=this.bones,R=this.boneRest; if(!B||!R)return;
+	  _meshyPose(dt,isMoving){
+	    const B=this.bones,R=this.boneRest; if(!B||!R)return;
     // Reset cached bones to bind-pose local transform each frame.
     for(const k in B){
       const b=B[k],r=R[k];
@@ -6839,11 +7182,51 @@ class Enemy{
     } else {
       // Idle: tiny breathing sway through the spine.
       const t=this._poseT*1.6;
-      if(B.Spine) B.Spine.rotateX(Math.sin(t)*0.020);
-    }
-  }
-  // ── Animation update (called every frame while alive) ──────────────────────
+	      if(B.Spine) B.Spine.rotateX(Math.sin(t)*0.020);
+	    }
+	  }
+	  _meshyAdditiveCombatPose(bodyRX,bodyRY,bodyRZ,lARX,rARX,lElbRX,rElbRX){
+	    if(!this.meshyRig||!this.meshyRig.visible||!this.bones)return;
+	    const B=this.bones;
+	    const peek=THREE.MathUtils.clamp((this.peekAmt||0)+(this._peekPrepPulse||0)*.35,0,1);
+	    const shot=THREE.MathUtils.clamp((this.shootRecoilTimer||0)/Math.max(.08,this._shotRecoverDur||.20),0,1);
+	    const fire=(1-THREE.MathUtils.smoothstep(1-shot,.05,.28))*(this._shotVisualStrength||1);
+	    const side=this._peekSideSign||this._shotRecoverSide||1;
+	    const spineW=this.type==='soldier' ? .72 : .48;
+	    if(B.Hips){
+	      B.Hips.rotateX(bodyRX*.24*spineW);
+	      B.Hips.rotateZ(bodyRZ*.18*spineW);
+	    }
+	    if(B.Spine){
+	      B.Spine.rotateX(bodyRX*.34*spineW-fire*.020);
+	      B.Spine.rotateY(bodyRY*.38*spineW+side*peek*.030);
+	      B.Spine.rotateZ(bodyRZ*.42*spineW-side*peek*.050+side*fire*.026);
+	    }
+	    const upper=B.Spine2||B.Spine1||B.Spine;
+	    if(upper){
+	      upper.rotateX(bodyRX*.26*spineW-fire*.040);
+	      upper.rotateY(bodyRY*.32*spineW+side*peek*.085-side*fire*.028);
+	      upper.rotateZ(bodyRZ*.36*spineW-side*peek*.105+side*fire*.040);
+	    }
+	    if(B.Head){
+	      B.Head.rotateX(-peek*.030-fire*.035);
+	      B.Head.rotateY(side*peek*.060);
+	      B.Head.rotateZ(-side*peek*.080+side*fire*.035);
+	    }
+	    if(B.LeftArm)B.LeftArm.rotateX(lARX*.11-fire*.020);
+	    if(B.RightArm)B.RightArm.rotateX(rARX*.11-fire*.070);
+	    if(B.LeftForeArm)B.LeftForeArm.rotateX(lElbRX*.10+fire*.035);
+	    if(B.RightForeArm)B.RightForeArm.rotateX(rElbRX*.10+fire*.070);
+	  }
+	  // ── Animation update (called every frame while alive) ──────────────────────
   _updateAnim(dt,isMoving){
+    const desiredMoveSpeed=Math.hypot(this._moveVelX||0,this._moveVelZ||0);
+    const locomotionMode=this._movementMode||'idle';
+    const locomotionIntent=desiredMoveSpeed>.18&&(
+      locomotionMode==='walk'||locomotionMode==='chase'||locomotionMode==='strafe'||
+      locomotionMode==='flank'||locomotionMode==='reposition'||locomotionMode==='juke'
+    );
+    isMoving=!!(isMoving||locomotionIntent);
     // Pick a Mixamo clip for the current AI state. Authored skin weights match
     // these clips so no stretching like our hand-rolled procedural march had.
     if(this.actions){
@@ -6855,6 +7238,7 @@ class Enemy{
       }
       this._meshyDriveClip(pick);
     }
+    this._updateDropkickContactMark(dt);
     // --- Spawn pop-in: scale overshoot + bright blue-white emissive burst ---
     const visualScale=Math.max(.001,this.visualScale||1);
     if(this.spawnTimer>0&&!this.spawnIntro){
@@ -6868,9 +7252,39 @@ class Enemy{
         this.hM.emissive.setRGB(surge*.08,surge*.42,surge*.92);
         return;
       }
-    }else{this.group.scale.setScalar(visualScale);}
+	    }else{this.group.scale.setScalar(visualScale);}
+	    this._stabilizeProceduralHitboxes(dt);
+	    const motionProfile=this.motionProfile||_enemyMotionProfile(this.type);
+	    const frameDt=Math.max(dt||0,1/120);
+	    const nowX=this.group.position.x,nowZ=this.group.position.z,nowYaw=this.group.rotation.y||0;
+	    const lastX=this._animLastX==null?nowX:this._animLastX;
+	    const lastZ=this._animLastZ==null?nowZ:this._animLastZ;
+	    const lastYaw=this._animLastYaw==null?nowYaw:this._animLastYaw;
+	    const mdx=nowX-lastX,mdz=nowZ-lastZ;
+	    const speedNow=THREE.MathUtils.clamp(Math.hypot(mdx,mdz)/frameDt,0,12);
+	    const speedDrive=isMoving?Math.max(speedNow,desiredMoveSpeed*.72):speedNow;
+	    const yawDelta=((nowYaw-lastYaw+Math.PI*3)%(Math.PI*2))-Math.PI;
+	    const rightX=Math.cos(nowYaw),rightZ=-Math.sin(nowYaw);
+	    const fwdX=Math.sin(nowYaw),fwdZ=Math.cos(nowYaw);
+	    const lateralNow=THREE.MathUtils.clamp((mdx*rightX+mdz*rightZ)/frameDt,-8,8);
+	    const forwardNow=THREE.MathUtils.clamp((mdx*fwdX+mdz*fwdZ)/frameDt,-8,8);
+	    const prevSpeed=this._moveSpeedVis||0;
+	    this._moveSpeedVis=damp(prevSpeed,speedDrive,speedDrive>prevSpeed?18:9,dt);
+	    this._moveAccelVis=damp(this._moveAccelVis||0,(speedDrive-prevSpeed)/frameDt,10,dt);
+	    this._lateralSpeedVis=damp(this._lateralSpeedVis||0,lateralNow,16,dt);
+	    this._forwardSpeedVis=damp(this._forwardSpeedVis||0,forwardNow,14,dt);
+	    this._turnRateVis=damp(this._turnRateVis||0,THREE.MathUtils.clamp(yawDelta/frameDt,-8,8),15,dt);
+	    this._animLastX=nowX;this._animLastZ=nowZ;this._animLastYaw=nowYaw;
+	    this._peekPrepPulse=Math.max(0,(this._peekPrepPulse||0)-dt*2.6);
+	    this._peekCommitPulse=Math.max(0,(this._peekCommitPulse||0)-dt*3.9);
+		    this._peekShotTuck=Math.max(0,(this._peekShotTuck||0)-dt*4.8);
+		    this._shotRecoverTimer=Math.max(0,(this._shotRecoverTimer||0)-dt);
+		    this._fireBlinkTimer=Math.max(0,(this._fireBlinkTimer||0)-dt);
+		    this._pivotPulse=Math.max(0,(this._pivotPulse||0)-dt*3.8);
+		    this._enemyFootPlantVis=Math.max(0,(this._enemyFootPlantVis||0)-dt*7.8);
+		    this._enemyStopSettleVis=Math.max(0,(this._enemyStopSettleVis||0)-dt*3.7);
 
-    const isAttacking=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
+	    const isAttacking=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
     const isChasing=this.state===CHASE||this.state===ATTACK||this.state===FLANK||this.state===REPOSITION;
     const isRunning=isMoving&&isChasing&&(this.speed>3.0||this._movementMode==='reposition'||this._movementMode==='juke'||this._movementMode==='flank');
     let poseState='idle';
@@ -6897,9 +7311,11 @@ class Enemy{
       isAttacking?'combat':'idle'
     ]||ENEMY_POSE_STATES.idle;
 
-    // Base limb targets (computed below)
-    let lARX=0,rARX=0,lLRX=0,rLRX=0,bodyRZ=0,bodyRX=0,bodyRY=0;
-    let lElbRX=0.32,rElbRX=0.32; // natural relaxed elbow bend
+	    // Base limb targets (computed below)
+	    let lARX=0,rARX=0,lLRX=0,rLRX=0,bodyRZ=0,bodyRX=0,bodyRY=0;
+	    let lARY=0,rARY=0,lARZ=0,rARZ=0,lLRY=0,rLRY=0,lLRZ=0,rLRZ=0;
+	    let lBootRX=0,rBootRX=0,lBootRZ=0,rBootRZ=0;
+	    let lElbRX=0.32,rElbRX=0.32; // natural relaxed elbow bend
 
     if(isMoving){
       // Walking vs running gait — type-modulated cadence
@@ -6915,21 +7331,28 @@ class Enemy{
         soldier:  {spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16},
         boss:     {spd:.96,armAmt:.65,legAmt:.62,bob:.020,leanRun:-.10}
       }[this.type]||{spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16};
-      const phaseSpd=(isRunning?this.speed*2.95:this.speed*2.20)*typeGait.spd;
-      this.walkPhase+=dt*phaseSpd;
-      const sw=Math.sin(this.walkPhase);
-      const sw2=Math.sin(this.walkPhase*2);
-      const swA=Math.abs(sw);
+		      const gaitSpeed=THREE.MathUtils.clamp((this._moveSpeedVis||this.speed*.55)/Math.max(.65,this.speed),.30,1.55);
+		      const phaseSpd=(isRunning?7.9:5.15)*typeGait.spd*(motionProfile.stride||1)*(.70+gaitSpeed*.38);
+	      this.walkPhase+=dt*phaseSpd;
+	      const sw=Math.sin(this.walkPhase);
+	      const sw2=Math.sin(this.walkPhase*2);
+	      const swA=Math.abs(sw);
       // Phase R: foot-strike trigger — fires at the bottom of each leg phase
       // (sw crosses zero from + to -). Used for impact emphasis.
       const _phaseSwitch=this._lastSwSign==null?0:Math.sign(sw)-this._lastSwSign;
       this._lastSwSign=Math.sign(sw);
-      if(_phaseSwitch!==0){this._footStrikeT=performance.now();}
-      const _strikeAge=(performance.now()-(this._footStrikeT||0))/1000;
-      const _strikePulse=Math.max(0,1-_strikeAge/0.18);
+	      if(_phaseSwitch!==0){
+	        this._footStrikeT=performance.now();
+	        this._enemyFootPlantVis=Math.max(this._enemyFootPlantVis||0,isRunning?.60:.40);
+	        this._enemyFootPlantSide=Math.sign(sw)||1;
+	      }
+	      const _strikeAge=(performance.now()-(this._footStrikeT||0))/1000;
+	      const _strikePulse=Math.max(0,1-_strikeAge/0.18);
+	      const _plantPulse=Math.max(_strikePulse,this._enemyFootPlantVis||0);
 
-      const armAmt=(isRunning?1.10:.70)*typeGait.armAmt/.78;
-      const legAmt=(isRunning?.92:.60)*typeGait.legAmt/.65;
+		      const strideVis=THREE.MathUtils.clamp(.62+gaitSpeed*.42,.55,1.22);
+		      const armAmt=(isRunning?1.10:.70)*typeGait.armAmt/.78*(motionProfile.stride||1)*strideVis;
+		      const legAmt=(isRunning?.92:.60)*typeGait.legAmt/.65*(motionProfile.stride||1)*strideVis;
 
       lARX= sw*armAmt; rARX=-sw*armAmt;
       lLRX=-sw*legAmt; rLRX= sw*legAmt;
@@ -6941,42 +7364,81 @@ class Enemy{
         rARX+=Math.max(0,-sw)*leadBias;
       }
 
-      // Elbow pumping — opposite arm bends more on forward stride
-      lElbRX=0.32+Math.max(0,-sw)*(isRunning?.72:.30);
-      rElbRX=0.32+Math.max(0, sw)*(isRunning?.72:.30);
+	      // Elbow pumping — opposite arm bends more on forward stride
+	      lElbRX=0.32+Math.max(0,-sw)*(isRunning?.72:.30);
+	      rElbRX=0.32+Math.max(0, sw)*(isRunning?.72:.30);
+	      if(isAttacking){
+	        const aimPose=this.aimReady||0;
+	        const combatCarry=.30+aimPose*.42;
+	        lARX=lARX*(1-combatCarry)-aimPose*.28;
+	        rARX=rARX*(1-combatCarry)-aimPose*.32;
+	        lElbRX+=aimPose*.34;
+	        rElbRX+=aimPose*.30;
+	      }
       // Knee bend follows leg phase — back leg bends more on push-off.
       // Phase R: stronger push-off curve, sharper foot-plant.
-      this._lKneeBend=0.10+Math.max(0,sw)*(isRunning?.62:.34)+_strikePulse*0.08*Math.max(0,sw);
-      this._rKneeBend=0.10+Math.max(0,-sw)*(isRunning?.62:.34)+_strikePulse*0.08*Math.max(0,-sw);
+	      this._lKneeBend=0.10+Math.max(0,sw)*(isRunning?.62:.34)+_plantPulse*0.11*Math.max(0,sw);
+	      this._rKneeBend=0.10+Math.max(0,-sw)*(isRunning?.62:.34)+_plantPulse*0.11*Math.max(0,-sw);
 
-      // Torso forward lean at speed (heavier types lean less)
-      bodyRX=isRunning?typeGait.leanRun:-.05;
+	      // Torso forward lean at speed (heavier types lean less)
+	      bodyRX=isRunning?typeGait.leanRun:-.05;
+	      if(isAttacking)bodyRX-=(this.aimReady||0)*.060;
       // Spine twist: counter-rotation adds naturalistic torso twist
       bodyRY=sw*(isRunning?.14:.065);
       // Side-to-side sway — heavy types sway more, scouts less
-      const swayAmp=this.type==='heavy'?.13:this.type==='scout'?.045:.09;
-      bodyRZ=sw*(isRunning?swayAmp:swayAmp*.55);
+	      const swayAmp=this.type==='heavy'?.13:this.type==='scout'?.045:.09;
+	      bodyRZ=sw*(isRunning?swayAmp:swayAmp*.55);
 
       // Body vertical bob: compress at foot-strike, rise at mid-stride.
       // Phase R: add a sharp dip on actual foot-strike for impact.
       const bobScale=typeGait.bob/.025;
-      const _strikeDip=_strikePulse*(isRunning?0.018:0.008);
+	      const _strikeDip=_plantPulse*(isRunning?0.020:0.010);
       this.bMesh.position.y=.76-swA*(isRunning?.040:.018)*bobScale+sw2*(isRunning?.012:.006)*bobScale-_strikeDip;
       // Hip drop on each foot-strike — Phase R: bumped 30%.
       if(this.lLegGrp){
         this.lLegGrp.position.y=.22-Math.max(0,sw)*(isRunning?.026:.013);
         this.rLegGrp.position.y=.22-Math.max(0,-sw)*(isRunning?.026:.013);
       }
-      // Head subtle counter-bob — Phase R: stronger absorption pulse on strike.
-      if(this.hMesh)this.hMesh.position.y=1.48-swA*.006-_strikeDip*0.5;
-      if(this._movementMode==='juke'){
+	      // Head subtle counter-bob — Phase R: stronger absorption pulse on strike.
+		      if(this.hMesh)this.hMesh.position.y=1.48-swA*.006-_strikeDip*0.56;
+	      const speedFrac=THREE.MathUtils.clamp(this._moveSpeedVis/Math.max(1,this.speed*1.35),0,1.25);
+	      const accelLean=THREE.MathUtils.clamp((this._moveAccelVis||0)/18,-1,1)*(motionProfile.inertia||1);
+	      const lateralLean=THREE.MathUtils.clamp((this._lateralSpeedVis||0)/Math.max(1,this.speed),-1,1);
+	      const turnLean=THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*(motionProfile.turnLean||1);
+	      const plantSide=sw>=0?1:-1;
+	      const lSwing=THREE.MathUtils.clamp(Math.max(0,-sw)*1.15,0,1);
+	      const rSwing=THREE.MathUtils.clamp(Math.max(0, sw)*1.15,0,1);
+	      const footRoll=Math.sin(THREE.MathUtils.clamp((this.walkPhase%(Math.PI*2))/(Math.PI*2),0,1)*Math.PI*2);
+		      lBootRX=-lSwing*.20+Math.max(0,sw)*.070-_plantPulse*.060*Math.max(0,sw);
+		      rBootRX=-rSwing*.20+Math.max(0,-sw)*.070-_plantPulse*.060*Math.max(0,-sw);
+	      lBootRZ=-lateralLean*.050+footRoll*.018*(isRunning?1:.55);
+	      rBootRZ=-lateralLean*.050-footRoll*.018*(isRunning?1:.55);
+		      lLRZ+=-lateralLean*(isRunning?.105:.070)+plantSide*_plantPulse*.034;
+		      rLRZ+=-lateralLean*(isRunning?.105:.070)-plantSide*_plantPulse*.034;
+	      lLRY+=turnLean*.045+lateralLean*.030;
+	      rLRY+=turnLean*.045+lateralLean*.030;
+	      lARZ+=-bodyRZ*.22-turnLean*.035;
+	      rARZ+=-bodyRZ*.22-turnLean*.035;
+	      lARY+=bodyRY*.18;
+	      rARY+=bodyRY*.18;
+		      bodyRX+=-accelLean*.050-speedFrac*.020+_plantPulse*(isRunning?.032:.016);
+		      bodyRZ+=-lateralLean*.105*(isRunning?1.0:.62)-turnLean*.072+plantSide*_plantPulse*(isRunning?.050:.028);
+	      bodyRY+=turnLean*.052-lateralLean*.038;
+	      if(this.weaponGrp&&isAttacking){
+	        this.weaponGrp.position.x+=(-lateralLean*.030-turnLean*.018-this.weaponGrp.position.x)*Math.min(dt*7,1);
+		        this.weaponGrp.rotation.z+=(-turnLean*.035+plantSide*_plantPulse*.024)*(isRunning?1:.55);
+	      }
+	      if(this._movementMode==='juke'){
         const j=Math.sin(Math.max(0,Math.min(1,(this._jukeTimer||0)/.50))*Math.PI);
         bodyRZ+=this.strafeDir*j*.22;
         bodyRY-=this.strafeDir*j*.14;
         lLRX+=j*.20;rLRX-=j*.20;
+        lLRZ-=this.strafeDir*j*.11;rLRZ-=this.strafeDir*j*.11;
+        lBootRZ-=this.strafeDir*j*.10;rBootRZ-=this.strafeDir*j*.10;
       }else if(this._movementMode==='reposition'||this._movementMode==='flank'){
         bodyRX-=.08;
         lElbRX+=.14;rElbRX+=.14;
+        lARY-=.035;rARY-=.035;
       }
       // Phase R: trace the moving-state for the smooth stop transition below.
       this._wasMoving=true;
@@ -6985,10 +7447,12 @@ class Enemy{
       // Phase R: brief deceleration settle when transitioning from moving → idle.
       // The first ~250ms after stopping, residual hip/body bob fades out
       // smoothly instead of snapping. Tracked via _wasMoving + _stopStart.
-      if(this._wasMoving){
-        this._stopStart=performance.now();
-        this._wasMoving=false;
-      }
+	      if(this._wasMoving){
+	        this._stopStart=performance.now();
+	        this._enemyStopSettleVis=Math.max(this._enemyStopSettleVis||0,THREE.MathUtils.clamp((this._moveSpeedVis||0)/Math.max(1,this.speed),.28,1));
+	        this._enemyStopSettleSide=Math.sign(this._lateralSpeedVis||this._turnRateVis||this._enemyFootPlantSide||1)||1;
+	        this._wasMoving=false;
+	      }
       this._lKneeBend=0.10;this._rKneeBend=0.10;
       // ── Idle: breathing + weight shift + head micro-movements ──
       const ip=Date.now()*.001;
@@ -7001,10 +7465,27 @@ class Enemy{
       lElbRX=0.32+Math.abs(breathA)*.10;
       rElbRX=0.32+Math.abs(breathA)*.10;
 
-      // Weight shift
-      bodyRZ=weightShift*.032;
-      // Chest rises/falls
-      this.bMesh.position.y=.76+breathA*.009;
+	      // Weight shift
+	      bodyRZ=weightShift*.032;
+	      const idleTurnLean=THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*(motionProfile.turnLean||1);
+		      const stopSettle=THREE.MathUtils.clamp((this._moveSpeedVis||0)/Math.max(1,this.speed),0,1);
+		      const pivot=this._pivotPulse||0;
+		      const pivotSide=this._pivotSide||1;
+		      const stopPulse=this._enemyStopSettleVis||0;
+		      const stopSide=this._enemyStopSettleSide||pivotSide;
+		      bodyRX+=stopSettle*.025+stopPulse*.055;
+		      bodyRZ-=idleTurnLean*.040+pivotSide*pivot*.070+stopSide*stopPulse*.085;
+		      bodyRY+=pivotSide*pivot*.050+stopSide*stopPulse*.052;
+		      lLRX+=pivot*.115+stopPulse*.075;rLRX-=pivot*.085+stopPulse*.060;
+		      lLRY+=pivotSide*pivot*.16+stopSide*stopPulse*.120;rLRY+=pivotSide*pivot*.16+stopSide*stopPulse*.120;
+		      lBootRZ-=pivotSide*pivot*.10+stopSide*stopPulse*.080;rBootRZ-=pivotSide*pivot*.10+stopSide*stopPulse*.080;
+		      this._lKneeBend+=stopPulse*.14;this._rKneeBend+=stopPulse*.10;
+		      if(this.weaponGrp&&stopPulse>.01){
+		        this.weaponGrp.position.x+=(stopSide*.022*stopPulse-this.weaponGrp.position.x)*Math.min(dt*10,1);
+		        this.weaponGrp.rotation.z+=stopSide*stopPulse*.055;
+		      }
+	      // Chest rises/falls
+	      this.bMesh.position.y=.76+breathA*.009;
 
       // Head micro-scan (only when not already tracking player)
       if(!isAttacking){
@@ -7025,55 +7506,105 @@ class Enemy{
         this.bMesh.position.y=.76-.06-coverCrouch;
         // Slight lean over weapon (right hand side)
         bodyRZ=-0.04;
-        const aimPose=this.aimReady||0;
-        bodyRX-=aimPose*.075;
-        lARX-=aimPose*.34;rARX-=aimPose*.34;
-        lElbRX+=aimPose*.22;rElbRX+=aimPose*.18;
-        if(this.weaponGrp){
-          this.weaponGrp.position.y+=(.98+aimPose*.025-this.weaponGrp.position.y)*Math.min(dt*7,1);
-          this.weaponGrp.rotation.y=Math.sin(Date.now()*.004+this._combatSeed)*(1-aimPose)*.025;
-        }
+	        const aimPose=this.aimReady||0;
+	        const aimTrack=THREE.MathUtils.clamp(this._aimTrackQuality==null?aimPose:this._aimTrackQuality,0,1);
+	        const aimErr=THREE.MathUtils.clamp(this._aimYawErrorSigned||0,-1,1);
+	        bodyRX-=aimPose*.075;
+	        bodyRZ-=THREE.MathUtils.clamp((this._lateralSpeedVis||0)/Math.max(1,this.speed),-1,1)*.045;
+	        bodyRY+=THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*.040+aimErr*(1-aimTrack)*.055;
+	        lARX-=aimPose*.34;rARX-=aimPose*.34;
+	        lARY+=aimErr*.030*(1-aimTrack*.55);rARY+=aimErr*.036*(1-aimTrack*.55);
+	        lARZ-=aimPose*.045;rARZ-=aimPose*.035;
+	        lElbRX+=aimPose*.22;rElbRX+=aimPose*.18;
+	        if(this.weaponGrp){
+	          this.weaponGrp.position.y+=(.98+aimPose*.025-this.weaponGrp.position.y)*Math.min(dt*7,1);
+	          const aimBreath=Math.sin(Date.now()*.0032+this._combatSeed);
+	          const lowReady=1-aimPose*.72;
+	          this.weaponGrp.position.y+=aimBreath*.004*lowReady*(motionProfile.aimSway||1);
+	          this.weaponGrp.rotation.y=Math.sin(Date.now()*.004+this._combatSeed)*(1-aimPose)*.025+THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*.018+aimErr*(1-aimTrack)*.045;
+	          this.weaponGrp.rotation.z+=aimBreath*.010*lowReady*(motionProfile.aimSway||1);
+	        }
         // Phase 4: corner-peek lean overlay. Driven by peekAmt (0..1), with
         // direction = slot edge tangent in world space projected onto the
         // agent's right vector. When peeking, torso rolls along the edge,
         // body twists slightly toward target, head pokes out.
-        if(this.coverSlot&&this.peekAmt>0.01){
-          const slot=this.coverSlot;
-          // Edge direction in world space → project onto agent's right vector
-          const yaw=this.group.rotation.y;
-          const rx=Math.cos(yaw),rz=-Math.sin(yaw);
-          const edgeProj=slot.edgeX*rx+slot.edgeZ*rz;       // signed: +/-1 ideal
-          const sideSign=Math.sign(edgeProj)||1;
-          const eased=this.peekAmt;
-          bodyRZ+=-0.18*sideSign*eased;
-          bodyRY+= 0.10*sideSign*eased;
-          if(this.hMesh){
-            this.hMesh.position.x=0.18*sideSign*eased;
-            this.hMesh.rotation.x=-0.05*eased;
-          }
-          if(this.weaponGrp){
-            this.weaponGrp.position.x=0.18*sideSign*eased;
-          }
-        }else if(this.weaponGrp){
-          // ease weapon offset back toward zero when not peeking
-          this.weaponGrp.position.x+=(0-this.weaponGrp.position.x)*Math.min(dt*9,1);
-          if(this.hMesh)this.hMesh.position.x+=(0-this.hMesh.position.x)*Math.min(dt*9,1);
-        }
+	        if(this.coverSlot&&(this.peekAmt>0.01||this._peekPrepPulse>0.01||this._peekShotTuck>0.01)){
+	          const slot=this.coverSlot;
+	          // Edge direction in world space → project onto agent's right vector
+	          const yaw=this.group.rotation.y;
+	          const rx=Math.cos(yaw),rz=-Math.sin(yaw);
+	          const edgeProj=(slot.edgeX||1)*rx+(slot.edgeZ||0)*rz;       // signed: +/-1 ideal
+	          const sideSign=Math.sign(edgeProj)||1;
+	          this._peekSideSign=sideSign;
+	          const raw=THREE.MathUtils.clamp(this.peekAmt||0,0,1);
+	          const eased=THREE.MathUtils.smoothstep(raw,0,1);
+	          const weaponLead=THREE.MathUtils.smoothstep(Math.min(1,raw*1.28+.06),0,1);
+	          const prep=this._peekPrepPulse||0;
+	          const commit=this._peekCommitPulse||0;
+	          const shotTuck=this._peekShotTuck||0;
+	          const leanMul=motionProfile.peekLean||1;
+	          const leadMul=motionProfile.peekLead||1;
+	          bodyRZ+=sideSign*(-0.070*prep-0.245*eased*leanMul+0.040*Math.sin(eased*Math.PI)-0.055*shotTuck);
+	          bodyRY+=sideSign*(0.060*prep+0.165*eased*leanMul-0.030*shotTuck);
+	          bodyRX-=0.035*prep+0.050*eased+0.045*commit+0.035*shotTuck;
+	          lElbRX+=0.12*prep+0.18*weaponLead;
+	          rElbRX+=0.10*prep+0.14*weaponLead;
+	          if(this.hMesh){
+	            const headX=sideSign*(0.045*prep+0.205*eased*leanMul-0.040*shotTuck);
+	            this.hMesh.position.x+=(headX-this.hMesh.position.x)*Math.min(dt*18,1);
+	            this.hMesh.position.y+=(1.46-0.012*prep-0.020*eased-this.hMesh.position.y)*Math.min(dt*12,1);
+	            this.hMesh.rotation.x+=-0.045*prep-0.065*eased-0.055*shotTuck;
+	            this.hMesh.rotation.y+=sideSign*(0.10*prep+0.18*eased);
+	            this.hMesh.rotation.z+=sideSign*(-0.055*prep-0.115*eased+0.060*shotTuck);
+	          }
+	          if(this.weaponGrp){
+	            const weaponX=sideSign*(0.060*prep+0.245*weaponLead*leadMul-0.045*shotTuck);
+	            this.weaponGrp.position.x+=(weaponX-this.weaponGrp.position.x)*Math.min(dt*20,1);
+	            this.weaponGrp.position.z+=(-0.018*weaponLead-0.012*prep-0.026*shotTuck-this.weaponGrp.position.z)*Math.min(dt*12,1);
+	            this.weaponGrp.rotation.y+=sideSign*(0.050*prep+0.155*weaponLead-0.030*shotTuck);
+	            this.weaponGrp.rotation.z+=sideSign*(-0.060*prep-0.115*weaponLead+0.070*shotTuck);
+	          }
+	        }else if(this.weaponGrp){
+	          // ease weapon offset back toward zero when not peeking
+	          this.weaponGrp.position.x+=(0-this.weaponGrp.position.x)*Math.min(dt*9,1);
+	          if(this.hMesh){
+	            this.hMesh.position.x+=(0-this.hMesh.position.x)*Math.min(dt*9,1);
+	            this.hMesh.position.y+=(1.48-this.hMesh.position.y)*Math.min(dt*8,1);
+	          }
+	        }
       }
     }
 
-    // --- Shoot recoil: right upper arm snaps back + elbow kicks up ---
-    if(this.shootRecoilTimer>0){
-      this.shootRecoilTimer-=dt;
-      const snap=Math.sin((1-Math.max(0,this.shootRecoilTimer)/.20)*Math.PI);
-      rARX-=snap*1.08; lARX+=snap*.32;
-      rElbRX+=snap*.52; // forearm whips upward with recoil
-      const wkick=snap*.058;
-      this.weaponGrp.position.z=-wkick;
-      this.weaponGrp.rotation.x=this.aimPitch-snap*.15;
-    }else{
-      this.weaponGrp.position.z+=(0-this.weaponGrp.position.z)*Math.min(dt*18,1);
-    }
+	    // --- Shoot recoil: shoulder compression, muzzle climb, and recovery ---
+	    if(this.shootRecoilTimer>0){
+	      const dur=Math.max(.08,this._shotRecoverDur||.20);
+	      this.shootRecoilTimer=Math.max(0,this.shootRecoilTimer-dt);
+	      const p=1-THREE.MathUtils.clamp(this.shootRecoilTimer/dur,0,1);
+	      const sharp=1-THREE.MathUtils.smoothstep(p,.035,.22);
+	      const settle=Math.sin(THREE.MathUtils.clamp(p,0,1)*Math.PI)*(1-THREE.MathUtils.smoothstep(p,.72,1.0));
+	      const strength=(this._shotVisualStrength||1);
+	      const snap=Math.max(sharp*.74,settle)*strength;
+	      const side=this._shotRecoverSide||1;
+	      rARX-=snap*1.12; lARX+=snap*.34;
+	      rElbRX+=snap*.62; lElbRX+=snap*.16;
+	      bodyRX+=snap*.055;
+	      bodyRZ+=side*snap*.052;
+	      bodyRY-=side*snap*.035;
+	      if(this.hMesh){
+	        this.hMesh.rotation.x-=snap*.055;
+	        this.hMesh.rotation.z+=side*snap*.035;
+	      }
+	      if(this.weaponGrp){
+	        const wkick=snap*.064;
+	        this.weaponGrp.position.z=-wkick;
+	        this.weaponGrp.position.y+=sharp*.010*strength;
+	        this.weaponGrp.rotation.x=this.aimPitch-snap*.145;
+	        this.weaponGrp.rotation.y+=side*snap*.032;
+	        this.weaponGrp.rotation.z+=side*snap*.070;
+	      }
+	    }else{
+	      if(this.weaponGrp)this.weaponGrp.position.z+=(0-this.weaponGrp.position.z)*Math.min(dt*18,1);
+	    }
 
     // --- Melee impact: arms fling wide, forearms extend, head/torso snap ---
     if(this.meleeHitTimer>0){
@@ -7088,40 +7619,109 @@ class Enemy{
       this.bulletHitTimer-=dt;
       const dur=this.bulletHitTimer>.18?.22:.16;
       let f=Math.sin((1-Math.max(0,this.bulletHitTimer)/dur)*Math.PI);
+      let snapF=0;
+      if(this._hitSnapTimer>0){
+        const sd=Math.max(.001,this._hitSnapDur||.055);
+        this._hitSnapTimer=Math.max(0,this._hitSnapTimer-dt);
+        const sp=1-THREE.MathUtils.clamp(this._hitSnapTimer/sd,0,1);
+        snapF=(1-THREE.MathUtils.smoothstep(sp,.12,1.0))*THREE.MathUtils.clamp(this._hitSnapStrength||.7,.30,1.45);
+      }
       const hitMag=(this._lastHitFlags&&this._lastHitFlags.shotgun)?1.18:1.0;
       f=Math.min(1,f*hitMag);
+      f=Math.min(1,Math.max(f,snapF*.86));
+      const impact=THREE.MathUtils.clamp(this._hitImpactStrength||1,.85,2.25);
       // Phase T: branch flinch on hit location. Headshot = sharper head
       // snap with brief slump. Body shot = pronounced torso double-over.
-      if(this._lastHitWasHead){
-        // Head whips violently back, body slumps forward (limp neck)
-        this.hMesh.rotation.x=-f*0.55;
-        this.hMesh.rotation.z=f*(this.staggerDir.x*-0.28);
-        this.bMesh.rotation.x=f*0.05;        // tiny forward tip from neck snap
-        this.bMesh.rotation.z+=f*(this.staggerDir.x*0.06);
-        lARX-=f*0.30;rARX-=f*0.30;
-        lElbRX+=f*0.20;rElbRX+=f*0.20;
+	      if(this._lastHitWasHead){
+	        // Head whips violently back, body slumps forward (limp neck)
+        const hsPunch=THREE.MathUtils.clamp(this._headshotPunch||0,0,1.8);
+        this._headshotPunch=damp(hsPunch,0,7.5,dt);
+        f=Math.min(1,Math.max(f,hsPunch*.58));
+	        this.hMesh.rotation.x=-f*(0.74+hsPunch*.16)*impact;
+        this.hMesh.rotation.z=f*(this.staggerDir.x*(-0.42-hsPunch*.05))*impact;
+        this.bMesh.rotation.x=f*(0.09+hsPunch*.035)*impact;        // tiny forward tip from neck snap
+        this.bMesh.rotation.z+=f*(this.staggerDir.x*(0.10+hsPunch*.025))*impact;
+        lARX-=f*(0.40+hsPunch*.055)*impact;rARX-=f*(0.40+hsPunch*.055)*impact;
+        lElbRX+=f*(0.28+hsPunch*.06)*impact;rElbRX+=f*(0.28+hsPunch*.06)*impact;
       } else {
         // Body shot — torso double-over, head dips with chest
-        this.bMesh.rotation.x=f*0.22;
-        this.bMesh.rotation.z+=f*(this.staggerDir.x*0.12);
-        this.hMesh.rotation.x=f*0.20;
-        this.hMesh.rotation.z=f*(this.staggerDir.x*-0.10);
-        lARX-=f*0.35;rARX-=f*0.30;
-        lElbRX+=f*0.40;rElbRX+=f*0.40;       // arms drop to clutch chest
-      }
-      // Phase T: apply directional pushback impulse — translates the group
+        this.bMesh.rotation.x=f*0.28*impact;
+        this.bMesh.rotation.z+=f*(this.staggerDir.x*0.16)*impact;
+        this.hMesh.rotation.x=f*0.24*impact;
+        this.hMesh.rotation.z=f*(this.staggerDir.x*-0.12)*impact;
+	        lARX-=f*0.42*impact;rARX-=f*0.36*impact;
+	        lElbRX+=f*0.48*impact;rElbRX+=f*0.48*impact;       // arms drop to clutch chest
+	      }
+	      const zone=this._lastHitLimbId||'torso';
+	      if(zone==='leftUpperArm'||zone==='leftForearm'){
+	        lARX-=f*0.76*impact;lElbRX+=f*0.92*impact;this.lArmGrp.rotation.z-=f*.30*impact;
+	        this.hMesh.rotation.z+=f*.06*impact;
+	      }else if(zone==='rightUpperArm'||zone==='rightForearm'){
+	        rARX-=f*0.76*impact;rElbRX+=f*0.92*impact;this.rArmGrp.rotation.z+=f*.30*impact;
+	        this.hMesh.rotation.z-=f*.06*impact;
+	      }else if(zone==='leftThigh'||zone==='leftShin'){
+	        lLRX+=f*.58*impact;this._lKneeBend=(this._lKneeBend||.1)+f*.92*impact;bodyRZ-=f*.13*impact;
+	      }else if(zone==='rightThigh'||zone==='rightShin'){
+	        rLRX+=f*.58*impact;this._rKneeBend=(this._rKneeBend||.1)+f*.92*impact;bodyRZ+=f*.13*impact;
+	      }else if(zone==='neck'){
+	        this.hMesh.rotation.x-=f*.30*impact;this.hMesh.rotation.z+=f*(this.staggerDir.x||0)*.24*impact;
+	      }
+	      // Phase T: apply directional pushback impulse — translates the group
       // briefly in bullet direction.
       const _nowMsT=performance.now();
       if(this._pushImpulse&&_nowMsT<this._pushImpulse.until){
-        const pt=(_nowMsT-this._pushImpulse.start)/120;
+        const impulseDur=Math.max(1,this._pushImpulse.dur||120);
+        const pt=(_nowMsT-this._pushImpulse.start)/impulseDur;
         const pe=Math.sin(Math.max(0,Math.min(1,pt))*Math.PI);
-        this.group.position.x+=this._pushImpulse.x*pe*dt*8;
-        this.group.position.z+=this._pushImpulse.z*pe*dt*8;
+        const speed=8*(120/impulseDur);
+        this.group.position.x+=this._pushImpulse.x*pe*dt*speed;
+        this.group.position.z+=this._pushImpulse.z*pe*dt*speed;
       }
     }else{
       this.hMesh.rotation.x+=(0-this.hMesh.rotation.x)*Math.min(dt*9,1);
       this.hMesh.rotation.z+=(0-this.hMesh.rotation.z)*Math.min(dt*9,1);
       this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*Math.min(dt*9,1);
+    }
+    if(this._dropkickImpactTimer>0){
+      const dur=Math.max(.1,this._dropkickImpactDur||.46);
+      this._dropkickImpactTimer=Math.max(0,this._dropkickImpactTimer-dt);
+      const k=THREE.MathUtils.clamp(1-this._dropkickImpactTimer/dur,0,1);
+      const snap=1-THREE.MathUtils.smoothstep(k,.020,.150);
+      const buckle=THREE.MathUtils.smoothstep(k,.045,.180)*(1-THREE.MathUtils.smoothstep(k,.300,.560));
+      const rebound=Math.sin(THREE.MathUtils.clamp((k-.120)/.620,0,1)*Math.PI)*(1-THREE.MathUtils.smoothstep(k,.620,1.000));
+      const side=this._dropkickImpactSide||1;
+      const strength=THREE.MathUtils.clamp(this._dropkickImpactStrength||1,.6,1.5);
+      bodyRX-=(snap*.58+buckle*.42+rebound*.16)*strength;
+      bodyRZ+=side*(snap*.26+buckle*.40-rebound*.10)*strength;
+      bodyRY-=side*(snap*.20+buckle*.14)*strength;
+      lARX+=(snap*(.92-side*.18)+buckle*(.48-side*.08)-rebound*.10)*strength;
+      rARX-=(snap*(.92+side*.18)+buckle*(.48+side*.08)-rebound*.10)*strength;
+      lElbRX+=(snap*.82+buckle*.46)*strength;
+      rElbRX+=(snap*.82+buckle*.46)*strength;
+      this._lKneeBend=(this._lKneeBend||.1)+(snap*.42+buckle*.58)*strength;
+      this._rKneeBend=(this._rKneeBend||.1)+(snap*.52+buckle*.46)*strength;
+      if(this.bMesh)this.bMesh.position.y-=(snap*.030+buckle*.050)*strength;
+      if(this.hMesh){
+        this.hMesh.rotation.x-=(snap*.42+buckle*.24+rebound*.08)*strength;
+        this.hMesh.rotation.z+=side*(snap*.22+buckle*.16-rebound*.05)*strength;
+      }
+      if(this.weaponGrp){
+        this.weaponGrp.position.y-=(snap*.050+buckle*.030)*strength;
+        this.weaponGrp.rotation.z+=side*(snap*.34+buckle*.18-rebound*.06)*strength;
+      }
+      const imp=this._dropkickPushImpulse;
+      if(imp&&this.group){
+        const nowMs=performance.now();
+        if(nowMs<imp.until){
+          const pt=THREE.MathUtils.clamp((nowMs-imp.start)/Math.max(1,imp.dur||190),0,1);
+          const shove=(1-THREE.MathUtils.smoothstep(pt,.040,1.000))*(imp.power||1);
+          this.group.position.x+=(imp.x||0)*shove*dt*5.4;
+          this.group.position.z+=(imp.z||0)*shove*dt*5.4;
+        }else{
+          this._dropkickPushImpulse=null;
+        }
+      }
+      this._applyDropkickFlyImpulse(dt,false);
     }
 
     // Tactical overlays: reloads, vaults, reposition sprints, and suppression
@@ -7157,7 +7757,7 @@ class Enemy{
     if(this._suppressedUntil&&performance.now()<this._suppressedUntil){
       bodyRX+=.22;bodyRZ+=.10*Math.sign(this.strafeDir||1);
       lARX+=.20;rARX+=.20;lElbRX+=.50;rElbRX+=.50;
-      if(this.hMesh)this.hMesh.position.y-=.06;
+      if(this.hMesh)this.hMesh.position.y+=(1.42-this.hMesh.position.y)*Math.min(dt*16,1);
     }
     if(this._repositionAnimStart&&performance.now()-this._repositionAnimStart<520){
       const rt=(performance.now()-this._repositionAnimStart)/520;
@@ -7210,25 +7810,71 @@ class Enemy{
         this._aimRaiseStart=null;
       }
     }
+    if(this.limbTrauma){
+      const takeTrauma=(id,rate=2.9)=>{
+        const v=this.limbTrauma[id]||0;
+        if(v<=0)return 0;
+        this.limbTrauma[id]=Math.max(0,v-dt*rate);
+        return Math.sin(Math.min(1,v)*Math.PI*.5)*v;
+      };
+      const headT=takeTrauma('head',3.8),neckT=takeTrauma('neck',3.4),torsoT=takeTrauma('torso',2.8);
+      const lua=takeTrauma('leftUpperArm'),lfa=takeTrauma('leftForearm');
+      const rua=takeTrauma('rightUpperArm'),rfa=takeTrauma('rightForearm');
+      const lth=takeTrauma('leftThigh'),lsh=takeTrauma('leftShin');
+      const rth=takeTrauma('rightThigh'),rsh=takeTrauma('rightShin');
+      if(headT||neckT){
+        this.hMesh.rotation.x-=headT*.38+neckT*.26;
+        this.hMesh.rotation.z+=(this.staggerDir.x||0)*(headT*.22+neckT*.18);
+      }
+      if(torsoT){
+        bodyRX+=torsoT*.12;
+        bodyRZ+=(this.staggerDir.x||0)*torsoT*.10;
+      }
+      if(lua||lfa){lARX-=lua*.36+lfa*.54;lElbRX+=lua*.26+lfa*.72;this.lArmGrp.rotation.z-=Math.max(lua,lfa)*.16;}
+      if(rua||rfa){rARX-=rua*.36+rfa*.54;rElbRX+=rua*.26+rfa*.72;this.rArmGrp.rotation.z+=Math.max(rua,rfa)*.16;}
+      if(lth||lsh){lLRX+=lth*.30-lsh*.18;this._lKneeBend=(this._lKneeBend||.1)+lsh*.62+lth*.22;bodyRZ-=Math.max(lth,lsh)*.07;}
+      if(rth||rsh){rLRX+=rth*.30-rsh*.18;this._rKneeBend=(this._rKneeBend||.1)+rsh*.62+rth*.22;bodyRZ+=Math.max(rth,rsh)*.07;}
+    }
     // --- Lerp limbs toward targets ---
-    const ls=Math.min(dt*13,1);
-    const lsQ=Math.min(dt*20,1); // quicker for extremities
+    // Heavier interpolation is used for idle/patrol so enemies stop drifting,
+    // while fire/hit/vault poses snap hard enough to read in first-person.
+    const urgentPose=!!(this.shootRecoilTimer>0||this.bulletHitTimer>0||this.meleeHitTimer>0||this.staggerTimer>0||this._dropkickImpactTimer>0);
+    const poseHz=urgentPose?20:(isMoving?14:(isAttacking?12:8.5));
+    const ls=Math.min(dt*poseHz,1);
+    const lsQ=Math.min(dt*(urgentPose?28:21),1); // quicker for extremities
     this.lArmGrp.rotation.x+=(lARX-this.lArmGrp.rotation.x)*ls;
     this.rArmGrp.rotation.x+=(rARX-this.rArmGrp.rotation.x)*ls;
     this.lLegGrp.rotation.x+=(lLRX-this.lLegGrp.rotation.x)*ls;
     this.rLegGrp.rotation.x+=(rLRX-this.rLegGrp.rotation.x)*ls;
+    this.lArmGrp.rotation.y+=(lARY-this.lArmGrp.rotation.y)*ls;
+    this.rArmGrp.rotation.y+=(rARY-this.rArmGrp.rotation.y)*ls;
+    this.lArmGrp.rotation.z+=(lARZ-this.lArmGrp.rotation.z)*ls;
+    this.rArmGrp.rotation.z+=(rARZ-this.rArmGrp.rotation.z)*ls;
+    this.lLegGrp.rotation.y+=(lLRY-this.lLegGrp.rotation.y)*ls;
+    this.rLegGrp.rotation.y+=(rLRY-this.rLegGrp.rotation.y)*ls;
+    this.lLegGrp.rotation.z+=(lLRZ-this.lLegGrp.rotation.z)*ls;
+    this.rLegGrp.rotation.z+=(rLRZ-this.rLegGrp.rotation.z)*ls;
     // Elbow groups — responsive, snappy
     if(this.lElbowGrp)this.lElbowGrp.rotation.x+=(lElbRX-this.lElbowGrp.rotation.x)*lsQ;
     if(this.rElbowGrp)this.rElbowGrp.rotation.x+=(rElbRX-this.rElbowGrp.rotation.x)*lsQ;
     // Knee groups — bend with stride
     if(this.lKneeGrp)this.lKneeGrp.rotation.x+=((this._lKneeBend||0.10)-this.lKneeGrp.rotation.x)*lsQ;
     if(this.rKneeGrp)this.rKneeGrp.rotation.x+=((this._rKneeBend||0.10)-this.rKneeGrp.rotation.x)*lsQ;
+    if(this.lBootMesh){
+      this.lBootMesh.rotation.x+=(lBootRX-this.lBootMesh.rotation.x)*lsQ;
+      this.lBootMesh.rotation.z+=(lBootRZ-this.lBootMesh.rotation.z)*lsQ;
+    }
+    if(this.rBootMesh){
+      this.rBootMesh.rotation.x+=(rBootRX-this.rBootMesh.rotation.x)*lsQ;
+      this.rBootMesh.rotation.z+=(rBootRZ-this.rBootMesh.rotation.z)*lsQ;
+    }
     // Body attitude: side sway (Z) + forward lean (X) + spine twist (Y)
-    this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*ls;
-    this.bMesh.rotation.z+=(bodyRZ-this.bMesh.rotation.z)*ls;
-    this.bMesh.rotation.y+=(bodyRY-this.bMesh.rotation.y)*ls;
+	    this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*ls;
+	    this.bMesh.rotation.z+=(bodyRZ-this.bMesh.rotation.z)*ls;
+	    this.bMesh.rotation.y+=(bodyRY-this.bMesh.rotation.y)*ls;
+	    this._meshyAdditiveCombatPose(bodyRX,bodyRY,bodyRZ,lARX,rARX,lElbRX,rElbRX);
 
-    // --- Emissive states (priority: hit > alert > attack > idle) ---
+	    // --- Emissive states (priority: hit > alert > attack > idle) ---
     if(this.hitFlashTimer>0){
       this.hitFlashTimer-=dt;
       if(this.hitFlashTimer>.09){
@@ -7244,9 +7890,14 @@ class Enemy{
       this.hM.emissive.setRGB(pulse*.95,pulse*.62,0);
       this.bM.emissive.set(0);
       this.hMesh.scale.setScalar(1+pulse*.08);
-    }else if(isAttacking){
-      // Subtle aggression pulse: red glow on torso in attack state
-      const ap=Math.sin(Date.now()*.0072)*.065+.060;
+	    }else if(this._fireBlinkTimer>0){
+	      const f=THREE.MathUtils.clamp(this._fireBlinkTimer/(this._lastShotType==='marksman' ? .18 : .11),0,1);
+	      this.bM.emissive.setRGB(.34*f,.12*f,.04*f);
+	      this.hM.emissive.setRGB(.55*f,.32*f,.10*f);
+	      this.hMesh.scale.setScalar(1+f*.045);
+	    }else if(isAttacking){
+	      // Subtle aggression pulse: red glow on torso in attack state
+	      const ap=Math.sin(Date.now()*.0072)*.065+.060;
       this.bM.emissive.setRGB(ap,0,0);
       this.hM.emissive.set(0);this.hMesh.scale.setScalar(1);
     }else{
@@ -7256,15 +7907,17 @@ class Enemy{
     if(this.visorM){
       const tnow=Date.now()*.001+this.walkPhase;
       // Base pulse: gentle. Alert: faster strobe. Attack: hot.
-      let amp=.45,freq=2.4;
-      if(this.alertFlashTimer>0){amp=1.0;freq=14;}
-      else if(isAttacking){amp=.85;freq=4.5;}
-      const pulse=.55+amp*Math.sin(tnow*freq)*.5;
-      const baseCol=this.visorM.emissive; // base set in constructor
-      // Drive visor emissive scaled around its base hue
-      const ts=this._visorBaseCol||(this._visorBaseCol=new THREE.Color(this.visorM.color).copy(this.visorGlowM.color));
-      this.visorM.emissive.setRGB(ts.r*pulse,ts.g*pulse,ts.b*pulse);
-      if(this.visorGlowM)this.visorGlowM.opacity=.55+pulse*.35;
+	      let amp=.45,freq=2.4;
+	      if(this.alertFlashTimer>0){amp=1.0;freq=14;}
+	      else if(isAttacking){amp=.85;freq=4.5;}
+	      const shotBlink=this._fireBlinkTimer>0?THREE.MathUtils.clamp(this._fireBlinkTimer/(this._lastShotType==='marksman' ? .18 : .11),0,1):0;
+	      const aimGlow=isAttacking?THREE.MathUtils.clamp((this.aimReady||0)*.20+(this.peekAmt||0)*.12,0,.36):0;
+	      const pulse=.55+amp*Math.sin(tnow*freq)*.5+shotBlink*.78+aimGlow;
+	      const baseCol=this.visorM.emissive; // base set in constructor
+	      // Drive visor emissive scaled around its base hue
+	      const ts=this._visorBaseCol||(this._visorBaseCol=new THREE.Color(this.visorM.color).copy(this.visorGlowM.color));
+	      this.visorM.emissive.setRGB(ts.r*pulse,ts.g*pulse,ts.b*pulse);
+	      if(this.visorGlowM)this.visorGlowM.opacity=THREE.MathUtils.clamp(.55+pulse*.35+shotBlink*.18,.35,1.0);
       if(this.insigniaM)this.insigniaM.opacity=.55+pulse*.4;
     }
 
@@ -7279,29 +7932,116 @@ class Enemy{
   // ── Multi-phase death animation ────────────────────────────────────────────
   _updateDeath(dt){
     // Mixer is already advanced by update(); the Dead clip clamps when finished.
+    if(this._headshotHitStopTimer>0){
+      const hsDur=Math.max(.001,this._headshotHitStopDur||.115);
+      this._headshotHitStopTimer=Math.max(0,this._headshotHitStopTimer-dt);
+      const hsRemain=THREE.MathUtils.clamp(this._headshotHitStopTimer/hsDur,0,1);
+      const freeze=THREE.MathUtils.clamp((1-THREE.MathUtils.smoothstep(1-hsRemain,.08,.72))*.72,0,.72);
+      this.deathTimer=Math.max(0,this.deathTimer-dt*freeze);
+      this.hitFlashTimer=Math.max(this.hitFlashTimer||0,.08*hsRemain);
+      if(this.visorGlowM)this.visorGlowM.opacity=Math.max(this.visorGlowM.opacity||0,.72*hsRemain);
+    }
     const t=this.deathTimer;
     // Topple direction sign based on stagger (fall away from attacker)
     const topSgn=this.staggerDir.x>=0?1:-1;
     // Phase T: variant flag — headshot kills get a sharper snap + straighter
     // collapse; body shots use the existing topple arc.
     const wasHead=!!this._lastHitWasHead;
+    this._updateDropkickContactMark(dt);
+    if(this._deathByDropkick){
+      const side=this._dropkickImpactSide||topSgn||1;
+      const strength=THREE.MathUtils.clamp(this._dropkickImpactStrength||1.35,.75,1.7);
+      const pushDir=(this.staggerDir&&this.staggerDir.lengthSq&&this.staggerDir.lengthSq()>0.001)?this.staggerDir:null;
+      const flyLift=this._applyDropkickFlyImpulse(dt,true);
+      const storedLift=Math.max(0,this._dropkickDeathLift||0);
+      const deathArc=storedLift*Math.sin(THREE.MathUtils.clamp(t/.42,0,1)*Math.PI)*(1-THREE.MathUtils.smoothstep(t,.40,1.18));
+      const deathLift=Math.max(flyLift,deathArc);
+      if(t<.18){
+        const ph=THREE.MathUtils.clamp(t/.18,0,1);
+        const ease=1-Math.pow(1-ph,3);
+        if(pushDir)this.group.position.addScaledVector(pushDir,dt*(11.2+strength*2.4)*(1-ph));
+        this.group.position.y=this.deathStartY+deathLift-ease*.055;
+        this.group.rotation.y=side*ease*.10;
+        this.hMesh.rotation.x=-ease*(.90+.12*strength);
+        this.hMesh.rotation.z=side*ease*.34;
+        this.bMesh.rotation.x=-ease*(.42+.10*strength);
+        this.bMesh.rotation.y=-side*ease*.18;
+        this.bMesh.rotation.z=side*ease*.32;
+        this.lArmGrp.rotation.x=ease*(1.24-side*.16);
+        this.rArmGrp.rotation.x=-ease*(1.18+side*.16);
+        this.lArmGrp.rotation.z=-ease*.42;
+        this.rArmGrp.rotation.z=ease*.42;
+        this.lLegGrp.rotation.x=ease*.48;
+        this.rLegGrp.rotation.x=ease*.62;
+        if(this.lElbowGrp)this.lElbowGrp.rotation.x=ease*.94;
+        if(this.rElbowGrp)this.rElbowGrp.rotation.x=ease*.94;
+      }else if(t<.52){
+        const ph=THREE.MathUtils.clamp((t-.18)/.34,0,1);
+        const ease=1-Math.pow(1-ph,2);
+        if(pushDir)this.group.position.addScaledVector(pushDir,dt*(5.0+strength*1.2)*(1-ph));
+        this.group.position.y=this.deathStartY+deathLift-.055-ease*.250;
+        this.group.rotation.y=side*(.10+ease*.20);
+        this.bMesh.rotation.x=-.50+ease*.66;
+        this.bMesh.rotation.y=-side*(.18+ease*.14);
+        this.bMesh.rotation.z=side*(.32+ease*.20);
+        this.hMesh.rotation.x=-.92+ease*.34;
+        this.hMesh.rotation.z=side*(.34+ease*.12);
+        this.lLegGrp.rotation.x=.48+ease*.80;
+        this.rLegGrp.rotation.x=.62+ease*.64;
+        this.lArmGrp.rotation.x+=( -.38-this.lArmGrp.rotation.x)*Math.min(dt*7,1);
+        this.rArmGrp.rotation.x+=( .28-this.rArmGrp.rotation.x)*Math.min(dt*7,1);
+        if(this.lElbowGrp)this.lElbowGrp.rotation.x+=(.58-this.lElbowGrp.rotation.x)*Math.min(dt*7,1);
+        if(this.rElbowGrp)this.rElbowGrp.rotation.x+=(.58-this.rElbowGrp.rotation.x)*Math.min(dt*7,1);
+      }else if(t<1.38){
+        const ph=THREE.MathUtils.clamp((t-.52)/.86,0,1);
+        const ease=1-Math.pow(1-ph,3);
+        if(pushDir)this.group.position.addScaledVector(pushDir,dt*1.80*(1-ph));
+        this.group.rotation.z=side*ease*(Math.PI*.58);
+        this.group.rotation.x=ease*Math.PI*.22;
+        this.group.rotation.y=side*(.30+ease*.16);
+        this.group.position.y=this.deathStartY+deathLift-.305-ease*.420;
+        this.lArmGrp.rotation.x+=(-.62-this.lArmGrp.rotation.x)*Math.min(dt*4.5,1);
+        this.rArmGrp.rotation.x+=( .42-this.rArmGrp.rotation.x)*Math.min(dt*4.5,1);
+        this.lArmGrp.rotation.z+=( -.18-this.lArmGrp.rotation.z)*Math.min(dt*4,1);
+        this.rArmGrp.rotation.z+=( .18-this.rArmGrp.rotation.z)*Math.min(dt*4,1);
+      }else if(t<2.0){
+        const phT=(t-1.38)/.62;
+        const tw=Math.sin(phT*Math.PI*4)*Math.exp(-phT*3);
+        this.rArmGrp.rotation.z+=tw*.025;
+        this.lArmGrp.rotation.z-=tw*.018;
+        if(this.lLegGrp)this.lLegGrp.rotation.x+=tw*.015;
+      }
+      if(t>2.35&&t<2.92){
+        this.group.rotation.x=damp(this.group.rotation.x,0,3.8,dt);
+        this.group.rotation.z=damp(this.group.rotation.z,0,3.8,dt);
+      }
+      if(t>2.6){
+        const a=Math.max(0,1-(t-2.6)/1.4);
+        if(a<=0){this.removeNeeded=true;return;}
+        const _mats=new Set();
+        this.group.traverse(obj=>{if(obj.material){if(Array.isArray(obj.material))obj.material.forEach(m=>_mats.add(m));else _mats.add(obj.material);}});
+        _mats.forEach(m=>{m.transparent=true;m.opacity=Math.min(m.opacity===undefined?1:m.opacity,a);});
+      }
+      return;
+    }
 
+    const deathImpactPower=THREE.MathUtils.clamp(this._deathImpactPower||1,.75,2.25);
     if(t<.20){
       // Phase 1: explosive snap — violent backward push, head whips, arms flung wide.
       // Phase T: headshot exaggerates head whip + reduces forward push (limp).
       const ph=t/.20,ease=1-Math.pow(1-ph,3);
-      const pushMul=wasHead?2.0:5.0;
+      const pushMul=(wasHead?2.0:5.0)*deathImpactPower;
       this.group.position.addScaledVector(this.staggerDir,dt*pushMul*(1-ph));
       // Head whips back sharply (more on headshot)
-      this.hMesh.rotation.x=-ease*(wasHead?1.10:.80);
-      this.hMesh.rotation.z=ease*(topSgn*(wasHead?.32:.22));
+      this.hMesh.rotation.x=-ease*(wasHead?1.10:.80)*(1+(deathImpactPower-1)*.18);
+      this.hMesh.rotation.z=ease*(topSgn*(wasHead?.32:.22))*(1+(deathImpactPower-1)*.12);
       // Torso shunts backward
-      this.bMesh.rotation.x=-ease*(wasHead?.18:.32);
+      this.bMesh.rotation.x=-ease*(wasHead?.18:.32)*(1+(deathImpactPower-1)*.24);
       // Arms flung wide and back
-      this.lArmGrp.rotation.x=ease*1.40;
-      this.rArmGrp.rotation.x=-ease*1.25;
-      this.lArmGrp.rotation.z=-ease*.38;
-      this.rArmGrp.rotation.z= ease*.38;
+      this.lArmGrp.rotation.x=ease*1.40*(1+(deathImpactPower-1)*.14);
+      this.rArmGrp.rotation.x=-ease*1.25*(1+(deathImpactPower-1)*.14);
+      this.lArmGrp.rotation.z=-ease*.38*(1+(deathImpactPower-1)*.20);
+      this.rArmGrp.rotation.z= ease*.38*(1+(deathImpactPower-1)*.20);
       if(this.lElbowGrp){this.lElbowGrp.rotation.x=ease*1.05;}
       if(this.rElbowGrp){this.rElbowGrp.rotation.x=ease*1.05;}
 
@@ -7424,7 +8164,7 @@ class Enemy{
     }
     return true;
   }
-  _tryMove(dx,dz,walls){
+  _tryMove(dx,dz,walls,opts=null){
     const R=.38,nx=this.group.position.x+dx,nz=this.group.position.z+dz;
     const cx=this.group.position.x,cz=this.group.position.z;
     let okX=true,okZ=true;
@@ -7468,6 +8208,18 @@ class Enemy{
       }
     }
     if(okX)this.group.position.x=nx;if(okZ)this.group.position.z=nz;
+    const moved=Math.hypot(this.group.position.x-cx,this.group.position.z-cz);
+    const wanted=Math.hypot(dx,dz);
+    if(wanted>0.025&&!(opts&&opts.separation)){
+      if(moved<wanted*0.22)this._blockedMoveHits=(this._blockedMoveHits||0)+1;
+      else this._blockedMoveHits=Math.max(0,(this._blockedMoveHits||0)-2);
+      if(this._blockedMoveHits>12){
+        this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
+        if(this.state===PATROL){this.patrolTarget=null;this.patrolTimer=0;}
+        this._needsAiRepair=true;
+        this._blockedMoveHits=6;
+      }
+    }
     // Phase L: if the agent is currently inside a broken-window AABB, mark
     // a brief vault arc so the body visibly hops the sill rather than
     // teleporting at floor level. Drones skip (they fly).
@@ -7486,13 +8238,67 @@ class Enemy{
         }
       }
     }
+    return{okX,okZ,moved,wanted};
+  }
+  _faceYaw(targetYaw,dt,rate=9.5){
+    if(!Number.isFinite(targetYaw))return;
+    const cur=this.group.rotation.y||0;
+    const delta=Math.atan2(Math.sin(targetYaw-cur),Math.cos(targetYaw-cur));
+    if(Math.abs(delta)>ENEMY_LOCOMOTION_FEEL.turnPlantAngle&&this.type!=='drone'&&!this.dead){
+      this._pivotPulse=Math.max(this._pivotPulse||0,THREE.MathUtils.clamp(Math.abs(delta)*.55,0,.85));
+      this._pivotSide=Math.sign(delta)||this._pivotSide||1;
+    }
+    const dampAmt=1-Math.exp(-Math.max(0.001,rate)*Math.max(0,dt));
+    this.group.rotation.y=cur+delta*dampAmt;
+  }
+  _moveWithVelocity(vx,vz,dt,walls,opts=null){
+    if(!Number.isFinite(vx)||!Number.isFinite(vz)||!Number.isFinite(dt)||dt<=0)return {okX:true,okZ:true,moved:0,wanted:0};
+    if(opts&&opts.separation)return this._tryMove(vx*dt,vz*dt,walls,opts);
+    const desired=Math.hypot(vx,vz);
+    const current=Math.hypot(this._moveVelX||0,this._moveVelZ||0);
+    const mode=this._movementMode||'idle';
+    let accel=ENEMY_LOCOMOTION_FEEL.combatAccel;
+    if(mode==='walk'||this.state===PATROL||this.state===SEARCH)accel=ENEMY_LOCOMOTION_FEEL.patrolAccel;
+    if(mode==='juke'||mode==='flank')accel=ENEMY_LOCOMOTION_FEEL.jukeAccel;
+    if(desired<current)accel=ENEMY_LOCOMOTION_FEEL.decel;
+    this._moveVelX=damp(this._moveVelX||0,vx,accel,dt);
+    this._moveVelZ=damp(this._moveVelZ||0,vz,accel,dt);
+    const smoothed=Math.hypot(this._moveVelX,this._moveVelZ);
+    if(desired>.35&&smoothed<desired*.30){
+      const catchup=Math.min(1,dt*(mode==='juke'?28:18));
+      this._moveVelX=THREE.MathUtils.lerp(this._moveVelX,vx,catchup*.42);
+      this._moveVelZ=THREE.MathUtils.lerp(this._moveVelZ,vz,catchup*.42);
+    }
+    const result=this._tryMove(this._moveVelX*dt,this._moveVelZ*dt,walls,opts);
+    if(result&&result.wanted>.001){
+      const frac=result.moved/result.wanted;
+      if(frac<.35){
+        this._moveVelX*=.42;this._moveVelZ*=.42;
+        if(!(opts&&opts.noUnstick)&&desired>.25){
+          const side=this._unstickSide||(this._unstickSide=Math.random()<.5?-1:1);
+          const len=Math.max(.001,desired);
+          const nx=-vz/len*side,nz=vx/len*side;
+          const nudge=ENEMY_LOCOMOTION_FEEL.unstickStep*(mode==='juke'?1.4:1.0);
+          const nudged=this._tryMove(nx*nudge,nz*nudge,walls,{separation:true});
+          if(nudged&&nudged.moved<nudge*.25)this._unstickSide=-side;
+        }
+      }else{
+        this._unstickSide=0;
+      }
+    }
+    return result;
   }
   _moveTo(tgt,dt,walls){
     const dx=tgt.x-this.group.position.x,dz=tgt.z-this.group.position.z;
     const d=Math.sqrt(dx*dx+dz*dz);if(d<.4)return;
     const limbMul=(typeof _enemyMoveSpeedMul==='function')?_enemyMoveSpeedMul(this):1.0;
-    const spd=this.speed*(this._encSpeedMul||1)*limbMul*dt/d;this._tryMove(dx*spd,dz*spd,walls);
-    this.group.rotation.y=Math.atan2(dx,dz);
+    let targetSpeed=this.speed*(this._encSpeedMul||1)*limbMul;
+    if(this.state===PATROL||this.state===SEARCH||this.state===REPOSITION){
+      const arrive=THREE.MathUtils.clamp((d-.35)/ENEMY_LOCOMOTION_FEEL.arriveSlowRadius,0,1);
+      targetSpeed*=.34+.66*THREE.MathUtils.smoothstep(arrive,0,1);
+    }
+    this._moveWithVelocity(dx/d*targetSpeed,dz/d*targetSpeed,dt,walls);
+    this._faceYaw(Math.atan2(dx,dz),dt,8.8);
     if(this._movementMode!=='vault'&&this._movementMode!=='juke')this._movementMode=this.state===REPOSITION?'reposition':this.state===FLANK?'flank':this.state===CHASE?'chase':'walk';
   }
   _pathToTarget(tgt,dt,walls){
@@ -7503,7 +8309,10 @@ class Enemy{
     this.navRecalcT-=dt;
     const px=this.group.position.x,pz=this.group.position.z;
     const tx=tgt.x,tz=tgt.z;
-    if(Math.hypot(tx-px,tz-pz)<.55)return;
+    if(Math.hypot(tx-px,tz-pz)<.55){
+      this._moveWithVelocity(0,0,dt,walls,{noUnstick:true});
+      return;
+    }
     const needsPath=!this.navPath||this.navPath.length<2;
     if(needsPath&&this.navRecalcT>0){
       this._moveTo(tgt,dt,walls);
@@ -7524,14 +8333,87 @@ class Enemy{
     const wp=this.navPath[Math.min(this.navPathIdx,this.navPath.length-1)];
     this._moveTo(new THREE.Vector3(wp.x,0,wp.z),dt,walls);
   }
+  _patrolPointOk(x,z,walls,zoneId){
+    if(Number.isFinite(zoneId)&&!_enemySpawnZoneOk(x,z,zoneId))return false;
+    return _enemySpawnCandidateClear(x,z,walls,.36,null,{zoneId,requireNav:true,peerR:0});
+  }
+  _patrolPathOk(x,z){
+    const ng=typeof G!=='undefined'&&G.levelData&&G.levelData.navGrid;
+    if(!ng)return true;
+    const px=this.group.position.x,pz=this.group.position.z;
+    const path=_navAStar(ng,px,pz,x,z);
+    return !!(path&&path.length>1);
+  }
+  _pickPatrolTarget(walls){
+    const px=this.group.position.x,pz=this.group.position.z;
+    const zoneId=Number.isFinite(this.zoneId)?this.zoneId:(typeof getZoneOf==='function'?getZoneOf(this.group.position):null);
+    const lvl=typeof G!=='undefined'&&G.levelData;
+    const slots=lvl&&Array.isArray(lvl.coverSlots)?lvl.coverSlots:null;
+    if(slots&&slots.length){
+      const cands=[];
+      for(const s of slots){
+        if(s.claimedBy&&s.claimedBy!==this)continue;
+        if(!this._patrolPointOk(s.x,s.z,walls,zoneId))continue;
+        const dx=s.x-px,dz=s.z-pz,d2=dx*dx+dz*dz;
+        if(d2<2.4*2.4||d2>15*15)continue;
+        if(!this._patrolPathOk(s.x,s.z))continue;
+        cands.push({s,score:d2*(.75+Math.random()*.5)});
+      }
+      if(cands.length){
+        cands.sort((a,b)=>a.score-b.score);
+        const s=cands[Math.min(cands.length-1,Math.floor(Math.random()*Math.min(4,cands.length)))].s;
+        return new THREE.Vector3(s.x,0,s.z);
+      }
+    }
+    for(let i=0;i<54;i++){
+      const rad=2.8+Math.random()*10.5;
+      const a=Math.random()*Math.PI*2;
+      const x=px+Math.cos(a)*rad,z=pz+Math.sin(a)*rad;
+      if(!this._patrolPointOk(x,z,walls,zoneId))continue;
+      if(!this._patrolPathOk(x,z))continue;
+      return new THREE.Vector3(x,0,z);
+    }
+    return _findClearEnemySpawn(new THREE.Vector3(px,WT||.4,pz),walls,.36,null,{zoneId,requireNav:true,peerR:0,strictZone:false})
+      ||new THREE.Vector3(px,0,pz);
+  }
   _patrol(dt,walls){
+    if(this.patrolPauseTimer>0){
+      this.patrolPauseTimer=Math.max(0,this.patrolPauseTimer-dt);
+      this._moveWithVelocity(0,0,dt,walls,{noUnstick:true});
+      this.patrolLookTimer-=dt;
+      if(this.patrolLookTimer<=0){
+        this.patrolLookTimer=.55+Math.random()*.85;
+        this._patrolStopLook=(Math.random()-.5)*Math.PI*.92;
+        this._patrolStopYaw=this.group.rotation.y||0;
+      }
+      const lookTarget=(this._patrolStopYaw||this.group.rotation.y||0)+(this._patrolStopLook||0);
+      this._faceYaw(lookTarget,dt,2.6);
+      this.headLookY+=(THREE.MathUtils.clamp(this._patrolStopLook||0,-.75,.75)-this.headLookY)*Math.min(dt*3.0,1);
+      this.hMesh.rotation.y=this.headLookY;
+      return false;
+    }
     if(this._encPatrolWaypoints&&this._encPatrolWaypoints.length){
       this.patrolLookTimer-=dt;
-      const wp=this._encPatrolWaypoints[this._encPatrolIdx|0];
+      let wp=this._encPatrolWaypoints[this._encPatrolIdx|0];
+      if(wp&&!this._patrolPointOk(wp.x,wp.z,walls,this.zoneId)){
+        const fixed=_findClearEnemySpawn(wp,walls,.36,null,{zoneId:this.zoneId,requireNav:true,peerR:0,strictZone:false});
+        if(fixed)wp.copy(fixed);
+        else{
+          this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+          wp=this._encPatrolWaypoints[this._encPatrolIdx|0];
+        }
+      }
       const px=this.group.position.x,pz=this.group.position.z;
       const dx=wp.x-px,dz=wp.z-pz;
       if(dx*dx+dz*dz<0.55*0.55){
         this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
+        this.patrolPauseTimer=.45+Math.random()*1.10;
+        this._patrolStopYaw=this.group.rotation.y||0;
+        return false;
+      }else if((this._blockedMoveHits||0)>9){
+        this._encPatrolIdx=(this._encPatrolIdx+1)%this._encPatrolWaypoints.length;
+        this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;this._blockedMoveHits=0;
       }
       this.patrolTarget=this._encPatrolWaypoints[this._encPatrolIdx|0];
       if(this.patrolLookTimer<=0){
@@ -7541,12 +8423,21 @@ class Enemy{
       this._pathToTarget(this.patrolTarget,dt*.55,walls);
       this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
       this.hMesh.rotation.y=this.headLookY;
-      return;
+      return true;
     }
     this.patrolTimer-=dt;this.patrolLookTimer-=dt;
-    if(!this.patrolTarget||this.patrolTimer<=0){
-      this.patrolTarget=new THREE.Vector3((Math.random()-.5)*22,0,(Math.random()-.5)*38);
+    const reached=this.patrolTarget&&Math.hypot(this.patrolTarget.x-this.group.position.x,this.patrolTarget.z-this.group.position.z)<.8;
+    if(reached){
+      this.patrolPauseTimer=.55+Math.random()*1.35;
+      this._patrolStopYaw=this.group.rotation.y||0;
+      this.patrolTarget=null;
+      this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;
+      return false;
+    }
+    if(!this.patrolTarget||this.patrolTimer<=0||reached||(this._blockedMoveHits||0)>9){
+      this.patrolTarget=this._pickPatrolTarget(walls);
       this.patrolTimer=2.5+Math.random()*3;
+      this.navPath=null;this.navPathIdx=0;this.navRecalcT=0;this._blockedMoveHits=0;
     }
     // Head look-around sweep while patrolling
     if(this.patrolLookTimer<=0){
@@ -7556,6 +8447,7 @@ class Enemy{
     this._pathToTarget(this.patrolTarget,dt*.55,walls);
     this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
     this.hMesh.rotation.y=this.headLookY;
+    return true;
   }
 
   _enemyBark(kind,chance,minMs){
@@ -7659,16 +8551,77 @@ class Enemy{
     if(this.magAmmo<=0)this._startReload();
     return true;
   }
-  _updateAimReadiness(dt,cs,horizDist){
-    const wants=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
-    let target=(wants&&cs&&!this.enemyReloadTimer)?1:0;
-    if(this.state===REPOSITION&&horizDist>this.attackRange*.75)target=.55;
-    this.aimIntent=target;
-    const base=this.tactic.aim||.35;
-    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
-    const speed=(target>this.aimReady?1/base:2.4)*(1/(p.aimMul||1));
-    this.aimReady+=(target-this.aimReady)*Math.min(dt*speed,1);
+  _markShotVisual(shotType='burst',dist=0){
+    const p=this.motionProfile||_enemyMotionProfile(this.type);
+    const typeMul=shotType==='marksman' ? 1.48 : shotType==='suppress' ? 1.16 : shotType==='drone' ? .55 : shotType==='demolitions' ? 1.22 : 1.0;
+    const dur=shotType==='marksman' ? .34 : shotType==='suppress' ? .24 : shotType==='drone' ? .12 : .20;
+    const side=(this.peekAmt>.10?(this._peekSideSign||1):(this.strafeDir||1))*(Math.random()<.18?-1:1);
+    this._lastShotType=shotType;
+    this._lastShotAt=performance.now();
+    this._shotRecoverDur=dur;
+    this._shotRecoverTimer=dur;
+    this._shotRecoverSide=side;
+    this._shotVisualStrength=THREE.MathUtils.clamp(typeMul*(p.recoil||1),.35,1.95);
+    this.shootRecoilTimer=Math.max(this.shootRecoilTimer||0,dur);
+    this._muzzleFlashScale=THREE.MathUtils.clamp(typeMul*(p.muzzle||1)*(dist>14?1.08:1),.55,1.9);
+    this._muzzleFlashWarmth=shotType==='marksman' ? .75 : shotType==='drone' ? .40 : shotType==='suppress' ? .08 : .20;
+    this._fireBlinkTimer=Math.max(this._fireBlinkTimer||0,shotType==='marksman' ? .18 : .11);
+    if(this.peekAmt>.22){
+      this._peekShotTuck=Math.max(this._peekShotTuck||0,shotType==='marksman' ? .30 : .18);
+      this.peekCooldown=Math.max(this.peekCooldown||0,shotType==='marksman' ? .24 : .13);
+    }
   }
+  _updateAimTracking(pp,dt,horizDist,cs){
+    if(!pp||this.type==='drone'){
+      this._aimTrackQuality=cs?1:0;
+      this._aimYawError=0;
+      this._aimYawErrorSigned=0;
+      return this._aimTrackQuality;
+    }
+    const dx=pp.x-this.group.position.x,dz=pp.z-this.group.position.z;
+    const targetYaw=Math.atan2(dx,dz);
+    const cur=this.group.rotation.y||0;
+    const signed=Math.atan2(Math.sin(targetYaw-cur),Math.cos(targetYaw-cur));
+    const yawErr=Math.abs(signed);
+    this._aimYawError=damp(this._aimYawError||0,yawErr,12,dt);
+    this._aimYawErrorSigned=damp(this._aimYawErrorSigned||0,signed,12,dt);
+    const speedFrac=THREE.MathUtils.clamp((this._moveSpeedVis||0)/Math.max(1,this.speed),0,1.35);
+    const lateralFrac=THREE.MathUtils.clamp(Math.abs(this._lateralSpeedVis||0)/Math.max(1,this.speed),0,1.25);
+    const turnFrac=THREE.MathUtils.clamp(Math.abs(this._turnRateVis||0)/5.4,0,1);
+    const coverBonus=(this.peekAmt||0)>.58?.13:(this.atCover?.07:0);
+    const braceBonus=(this.tactic&&this.tactic.brace) ? .10 : 0;
+    let q=cs?1-yawErr/.95-lateralFrac*.18-speedFrac*.10-turnFrac*.16+coverBonus+braceBonus:0;
+    if(this.state===REPOSITION)q=Math.min(q,.58);
+    if(this._suppressedUntil&&performance.now()<this._suppressedUntil)q=Math.min(q,.35);
+    q=THREE.MathUtils.clamp(q,0,1);
+    const rate=q>(this._aimTrackQuality||0)?9.5:5.8;
+    this._aimTrackQuality=damp(this._aimTrackQuality||0,q,rate,dt);
+    return this._aimTrackQuality;
+  }
+		  _updateAimReadiness(dt,cs,horizDist){
+	    const wants=this.state===ATTACK||this.state===FLANK||this.state===REPOSITION||this.state===SUPPRESS;
+	    let target=(wants&&cs&&!this.enemyReloadTimer)?1:0;
+	    if(this.state===REPOSITION&&horizDist>this.attackRange*.75)target=.55;
+	    const nowMs=performance.now();
+	    const underFire=this._suppressedUntil&&nowMs<this._suppressedUntil;
+	    if(underFire)target=Math.min(target,.24);
+    if(target>0){
+      const track=this._aimTrackQuality==null?1:THREE.MathUtils.clamp(this._aimTrackQuality,0,1);
+      const floor=(this.type==='heavy'||this.type==='riot'||this.type==='shielded')?.44:.30;
+      target*=floor+(1-floor)*track;
+      if(this.peekState==='peeking'||(this.peekAmt||0)>.55)target=Math.max(target,.64*track);
+      if(this.shootRecoilTimer>0)target=Math.min(target,.82);
+    }
+	    if(this._incomingNearMiss){
+	      target=Math.min(target,1-this._incomingNearMiss*.42);
+	      this._incomingNearMiss=Math.max(0,this._incomingNearMiss-dt*1.8);
+	    }
+	    this.aimIntent=target;
+	    const base=this.tactic.aim||.35;
+	    const p=this.personality||ENEMY_PERSONALITIES.disciplined;
+	    const speed=(target>this.aimReady?1/base:2.4)*(1/(p.aimMul||1))*(underFire?.74:1);
+	    this.aimReady+=(target-this.aimReady)*Math.min(dt*speed,1);
+	  }
   _maybeReposition(pp,walls,cs,horizDist,dt){
     if(this.type==='drone'||this.state===REPOSITION||this.state===FLANK||this.dead)return false;
     this.repositionCooldown-=dt;
@@ -7736,8 +8689,8 @@ class Enemy{
   _tickJuke(dt,walls){
     if(this._jukeTimer<=0||!this._jukeVec)return false;
     this._jukeTimer-=dt;
-    const sp=this.speed*(this.type==='scout'?1.95:this.type==='pistolero'?1.75:1.45)*dt;
-    this._tryMove(this._jukeVec.x*sp,this._jukeVec.z*sp,walls);
+    const sp=this.speed*(this.type==='scout'?1.95:this.type==='pistolero'?1.75:1.45);
+    this._moveWithVelocity(this._jukeVec.x*sp,this._jukeVec.z*sp,dt,walls,{sharp:true});
     if(this._jukeTimer<=0){this._jukeVec=null;this._movementMode='strafe';}
     return true;
   }
@@ -7750,7 +8703,7 @@ class Enemy{
     this.group.position.x=v.x0+(v.x1-v.x0)*ease;
     this.group.position.z=v.z0+(v.z1-v.z0)*ease;
     this.group.position.y=v.y0+Math.sin(t*Math.PI)*v.hop;
-    this.group.rotation.y=Math.atan2(v.x1-v.x0,v.z1-v.z0);
+    this._faceYaw(Math.atan2(v.x1-v.x0,v.z1-v.z0),dt,14);
     this._movementMode='vault';
     if(t>=1){
       this.group.position.y=v.yEnd;
@@ -7771,7 +8724,7 @@ class Enemy{
     if(d<1.1)return false;
     const nx=dx/d,nz=dz/d;
     for(const v of G.vaultables){
-      if((v.height||0)>1.35)continue;
+      if(!_runtimeVaultableUsable(v,px,pz))continue;
       const near=px>=v.x0-.85&&px<=v.x1+.85&&pz>=v.z0-.85&&pz<=v.z1+.85;
       if(!near)continue;
       const cx=(v.x0+v.x1)*.5,cz=(v.z0+v.z1)*.5;
@@ -7804,17 +8757,26 @@ class Enemy{
     if(this.mixer&&(!this.meshyRig||this.meshyRig.visible))this.mixer.update(dt);
 
     if(this.dead){this.deathTimer+=dt;this._updateDeath(dt);return null;}
+    if(this._headshotHitStopTimer>0){
+      const hsDur=Math.max(.001,this._headshotHitStopDur||.115);
+      this._headshotHitStopTimer=Math.max(0,this._headshotHitStopTimer-dt);
+      const hsRemain=THREE.MathUtils.clamp(this._headshotHitStopTimer/hsDur,0,1);
+      const freeze=(1-THREE.MathUtils.smoothstep(1-hsRemain,.10,.82));
+      dt*=1-THREE.MathUtils.clamp(freeze*.78,0,.78);
+      this._movementMode='hitstop';
+    }
     // ── GRENADE FLEE: enemy runs from a recently-landed grenade
     if(this._grenadeFleeUntil&&performance.now()<this._grenadeFleeUntil){
       const tx=this._grenadeFleeX,tz=this._grenadeFleeZ;
       const dx=tx-this.group.position.x,dz=tz-this.group.position.z;
       const d=Math.sqrt(dx*dx+dz*dz);
       if(d>.4){
-        const spd=this.speed*1.4*dt/d;
-        this._tryMove(dx*spd,dz*spd,walls);
-        this.group.rotation.y=Math.atan2(dx,dz);
+        const spd=this.speed*1.4;
+        this._moveWithVelocity(dx/d*spd,dz/d*spd,dt,walls,{sharp:true});
+        this._faceYaw(Math.atan2(dx,dz),dt,9.5);
       }
       this._updateAnim(dt,true);
+      if(this.meshyRig&&this.meshyRig.visible)this._syncMeshyHitboxesToBones();
       return null;
     }
     // ── DRONE: hover, smooth circle around player, fast strafe
@@ -7877,8 +8839,9 @@ class Enemy{
       const spd=2.35*dt;
       this.group.position.x+=D.inwardX*spd;
       this.group.position.z+=D.inwardZ*spd;
-      this.group.rotation.y=Math.atan2(D.inwardX,D.inwardZ);
+      this._faceYaw(Math.atan2(D.inwardX,D.inwardZ),dt,12);
       this._updateAnim(dt,true);
+      if(this.meshyRig&&this.meshyRig.visible)this._syncMeshyHitboxesToBones();
       if(s.t>0.92){this.spawnIntro=null;this.spawnTimer=0.38;D.targetY=D.baseY;}
       return null;
     }
@@ -7893,6 +8856,7 @@ class Enemy{
     const cs=this.canSee(pp,walls,_leanOff);
     let moving=false,shootResult=null;
     if(this._movementMode!=='juke'&&this._movementMode!=='vault')this._movementMode='idle';
+    this._updateAimTracking(pp,dt,horizDist,cs);
     this._updateAimReadiness(dt,cs,horizDist);
     if(this.state!==ATTACK&&this.enemyReloadTimer>0)this._tickReload(dt);
 
@@ -7948,8 +8912,8 @@ class Enemy{
     } else if(this.type==='riot'&&this.state===ATTACK&&horizDist<6&&cs){
       // Charge melee
       const cdx=pdx/Math.max(0.01,horizDist),cdz=pdz/Math.max(0.01,horizDist);
-      const rush=this.speed*2.0*dt;
-      this._tryMove(cdx*rush,cdz*rush,walls);
+      const rush=this.speed*2.0;
+      this._moveWithVelocity(cdx*rush,cdz*rush,dt,walls,{sharp:true});
       if(horizDist<1.6){
         // Apply melee damage to player + brief stagger
         if(typeof takeDamage==='function'&&!P.dead){
@@ -7983,9 +8947,9 @@ class Enemy{
         const tdx=mx-this.group.position.x,tdz=mz-this.group.position.z;
         const td=Math.sqrt(tdx*tdx+tdz*tdz);
         if(td>0.7){
-          const sp=this.speed*1.3*dt/td;
-          this._tryMove(tdx*sp,tdz*sp,walls);
-          this.group.rotation.y=Math.atan2(pdx,pdz);
+          const sp=this.speed*1.3;
+          this._moveWithVelocity(tdx/td*sp,tdz/td*sp,dt,walls);
+          this._faceYaw(Math.atan2(pdx,pdz),dt,8.5);
           moving=true;
         }
       }
@@ -8011,8 +8975,8 @@ class Enemy{
         const tdx=tx-this.group.position.x,tdz=tz-this.group.position.z;
         const td=Math.sqrt(tdx*tdx+tdz*tdz);
         if(td>0.5){
-          const sp=this.speed*1.0*dt/td;
-          this._tryMove(tdx*sp,tdz*sp,walls);
+          const sp=this.speed*1.0;
+          this._moveWithVelocity(tdx/td*sp,tdz/td*sp,dt,walls);
         }
       }
     }
@@ -8050,13 +9014,13 @@ class Enemy{
             const g=c.createGain();g.gain.value=0.10;
             s.connect(f);f.connect(g);g.connect(c.destination);s.start();
           }
-        }else{this._patrol(dt,walls);moving=true;}
+        }else{moving=!!this._patrol(dt,walls);}
         break;
       }
 
       case ALERT:
         this.alertTimer-=dt;
-        this.group.rotation.y=Math.atan2(pdx,pdz);
+        this._faceYaw(Math.atan2(pdx,pdz),dt,10);
         if(this.alertTimer<=0){
           this.state=CHASE;this.alertFlashTimer=0;
           this.hM.emissive.set(0);this.hMesh.scale.setScalar(1);
@@ -8106,7 +9070,7 @@ class Enemy{
          }
          this._pathToTarget(chaseTgt,dt,walls);}
         moving=true;
-        this.group.rotation.y=Math.atan2(pdx,pdz);
+        this._faceYaw(Math.atan2(pdx,pdz),dt,9);
         break;
 
       case SEARCH:{
@@ -8157,7 +9121,7 @@ class Enemy{
         if(td>.58){
           const mul=this.repositionReason==='retreat'?1.12:this.repositionReason==='flank'?1.22:1.0;
           this._pathToTarget(this.repositionTarget,dt*mul,walls);moving=true;
-          this.group.rotation.y=cs?Math.atan2(pdx,pdz):Math.atan2(tx,tz);
+          this._faceYaw(cs?Math.atan2(pdx,pdz):Math.atan2(tx,tz),dt,9);
         }else{
           this.atCover=!!this.coverSlot;
           this.repositionTarget=null;
@@ -8178,7 +9142,7 @@ class Enemy{
         const _flankTellMul=(this._flankTellUntil&&performance.now()<this._flankTellUntil)?.35:1.0;
         const _flankMul=((this._flankSpeedBoostUntil&&performance.now()<this._flankSpeedBoostUntil)?1.25:1.0)*_flankTellMul;
         this._pathToTarget(this.flankTarget,dt*_flankMul,walls);moving=true;
-        this.group.rotation.y=Math.atan2(pdx,pdz);
+        this._faceYaw(Math.atan2(pdx,pdz),dt,9);
         const fdx=this.flankTarget.x-this.group.position.x,fdz=this.flankTarget.z-this.group.position.z;
         if(Math.sqrt(fdx*fdx+fdz*fdz)<1.2){this.state=ATTACK;this.flankTarget=null;}
         break;
@@ -8218,24 +9182,35 @@ class Enemy{
           if(slot){
             // Maintain claim
             slot.claimedBy=this;
-            // Peek scheduling
-            this.peekCooldown-=dt;
-            if(this.peekState==='safe'){
-              this.peekAmtTarget=0;
-              if(this.peekRate>0&&this.peekCooldown<=0&&cs){
-                this.peekState='peeking';this.peekStart=nowMs;
-                if(G&&G._aiPeekCount!=null)G._aiPeekCount++;
-              }
-            }
-            if(this.peekState==='peeking'){
-              this.peekAmtTarget=1;
-              const elapsed=nowMs-this.peekStart;
-              if(elapsed>=this.peekHoldMs){
-                this.peekState='safe';
-                this.peekCooldown=1/Math.max(0.05,this.peekRate);
-                this.peekAmtTarget=0;
-              }
-            }
+	            // Peek scheduling
+	            this.peekCooldown-=dt;
+	            if(this.peekState==='safe'){
+	              this.peekAmtTarget=0;
+	              if(this.peekRate>0&&cs){
+	                const prep=THREE.MathUtils.clamp(1-(this.peekCooldown/.30),0,1);
+	                this._peekPrepPulse=Math.max(this._peekPrepPulse||0,prep*.75);
+	              }
+	              if(this.peekRate>0&&this.peekCooldown<=0&&cs){
+	                this.peekState='peeking';this.peekStart=nowMs;
+	                const yaw=this.group.rotation.y;
+	                const rx=Math.cos(yaw),rz=-Math.sin(yaw);
+	                const edgeProj=(slot.edgeX||1)*rx+(slot.edgeZ||0)*rz;
+	                this._peekSideSign=Math.sign(edgeProj)||this._peekSideSign||1;
+	                this._peekCommitPulse=1;
+	                this._peekPrepPulse=Math.max(this._peekPrepPulse||0,.85);
+	                if(G&&G._aiPeekCount!=null)G._aiPeekCount++;
+	              }
+	            }
+	            if(this.peekState==='peeking'){
+	              this.peekAmtTarget=1;
+	              const elapsed=nowMs-this.peekStart;
+	              if(elapsed>=this.peekHoldMs){
+	                this.peekState='safe';
+	                this.peekCooldown=1/Math.max(0.05,this.peekRate);
+	                this.peekAmtTarget=0;
+	                this._peekShotTuck=Math.max(this._peekShotTuck||0,.16);
+	              }
+	            }
             // Translate toward safe pose (no sine wiggle)
             const tgtX=slot.x+slot.peekDx*this.peekAmt;
             const tgtZ=slot.z+slot.peekDz*this.peekAmt;
@@ -8261,14 +9236,15 @@ class Enemy{
             const perpX=-pdz*invD,perpZ=pdx*invD;
             const radX=pdx*invD,radZ=pdz*invD;
             const dErr=horizDist-this.idealDist;
-            const stM=this.speed*.85*this.strafeDir*(this.personality.jitter||1);
-            const rM=this.speed*.55*Math.sign(-dErr)*(Math.abs(dErr)>1.5?1:.4)*(this.tactic.advance||.5);
-            this._tryMove((perpX*stM+radX*rM)*dt,(perpZ*stM+radZ*rM)*dt,walls);
+	            const plantMul=(this.shootRecoilTimer>0||this._fireBlinkTimer>0)?0.38:(0.92-this.aimReady*.24);
+	            const stM=this.speed*.85*this.strafeDir*(this.personality.jitter||1)*plantMul;
+	            const rM=this.speed*.55*Math.sign(-dErr)*(Math.abs(dErr)>1.5?1:.4)*(this.tactic.advance||.5)*(0.82+plantMul*.18);
+	            this._moveWithVelocity(perpX*stM+radX*rM,perpZ*stM+radZ*rM,dt,walls,{combat:true});
             this._movementMode='strafe';
           }
           moving=true;
         }
-        this.group.rotation.y=Math.atan2(pdx,pdz);
+        this._faceYaw(Math.atan2(pdx,pdz),dt,10.5);
         const _enemyReloading=this._tickReload(dt);
         // ── DEMOLITIONS: throws grenade every 5-7s instead of bursting
         if(this.type==='demolitions'){
@@ -8293,20 +9269,21 @@ class Enemy{
           if(this.magAmmo<=0){this._startReload();break;}
           // Bigger pause between shots, but visor charges up first
           this.shootTimer-=dt;this.burstCooldown-=dt;
-          if(this.burstCooldown<=0&&cs){
+          const _trackReady=this._aimTrackQuality==null?1:this._aimTrackQuality;
+          if(this.burstCooldown<=0&&cs&&this.aimReady>.76&&_trackReady>.66){
             // Charge for 1.2s — visor pulses brighter
             this._chargeT=(this._chargeT||0)+dt;
             if(this.visorM){
               const c=Math.min(1,this._chargeT/1.2);
               this.visorM.emissive.setRGB(c*1.6,c*1.6,c*1.8);
             }
-            if(this._chargeT>=1.2){
-              if(!this._consumeRound())break;
-              shootResult={shoot:true,dist:horizDist,accuracy:.012,src:this,aimReady:this.aimReady};
-              this.shootRecoilTimer=.32;
-              this._chargeT=0;
-              this.burstCooldown=2.5+Math.random()*.8;
-            }
+	            if(this._chargeT>=1.2){
+	              if(!this._consumeRound())break;
+	              this._markShotVisual('marksman',horizDist);
+		              shootResult={shoot:true,dist:horizDist,accuracy:.012,src:this,aimReady:this.aimReady,shotType:'marksman',burstIndex:0};
+	              this._chargeT=0;
+	              this.burstCooldown=2.5+Math.random()*.8;
+	            }
           } else this._chargeT=0;
           break;
         }
@@ -8315,12 +9292,12 @@ class Enemy{
           if(_enemyReloading)break;
           if(this.magAmmo<=0){this._startReload();break;}
           this.shootTimer-=dt;
-          if(this.shootTimer<=0&&cs&&horizDist<10){
-            this.shootTimer=.20+Math.random()*.10;
-            this.shootRecoilTimer=.10;
-            if(!this._consumeRound())break;
-            shootResult={shoot:true,dist:horizDist,accuracy:.10,src:this,aimReady:this.aimReady};
-          }
+	          if(this.shootTimer<=0&&cs&&horizDist<10){
+	            this.shootTimer=.20+Math.random()*.10;
+	            if(!this._consumeRound())break;
+	            this._markShotVisual('drone',horizDist);
+		            shootResult={shoot:true,dist:horizDist,accuracy:.10,src:this,aimReady:this.aimReady,shotType:'drone',burstIndex:this.burstCount||0};
+	          }
           break;
         }
         if(_enemyReloading)break;
@@ -8331,11 +9308,11 @@ class Enemy{
         }
         // ── Phase 3: only fire while in PEEK_FIRE pose (peekAmt > 0.5) when
         // a cover slot is assigned. Without a slot, fire freely (open ground).
-        if(this.atCover&&this.coverSlot&&this.peekState==='safe'&&this.peekAmt<0.5){
-          // Behind cover — don't shoot. Suppress also gates here.
-          if(!(this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0)){
-            break;
-          }
+	        if(this.atCover&&this.coverSlot&&this.peekAmt<0.62){
+	          // Behind cover — don't shoot. Suppress also gates here.
+	          if(!(this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0)){
+	            break;
+	          }
         }
         // Burst-fire logic (default for soldier/heavy/scout/etc).
         // Phase 3: SUPPRESS overrides — fire even without LOS, with reduced
@@ -8343,19 +9320,21 @@ class Enemy{
         const _isSuppressing=this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0;
         if(this.magAmmo<=0){this._startReload();break;}
         this.shootTimer-=dt;this.burstCooldown-=dt;
-        const _aimGate=_isSuppressing||this.aimReady>0.58||this.type==='pistolero'||this.type==='scout';
+        const _trackGate=this._aimTrackQuality==null?1:this._aimTrackQuality;
+        const _agileGate=(this.type==='pistolero'||this.type==='scout')&&this.aimReady>.42&&_trackGate>.38;
+        const _aimGate=_isSuppressing||(this.aimReady>0.60&&_trackGate>.50)||_agileGate;
         if(this.burstCooldown<=0&&this.shootTimer<=0&&(cs||_isSuppressing)&&_aimGate){
-          if(this.burstMax > this.burstCount){
-            if(!this._consumeRound())break;
-            this.burstCount++;
-            this.shootTimer=.09+Math.random()*.08;
-            this.shootRecoilTimer=.18;
-            const limbAcc=(typeof _enemyAccuracyMul==='function')?_enemyAccuracyMul(this):1.0;
-            const personaNoise=(this.personality.jitter||1)*0.010;
-            const aimBonus=(1-this.aimReady)*0.060;
-            const accDeg=(_isSuppressing?(.20-this.diff*.01):.065-this.diff*.007)+personaNoise+aimBonus+(1-limbAcc)*.10;
-            shootResult={shoot:true,dist:horizDist,accuracy:Math.max(.006,accDeg),src:this,aimReady:this.aimReady};
-          }else{
+	          if(this.burstMax > this.burstCount){
+	            if(!this._consumeRound())break;
+	            this.burstCount++;
+	            this.shootTimer=.09+Math.random()*.08;
+	            const limbAcc=(typeof _enemyAccuracyMul==='function')?_enemyAccuracyMul(this):1.0;
+	            const personaNoise=(this.personality.jitter||1)*0.010;
+	            const aimBonus=(1-this.aimReady)*0.060;
+	            const accDeg=(_isSuppressing?(.20-this.diff*.01):.065-this.diff*.007)+personaNoise+aimBonus+(1-limbAcc)*.10;
+	            this._markShotVisual(_isSuppressing?'suppress':'burst',horizDist);
+		            shootResult={shoot:true,dist:horizDist,accuracy:Math.max(.006,accDeg),src:this,aimReady:this.aimReady,shotType:_isSuppressing?'suppress':'burst',burstIndex:this.burstCount};
+	          }else{
             this.burstCount=0;
             this.burstCooldown=1.1+Math.random()*.9;
             this.shootTimer=this.burstCooldown;
@@ -8382,6 +9361,7 @@ class Enemy{
       if(this.peekAmt>0.5&&G&&G._aiPeekShotsFired!=null)G._aiPeekShotsFired++;
     }
     this._updateAnim(dt,moving);
+    if(this.meshyRig&&this.meshyRig.visible)this._syncMeshyHitboxesToBones();
     return shootResult;
   }
 
@@ -8456,7 +9436,7 @@ function _cellWallsAt(idx,x,z){
 function _isPosClearForEnemyAndPeers(x,z,walls,R,peers,peerR){
   if(!_isPosClearForEnemy(x,z,walls,R))return false;
   if(peers&&peers.length){
-    const pr=peerR||0.85;
+    const pr=Number.isFinite(peerR)?peerR:1.18;
     const pr2=pr*pr;
     for(let i=0,n=peers.length;i<n;i++){
       const p=peers[i];
@@ -8466,24 +9446,85 @@ function _isPosClearForEnemyAndPeers(x,z,walls,R,peers,peerR){
   }
   return true;
 }
-function _findClearEnemySpawn(sp,walls,R,peers){
-  // Try increasing-radius jitters near the spawn anchor first, then bail out
-  // to a few hard-coded room-clear spots. Phase: also reject positions that
-  // overlap already-placed enemies in this wave.
-  for(let i=0;i<24;i++){
-    const rad=(i<8)?2.2:(i<16)?4.0:7.0;
-    const dx=(Math.random()-.5)*rad,dz=(Math.random()-.5)*rad;
-    const x=sp.x+dx,z=sp.z+dz;
-    if(_isPosClearForEnemyAndPeers(x,z,walls,R,peers))return new THREE.Vector3(x,sp.y,z);
-  }
-  // Last-ditch fallbacks — known interior points of the building
-  const fallbacks=[[0,0],[0,4],[0,-4],[6,0],[-6,0],[0,10],[0,-10],[6,6],[-6,-6],[6,-6],[-6,6]];
-  for(const [fx,fz] of fallbacks){if(_isPosClearForEnemyAndPeers(fx,fz,walls,R,peers))return new THREE.Vector3(fx,sp.y,fz);}
-  return sp.clone();
+function _enemySpawnPeerRadius(type){
+  const t=String(type||'soldier');
+  if(t==='boss')return 1.55;
+  if(t==='heavy'||t==='riot'||t==='shielded'||t==='lieutenant')return 1.36;
+  if(t==='drone')return .92;
+  return 1.18;
+}
+function _enemySpawnZoneOk(x,z,zoneId){
+  if(!Number.isFinite(zoneId))return true;
+  if(typeof getZoneOf!=='function')return true;
+  return getZoneOf({x,z})===(zoneId|0);
+}
+function _enemySpawnNavOk(x,z,opts){
+  if(!opts||!opts.requireNav)return true;
+  const ng=typeof G!=='undefined'&&G.levelData&&G.levelData.navGrid;
+  return !ng||_navCellOpen(ng,x,z);
+}
+function _enemySpawnCandidateClear(x,z,walls,R,peers,opts){
+  opts=opts||{};
+  if(!_enemySpawnZoneOk(x,z,opts.zoneId))return false;
+  if(!_enemySpawnNavOk(x,z,opts))return false;
+  return _isPosClearForEnemyAndPeers(x,z,walls,R,peers,opts.peerR);
+}
+function _findClearEnemySpawn(sp,walls,R,peers,opts){
+  // Fail closed: never return the raw spawn if it clips geometry or another
+  // enemy. Clustered door waves and authored anchors are repaired by scanning
+  // outward through deterministic rings, then tactical cover/nav points.
+  opts=opts||{};
+  const y=Number.isFinite(sp&&sp.y)?sp.y:(WT||.4);
+  const sx=Number.isFinite(sp&&sp.x)?sp.x:0;
+  const sz=Number.isFinite(sp&&sp.z)?sp.z:0;
+  const tryCandidate=(x,z,zoneOverride)=>{
+    const o=zoneOverride===undefined?opts:{...opts,zoneId:zoneOverride};
+    if(_enemySpawnCandidateClear(x,z,walls,R,peers,o))return new THREE.Vector3(x,y,z);
+    return null;
+  };
+  const scan=(zoneOverride)=>{
+    const exact=tryCandidate(sx,sz,zoneOverride);
+    if(exact)return exact;
+    const rings=[.62,.95,1.35,1.85,2.45,3.2,4.15,5.35,6.8,8.4,10.2,12.0];
+    const seed=((sx*12.9898+sz*78.233)%1+1)%1;
+    for(let r=0;r<rings.length;r++){
+      const rad=rings[r];
+      const steps=r<3?12:r<7?18:28;
+      const phase=seed*Math.PI*2+r*.37;
+      for(let k=0;k<steps;k++){
+        const a=phase+(k/steps)*Math.PI*2;
+        const wobble=1+(((k*13+r*7)%11)-5)*.018;
+        const x=sx+Math.cos(a)*rad*wobble;
+        const z=sz+Math.sin(a)*rad*wobble;
+        const hit=tryCandidate(x,z,zoneOverride);
+        if(hit)return hit;
+      }
+    }
+    const lvl=typeof G!=='undefined'&&G.levelData;
+    const slots=lvl&&Array.isArray(lvl.coverSlots)?lvl.coverSlots.slice():null;
+    if(slots&&slots.length){
+      slots.sort((a,b)=>((a.x-sx)**2+(a.z-sz)**2)-((b.x-sx)**2+(b.z-sz)**2));
+      for(const s of slots){
+        const hit=tryCandidate(s.x,s.z,zoneOverride);
+        if(hit)return hit;
+      }
+    }
+    const fallbacks=[[0,0],[0,4],[0,-4],[6,0],[-6,0],[0,10],[0,-10],[6,6],[-6,-6],[6,-6],[-6,6],[10,12],[-10,12],[10,-12],[-10,-12]];
+    for(const [fx,fz] of fallbacks){
+      const hit=tryCandidate(fx,fz,zoneOverride);
+      if(hit)return hit;
+    }
+    return null;
+  };
+  let found=scan(opts.zoneId);
+  if(found||opts.strictZone)return found;
+  if(Number.isFinite(opts.zoneId))found=scan(null);
+  return found;
 }
 // Push a candidate spawn out of wall/cover AABBs (door spawns sit near perimeter props).
-function _snapSpawnOutOfWalls(x,z,y,walls,R,peers){
-  if(_isPosClearForEnemyAndPeers(x,z,walls,R,peers))return new THREE.Vector3(x,y,z);
+function _snapSpawnOutOfWalls(x,z,y,walls,R,peers,opts){
+  opts=opts||{};
+  if(_enemySpawnCandidateClear(x,z,walls,R,peers,opts))return new THREE.Vector3(x,y,z);
   for(let ring=0;ring<8;ring++){
     const rad=.30+ring*.42;
     // Try more angular samples on outer rings so we find clear gaps even in
@@ -8492,7 +9533,7 @@ function _snapSpawnOutOfWalls(x,z,y,walls,R,peers){
     for(let k=0;k<steps;k++){
       const t=(k/steps)*Math.PI*2;
       const tx=x+Math.cos(t)*rad,tz=z+Math.sin(t)*rad;
-      if(_isPosClearForEnemyAndPeers(tx,tz,walls,R,peers))return new THREE.Vector3(tx,y,tz);
+      if(_enemySpawnCandidateClear(tx,tz,walls,R,peers,opts))return new THREE.Vector3(tx,y,tz);
     }
   }
   return null;
@@ -8790,41 +9831,8 @@ class EnemyManager{
       for(let i=0;i<cnt;i++){
         const sp=zSpawns[i%zSpawns.length];
         const _spawnR=.46;
-        let pos,doorUsed=null;
-        if(doorsZ.length){
-          doorUsed=doorsZ[i%doorsZ.length];
-          const id=1.14;
-          // Stagger multiple enemies sharing the same door by stepping further
-          // into the room as the door index repeats.
-          const _doorOrdinal=Math.floor(i/doorsZ.length);
-          const extraStep=_doorOrdinal*0.95;
-          let bx=doorUsed.ax+doorUsed.inwardX*(id+extraStep),bz=doorUsed.az+doorUsed.inwardZ*(id+extraStep);
-          pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,_spawnR,_peers);
-          if(!pos){
-            const px=-doorUsed.inwardZ,py=doorUsed.inwardX;
-            pos=_snapSpawnOutOfWalls(bx+px*.55,bz+py*.55,WT,_walls,_spawnR,_peers)
-              ||_snapSpawnOutOfWalls(bx-px*.55,bz-py*.55,WT,_walls,_spawnR,_peers);
-          }
-          if(!pos){
-            pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers);
-            doorUsed=null;
-          }else if(Math.hypot(pos.x-doorUsed.ax,pos.z-doorUsed.az)>3.15){
-            doorUsed=null;
-          }
-        }else{
-          pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers);
-        }
-        // Bugfix: final safety pass — if the chosen pos somehow ended up
-        // inside a wall (degenerate spawn anchor, fallback returning raw
-        // sp), push it out. Without this, enemies pin against geometry
-        // and can't move.
-        if(!_isPosClearForEnemy(pos.x,pos.z,_walls,_spawnR)){
-          const snap=_snapSpawnOutOfWalls(pos.x,pos.z,WT,_walls,_spawnR,_peers);
-          if(snap)pos=snap;
-        }
-        // Track the placed position so subsequent spawns avoid it
-        _peers.push({x:pos.x,z:pos.z});
-        // Type-by-zone bias + authored sequence role contract.
+        // Type-by-zone bias + authored sequence role contract. Pick this
+        // before resolving a point so large enemies reserve more spacing.
         let type;
         const role=roleByZone[z]||null;
         const authoredTypes=authoredTypePools&&Array.isArray(authoredTypePools[z])?authoredTypePools[z].filter(Boolean):null;
@@ -8836,6 +9844,44 @@ class EnemyManager{
         else if(z===0&&i===cnt-1&&cnt>=2)type='scout';
         else if(globalIdx===0&&diff>=2&&totalCount>=4)type='heavy';
         else type=basePool[Math.floor(Math.random()*basePool.length)];
+        const _spawnOpts={zoneId:z,peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+        let pos,doorUsed=null;
+        if(doorsZ.length){
+          doorUsed=doorsZ[i%doorsZ.length];
+          const id=1.14;
+          // Stagger multiple enemies sharing the same door by stepping further
+          // into the room as the door index repeats.
+          const _doorOrdinal=Math.floor(i/doorsZ.length);
+          const extraStep=_doorOrdinal*0.95;
+          let bx=doorUsed.ax+doorUsed.inwardX*(id+extraStep),bz=doorUsed.az+doorUsed.inwardZ*(id+extraStep);
+          pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,_spawnR,_peers,_spawnOpts);
+          if(!pos){
+            const px=-doorUsed.inwardZ,py=doorUsed.inwardX;
+            pos=_snapSpawnOutOfWalls(bx+px*.55,bz+py*.55,WT,_walls,_spawnR,_peers,_spawnOpts)
+              ||_snapSpawnOutOfWalls(bx-px*.55,bz-py*.55,WT,_walls,_spawnR,_peers,_spawnOpts);
+          }
+          if(!pos){
+            pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers,_spawnOpts);
+            doorUsed=null;
+          }else if(Math.hypot(pos.x-doorUsed.ax,pos.z-doorUsed.az)>3.15){
+            doorUsed=null;
+          }
+        }else{
+          pos=_findClearEnemySpawn(sp,_walls,_spawnR,_peers,_spawnOpts);
+        }
+        if(!pos)continue;
+        // Bugfix: final safety pass — if the chosen pos somehow ended up
+        // inside a wall (degenerate spawn anchor, fallback returning raw
+        // sp), push it out. Without this, enemies pin against geometry
+        // and can't move.
+        if(!_enemySpawnCandidateClear(pos.x,pos.z,_walls,_spawnR,_peers,_spawnOpts)){
+          const snap=_snapSpawnOutOfWalls(pos.x,pos.z,WT,_walls,_spawnR,_peers,_spawnOpts)
+            ||_findClearEnemySpawn(pos,_walls,_spawnR,_peers,_spawnOpts);
+          if(snap)pos=snap;
+          else continue;
+        }
+        // Track the placed position so subsequent spawns avoid it
+        _peers.push({x:pos.x,z:pos.z});
         const enemy=new Enemy(this.scene,pos,diff,type);
         enemy.zoneId=lvl&&lvl.zoneIdByPosition?getZoneOf(pos):z;
         if(lvl&&lvl.isMegaplexB01)applyMegaplexB01EnemyPresentation(enemy,type);
@@ -8844,9 +9890,10 @@ class EnemyManager{
           if(authoredMeta.encounterId)enemy.encounterId=authoredMeta.encounterId;
           if(authoredMeta.role)enemy.encounterRole=authoredMeta.role;
           if(authoredMeta.behavior)enemy.encounterBehavior=authoredMeta.behavior;
-          if(authoredMeta.wave)enemy.spawnWave=authoredMeta.wave;
-          if(authoredMeta.id)enemy.encounterSpecId=authoredMeta.id;
-          if(authoredMeta.role)applyEncounterRole(enemy,authoredMeta.role);
+	          if(authoredMeta.wave)enemy.spawnWave=authoredMeta.wave;
+	          if(authoredMeta.id)enemy.encounterSpecId=authoredMeta.id;
+	          if(Number.isFinite(authoredMeta.yaw))enemy.group.rotation.y=authoredMeta.yaw;
+	          if(authoredMeta.role)applyEncounterRole(enemy,authoredMeta.role);
           _initEncounterPatrolFromTag(enemy);
         }
         if(doorUsed)enemy.spawnIntro={t:0,door:doorUsed};
@@ -8930,6 +9977,71 @@ class EnemyManager{
       if(Math.abs(dx)>Math.abs(dz)) e.coverPoint={x:cx+Math.sign(dx||1)*(halfW+0.65),z:cz};
       else                          e.coverPoint={x:cx,z:cz+Math.sign(dz||1)*(halfD+0.65)};
     }
+    this._repairSpawnOverlaps(_walls);
+    this._needsSpawnAudit=false;
+  }
+  _repairSpawnOverlaps(walls){
+    const _walls=walls||[];
+    const alive=this._list.filter(e=>e&&!e.dead&&!e._roomFlowDormant&&e.group&&e.group.position);
+    let moved=0;
+    for(const e of alive){
+      const peers=[];
+      for(const p of alive){
+        if(p===e)continue;
+        peers.push({x:p.group.position.x,z:p.group.position.z});
+      }
+      const zoneId=Number.isFinite(e.zoneId)?e.zoneId:(typeof getZoneOf==='function'?getZoneOf(e.group.position):null);
+      const R=e.type==='drone'?.34:.46;
+      const opts={zoneId,peerR:_enemySpawnPeerRadius(e.type)*.92,requireNav:e.type!=='drone',strictZone:false};
+      const p=e.group.position;
+      if(!e._needsAiRepair&&_enemySpawnCandidateClear(p.x,p.z,_walls,R,peers,opts))continue;
+      const fixed=_findClearEnemySpawn(new THREE.Vector3(p.x,p.y,p.z),_walls,R,peers,opts)
+        ||_findClearEnemySpawn(new THREE.Vector3(p.x,p.y,p.z),_walls,R,peers,{peerR:opts.peerR,requireNav:e.type!=='drone'})
+        ||_snapSpawnOutOfWalls(p.x,p.z,p.y,_walls,R,null,{requireNav:e.type!=='drone'});
+      if(!fixed)continue;
+      p.x=fixed.x;p.z=fixed.z;
+      if(Number.isFinite(fixed.y))p.y=fixed.y;
+      e.navPath=null;e.navPathIdx=0;e.navRecalcT=0;
+      e.patrolTarget=null;e.repositionTarget=null;e._needsAiRepair=false;
+      moved++;
+    }
+    if(moved&&typeof G!=='undefined')G._aiSpawnRepairs=(G._aiSpawnRepairs||0)+moved;
+    return moved;
+  }
+  _separateLiveEnemies(walls,dt){
+    const alive=this._list.filter(e=>e&&!e.dead&&!e._roomFlowDormant&&e.group&&e.group.position);
+    if(alive.length<2)return 0;
+    let pushes=0;
+    for(let i=0;i<alive.length;i++){
+      const a=alive[i],ap=a.group.position;
+      for(let j=i+1;j<alive.length;j++){
+        const b=alive[j],bp=b.group.position;
+        const dx=ap.x-bp.x,dz=ap.z-bp.z;
+        let d2=dx*dx+dz*dz;
+        const min=Math.max(.74,Math.min(1.05,Math.max(_enemySpawnPeerRadius(a.type),_enemySpawnPeerRadius(b.type))*.66));
+        if(d2>=min*min)continue;
+        let d=Math.sqrt(d2),nx,nz;
+        if(d<0.001){
+          const ang=i*2.399963+j*1.317;
+          nx=Math.cos(ang);nz=Math.sin(ang);d=.001;
+        }else{nx=dx/d;nz=dz/d;}
+        const step=Math.min(.095,(min-d)*.34)*(dt>0?Math.min(1,dt*8):1);
+        if(step<=0)continue;
+        if(a.type==='drone'){ap.x+=nx*step;ap.z+=nz*step;}
+        else a._tryMove(nx*step,nz*step,walls,{separation:true});
+        if(b.type==='drone'){bp.x-=nx*step;bp.z-=nz*step;}
+        else b._tryMove(-nx*step,-nz*step,walls,{separation:true});
+        const nowMs=performance.now();
+        if(step>.070||nowMs-(a._lastSeparationPathReset||0)>420){
+          a.navPath=null;a._lastSeparationPathReset=nowMs;
+        }
+        if(step>.070||nowMs-(b._lastSeparationPathReset||0)>420){
+          b.navPath=null;b._lastSeparationPathReset=nowMs;
+        }
+        pushes++;
+      }
+    }
+    return pushes;
   }
   // Per-zone alive counts for the room-clear gate
   // Phase 3 §6.3 — pick at most one suppress+flank pair per zone. The
@@ -9003,13 +10115,22 @@ class EnemyManager{
         boss.hp=Math.min(boss.maxHp,boss.hp+(cmd.amt||boss.maxHp*0.15));
       } else if(cmd.type==='addSpawn'){
         // Spawn one or more adds near the boss
+        const peers=[];
+        for(const e of this._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
+        const _walls=G.levelData?G.levelData.walls:[];
         for(const a of (cmd.adds||[])){
           const dx=a.dx||0,dz=a.dz||0;
           const tx=bx+dx,tz=bz+dz;
-          const pos=new THREE.Vector3(tx,WT||.4,tz);
+          const type=a.type||'soldier';
+          const opts={zoneId:Number.isFinite(boss.zoneId)?boss.zoneId:2,peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+          const pos=_snapSpawnOutOfWalls(tx,tz,WT||.4,_walls,.46,peers,opts)
+            ||_findClearEnemySpawn(new THREE.Vector3(tx,WT||.4,tz),_walls,.46,peers,opts);
+          if(!pos)continue;
           const newE=new Enemy(this.scene,pos,G.building||1,a.type||'soldier');
           newE.zoneId=boss.zoneId||2;
           this._list.push(newE);
+          peers.push({x:pos.x,z:pos.z});
+          this._needsSpawnAudit=true;
           _flagSsrSolidsDirty();
         }
       } else if(cmd.type==='retreat'){
@@ -9067,6 +10188,17 @@ class EnemyManager{
       this._pairT=0;
       this._tryFormPairs(pp,walls);
     }
+    this._sepT=(this._sepT||0)+dt;
+    if(this._sepT>.12){
+      this._sepT=0;
+      this._separateLiveEnemies(walls,dt);
+    }
+    this._repairT=(this._repairT||0)+dt;
+    if(this._needsSpawnAudit||this._repairT>1.1||this._list.some(e=>e&&e._needsAiRepair)){
+      this._repairT=0;
+      this._repairSpawnOverlaps(walls);
+      this._needsSpawnAudit=false;
+    }
     // Phase W: boss-phase interpreter — watches each `boss`/`lieutenant`
     // enemy, fires authored commands at HP thresholds (50%, 25%). Phases
     // declared on G.campaignLevel.bossPhases. Each phase has `at` (HP frac),
@@ -9119,24 +10251,44 @@ class EnemyManager{
       const ex=e.group.position.x,ez=e.group.position.z;
       const ppNear=_nearestPlayerWorldPosForAi(ex,ez);
       if(typeof tickEncounterEnemyIntent==='function')tickEncounterEnemyIntent(e,dt,ppNear,P,G.levelData&&G.levelData.encounterDef&&G.levelData.encounterDef.floorplan);
-      const r=e.update(dt,ppNear,walls);
-      if(r&&r.shoot){
-          // Muzzle flash — additive plane-sprite burst (no PointLight, see Enemy ctor)
-          if(e.muzzleFlashH){
-            e.muzzleFlashH.visible=true;if(e.muzzleFlashV)e.muzzleFlashV.visible=true;if(e.muzzleFlashD)e.muzzleFlashD.visible=true;
-            const _sc=0.85+Math.random()*.30;
-            e.muzzleFlashH.material.opacity=0.92*_sc;e.muzzleFlashH.scale.setScalar(_sc);
-            if(e.muzzleFlashV){e.muzzleFlashV.material.opacity=0.88*_sc;e.muzzleFlashV.scale.setScalar(_sc);}
-            if(e.muzzleFlashD){e.muzzleFlashD.material.opacity=0.70*_sc;e.muzzleFlashD.scale.setScalar(_sc);
-              e.muzzleFlashD.rotation.z=Math.PI*.25+Math.random()*.5;}
-            setTimeout(()=>{
-              if(e.muzzleFlashH){e.muzzleFlashH.material.opacity=0;e.muzzleFlashH.visible=false;}
-              if(e.muzzleFlashV){e.muzzleFlashV.material.opacity=0;e.muzzleFlashV.visible=false;}
-              if(e.muzzleFlashD){e.muzzleFlashD.material.opacity=0;e.muzzleFlashD.visible=false;}
-            },55);
-          }
-        const mp=e.getMuzzlePos();
-        shots.push({pos:e.group.position.clone(),muzzlePos:mp,...r});
+	      const r=e.update(dt,ppNear,walls);
+	      if(r&&r.shoot){
+	        const mp=e.getMuzzlePos();
+	          // Muzzle flash — additive plane-sprite burst (no PointLight, see Enemy ctor)
+	          if(e.muzzleFlashH){
+	            e.muzzleFlashH.visible=true;if(e.muzzleFlashV)e.muzzleFlashV.visible=true;if(e.muzzleFlashD)e.muzzleFlashD.visible=true;
+	            const _shotType=r.shotType||e._lastShotType||'burst';
+	            const _flashMul=e._muzzleFlashScale||1;
+	            const _sc=(0.85+Math.random()*.30)*_flashMul;
+	            const _warm=e._muzzleFlashWarmth||0;
+	            const _flashColor=_shotType==='marksman'?0xdff6ff:(_shotType==='drone'?0xb8f0ff:0xffee88);
+	            e.muzzleFlashH.material.color.setHex(_flashColor);
+	            if(e.muzzleFlashV)e.muzzleFlashV.material.color.setHex(_flashColor);
+	            if(e.muzzleFlashD)e.muzzleFlashD.material.color.setHex(_warm>.55?0xffffff:0xffc060);
+	            e.muzzleFlashH.material.opacity=0.92*_sc;e.muzzleFlashH.scale.setScalar(_sc);
+	            if(e.muzzleFlashV){e.muzzleFlashV.material.opacity=0.88*_sc;e.muzzleFlashV.scale.setScalar(_sc);}
+	            if(e.muzzleFlashD){e.muzzleFlashD.material.opacity=0.70*_sc;e.muzzleFlashD.scale.setScalar(_sc);
+	              e.muzzleFlashD.rotation.z=Math.PI*.25+Math.random()*.5;}
+	            if(scene&&G.trails&&G.trails.length<(_trailBudget().total-3)&&_shotType!=='drone'&&Math.random()<.58){
+	              const am=typeof _additiveVfxTierMul==='function'?_additiveVfxTierMul():1;
+	              const smMat=new THREE.MeshBasicMaterial({color:0x8f8f88,transparent:true,opacity:.22*am,depthWrite:false,depthTest:true});
+	              const sm=new THREE.Mesh(new THREE.PlaneGeometry(.055+.035*_flashMul,.055+.035*_flashMul),smMat);
+	              sm.position.copy(mp);
+	              _orientVfxBillboard(sm);
+	              const toPlayer=new THREE.Vector3(ppNear.x-e.group.position.x,.16,ppNear.z-e.group.position.z);
+	              if(toPlayer.lengthSq()<.001)toPlayer.set(0,.1,1);
+	              toPlayer.normalize();
+	              const vel=toPlayer.multiplyScalar(.45+Math.random()*.32).add(new THREE.Vector3((Math.random()-.5)*.16,.18+Math.random()*.15,(Math.random()-.5)*.16));
+	              scene.add(sm);
+	              G.trails.push({mesh:sm,mat:smMat,vel,timer:.32,maxTime:.32,isSmoke:true,faceCameraBillboard:true});
+	            }
+	            setTimeout(()=>{
+	              if(e.muzzleFlashH){e.muzzleFlashH.material.opacity=0;e.muzzleFlashH.visible=false;}
+	              if(e.muzzleFlashV){e.muzzleFlashV.material.opacity=0;e.muzzleFlashV.visible=false;}
+	              if(e.muzzleFlashD){e.muzzleFlashD.material.opacity=0;e.muzzleFlashD.visible=false;}
+	            },55);
+	          }
+	        shots.push({pos:e.group.position.clone(),muzzlePos:mp,...r});
         // Distance-based echo for distant shots
         if(typeof sfxGunshotEcho==='function'&&typeof P!=='undefined'){
           const dx=e.group.position.x-P.pos.x,dz=e.group.position.z-P.pos.z;
@@ -9258,6 +10410,23 @@ function sfxShoot(weaponIdx){
     og.gain.exponentialRampToValueAtTime(.001,c.currentTime+.06);
     o.connect(og);og.connect(c.destination);o.start();o.stop(c.currentTime+.08);
   }
+}
+function sfxDryFire(hasReserve=false){
+  const c=getAC();
+  const tick=c.createOscillator(),tg=c.createGain();
+  tick.type='square';
+  tick.frequency.setValueAtTime(hasReserve?1050:760,c.currentTime);
+  tick.frequency.exponentialRampToValueAtTime(hasReserve?520:390,c.currentTime+.045);
+  tg.gain.setValueAtTime(hasReserve?.105:.075,c.currentTime);
+  tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.060);
+  tick.connect(tg);tg.connect(c.destination);tick.start();tick.stop(c.currentTime+.075);
+  const clack=c.createOscillator(),cg=c.createGain();
+  clack.type='triangle';
+  clack.frequency.setValueAtTime(hasReserve?310:240,c.currentTime+.020);
+  clack.frequency.exponentialRampToValueAtTime(hasReserve?190:150,c.currentTime+.070);
+  cg.gain.setValueAtTime(hasReserve?.050:.036,c.currentTime+.020);
+  cg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.085);
+  clack.connect(cg);cg.connect(c.destination);clack.start(c.currentTime+.020);clack.stop(c.currentTime+.095);
 }
 // ── ADAPTIVE SCORE ────────────────────────────────────────────────────────────
 // Procedural cinematic synth music. Two layers crossfaded by combat density.
@@ -9650,6 +10819,8 @@ function checkMeleeHit(){
       const comboMult=1+MELEE.comboCount*.22;
       const baseDmg=MELEE.isLunge?120:MELEE.comboCount===2?140:82;
       const dmg=(baseDmg*comboMult)|0;
+      const knifeZone=MELEE.comboCount===2?'neck':MELEE.isLunge?'torso':(Math.random()<.5?'leftForearm':'rightForearm');
+      _primeEnemyHitZone(knifeZone);
       const killed=e.takeDamage(dmg,false,true);
       sfxMeleeHit(MELEE.comboCount);showHM('body',Math.min(1,dmg/120));
       // Hit-stop: almost-freeze swing advancement for tactile crunch
@@ -10068,6 +11239,13 @@ function _adaptivePerfTelemetry(){
   };
 }
 function damp(current,target,lambda,dt){return target+(current-target)*Math.exp(-lambda*Math.max(0,dt||0));}
+function dampAngle(current,target,lambda,dt){
+  if(!Number.isFinite(target))return Number.isFinite(current)?current:0;
+  if(!Number.isFinite(current))return target;
+  const tau=Math.PI*2;
+  const delta=((((target-current+Math.PI)%tau)+tau)%tau)-Math.PI;
+  return current+delta*(1-Math.exp(-lambda*Math.max(0,dt||0)));
+}
 function _gatherScenePointLightTelemetry(scene){
   const out={
     scenePointLightsTotal:0,
@@ -10490,7 +11668,7 @@ function _sampleRuntimeFrame(){
   }
   return sample;
 }
-const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0,throttleInterval:1,renderedThisFrame:false,skippedThrottle:false,ads:0,settle:0,fov:0,vignetteOpacity:0,eyeBoxX:0,eyeBoxY:0};
+const _scopePipStatus={enabled:false,visible:false,opacity:0,rendered:false,error:null,width:0,height:0,backend:_rendererBoot.info.backend,frame:0,throttleInterval:1,renderedThisFrame:false,skippedThrottle:false,ads:0,settle:0,fov:0,vignetteOpacity:0,eyeBoxX:0,eyeBoxY:0,screenOverlay:false,viewmodelHidden:false};
 function _renderScopeTarget(target,cam){
   try{
     if(_renderStack)_renderStack.renderToTarget(target,cam);
@@ -10881,6 +12059,8 @@ function attachDeagleGlbModel(){
       }
     }
   });
+  configureViewmodelScene(THREE,rig);
+  _polishPistolViewmodelRig(rig);
   // Auto-fit. Native GLB is ~2u long, 1.33u tall, 0.41u deep. Tuned visually
   // so the gun reads as held in the lower-right of the camera frame.
   const bb=new THREE.Box3().setFromObject(rig);
@@ -10946,6 +12126,73 @@ const _USP_GLB_LHAND_RELOAD_DELTA={x:.055,y:.026,z:-.042,rx:.085,ry:-.058,rz:.04
 function _debugUspVm(tag, payload){
   LEGACY_PISTOL_GLB_STATUS.lastEvent={tag,payload,at:Math.round(performance.now())};
 }
+function _polishPistolViewmodelRig(rig){
+  if(!rig||!rig.traverse)return;
+  const nodeNames=['chargingHandle','trigger','mag','suppressor','suppressor_front_cap','barrel','front_sight','rear_sight','slide_top_flat'];
+  rig.userData.uspNodes={};
+  rig.traverse(o=>{
+    if(o.layers&&typeof o.layers.set==='function')o.layers.set(1);
+    if(o.userData){o.userData.noSsr=true;o.userData.noReflect=true;}
+    if(o.name&&nodeNames.includes(o.name)){
+      rig.userData.uspNodes[o.name]=o;
+      o.userData.uspRest={
+        pos:o.position.clone(),
+        rot:o.rotation.clone(),
+        scale:o.scale.clone()
+      };
+    }
+    if(!(o.isMesh||o.isSkinnedMesh))return;
+    o.frustumCulled=false;
+    o.castShadow=false;
+    o.receiveShadow=false;
+    o.renderOrder=7;
+    const lowerName=String(o.name||'').toLowerCase();
+    const mats=o.material?(Array.isArray(o.material)?o.material:[o.material]):[];
+    for(const mat of mats){
+      if(!mat)continue;
+      const matName=String(mat.name||'').toLowerCase();
+      const key=lowerName+' '+matName;
+      mat.userData=mat.userData||{};
+      mat.userData.aaMaterial=mat.userData.aaMaterial||'authored-pistol-viewmodel';
+      mat.userData.aaSourceMaterial=mat.userData.aaSourceMaterial||mat.name||'usp';
+      if(mat.map&&THREE.SRGBColorSpace)mat.map.colorSpace=THREE.SRGBColorSpace;
+      if('envMapIntensity' in mat)mat.envMapIntensity=Math.max(mat.envMapIntensity||0,1.05);
+      if(/slide|barrel|suppressor|sight|charging|ejection|control|decocker|release|trigger|worn|cap/.test(key)){
+        if('roughness' in mat)mat.roughness=key.includes('worn')?.48:.36;
+        if('metalness' in mat)mat.metalness=key.includes('suppressor')?.72:.82;
+        if(mat.color&&/slide|sight|charging/.test(key))mat.color.lerp(new THREE.Color(0x2e3338),.22);
+      }else if(/grip|rubber|rib/.test(key)){
+        if('roughness' in mat)mat.roughness=.94;
+        if('metalness' in mat)mat.metalness=.01;
+        if(mat.color)mat.color.lerp(new THREE.Color(0x0b0d10),.35);
+      }else{
+        if('roughness' in mat)mat.roughness=.82;
+        if('metalness' in mat)mat.metalness=.04;
+      }
+      mat.needsUpdate=true;
+    }
+  });
+  const sightM=new THREE.MeshBasicMaterial({color:0xeaf2ff,toneMapped:false});
+  const rearM=sightM.clone();
+  rearM.color.setHex(0xc9d6ff);
+  const addSightPaint=(node,name,w,h,d,mat,x=0,y=.035,z=0)=>{
+    if(!node||(node.userData&&node.userData.adsSightPaintAdded))return null;
+    const mesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
+    mesh.name=name;
+    mesh.position.set(x,y,z);
+    mesh.renderOrder=9;
+    mesh.frustumCulled=false;
+    mesh.userData.adsSightPaint=true;
+    mesh.userData.noSsr=true;
+    mesh.userData.noReflect=true;
+    if(mesh.layers&&typeof mesh.layers.set==='function')mesh.layers.set(1);
+    node.add(mesh);
+    node.userData.adsSightPaintAdded=true;
+    return mesh;
+  };
+  addSightPaint(rig.userData.uspNodes.front_sight,'usp_front_sight_paint',.035,.020,.012,sightM,0,.040,0);
+  addSightPaint(rig.userData.uspNodes.rear_sight,'usp_rear_sight_paint',.060,.014,.010,rearM,0,.036,0);
+}
 function attachDeagleStaticModel(gltfScene, animations){
   if(deagleGlbRig){_debugUspVm('attach_skip_already', {hasRig:true});return;}
   if(typeof gunGrp==='undefined'||typeof P==='undefined'){
@@ -10972,6 +12219,8 @@ function attachDeagleStaticModel(gltfScene, animations){
       }
     }
   });
+  configureViewmodelScene(THREE,rig);
+  _polishPistolViewmodelRig(rig);
   // Auto-fit longest dim to 0.24m for view-model framing.
   const bb=new THREE.Box3().setFromObject(rig);
   const sz=new THREE.Vector3();bb.getSize(sz);
@@ -11297,7 +12546,7 @@ function _applyWeaponQuality(){
   const activeList=_selectedWeaponMeshList();
   for(const m of _AA_WEAPON_SURFACE_PARTS){
     if(!m)continue;
-    m.visible=showDetails&&m.userData.aaWeaponGroup===activeList;
+    m.visible=(showDetails||m.userData.adsSightPaint)&&m.userData.aaWeaponGroup===activeList;
   }
 }
 function applyAAWeaponSurfacePass(){
@@ -11305,6 +12554,8 @@ function applyAAWeaponSurfacePass(){
   const darkInsetM=_aaMat('paintedMetal',{color:0x07090c,roughness:.86,metalness:.20});
   const gripRubberM=_aaMat('rubber',{color:0x08090c,roughness:.92,metalness:.02});
   const amberMarkM=_aaMat('emissivePanel',{color:0xffb15a,roughness:.44,metalness:.18,emissive:0x1a0900,emissiveIntensity:.22});
+  const sightPaintM=_aaMat('emissivePanel',{color:0xeaf2ff,roughness:.34,metalness:.08,emissive:0x4a6fff,emissiveIntensity:.42});
+  const opticDotM=new THREE.MeshBasicMaterial({color:0xff4030,transparent:true,opacity:.98,depthTest:false,toneMapped:false});
   const opticGlintM=_aaMat('glass',{color:0x123840,roughness:.18,metalness:.12,emissive:0x0a3038,emissiveIntensity:.35,transparent:false,opacity:1});
   _aaTuneWeaponMaterials(M4_MESHES,'metal');
   _aaTuneWeaponMaterials(DE_MESHES,'polymer');
@@ -11323,18 +12574,30 @@ function applyAAWeaponSurfacePass(){
   _aaWeaponDetail(SG_MESHES,false,.004,.038,.060,scratchM,.025,.020,-.055,0,0,0);
   _aaWeaponDetail(SG_MESHES,false,.050,.004,.010,gripRubberM,0,-.032,-.198,0,0,0);
   _aaWeaponDetail(SG_MESHES,false,.050,.004,.010,gripRubberM,0,-.032,-.226,0,0,0);
+  _aaWeaponDetail(SG_MESHES,false,.014,.014,.006,sightPaintM,0,.073,-.498,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(SM_MESHES,false,.036,.004,.006,scratchM,0,.030,-.205,0,0,0);
   _aaWeaponDetail(SM_MESHES,false,.020,.020,.003,opticGlintM,0,.046,-.043,0,0,0);
+  _aaWeaponDetail(SM_MESHES,false,.018,.018,.004,opticDotM,0,.046,-.050,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(DMR_MESHES,false,.036,.003,.070,scratchM,0,.060,-.090,0,0,0);
   _aaWeaponDetail(DMR_MESHES,false,.026,.026,.003,opticGlintM,0,.080,.031,0,0,0);
   _aaWeaponDetail(SPP_MESHES,false,.040,.003,.055,scratchM,0,.040,-.018,0,0,0);
   _aaWeaponDetail(SPP_MESHES,false,.030,.004,.006,darkInsetM,0,.062,-.210,0,0,0);
+  _aaWeaponDetail(SPP_MESHES,false,.010,.006,.004,sightPaintM,0,.055,-.080,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SPP_MESHES,false,.018,.004,.004,sightPaintM,0,.051,.060,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(SNI_MESHES,false,.036,.003,.095,scratchM,0,.064,-.115,0,0,0);
   _aaWeaponDetail(SNI_MESHES,false,.030,.030,.003,opticGlintM,0,.092,.031,0,0,0);
   gunGrp.userData.weaponSurfacePass='aa-procedural-pbr';
   gunGrp.userData.weaponDetailParts=_AA_WEAPON_SURFACE_PARTS.length;
 }
 applyAAWeaponSurfacePass();
+function _syncPracticalIronSightViewmodel(){
+  if(typeof P==='undefined')return;
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const shotgunAds=P.weaponIdx===3&&ads>.62&&!P.reloading&&!P.vaulting&&!P.dropkickActive;
+  for(const m of [sgStock,sgPad,sgComb,sgShellHldr,sgShellSlot]){
+    if(m)m.visible=P.weaponIdx===3&&!shotgunAds;
+  }
+}
 gunGrp.position.set(.12,-.11,-.22);camera.add(gunGrp);
 // `clone(true)` deep-copies userData via JSON; our detail meshes store `aaWeaponGroup`
 // as a ref to weapon mesh arrays (circular through the scene graph) — strip before clone.
@@ -11543,6 +12806,7 @@ const _VIEWMODEL_PROFILE=getViewmodelProfile();
 const _AA_VIEWMODEL_PARTS=[];
 const _M4_RIGHT_FOREARM_CROP_PARTS=[rForearm,rWrist];
 const _M4_LEFT_FOREARM_CROP_PARTS=[lForearm,lWrist];
+const _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS=[lPalm,lFingGrp,lThGrp];
 const _M4_SUPPORT_HAND_HIDE_PARTS=[lPalm];
 const _M4_SUPPORT_HAND_GRIP_PARTS=[];
 const _M4_TRIGGER_HAND_HIDE_PARTS=[rPalm,rKnuck];
@@ -11555,6 +12819,8 @@ const vmGloveM=_aaViewMat(0x17161a,.86,.02,{},'rubber');
 const vmGlovePanelM=_aaViewMat(0x0a0a0d,.90,.02,{},'rubber');
 const vmSleeveM=_aaViewMat(0xc99072,.78,0,{},'skin');
 const vmArmorM=_aaViewMat(0x0e1116,.72,.04,{},'rubber');
+const vmSkinCreaseM=_aaViewMat(0x8f5f4b,.82,0,{},'skin');
+const vmGloveSeamM=_aaViewMat(0x07080a,.94,.01,{},'rubber');
 [skinM,gloveM,sleeveM,gloveDarkM].forEach(m=>{
   if('roughness' in m)m.roughness=.78;
   if('metalness' in m)m.metalness=0;
@@ -11595,8 +12861,12 @@ function applyAAViewmodelRig(){
     _aaVmBox(rGrp,.052,.008,.030,vmGlovePanelM,.005,.037,.018),
     _aaVmCapsule(rGrp,.026,.054,vmSkinM,'z',.004,.003,.022,0,0,0,.92,1,1)
   );
+  _aaVmBox(rGrp,.040,.003,.010,vmSkinCreaseM,.004,.030,.000,.05,0,0);
+  _aaVmBox(rGrp,.036,.003,.009,vmSkinCreaseM,.004,.028,.018,-.03,0,0);
   const _rPalmShell=_aaVmBox(rGrp,.060,.070,.086,vmGloveM,.002,-.002,-.020);
   const _rKnuckleShell=_aaVmBox(rGrp,.058,.014,.032,vmArmorM,.002,.036,-.055);
+  _aaVmBox(rGrp,.045,.004,.010,vmGloveSeamM,.002,.030,-.018,.04,0,0);
+  _aaVmBox(rGrp,.038,.004,.008,vmGloveSeamM,.002,-.030,-.019,-.03,0,0);
   _M4_TRIGGER_HAND_HIDE_PARTS.push(_rPalmShell,_rKnuckleShell);
   for(let i=0;i<4;i++)_aaVmSphere(rGrp,.0075,vmArmorM,-.019+i*.013,.045,-.057,1.25,.65,.85);
   _aaVmCapsule(rIdxGrp,.0075,.030,vmGloveM,'z',0,0,-.014);
@@ -11628,15 +12898,24 @@ function applyAAViewmodelRig(){
   _aaVmBox(lGrp,.066,.009,.070,vmArmorM,-.008,.039,.064);
   _aaVmBox(lGrp,.052,.008,.030,vmGlovePanelM,-.006,.035,.018);
   _aaVmCapsule(lGrp,.026,.056,vmSkinM,'z',-.005,.001,.021,0,0,0,.92,1,1);
+  _aaVmBox(lGrp,.040,.003,.010,vmSkinCreaseM,-.005,.029,.002,.05,0,0);
+  _aaVmBox(lGrp,.034,.003,.009,vmSkinCreaseM,-.005,.027,.020,-.04,0,0);
   const _lPalmShell=_aaVmBox(lGrp,.082,.049,.088,vmGloveM,-.002,.003,-.028);
   const _lKnuckleShell=_aaVmBox(lGrp,.074,.010,.018,vmArmorM,-.002,.031,-.054);
+  const _lPalmSeamTop=_aaVmBox(lGrp,.056,.004,.009,vmGloveSeamM,-.002,.028,-.024,.02,0,0);
+  const _lPalmSeamBottom=_aaVmBox(lGrp,.044,.004,.008,vmGloveSeamM,-.002,-.018,-.030,-.04,0,0);
   _M4_SUPPORT_HAND_HIDE_PARTS.push(_lPalmShell,_lKnuckleShell);
+  _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS.push(_lPalmShell,_lKnuckleShell,_lPalmSeamTop,_lPalmSeamBottom);
   for(const _lg of[lIdxGrp,lMidGrp,lRingGrp,lPinkGrp]){
-    _aaVmCapsule(_lg,.0075,.032,vmGloveM,'y',0,.014,0,-.20,0,0);
-    _aaVmBox(_lg,.012,.012,.004,vmArmorM,0,.028,0);
+    _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS.push(
+      _aaVmCapsule(_lg,.0075,.032,vmGloveM,'y',0,.014,0,-.20,0,0),
+      _aaVmBox(_lg,.012,.012,.004,vmArmorM,0,.028,0)
+    );
   }
-  _aaVmCapsule(lThGrp,.008,.044,vmGloveM,'y',0,.002,0,-.08,0,0);
-  _aaVmSphere(lThGrp,.007,vmArmorM,0,.020,.008,1.1,.75,1);
+  _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS.push(
+    _aaVmCapsule(lThGrp,.008,.044,vmGloveM,'y',0,.002,0,-.08,0,0),
+    _aaVmSphere(lThGrp,.007,vmArmorM,0,.020,.008,1.1,.75,1)
+  );
   _M4_SUPPORT_HAND_GRIP_PARTS.push(
     _aaVmBox(lGrp,.052,.032,.054,vmGloveM,-.005,.010,-.036,-.08,.02,.20),
     _aaVmBox(lGrp,.048,.008,.017,vmArmorM,-.004,.033,-.058,-.04,0,.18),
@@ -11684,6 +12963,383 @@ function _vmHandTouchDepthBias(grp){
 }
 _vmHandTouchDepthBias(rGrp);
 _vmHandTouchDepthBias(lGrp);
+// ── FIRST-PERSON DROPKICK FEET ────────────────────────────────────────────────
+// Camera-local boots that only appear during the airborne kick/landing window.
+const dropkickFeetGrp=new THREE.Group();
+dropkickFeetGrp.name='dropkick-first-person-feet';
+dropkickFeetGrp.visible=false;
+dropkickFeetGrp.renderOrder=12;
+camera.add(dropkickFeetGrp);
+const _dropBootM=_aaViewMat(0x15171c,.78,.08,{},'rubber');
+const _dropSoleM=_aaViewMat(0x06070a,.92,.02,{},'rubber');
+const _dropArmorM=_aaViewMat(0x252b34,.68,.12,{},'rubber');
+const _dropPantM=_aaViewMat(0x101722,.84,.02,{},'fabric');
+const _dropKneeM=_aaViewMat(0x2a3038,.66,.12,{},'rubber');
+const _DROP_FEET_PARTS=[];
+function _dropFootMesh(parent,geo,mat,x,y,z,rx=0,ry=0,rz=0,name='part'){
+  const m=new THREE.Mesh(geo,mat);
+  m.name=`${parent.name}_${name}`;
+  m.position.set(x,y,z);m.rotation.set(rx,ry,rz);
+  m.userData.baseDropkickPose={x,y,z,rx,ry,rz};
+  m.castShadow=true;m.receiveShadow=false;m.renderOrder=12;
+  parent.add(m);_DROP_FEET_PARTS.push(m);return m;
+}
+function _dropLimbGeo(radius,length,fallbackDepth){
+  return THREE.CapsuleGeometry?new THREE.CapsuleGeometry(radius,length,4,10):new THREE.BoxGeometry(radius*2,radius*1.55,fallbackDepth||length);
+}
+const dropkickBodyRoot=new THREE.Group();
+dropkickBodyRoot.name='dropkick_lower_body';
+dropkickFeetGrp.add(dropkickBodyRoot);
+const dropkickBodyParts={
+  pelvis:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.340,.100,.135),_dropPantM,0,.245,.210,.04,0,0,'pelvis'),
+  belt:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.365,.026,.150),_dropArmorM,0,.315,.202,.02,0,0,'belt'),
+  abdomen:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.235,.155,.105),_dropPantM,0,.385,.275,.18,0,0,'abdomen'),
+  chest:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.185,.072,.085),_dropArmorM,0,.500,.330,.28,0,0,'lower_chest'),
+  ribL:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.055,.150,.090),_dropPantM,-.118,.392,.268,.16,.05,-.10,'rib_L'),
+  ribR:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.055,.150,.090),_dropPantM,.118,.392,.268,.16,-.05,.10,'rib_R'),
+  shoulderL:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.070,.055,.080),_dropArmorM,-.130,.500,.315,.22,.03,-.12,'low_shoulder_L'),
+  shoulderR:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.070,.055,.080),_dropArmorM,.130,.500,.315,.22,-.03,.12,'low_shoulder_R'),
+  hipL:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.112,.052,.100),_dropKneeM,-.145,.230,.180,.02,.08,-.08,'hip_L'),
+  hipR:_dropFootMesh(dropkickBodyRoot,new THREE.BoxGeometry(.112,.052,.100),_dropKneeM,.145,.230,.180,.02,-.08,.08,'hip_R')
+};
+function _poseDropBody(side,twirl,extend,recover,enemyPlant,landKickback,impact){
+  const p=dropkickBodyParts;
+  const crunch=extend*.55+enemyPlant*.40+impact*.30;
+  const recoil=recover*.45+landKickback*.55;
+  _poseDropPart(p.pelvis,0,-crunch*.030+recoil*.035,-crunch*.060+recoil*.090,crunch*.18-recoil*.22,side*twirl*.12,side*twirl*.18);
+  _poseDropPart(p.belt,0,-crunch*.024+recoil*.030,-crunch*.055+recoil*.080,crunch*.20-recoil*.20,side*twirl*.14,side*twirl*.20);
+  _poseDropPart(p.abdomen,side*twirl*.010,-crunch*.060+recoil*.052,-crunch*.110+recoil*.125,crunch*.34-recoil*.32,side*twirl*.24,side*twirl*.34);
+  _poseDropPart(p.chest,side*twirl*.018,-crunch*.092+recoil*.070,-crunch*.145+recoil*.150,crunch*.44-recoil*.38,side*twirl*.34,side*twirl*.44);
+  _poseDropPart(p.ribL,-twirl*.032,-crunch*.066+recoil*.055,-crunch*.120+recoil*.130,crunch*.35-recoil*.30,side*twirl*.40,-.10+side*twirl*.54);
+  _poseDropPart(p.ribR,twirl*.032,-crunch*.066+recoil*.055,-crunch*.120+recoil*.130,crunch*.35-recoil*.30,side*twirl*.40,.10+side*twirl*.54);
+  _poseDropPart(p.shoulderL,-twirl*.045,-crunch*.095+recoil*.070,-crunch*.150+recoil*.150,crunch*.46-recoil*.36,side*twirl*.48,-.12+side*twirl*.62);
+  _poseDropPart(p.shoulderR,twirl*.045,-crunch*.095+recoil*.070,-crunch*.150+recoil*.150,crunch*.46-recoil*.36,side*twirl*.48,.12+side*twirl*.62);
+  _poseDropPart(p.hipL,-twirl*.018,-crunch*.022+recoil*.028,-crunch*.055+recoil*.080,crunch*.16-recoil*.18,side*twirl*.20,-.08+side*twirl*.16);
+  _poseDropPart(p.hipR,-twirl*.018,-crunch*.022+recoil*.028,-crunch*.055+recoil*.080,crunch*.16-recoil*.18,side*twirl*.20,.08+side*twirl*.16);
+}
+function _buildDropkickBoot(side){
+  const root=new THREE.Group();
+  root.name=side<0?'dropkick_leg_L':'dropkick_leg_R';
+  root.userData.baseSide=side;
+  dropkickFeetGrp.add(root);
+  const parts={
+    thigh:_dropFootMesh(root,_dropLimbGeo(.047,.235,.305),_dropPantM,0,.176,.160,Math.PI/2-.26,side*.035,0,'thigh'),
+    shin:_dropFootMesh(root,_dropLimbGeo(.039,.280,.340),_dropPantM,0,.048,-.030,Math.PI/2-.12,side*.040,0,'shin'),
+    knee:_dropFootMesh(root,new THREE.BoxGeometry(.128,.042,.084),_dropKneeM,0,.100,-.122,.04,side*.055,0,'knee'),
+    calfGuard:_dropFootMesh(root,new THREE.BoxGeometry(.112,.020,.170),_dropKneeM,0,.038,-.120,.10,side*.060,0,'calf_guard'),
+    boot:_dropFootMesh(root,new THREE.BoxGeometry(.184,.092,.350),_dropBootM,0,-.065,-.255,.03,side*.075,0,'boot'),
+    sole:_dropFootMesh(root,new THREE.BoxGeometry(.196,.032,.382),_dropSoleM,0,-.120,-.252,.03,side*.075,0,'sole'),
+    heel:_dropFootMesh(root,new THREE.BoxGeometry(.172,.070,.060),_dropSoleM,0,-.100,-.090,.00,side*.070,0,'heel'),
+    toe:_dropFootMesh(root,new THREE.BoxGeometry(.160,.054,.092),_dropArmorM,0,-.026,-.424,.08,side*.095,0,'toe'),
+    toeCap:_dropFootMesh(root,new THREE.BoxGeometry(.168,.036,.038),_dropArmorM,0,-.012,-.477,.13,side*.105,0,'toe_cap'),
+    laceA:_dropFootMesh(root,new THREE.BoxGeometry(.174,.014,.018),_dropArmorM,0,-.017,-.302,.16,side*.090,0,'lace_A'),
+    laceB:_dropFootMesh(root,new THREE.BoxGeometry(.168,.014,.018),_dropArmorM,0,-.015,-.344,.16,side*.095,0,'lace_B'),
+    anklePlate:_dropFootMesh(root,new THREE.BoxGeometry(.074,.028,.026),_dropArmorM,side*.052,.010,-.236,.03,side*.12,side*.08,'ankle_plate')
+  };
+  root.userData.parts=parts;
+  return root;
+}
+const dropkickBootL=_buildDropkickBoot(-1);
+const dropkickBootR=_buildDropkickBoot(1);
+const _dropStreakM=new THREE.MeshBasicMaterial({color:0xf2f6ff,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const dropkickStreakL=new THREE.Mesh(new THREE.PlaneGeometry(.105,.560),_dropStreakM.clone());
+const dropkickStreakR=new THREE.Mesh(new THREE.PlaneGeometry(.105,.560),_dropStreakM.clone());
+dropkickStreakL.renderOrder=11;dropkickStreakR.renderOrder=11;
+dropkickFeetGrp.add(dropkickStreakL,dropkickStreakR);
+const _dropImpactFlashM=new THREE.MeshBasicMaterial({color:0xfff1b0,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const dropkickImpactFlashA=new THREE.Mesh(new THREE.PlaneGeometry(.285,.055),_dropImpactFlashM.clone());
+const dropkickImpactFlashB=new THREE.Mesh(new THREE.PlaneGeometry(.075,.220),_dropImpactFlashM.clone());
+const dropkickImpactCore=new THREE.Mesh(new THREE.RingGeometry(.020,.066,18),_dropImpactFlashM.clone());
+dropkickImpactFlashA.renderOrder=13;dropkickImpactFlashB.renderOrder=13;dropkickImpactCore.renderOrder=14;
+dropkickFeetGrp.add(dropkickImpactFlashA,dropkickImpactFlashB,dropkickImpactCore);
+const _dropArcM=new THREE.MeshBasicMaterial({color:0xaedcff,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const _dropShockM=new THREE.MeshBasicMaterial({color:0xffd28a,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const dropkickSweepArcA=new THREE.Mesh(new THREE.PlaneGeometry(.620,.075),_dropArcM.clone());
+const dropkickSweepArcB=new THREE.Mesh(new THREE.PlaneGeometry(.430,.045),_dropArcM.clone());
+const dropkickShockRing=new THREE.Mesh(new THREE.RingGeometry(.030,.092,30),_dropShockM.clone());
+const dropkickShockShardA=new THREE.Mesh(new THREE.PlaneGeometry(.225,.026),_dropShockM.clone());
+const dropkickShockShardB=new THREE.Mesh(new THREE.PlaneGeometry(.160,.020),_dropShockM.clone());
+dropkickSweepArcA.renderOrder=15;dropkickSweepArcB.renderOrder=15;dropkickShockRing.renderOrder=16;dropkickShockShardA.renderOrder=16;dropkickShockShardB.renderOrder=16;
+dropkickFeetGrp.add(dropkickSweepArcA,dropkickSweepArcB,dropkickShockRing,dropkickShockShardA,dropkickShockShardB);
+function _poseDropPart(part,dx=0,dy=0,dz=0,drx=0,dry=0,drz=0){
+  if(!part||!part.userData||!part.userData.baseDropkickPose)return;
+  const b=part.userData.baseDropkickPose;
+  part.position.set(b.x+dx,b.y+dy,b.z+dz);
+  part.rotation.set(b.rx+drx,b.ry+dry,b.rz+drz);
+}
+function _poseDropLeg(root,side,extend,brace,retract,impact,scissor){
+  const p=root.userData.parts||{};
+  const kick=extend*(1-retract*.55);
+  const recoil=retract*(1-impact*.35);
+  _poseDropPart(p.thigh,0,brace*.014-recoil*.030,recoil*.080,kick*-.30+impact*.12,side*(kick*.052-recoil*.030),side*(scissor*.16));
+  _poseDropPart(p.shin,0,-kick*.010+recoil*.026,-kick*.045+recoil*.110,kick*.28-recoil*.44+impact*.15,side*kick*.038,side*(-scissor*.18));
+  _poseDropPart(p.knee,0,-kick*.010+impact*.014,-kick*.030+recoil*.075,kick*.10-recoil*.22+impact*.10,side*kick*.040,side*.020);
+  _poseDropPart(p.calfGuard,0,-kick*.012+impact*.018,-kick*.048+recoil*.096,kick*.22-recoil*.38+impact*.12,side*kick*.052,side*(-scissor*.12));
+  _poseDropPart(p.boot,side*impact*.010,-kick*.026+impact*.052,-kick*.100+recoil*.145+impact*.092,kick*.42-recoil*.70-impact*.18,side*(kick*.075+impact*.036),side*(kick*.046-recoil*.065+impact*.052));
+  _poseDropPart(p.sole,side*impact*.010,-kick*.030+impact*.060,-kick*.115+recoil*.158+impact*.110,kick*.45-recoil*.74-impact*.22,side*(kick*.075+impact*.040),side*(kick*.046-recoil*.065+impact*.058));
+  _poseDropPart(p.heel,side*impact*.006,-kick*.022+impact*.040,-kick*.076+recoil*.124+impact*.070,kick*.36-recoil*.62-impact*.10,side*(kick*.060+impact*.026),side*(kick*.038-recoil*.052+impact*.035));
+  _poseDropPart(p.toe,side*impact*.016,-kick*.016+impact*.066,-kick*.158+recoil*.185+impact*.142,kick*.58-recoil*.92-impact*.32,side*(kick*.092+impact*.048),side*(kick*.062-recoil*.070+impact*.070));
+  _poseDropPart(p.toeCap,side*impact*.018,-kick*.014+impact*.074,-kick*.176+recoil*.204+impact*.162,kick*.62-recoil*.98-impact*.36,side*(kick*.100+impact*.052),side*(kick*.070-recoil*.074+impact*.076));
+  _poseDropPart(p.laceA,side*impact*.010,-kick*.018+impact*.054,-kick*.126+recoil*.166+impact*.106,kick*.48-recoil*.76-impact*.20,side*(kick*.080+impact*.036),side*(kick*.052-recoil*.064+impact*.052));
+  _poseDropPart(p.laceB,side*impact*.012,-kick*.018+impact*.060,-kick*.140+recoil*.178+impact*.122,kick*.52-recoil*.82-impact*.24,side*(kick*.086+impact*.040),side*(kick*.056-recoil*.066+impact*.058));
+  _poseDropPart(p.anklePlate,side*(kick*.016-recoil*.008),-kick*.006+impact*.024,-kick*.052+recoil*.085,kick*.22-recoil*.34,side*kick*.066,side*(kick*.064));
+}
+function updateDropkickFeet(dt){
+  const active=!!P.dropkickActive;
+  const landRemain=P.dropkickLandTimer>0?THREE.MathUtils.clamp(P.dropkickLandTimer/Math.max(.001,P.dropkickLandDur||DROPKICK.landDur),0,1):0;
+  const landLive=landRemain>0;
+  const landPhase=landLive?1-landRemain:0;
+  const ph=active?THREE.MathUtils.clamp((P.dropkickT||0)/Math.max(.001,P.dropkickDur||DROPKICK.dur),0,1):0;
+  const dropkickTwirlSide=Math.sign(P.dropkickTwirlSide||1)||1;
+  const contactRemain=P.dropkickContactTimer>0?THREE.MathUtils.clamp(P.dropkickContactTimer/Math.max(.001,P.dropkickContactDur||.16),0,1):0;
+  const contactPlant=contactRemain>0?THREE.MathUtils.smoothstep(1-contactRemain,.02,.18)*(1-THREE.MathUtils.smoothstep(1-contactRemain,.62,1.0)):0;
+  const hitImpact=THREE.MathUtils.clamp(P.dropkickImpact||0,0,1);
+  const hitStopDur=Math.max(.001,P._dropkickImpactStopDur||.001);
+  const hitStopRemain=(P._dropkickImpactStopTimer||0)>0?THREE.MathUtils.clamp((P._dropkickImpactStopTimer||0)/hitStopDur,0,1):0;
+  const hitStopAge=hitStopRemain>0?1-hitStopRemain:1;
+  const hitStopPose=hitStopRemain>0?(1-THREE.MathUtils.smoothstep(hitStopAge,.050,.310))*THREE.MathUtils.clamp(P._dropkickImpactStopPower||1,0,1.22):0;
+  const hitStopPulse=THREE.MathUtils.clamp(P._dropkickHitStopPulse||0,0,1);
+  const enemyPlant=active?Math.max(hitImpact,contactPlant,hitStopPose*.94,THREE.MathUtils.smoothstep(ph,.235,.320)*(1-THREE.MathUtils.smoothstep(ph,.420,.620))*.58):0;
+  const impactSnap=(active||landLive)?Math.max(hitImpact,contactPlant,hitStopPose*.82,hitStopPulse*.55):0;
+  const contactAge=contactRemain>0?1-contactRemain:1;
+  const plantBeat=Math.max(contactRemain>0?1-THREE.MathUtils.smoothstep(contactAge,.055,.220):0,hitStopPose*.78);
+  const reboundBeat=contactRemain>0?THREE.MathUtils.smoothstep(contactAge,.180,.520)*(1-THREE.MathUtils.smoothstep(contactAge,.620,1.000)):0;
+  const settleBeat=contactRemain>0?THREE.MathUtils.smoothstep(contactAge,.470,.760)*(1-THREE.MathUtils.smoothstep(contactAge,.760,1.000)):0;
+  const chamber=active?1-THREE.MathUtils.smoothstep(ph,.020,.115):0;
+  const lead=active?THREE.MathUtils.smoothstep(ph,.045,.145):0;
+  const extend=active?THREE.MathUtils.smoothstep(ph,.085,.240):0;
+  const strike=active?Math.sin(THREE.MathUtils.clamp((ph-.145)/.205,0,1)*Math.PI):0;
+  const hold=active?THREE.MathUtils.smoothstep(ph,.215,.275)*(1-THREE.MathUtils.smoothstep(ph,.315,.440)):0;
+  const recoverRaw=active?THREE.MathUtils.smoothstep(ph,.335,.705):0;
+  const impactHold=Math.max(contactPlant*.84,contactRemain*.78,hitImpact*.50,hitStopPose*.96,plantBeat*.90);
+  const recover=recoverRaw*(1-impactHold*.68);
+  const landPlant=landLive?1-THREE.MathUtils.smoothstep(landPhase,.05,.20):0;
+  const landKickback=landLive?THREE.MathUtils.smoothstep(landPhase,.06,.44):0;
+  const exitHide=landLive?THREE.MathUtils.smoothstep(landPhase,.42,.76):0;
+  const impact=landLive?Math.pow(1-THREE.MathUtils.smoothstep(landPhase,.02,.13),2):0;
+  const landExtend=landLive?THREE.MathUtils.clamp(.86-landKickback*.48-exitHide*.20+contactRemain*.060,.28,.86):0;
+  const landBrace=landLive?THREE.MathUtils.clamp(1-landExtend,0,1):0;
+  const targetLock=active&&P.dropkickTargeted?THREE.MathUtils.clamp(P.dropkickTargetLock||.65,.35,1):0;
+  const strikeArc=active?Math.sin(THREE.MathUtils.clamp((ph-.080)/.365,0,1)*Math.PI)*(1-recover*.46):0;
+  const bodyReveal=active?(THREE.MathUtils.smoothstep(ph,.052,.185)*(1-THREE.MathUtils.smoothstep(ph,.600,.875))*(1-recover*.24)+impactHold*.58+hitStopPose*.36+plantBeat*.18+reboundBeat*.24+strikeArc*.17+targetLock*.08):landLive?((1-exitHide)*.54+contactRemain*.20+reboundBeat*.06):0;
+  const bodyTwirlLead=active?Math.sin(THREE.MathUtils.clamp((ph-.070)/.410,0,1)*Math.PI)*(1-recover*.44)*(1+targetLock*.12):landLive?Math.sin(landPhase*Math.PI)*(1-exitHide)*.30:0;
+  const twist=active?(Math.sin(THREE.MathUtils.clamp((ph-.020)/.520,0,1)*Math.PI)*(1-recover*.48)*1.78+bodyTwirlLead*.24+impactHold*.54+hitStopPose*.38+plantBeat*.21+strikeArc*.16-reboundBeat*.075):landLive?(Math.sin(landPhase*Math.PI)*.34+contactRemain*.24-reboundBeat*.045)*(1-exitHide):0;
+  const show=active?Math.max(chamber*.42,lead,extend,hold,enemyPlant,bodyReveal*.54)*(1-recover*.80):landLive?(1-exitHide):0;
+  dropkickFeetGrp.visible=show>.025;
+  if(!dropkickFeetGrp.visible){
+    dropkickStreakL.visible=false;dropkickStreakR.visible=false;
+    dropkickImpactFlashA.visible=false;dropkickImpactFlashB.visible=false;dropkickImpactCore.visible=false;
+    dropkickSweepArcA.visible=false;dropkickSweepArcB.visible=false;dropkickShockRing.visible=false;dropkickShockShardA.visible=false;dropkickShockShardB.visible=false;
+    return;
+  }
+  const actX=.020+lead*.025+extend*.148+strike*.045+enemyPlant*.022+impactSnap*.022+impactHold*.020+plantBeat*.034+hitStopPose*.030+strikeArc*.026-reboundBeat*.040-settleBeat*.012-recover*.070+bodyReveal*.016;
+  const actY=-.255+chamber*.025-lead*.060-extend*.315-strike*.045-enemyPlant*.058-impactSnap*.030-impactHold*.028-plantBeat*.044-hitStopPose*.020-strikeArc*.025+reboundBeat*.066+settleBeat*.018+recover*.280-targetLock*.020+bodyReveal*.018;
+  const actZ=-.390+chamber*.060-lead*.180-extend*.852-strike*.158-enemyPlant*.024-impactSnap*.036+impactHold*.112+plantBeat*.108+hitStopPose*.260-strikeArc*.052+reboundBeat*.206+settleBeat*.052+recover*.585-targetLock*.080-bodyReveal*.012;
+  const landY=-.420+impact*.050-landKickback*.045-contactRemain*.045+reboundBeat*.036+settleBeat*.016+exitHide*.105;
+  const landZ=-.800+impact*.048+landKickback*.220-contactRemain*.084+reboundBeat*.084+settleBeat*.038+exitHide*.130;
+  dropkickFeetGrp.position.set(actX,active?actY:landY,active?actZ:landZ);
+  dropkickFeetGrp.rotation.x=active?(.040+lead*.280+extend*.955+strike*.140+enemyPlant*.114+impactSnap*.058+plantBeat*.080+hitStopPose*.035+strikeArc*.048-reboundBeat*.086-settleBeat*.016+hold*.020-recover*.720):(0.44-impact*.28-landKickback*.48+contactRemain*.035-reboundBeat*.032+exitHide*.14);
+  dropkickFeetGrp.rotation.y=active?(-.035+twist*.156+bodyTwirlLead*.026+enemyPlant*.072+plantBeat*.064+hitStopPose*.046+strikeArc*.024-reboundBeat*.042+settleBeat*.012):(landKickback*.020+contactRemain*.020-reboundBeat*.012);
+  dropkickFeetGrp.rotation.z=active?(-.035+twist*.228+bodyTwirlLead*.046+enemyPlant*.094+plantBeat*.112+hitStopPose*.076+strikeArc*.040-reboundBeat*.068+settleBeat*.014-recover*.025):(Math.sin(landPhase*Math.PI)*.052*(1-exitHide)-contactRemain*.034+reboundBeat*.022);
+  dropkickFeetGrp.scale.setScalar(active?(.72+lead*.220+extend*.555+strike*.118+enemyPlant*.050+plantBeat*.042+hitStopPose*.036+strikeArc*.025+reboundBeat*.020+bodyReveal*.052+targetLock*.044-recover*.230):(.98+impact*.040+contactRemain*.038+reboundBeat*.020-landKickback*.160+exitHide*.030));
+  const spread=active?(.095+extend*.270+strike*.025+enemyPlant*.016+hold*.018+plantBeat*.052-reboundBeat*.026-recover*.120):(.315+contactRemain*.034-landKickback*.160);
+  const scissor=active?Math.sin(THREE.MathUtils.clamp((ph-.040)/.470,0,1)*Math.PI)*(.075+plantBeat*.028):(.035*(1-landKickback)+contactRemain*.016);
+  dropkickBootL.position.set(-spread*.70-plantBeat*.016+reboundBeat*.012,-scissor*.60-plantBeat*.014+reboundBeat*.018-bodyReveal*.012,.030+scissor*.32+recover*.040+plantBeat*.018-bodyReveal*.018);
+  dropkickBootR.position.set(spread+plantBeat*.078+hitStopPose*.050+strikeArc*.018-reboundBeat*.056-settleBeat*.010,scissor-plantBeat*.052-hitStopPose*.030-strikeArc*.010+reboundBeat*.056+settleBeat*.012,-.045-scissor*.42-plantBeat*.012+hitStopPose*.198-strikeArc*.022+reboundBeat*.178+settleBeat*.044);
+  dropkickBootL.scale.setScalar(active?(.75+extend*.112+bodyReveal*.020-recover*.090):(.86-landKickback*.080));
+  dropkickBootR.scale.setScalar(active?(1.03+extend*.205+strike*.055+enemyPlant*.085+plantBeat*.052+bodyReveal*.018-recover*.100):(1.00+contactRemain*.020-landKickback*.060));
+  dropkickBootL.rotation.set(.06-extend*.34-strike*.04+recover*.34+impact*.14-landKickback*.14-landPlant*.06,-.11-extend*.060+landKickback*.030+bodyReveal*.018,-.065-extend*.060+recover*.060-bodyReveal*.020);
+  dropkickBootR.rotation.set(.01-extend*.60-strike*.11-enemyPlant*.112-plantBeat*.164-hitStopPose*.110-strikeArc*.035+reboundBeat*.174+settleBeat*.028+recover*.24+impact*.18-landKickback*.14-landPlant*.07,.12+extend*.110+strikeArc*.020-enemyPlant*.040+plantBeat*.062+hitStopPose*.040-reboundBeat*.042-landKickback*.035,.045+extend*.082+strike*.030+plantBeat*.082+hitStopPose*.064+strikeArc*.026-reboundBeat*.064+settleBeat*.014-recover*.035-landPlant*.030);
+  _poseDropLeg(dropkickBootL,-1,active?extend:landExtend,hold,active?recover:Math.max(landKickback*.72,landBrace*.58),active?enemyPlant:Math.max(impact,landBrace*.22),scissor);
+  _poseDropLeg(dropkickBootR,1,active?extend:landExtend,hold,active?recover:Math.max(landKickback*.72,landBrace*.58),active?enemyPlant:Math.max(impact,landBrace*.22),-scissor);
+  dropkickBodyRoot.position.set(-.065+twist*.078+bodyTwirlLead*.025-enemyPlant*.016+bodyReveal*.038+strikeArc*.020,active?(.052-chamber*.030-lead*.026-extend*.166-enemyPlant*.094-plantBeat*.066-strikeArc*.026+reboundBeat*.070+settleBeat*.014+recover*.170+bodyReveal*.054):(-.174-landKickback*.018-contactRemain*.032+reboundBeat*.034+settleBeat*.012+exitHide*.140),active?(.035+chamber*.020-extend*.262-enemyPlant*.066-plantBeat*.068-strikeArc*.052+reboundBeat*.094+settleBeat*.026+recover*.272-bodyReveal*.060):(-.190+landKickback*.260-contactRemain*.058+reboundBeat*.064+settleBeat*.024+exitHide*.170));
+  dropkickBodyRoot.rotation.set(active?(.110+chamber*.040+extend*.252+enemyPlant*.168+plantBeat*.190+strikeArc*.052-reboundBeat*.102-settleBeat*.018-recover*.170):(.130-impact*.052-landKickback*.200-contactRemain*.080+reboundBeat*.052),active?(twist*.344+bodyTwirlLead*.055+enemyPlant*.124+plantBeat*.142+strikeArc*.040-reboundBeat*.064+settleBeat*.014):(contactRemain*.040),active?(twist*.515+bodyTwirlLead*.088+enemyPlant*.170+plantBeat*.212+strikeArc*.068-reboundBeat*.096+settleBeat*.018):(-landKickback*.076-contactRemain*.070+reboundBeat*.028));
+  dropkickBodyRoot.scale.setScalar(active?(.70+lead*.064+extend*.150+enemyPlant*.100+plantBeat*.095+strikeArc*.040+reboundBeat*.024+bodyReveal*.082-recover*.050):(.64+contactRemain*.054+reboundBeat*.020-landKickback*.050-exitHide*.060));
+  _poseDropBody(dropkickTwirlSide,twist*1.34,active?extend*1.08:landExtend*.80,active?recover:Math.max(landKickback*.78,landBrace*.46),active?enemyPlant*.88:Math.max(impact,landBrace*.20),landKickback,impact);
+  const streak=active?Math.max(0,Math.max(extend*.52,strike*.72)-enemyPlant*.66-recover*.88)*(1-THREE.MathUtils.smoothstep(ph,.34,.52))*(1+targetLock*.24):0;
+  dropkickStreakL.visible=dropkickStreakR.visible=streak>.02;
+  dropkickStreakL.position.set(-spread*.76,-.010,-.505);
+  dropkickStreakR.position.set(spread*.76,-.020,-.525);
+  dropkickStreakL.rotation.set(1.22,-.10,-.18);
+  dropkickStreakR.rotation.set(1.22,.10,.18);
+  dropkickStreakL.material.opacity=dropkickStreakR.material.opacity=streak*.18;
+  const sweep=active?Math.max(0,Math.max(strikeArc*.78,strike*.58,extend*.24)-recover*.88)*(1-plantBeat*.10)*(1+targetLock*.18):0;
+  dropkickSweepArcA.visible=dropkickSweepArcB.visible=sweep>.025;
+  if(sweep>.025){
+    dropkickSweepArcA.position.set(spread*.78+strikeArc*.045,scissor-.068,-.610-strikeArc*.040);
+    dropkickSweepArcB.position.set(spread*.56,scissor+.020,-.545);
+    dropkickSweepArcA.rotation.set(1.10,.20,.58+twist*.16);
+    dropkickSweepArcB.rotation.set(1.14,.12,-.26+twist*.12);
+    dropkickSweepArcA.scale.set(1+strikeArc*.48,.70+strikeArc*.18,1);
+    dropkickSweepArcB.scale.set(1+strike*.28,.82,1);
+    dropkickSweepArcA.material.opacity=sweep*.22;
+    dropkickSweepArcB.material.opacity=sweep*.13;
+  }
+  const flash=(active||landLive)?Math.min(.86,Math.max(plantBeat*.90,contactPlant*.62,hitImpact*.40)-(active?recover*.40:0))*(active?(1-THREE.MathUtils.smoothstep(ph,.370,.520)):(1-exitHide*.85)):0;
+  dropkickImpactFlashA.visible=dropkickImpactFlashB.visible=flash>.025;
+  dropkickImpactCore.visible=flash>.070;
+  if(flash>.025){
+    dropkickImpactFlashA.position.set(spread+.024,scissor-.038,-.548);
+    dropkickImpactFlashB.position.set(spread+.020,scissor-.044,-.542);
+    dropkickImpactCore.position.set(spread+.064,scissor-.026,-.608);
+    dropkickImpactFlashA.rotation.set(1.04,.16,.38);
+    dropkickImpactFlashB.rotation.set(1.07,.12,-.50);
+    dropkickImpactCore.rotation.set(1.06,.14,0);
+    dropkickImpactFlashA.material.opacity=flash*.34;
+    dropkickImpactFlashB.material.opacity=flash*.26;
+    dropkickImpactCore.material.opacity=flash*.30;
+    dropkickImpactCore.scale.setScalar(.72+flash*.42+plantBeat*.16);
+  }
+  const shock=(active||landLive)?Math.min(1,Math.max(plantBeat*.95,contactPlant*.70,hitImpact*.62))*(active?(1-THREE.MathUtils.smoothstep(ph,.390,.560)):(1-exitHide*.80)):0;
+  dropkickShockRing.visible=dropkickShockShardA.visible=dropkickShockShardB.visible=shock>.030;
+  if(shock>.030){
+    const shockScale=.58+shock*.42+plantBeat*.10;
+    dropkickShockRing.position.set(spread+.044,scissor-.034,-.604);
+    dropkickShockShardA.position.set(spread+.020,scissor-.052,-.575);
+    dropkickShockShardB.position.set(spread+.068,scissor+.010,-.596);
+    dropkickShockRing.rotation.set(1.06,.14,0);
+    dropkickShockShardA.rotation.set(1.03,.16,.46);
+    dropkickShockShardB.rotation.set(1.08,.10,-.38);
+    dropkickShockRing.scale.setScalar(shockScale);
+    dropkickShockShardA.scale.set(1+shock*.55,1,1);
+    dropkickShockShardB.scale.set(1+shock*.34,1,1);
+    dropkickShockRing.material.opacity=shock*.17;
+    dropkickShockShardA.material.opacity=shock*.25;
+    dropkickShockShardB.material.opacity=shock*.18;
+  }
+  const fade=THREE.MathUtils.clamp(show,0,1);
+  for(const m of _DROP_FEET_PARTS){
+    if(m.material&&'opacity' in m.material){
+      m.material.transparent=true;
+      m.material.opacity=fade;
+    }
+  }
+}
+// ── FIRST-PERSON SLIDE BODY ──────────────────────────────────────────────────
+// Separate from the dropkick rig: this is a low, camera-local lower body that
+// appears during slides so the move reads as a seated skid instead of a bare
+// camera dip.
+const slideLegsGrp=new THREE.Group();
+slideLegsGrp.name='slide-first-person-butt-slide-legs';
+slideLegsGrp.visible=false;
+slideLegsGrp.renderOrder=10;
+camera.add(slideLegsGrp);
+const _slidePantM=_aaViewMat(0x0f1520,.86,.02,{},'fabric');
+const _slideArmorM=_aaViewMat(0x202832,.72,.10,{},'rubber');
+const _slideBootM=_aaViewMat(0x111318,.84,.04,{},'rubber');
+const _slideSoleM=_aaViewMat(0x050608,.94,.02,{},'rubber');
+const _SLIDE_BODY_PARTS=[];
+function _slidePart(parent,geo,mat,x,y,z,rx=0,ry=0,rz=0,name='part'){
+  const m=new THREE.Mesh(geo,mat);
+  m.name=`${parent.name}_${name}`;
+  m.position.set(x,y,z);m.rotation.set(rx,ry,rz);
+  m.userData.baseSlidePose={x,y,z,rx,ry,rz};
+  m.castShadow=true;m.receiveShadow=false;m.renderOrder=10;
+  parent.add(m);_SLIDE_BODY_PARTS.push(m);return m;
+}
+function _poseSlidePart(part,dx=0,dy=0,dz=0,drx=0,dry=0,drz=0){
+  if(!part||!part.userData||!part.userData.baseSlidePose)return;
+  const b=part.userData.baseSlidePose;
+  part.position.set(b.x+dx,b.y+dy,b.z+dz);
+  part.rotation.set(b.rx+drx,b.ry+dry,b.rz+drz);
+}
+const slidePelvisRoot=new THREE.Group();
+slidePelvisRoot.name='slide_seated_lower_body';
+slideLegsGrp.add(slidePelvisRoot);
+const slideTorsoParts={
+  pelvis:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.390,.115,.180),_slidePantM,0,.110,.100,.05,0,0,'pelvis'),
+  belt:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.410,.030,.190),_slideArmorM,0,.178,.092,.02,0,0,'belt'),
+  abdomen:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.255,.125,.130),_slidePantM,0,.240,.165,.20,0,0,'abdomen'),
+  tailPad:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.330,.050,.155),_slideArmorM,0,.040,.180,-.06,0,0,'seat_armor'),
+  hipL:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.112,.060,.110),_slideArmorM,-.155,.090,.060,.06,.08,-.08,'hip_L'),
+  hipR:_slidePart(slidePelvisRoot,new THREE.BoxGeometry(.112,.060,.110),_slideArmorM,.155,.090,.060,.06,-.08,.08,'hip_R')
+};
+function _buildSlideLeg(side){
+  const root=new THREE.Group();
+  root.name=side<0?'slide_leg_L':'slide_leg_R';
+  root.userData.baseSide=side;
+  slideLegsGrp.add(root);
+  const parts={
+    thigh:_slidePart(root,_dropLimbGeo(.046,.310,.360),_slidePantM,0,.070,-.030,Math.PI/2+.16,side*.035,0,'thigh'),
+    knee:_slidePart(root,new THREE.BoxGeometry(.132,.044,.090),_slideArmorM,0,.014,-.225,.04,side*.045,0,'knee'),
+    shin:_slidePart(root,_dropLimbGeo(.039,.330,.395),_slidePantM,0,-.052,-.395,Math.PI/2-.05,side*.042,0,'shin'),
+    calfGuard:_slidePart(root,new THREE.BoxGeometry(.115,.022,.190),_slideArmorM,0,-.014,-.365,.12,side*.060,0,'calf_guard'),
+    boot:_slidePart(root,new THREE.BoxGeometry(.188,.092,.360),_slideBootM,0,-.130,-.650,.05,side*.070,0,'boot'),
+    sole:_slidePart(root,new THREE.BoxGeometry(.204,.032,.398),_slideSoleM,0,-.186,-.650,.05,side*.070,0,'sole'),
+    toe:_slidePart(root,new THREE.BoxGeometry(.166,.055,.102),_slideArmorM,0,-.092,-.870,.15,side*.080,0,'toe'),
+    heel:_slidePart(root,new THREE.BoxGeometry(.174,.070,.064),_slideSoleM,0,-.162,-.480,.01,side*.055,0,'heel')
+  };
+  root.userData.parts=parts;
+  return root;
+}
+const slideLegL=_buildSlideLeg(-1);
+const slideLegR=_buildSlideLeg(1);
+function _poseSlideLeg(root,side,slide,dirSide,back,scuff){
+  const p=root.userData.parts||{};
+  const sideAbs=Math.abs(dirSide);
+  const sit=THREE.MathUtils.clamp(slide,0,1);
+  const lead=side>0?1+dirSide*.20:1-dirSide*.20;
+  const forward=1+sit*.08-back*.06;
+  _poseSlidePart(p.thigh,0,-sit*.018, -sit*.032, sit*.18+back*.08, side*dirSide*.025, side*scuff*.030);
+  _poseSlidePart(p.knee,0,-sit*.018, -sit*.070, sit*.12+back*.05, side*dirSide*.026, side*scuff*.026);
+  _poseSlidePart(p.shin,0,-sit*.030, -sit*.108*forward, sit*.26-back*.10, side*dirSide*.035, -side*scuff*.044);
+  _poseSlidePart(p.calfGuard,0,-sit*.030, -sit*.100*forward, sit*.20-back*.08, side*dirSide*.040, -side*scuff*.036);
+  _poseSlidePart(p.boot,side*sideAbs*.006*lead,-sit*.034, -sit*.158*forward, sit*.28-back*.18, side*(dirSide*.052+sideAbs*.020), side*(.030+scuff*.035));
+  _poseSlidePart(p.sole,side*sideAbs*.006*lead,-sit*.038, -sit*.168*forward, sit*.30-back*.19, side*(dirSide*.052+sideAbs*.020), side*(.030+scuff*.035));
+  _poseSlidePart(p.toe,side*sideAbs*.008*lead,-sit*.026, -sit*.194*forward, sit*.38-back*.22, side*(dirSide*.060+sideAbs*.025), side*(.040+scuff*.040));
+  _poseSlidePart(p.heel,0,-sit*.030, -sit*.118*forward, sit*.20-back*.12, side*dirSide*.040, side*scuff*.020);
+}
+function updateSlideLegs(dt){
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const postSlideAimClear=!!(!P.sliding&&(P.slideTimer||0)<=0&&ads>.38);
+  const target=((P.sliding||((P.slideAmt>.035)&&!postSlideAimClear))&&!P.dropkickActive&&!(P.dropkickLandTimer>0))?1:0;
+  const exitAimUrgency=!target?THREE.MathUtils.smoothstep(ads,.28,.86):0;
+  P._slideLegVis=damp(Number.isFinite(P._slideLegVis)?P._slideLegVis:0,target,target?22:(16+exitAimUrgency*18),dt);
+  const vis=THREE.MathUtils.clamp(P._slideLegVis||0,0,1);
+  slideLegsGrp.visible=vis>.025;
+  if(!slideLegsGrp.visible){
+    slideLegsGrp.position.set(0,-1.16,-.36);
+    slideLegsGrp.rotation.set(1.08,0,0);
+    slideLegsGrp.scale.setScalar(.74);
+    return;
+  }
+  const entering=target?1-vis:0;
+  const exiting=target?0:THREE.MathUtils.clamp(1-vis+exitAimUrgency*.34,0,1);
+  const amt=THREE.MathUtils.clamp(Math.max(P.slideAmt||0,vis*.72),0,1);
+  const side=THREE.MathUtils.clamp(Number.isFinite(P.slideLocalR)?P.slideLocalR:0,-1,1);
+  const localF=THREE.MathUtils.clamp(Number.isFinite(P.slideLocalF)?P.slideLocalF:1,-1,1);
+  const back=Math.max(0,-localF);
+  const sideAbs=Math.abs(side);
+  const nowSec=performance.now()/1000;
+  const blocked=THREE.MathUtils.clamp(P._slideBlockedPulse||0,0,1);
+  P._slideLegPhase=(Number.isFinite(P._slideLegPhase)?P._slideLegPhase:0)+dt*(10.0+amt*7.0+back*3.0+sideAbs*2.0+blocked*5.0);
+  const skidWave=Math.sin(P._slideLegPhase||0)*amt*(P.sliding?1:0);
+  const scuff=(skidWave*.018+Math.sin(nowSec*(15.0+blocked*8.0))*(P.sliding?.014:.005))*amt+blocked*.020;
+  const adsClear=ads*(.46+back*.54);
+  const exitSweep=exiting*exiting;
+  slideLegsGrp.position.set(side*.045,-.550+vis*.040+back*.038-adsClear*.096-entering*.18-exitSweep*(.52+exitAimUrgency*.24),-.710-back*.024-sideAbs*.020+adsClear*.055+entering*.090+exitSweep*(.300+exitAimUrgency*.135));
+  slideLegsGrp.rotation.set(.560+amt*.115-back*.155-adsClear*.115+blocked*.045+entering*.20+exitSweep*(.54+exitAimUrgency*.18),side*.180-back*.036+exitSweep*side*.070,-side*.240+scuff*.90-exitSweep*side*.18);
+  slideLegsGrp.scale.setScalar((.86+amt*.105+adsClear*.025)*(1-exitSweep*.12));
+  const spread=.175+sideAbs*.038+back*.145+adsClear*.145;
+  slideLegL.position.set(-spread-sideAbs*.014-exitSweep*.040,-.010+sideAbs*.008-adsClear*.024+skidWave*.006,.020+back*.060+adsClear*.018+exitSweep*.040);
+  slideLegR.position.set(spread+sideAbs*.014+exitSweep*.040,-.006-sideAbs*.006-adsClear*.026-skidWave*.006,-.010-back*.034-adsClear*.014+exitSweep*.026);
+  slideLegL.rotation.set(.045+back*(.128+ads*.070)+exitSweep*.12,-.055+side*.060-back*(.052+ads*.052)-exitSweep*.060,-.050-side*.055-back*(.044+ads*.066)-skidWave*.025);
+  slideLegR.rotation.set(.030+back*(.094+ads*.060)+exitSweep*.10,.065+side*.070+back*(.052+ads*.052)+exitSweep*.060,.048-side*.050+back*(.044+ads*.066)+skidWave*.025);
+  _poseSlideLeg(slideLegL,-1,amt,side,back,scuff);
+  _poseSlideLeg(slideLegR,1,amt,side,back,-scuff);
+  _poseSlidePart(slideTorsoParts.pelvis,side*.012,-amt*.020,back*.040,.050+amt*.085-back*.090,side*.060,-side*.075);
+  _poseSlidePart(slideTorsoParts.belt,side*.012,-amt*.018,back*.038,.030+amt*.070-back*.080,side*.065,-side*.080);
+  _poseSlidePart(slideTorsoParts.abdomen,side*.020,-amt*.040,back*.072,.220+amt*.150-back*.145,side*.120,-side*.160);
+  _poseSlidePart(slideTorsoParts.tailPad,side*.006,-amt*.008,back*.030,-.065+back*.035,side*.035,-side*.050);
+  _poseSlidePart(slideTorsoParts.hipL,-sideAbs*.008,-amt*.012,back*.035,.080+amt*.050,side*.045,-.080-side*.060);
+  _poseSlidePart(slideTorsoParts.hipR,sideAbs*.008,-amt*.012,back*.035,.080+amt*.050,side*.045,.080-side*.060);
+  for(const m of _SLIDE_BODY_PARTS){
+    if(m.material&&'opacity' in m.material){
+      m.material.transparent=true;
+      m.material.opacity=.92+amt*.08;
+    }
+  }
+}
 // ── TECH ARM-BAND on left forearm ──────────────────────────────────────────
 // Always-on procedural fallback. The authored 3D hand GLB owns the production
 // wrist computer when it validates for M4.
@@ -11724,6 +13380,12 @@ function _syncArmBandVisibility(){
   let show=true;
   try{show=!_isAuthoredHandRuntimeActive();}catch(_){show=true;}
   try{if(P&&P.weaponIdx===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)show=false;}catch(_){}
+  try{
+    const wi=P&&Number.isFinite(P.weaponIdx)?P.weaponIdx|0:-1;
+    if(wi===1||wi===6)show=false;
+    const adsSightline=!!(P&&!P.reloading&&(P.adsVis||0)>.42&&(wi===1||wi===3||wi===4||wi===6));
+    if(adsSightline)show=false;
+  }catch(_){}
   armBandGrp.visible=show;
   try{if(typeof reloadHoloGrp!=='undefined')reloadHoloGrp.visible=show;}catch(_){}
   return show;
@@ -11948,6 +13610,7 @@ function _currentOpticProfile(){
       lensY:authoredM4?.24:.078,
       adsGunZ:authoredM4?-.44:-.12,
       adsFovDelta:authoredM4?20+(att.tier||1)*2:36+(att.tier||1)*3,
+      forcePip:true,
       view:m4ScopeView,
       viewM:m4ScopeViewM
     };
@@ -11961,8 +13624,10 @@ function _currentOpticProfile(){
       vignetteColor:'rgba(92,190,255,.12)',
       lensLocal:_scopeLensLocalDmr,
       lensY:.080,
-      adsGunZ:-.12,
+      adsGunZ:-.205,
       adsFovDelta:44,
+      forcePip:true,
+      screenScope:true,
       view:_dmrScopePip.mesh,
       viewM:_dmrScopePip.mat
     };
@@ -11976,8 +13641,10 @@ function _currentOpticProfile(){
       vignetteColor:'rgba(96,210,255,.16)',
       lensLocal:_scopeLensLocalSniper,
       lensY:.092,
-      adsGunZ:-.13,
+      adsGunZ:-.225,
       adsFovDelta:52,
+      forcePip:true,
+      screenScope:true,
       view:_sniperScopePip.mesh,
       viewM:_sniperScopePip.mat
     };
@@ -11998,6 +13665,231 @@ function _setScopePipView(profile,alpha){
   profile.viewM.opacity=alpha;
   if(profile.view)profile.view.visible=alpha>0.01;
   scopeViewM_active=profile.viewM;
+}
+function _syncScopedViewmodelVisibility(profile,scopeEase=0){
+  const guardSidePeek=!!(((P.guardBehindAmt||0)>.08||P.guardBehindHeld)&&P.guardMode==='wall'&&(Math.abs(P.guardPeekSide||0)>.035||P.guardBehindActive||P._guardCoverLockKey));
+  const slidePresentation=_slidePresentationActiveForViewmodel();
+  const hide=!!(profile&&profile.screenScope&&scopeEase>.84&&!P.reloading&&!P.vaulting&&!P.dropkickActive&&!guardSidePeek&&!slidePresentation);
+  if(gunGrp)gunGrp.visible=!hide;
+  _scopePipStatus.viewmodelHidden=hide;
+  return hide;
+}
+function _authoredPistolDepthSensitive(){
+  try{
+    return !!(P&&P.weaponIdx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig);
+  }catch(_){
+    return false;
+  }
+}
+function _activeProceduralWeaponMeshes(){
+  return ({0:M4_MESHES,1:DE_MESHES,3:SG_MESHES,4:SM_MESHES,5:DMR_MESHES,6:SPP_MESHES,7:SNI_MESHES})[P.weaponIdx]||null;
+}
+function _syncActiveWeaponViewmodelVisibility(forceCurrentVisible=false){
+  const idx=P.weaponIdx|0;
+  const useAuthM4=!!(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.ok&&!AUTHORED_VIEWMODEL_FORCED_FALLBACKS.has(M4_AUTHORED_STATUS.weaponId)&&!(G&&G.splitScreenActive));
+  const useGlbPistol=!!(idx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig);
+  if(useAuthM4&&m4AuthoredWeapon.rig)m4AuthoredWeapon.rig.visible=!!forceCurrentVisible;
+  if(idx===1&&deagleGlbRig)deagleGlbRig.visible=!!(forceCurrentVisible&&useGlbPistol);
+  const meshes=_activeProceduralWeaponMeshes();
+  if(meshes){
+    const showProcedural=!!(forceCurrentVisible&&!useAuthM4&&!useGlbPistol);
+    for(const m of meshes)if(m)m.visible=showProcedural;
+  }
+  if(idx===1&&DE_MESHES&&useGlbPistol){
+    for(const m of DE_MESHES)if(m)m.visible=false;
+  }
+}
+function _setFirstPersonOverlayDepth(root,renderOrder=1040){
+  if(!root||typeof root.traverse!=='function')return;
+  root.traverse(o=>{
+    if(!o||!o.isMesh)return;
+    o.renderOrder=Math.max(o.renderOrder||0,renderOrder);
+    const mats=Array.isArray(o.material)?o.material:[o.material];
+    for(const m of mats){
+      if(!m)continue;
+      m.depthTest=false;
+      m.depthWrite=false;
+    }
+  });
+}
+const _COMBAT_VIEWMODEL_DEPTH_STATE={active:false,objects:new Map(),materials:new Map()};
+function _setTemporaryFirstPersonOverlayDepth(root,renderOrder=1040,state=_COMBAT_VIEWMODEL_DEPTH_STATE){
+  if(!root||typeof root.traverse!=='function'||!state)return;
+  root.traverse(o=>{
+    if(!o||!o.isMesh)return;
+    if(!state.objects.has(o))state.objects.set(o,{renderOrder:o.renderOrder||0});
+    o.renderOrder=Math.max(o.renderOrder||0,renderOrder);
+    const mats=Array.isArray(o.material)?o.material:[o.material];
+    for(const m of mats){
+      if(!m)continue;
+      if(!state.materials.has(m))state.materials.set(m,{depthTest:m.depthTest,depthWrite:m.depthWrite});
+      m.depthTest=false;
+      m.depthWrite=false;
+    }
+  });
+}
+function _setTemporaryFirstPersonDepthIsolated(root,renderOrder=1040,state=_COMBAT_VIEWMODEL_DEPTH_STATE){
+  if(!root||typeof root.traverse!=='function'||!state)return;
+  state.depthClear=true;
+  root.traverse(o=>{
+    if(!o||!o.isMesh)return;
+    let prev=state.objects.get(o);
+    if(!prev){
+      prev={renderOrder:o.renderOrder||0,onBeforeRender:o.onBeforeRender};
+      state.objects.set(o,prev);
+    }else if(!Object.prototype.hasOwnProperty.call(prev,'onBeforeRender')){
+      prev.onBeforeRender=o.onBeforeRender;
+    }
+    o.renderOrder=Math.max(o.renderOrder||0,renderOrder);
+    if(o.userData&&o.userData._tempDepthClearState===state)return;
+    const prevOnBefore=prev.onBeforeRender;
+    o.onBeforeRender=function(renderer,sceneArg,cameraArg,geometry,material,group){
+      const info=renderer&&renderer.info&&renderer.info.render;
+      const frame=info&&Number.isFinite(info.frame)?info.frame:performance.now();
+      if(state.active&&state.depthClear&&state.clearDepthFrame!==frame&&renderer&&typeof renderer.clearDepth==='function'){
+        renderer.clearDepth();
+        state.clearDepthFrame=frame;
+      }
+      if(typeof prevOnBefore==='function')prevOnBefore.call(this,renderer,sceneArg,cameraArg,geometry,material,group);
+    };
+    o.userData=o.userData||{};
+    o.userData._tempDepthClearState=state;
+  });
+}
+function _restoreTemporaryFirstPersonOverlayDepth(state=_COMBAT_VIEWMODEL_DEPTH_STATE){
+  if(!state||!state.active)return;
+  for(const [o,prev] of state.objects){
+    if(o&&prev){
+      o.renderOrder=prev.renderOrder;
+      if(Object.prototype.hasOwnProperty.call(prev,'onBeforeRender'))o.onBeforeRender=prev.onBeforeRender;
+      if(o.userData&&o.userData._tempDepthClearState===state)delete o.userData._tempDepthClearState;
+    }
+  }
+  for(const [m,prev] of state.materials){
+    if(m&&prev){
+      m.depthTest=prev.depthTest;
+      m.depthWrite=prev.depthWrite;
+      m.needsUpdate=true;
+    }
+  }
+  state.objects.clear();
+  state.materials.clear();
+  state.active=false;
+  state.mode=null;
+  state.depthClear=false;
+  state.clearDepthFrame=-1;
+}
+function _syncCombatViewmodelOverlayDepth(active){
+  if(active){
+    const authoredPistol=_authoredPistolDepthSensitive();
+    const mode=authoredPistol?'authored-pistol-depth-isolated':'full';
+    if(_COMBAT_VIEWMODEL_DEPTH_STATE.active&&_COMBAT_VIEWMODEL_DEPTH_STATE.mode!==mode)_restoreTemporaryFirstPersonOverlayDepth(_COMBAT_VIEWMODEL_DEPTH_STATE);
+    _COMBAT_VIEWMODEL_DEPTH_STATE.active=true;
+    _COMBAT_VIEWMODEL_DEPTH_STATE.mode=mode;
+    if(authoredPistol){
+      _setTemporaryFirstPersonDepthIsolated(slideLegsGrp,1040,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonDepthIsolated(gunGrp,1060,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonDepthIsolated(rGrp,1070,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonDepthIsolated(lGrp,1070,_COMBAT_VIEWMODEL_DEPTH_STATE);
+    }else{
+      _setTemporaryFirstPersonOverlayDepth(slideLegsGrp,980,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonOverlayDepth(gunGrp,1060,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonOverlayDepth(rGrp,1070,_COMBAT_VIEWMODEL_DEPTH_STATE);
+      _setTemporaryFirstPersonOverlayDepth(lGrp,1070,_COMBAT_VIEWMODEL_DEPTH_STATE);
+    }
+  }else{
+    _restoreTemporaryFirstPersonOverlayDepth(_COMBAT_VIEWMODEL_DEPTH_STATE);
+  }
+}
+function _combatPresentationActive(){
+  const guardMode=_guardViewmodelMode();
+  const guardWall=!!((P.guardBehindAmt||0)>.045&&guardMode==='wall'&&(Math.abs(P.guardPeekSide||0)>.035||P.guardBehindHeld||P.guardBehindActive));
+  const slide=_slidePresentationActiveForViewmodel();
+  return {guardWall,slide,active:guardWall||slide};
+}
+function _slidePresentationActiveForViewmodel(){
+  const active=!!(P.sliding||(P.slideAmt||0)>.018||(P.slideTarget||0)>.018||(P.slideTimer||0)>0||(P.slideExitGrace||0)>0||(P.slideCarryTimer||0)>0||(P._slideLegVis||0)>.025||performance.now()<(P._slidePresentationUntil||0));
+  if(!active)return false;
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const postSlide=!!(!P.sliding&&(P.slideTimer||0)<=0&&(P.slideAmt||0)<.070);
+  if(postSlide&&ads>.42)return false;
+  return true;
+}
+function _guardViewmodelMode(){
+  const mode=P.guardMode||'none';
+  if(mode!=='none')return mode;
+  const visual=P._guardVisualMode||'none';
+  return (visual!=='none'&&(P.guardBehindAmt||0)>.025)?visual:'none';
+}
+function _combatPostureAimState(){
+  const guardMode=_guardViewmodelMode();
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const postSlideAimClear=!!(!P.sliding&&(P.slideTimer||0)<=0&&ads>.42);
+  const slide=!!((P.sliding||(P.slideAmt||0)>.035||(P.slideTarget||0)>.035||(P.slideTimer||0)>0)&&!postSlideAimClear);
+  const guardWall=!!((P.guardBehindAmt||0)>.035&&guardMode==='wall'&&(Math.abs(P.guardPeekSide||0)>.025||P.guardBehindActive||P.guardBehindHeld));
+  return {slide,guardWall,active:slide||guardWall,guardMode};
+}
+function _tickCombatPostureAimState(dt){
+  const state=_combatPostureAimState();
+  const active=!!state.active;
+  const nowMs=performance.now();
+  if(active){
+    P._combatPostureWasActive=true;
+    P._combatPostureRecover=damp(Number.isFinite(P._combatPostureRecover)?P._combatPostureRecover:0,0,24,dt);
+    P._combatPostureAlignUntil=nowMs+90;
+  }else{
+    if(P._combatPostureWasActive){
+      P._combatPostureRecover=1;
+      P._ironSightReacquireUntil=nowMs+220;
+      P._viewmodelPoseSnapUntil=nowMs+180;
+      P.scopeEyeX=0;
+      P.scopeEyeY=0;
+    }
+    P._combatPostureWasActive=false;
+    P._combatPostureRecover=damp(Number.isFinite(P._combatPostureRecover)?P._combatPostureRecover:0,0,16,dt);
+  }
+  return state;
+}
+function _forceCombatViewmodelVisible(){
+  const state=_combatPresentationActive();
+  if(!state.active||P.weaponIdx===2){
+    _syncCombatViewmodelOverlayDepth(false);
+    if(P.weaponIdx===1)_syncActiveWeaponViewmodelVisibility(true);
+    return state;
+  }
+  if(gunGrp)gunGrp.visible=true;
+  if(!_isAuthoredM4RuntimeActive()){
+    if(rGrp)rGrp.visible=true;
+    if(lGrp)lGrp.visible=(P.weaponIdx|0)!==2;
+  }
+  _scopePipStatus.viewmodelHidden=false;
+  _syncCombatViewmodelOverlayDepth(true);
+  _syncActiveWeaponViewmodelVisibility(true);
+  return state;
+}
+function _keepCombatViewmodelInFrame(dt){
+  const state=_forceCombatViewmodelVisible();
+  if(!state.active||!gunGrp)return;
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const adsLock=THREE.MathUtils.smoothstep(ads,.38,.92);
+  const authoredPistol=_authoredPistolDepthSensitive();
+  const strength=THREE.MathUtils.clamp(((state.guardWall?.60:0)+(state.slide?.58:0))*(1-adsLock*.42),0,1);
+  const minX=state.slide?-.220:(state.guardWall?-.245:-.145);
+  const maxX=state.slide?.240:(state.guardWall?.245:.175);
+  const minY=state.slide?-.205:-.230,maxY=state.slide?-.022:-.020;
+  const authoredPistolSlideMaxZ=-.235+adsLock*.060;
+  const minZ=state.slide?-.500:-.500,maxZ=state.slide?(authoredPistol?authoredPistolSlideMaxZ:-.070):-.185;
+  const safeX=THREE.MathUtils.clamp(gunGrp.position.x,minX,maxX);
+  const safeY=THREE.MathUtils.clamp(gunGrp.position.y,minY,maxY);
+  const safeZ=THREE.MathUtils.clamp(gunGrp.position.z,minZ,maxZ);
+  const a=Math.min(1,Math.max(dt,0)*(state.guardWall?24:20))*strength;
+  gunGrp.position.x+=(safeX-gunGrp.position.x)*a;
+  gunGrp.position.y+=(safeY-gunGrp.position.y)*a;
+  gunGrp.position.z+=(safeZ-gunGrp.position.z)*a;
+  if(state.guardWall){
+    gunGrp.rotation.y*=1-.24*strength;
+    gunGrp.rotation.z*=1-.12*strength;
+  }
 }
 // Tag viewmodel groups onto layer 1 so scope camera can ignore them
 function _setLayer(grp,n){grp.traverse(o=>o.layers.set(n));}
@@ -12813,6 +14705,7 @@ function updateKnives(dt){
       const hits=_rayHits(prev,dir,0,segLen,enemyMeshes);
       if(hits.length){
         const h=hits[0];const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
+        _primeEnemyHitFromObject(h.object,isHead?'head':'torso');
         const killed=enemy.takeDamage(isHead?999:200,isHead);
         addBlood(h.point,isHead);showHM(isHead?'head':'body');sfxHit(isHead);sfxKnifeStick();
         if(killed){killFeed(isHead);awardKillMoney(enemy,isHead);cinematicKill(h.point);if(Math.random()<.30)spawnAmmoPickup(enemy.group.position.clone());setTimeout(()=>checkZoneClears(),60);}
@@ -12912,6 +14805,15 @@ const ATTACHMENT_DEFS={
   ]
 };
 const ATTACH_TIER_COL=['#9aa0aa','#5fcb52','#3aa6ff','#c46bff']; // tier 1..4 swatches
+const GAMEPLAY_QOL_FEEL={
+  vaultBufferMs:185,
+  vaultPromptGraceMs:155,
+  pickupStickyMs:340,
+  pickupStickyRange:2.55,
+  reloadDeniedToastMs:720,
+  triggerReadyPulse:.46,
+  criticalHpRatio:.34
+};
 function attachmentScore(a){
   if(!a)return 0;
   const m=(k,d=1)=>Number.isFinite(a[k])?a[k]:d;
@@ -12931,6 +14833,7 @@ function randomAttachment(type,minTier,maxTier){
 const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
   vy:0,jumpH:0,grounded:true,
   wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
+  dropkickActive:false,dropkickT:0,dropkickTimer:0,dropkickDur:.58,dropkickCooldown:0,dropkickDirX:0,dropkickDirZ:-1,dropkickImpact:0,dropkickLandTimer:0,dropkickLandDur:.46,dropkickHitEnemies:null,
   vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
   nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
   // Camera dynamics: landing dip, damage roll, breathing/idle sway
@@ -12938,8 +14841,9 @@ const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,
   // Smoothed sprint amount (0..1) for gun-down pose
   sprintAmt:0,
   // Slide state — duration-gated, momentum-carrying low-stance dash
-  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,
-  slideCarryTimer:0,
+  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,slideLocalR:0,slideLocalF:1,
+  slideCarryTimer:0,slideExitGrace:0,
+  guardBehindHeld:false,guardBehindActive:false,guardBehindAmt:0,guardPeekUp:0,guardPeekSide:0,guardPeekForward:0,guardNormalX:0,guardNormalZ:1,guardTangentX:1,guardTangentZ:0,guardCover:null,guardCoverReady:0,guardCoverDist:0,guardMode:'none',
   // Attachment slots (one per type). null = empty.
   attachments:{scope:null,mag:null,muzzle:null,foregrip:null},
   // Pickup interaction state
@@ -12952,12 +14856,14 @@ const P={pos:new THREE.Vector3(0,.2,18),yaw:Math.PI,pitch:0,lean:0,leanTarget:0,
 const P2={pos:new THREE.Vector3(1.5,.2,18),yaw:0,pitch:0,lean:0,leanTarget:0,ads:0,adsTarget:0,adsVis:0,adsSettle:0,adsKick:0,scopeSettle:0,scopeEyeX:0,scopeEyeY:0,scopeViewFov:0,scopeVignetteOpacity:0,hp:100,ammo:START_WEAPON.mag,ammoRes:START_WEAPON.res,reloading:false,reloadTimer:0,RELOAD_TIME:START_WEAPON.reloadTime,bobPhase:0,bobAmt:0,dead:false,lastShot:0,FIRE_RATE:START_WEAPON.fireRate,dmgFlash:0,weaponIdx:START_WEAPON_IDX,running:false,
   vy:0,jumpH:0,grounded:true,
   wallJumpTimer:0,wallJumpDur:.42,wallJumpHardenTimer:0,wallJumpVx:0,wallJumpVz:0,wallJumpSide:0,wallJumpImpact:0,wallJumpNx:0,wallJumpNz:0,wallContact:null,
+  dropkickActive:false,dropkickT:0,dropkickTimer:0,dropkickDur:.58,dropkickCooldown:0,dropkickDirX:0,dropkickDirZ:-1,dropkickImpact:0,dropkickLandTimer:0,dropkickLandDur:.46,dropkickHitEnemies:null,
   vaulting:false,vaultT:0,vaultDur:0.58,vaultFrom:null,vaultTo:null,vaultObH:0,
   nearVault:null,vaultGunRot:0,vaultGunX:0,vaultGunY:0,vaultDir:'forward',
   landKick:0,dmgRoll:0,dmgPitch:0,
   sprintAmt:0,
-  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,
-  slideCarryTimer:0,
+  sliding:false,slideAmt:0,slideTarget:0,slideTimer:0,slideDirX:0,slideDirZ:0,slideLocalR:0,slideLocalF:1,
+  slideCarryTimer:0,slideExitGrace:0,
+  guardBehindHeld:false,guardBehindActive:false,guardBehindAmt:0,guardPeekUp:0,guardPeekSide:0,guardPeekForward:0,guardNormalX:0,guardNormalZ:1,guardTangentX:1,guardTangentZ:0,guardCover:null,guardCoverReady:0,guardCoverDist:0,guardMode:'none',
   crouching:false,crouchAmt:0,
   attachments:{scope:null,mag:null,muzzle:null,foregrip:null},
   nearPickup:null,
@@ -12977,6 +14883,8 @@ const H={
   idxRX:0,
   // Barrel heat (0..1, accumulates on shot, decays each frame)
   heat:0,
+  // Short additive kick when a bullet connects with an enemy.
+  hitKickT:0,hitKickDur:.18,hitKickStrength:0,hitKickSide:1,hitKickHead:false,hitKickKill:false,
   // Reticle pulse phase
   reticlePhase:0
 };
@@ -12988,8 +14896,17 @@ const H2={
   rRX:0,rRY:0,rRZ:0, lRX:.11,lRY:0,lRZ:0,
   idxRX:0,
   heat:0,
+  hitKickT:0,hitKickDur:.18,hitKickStrength:0,hitKickSide:1,hitKickHead:false,hitKickKill:false,
   reticlePhase:0
 };
+function _viewmodelHitKickEnvelope(hState){
+  if(!hState||!(hState.hitKickT>0))return 0;
+  const dur=Math.max(.001,hState.hitKickDur||.18);
+  const p=1-THREE.MathUtils.clamp(hState.hitKickT/dur,0,1);
+  const snap=p<.18?p/.18:Math.max(0,1-(p-.18)/.82);
+  const tail=Math.max(0,1-p);
+  return Math.max(0,snap)*Math.max(.18,tail)*Math.max(0,hState.hitKickStrength||0);
+}
 const DEFAULT_HAND_FIT={
   id:'default',
   right:{x:.003,y:-.060,z:.058,rx:.010,ry:.020,rz:-.020},
@@ -13008,8 +14925,169 @@ const WEAPON_HAND_FITS={
   6:{id:'p226-two-hand',right:{x:.004,y:-.058,z:.052,rx:.018,ry:.032,rz:-.028},left:{x:-.054,y:-.044,z:-.082,rx:.216,ry:.120,rz:.042},leftScale:1.02,fine:{hipX:-.030,hipY:-.018,hipZ:.032,hipRY:.038,hipRZ:.054,adsX:.010,adsY:-.001,adsZ:.010,adsRY:-.010,adsRZ:.046},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
   7:{id:'sniper-fore-end',right:{x:.003,y:-.057,z:.060,rx:.010,ry:.016,rz:-.020},left:{x:-.028,y:-.026,z:-.314,rx:.158,ry:.044,rz:.018},leftScale:1.065,fine:{hipX:-.004,hipY:.002,hipZ:-.008,hipRY:.010,hipRZ:.008,adsX:.010,adsY:.004,adsZ:-.014,adsRY:.014,adsRZ:.022},gun:{x:.132,y:-.114,z:-.250}}
 };
+const ADS_WEAPON_VIEW_FITS={
+  1:{y:-.040,z:-.170,rx:-.022,scale:.52},
+  3:{y:-.030,z:-.220,rx:.004,scale:.58},
+  4:{y:-.034,z:-.220,rx:.002,scale:.58},
+  6:{y:-.046,z:-.215,rx:-.018,scale:.52}
+};
+const IRON_SIGHT_REFERENCES={
+  0:{
+    front:{local:new THREE.Vector3(0,.071,-.296)},
+    rear:{local:new THREE.Vector3(0,.067,.040)},
+    maxX:.16,maxY:.24,maxPitch:.075,maxYaw:.055,lineTargetY:.026,aimNdcY:0
+  },
+  1:{
+    front:{local:new THREE.Vector3(0,.069,-.074),node:'front_sight',nodeLocal:new THREE.Vector3(0,.003,0)},
+    rear:{local:new THREE.Vector3(0,.067,.058),node:'rear_sight',nodeLocal:new THREE.Vector3(0,.003,0)},
+    maxX:.18,maxY:.28,maxPitch:.085,maxYaw:.060,lineTargetY:.030,aimNdcY:0
+  },
+  3:{
+    front:{local:new THREE.Vector3(0,.071,-.498)},
+    rear:{local:new THREE.Vector3(0,.061,.070)},
+    maxX:.18,maxY:.30,maxPitch:.090,maxYaw:.060,lineTargetY:.045,aimNdcY:0
+  },
+  4:{
+    front:{local:new THREE.Vector3(0,.046,-.043)},
+    rear:{local:new THREE.Vector3(0,.046,.034)},
+    maxX:.18,maxY:.30,maxPitch:.070,maxYaw:.055,lineWeight:.70,lineTargetY:.035,aimNdcY:0
+  },
+  6:{
+    front:{local:new THREE.Vector3(0,.054,-.080)},
+    rear:{local:new THREE.Vector3(0,.050,.060)},
+    maxX:.18,maxY:.28,maxPitch:.085,maxYaw:.060,lineTargetY:.032,aimNdcY:0
+  }
+};
+const _ironSightWorldTmp=new THREE.Vector3();
+const _ironSightRearWorldTmp=new THREE.Vector3();
+const _ironSightCamTmp=new THREE.Vector3();
+const _ironSightRearCamTmp=new THREE.Vector3();
+const _ironSightNdcTmp=new THREE.Vector3();
+const _ironSightRearNdcTmp=new THREE.Vector3();
+const _ironSightPostNdcTmp=new THREE.Vector3();
 function _handFitForWeapon(idx){
   return WEAPON_HAND_FITS[idx|0]||DEFAULT_HAND_FIT;
+}
+function _adsWeaponViewFit(idx){
+  return ADS_WEAPON_VIEW_FITS[idx|0]||null;
+}
+function _ironSightSpec(ref,point='front'){
+  if(!ref)return null;
+  const spec=ref[point]||null;
+  if(spec)return spec;
+  return point==='front'&&ref.local?ref:null;
+}
+function _ironSightWorldReference(idx,out=_ironSightWorldTmp,point='front'){
+  const ref=IRON_SIGHT_REFERENCES[idx|0];
+  const spec=_ironSightSpec(ref,point);
+  if(!spec)return null;
+  if(idx===1&&spec.node&&deagleGlbRig&&deagleGlbRig.visible&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){
+    const node=deagleGlbRig.userData.uspNodes[spec.node];
+    if(node){
+      out.copy(spec.nodeLocal||out.set(0,0,0)).applyMatrix4(node.matrixWorld);
+      return out;
+    }
+  }
+  out.copy(spec.local);
+  gunGrp.localToWorld(out);
+  return out;
+}
+function _alignIronSightToAimCenter(dt){
+  const idx=P.weaponIdx|0;
+  const ref=IRON_SIGHT_REFERENCES[idx];
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const alignAmt=THREE.MathUtils.smoothstep(ads,.54,.96);
+  if(!ref||alignAmt<=0.001||_currentOpticProfile()||P.reloading||P.vaulting||P.dropkickActive||P.weaponIdx===2){
+    P._ironSightAlign={active:false,weaponIdx:idx,ads:Number(ads.toFixed(3)),fov:Number((camera&&camera.fov||0).toFixed(3))};
+    return false;
+  }
+  camera.updateMatrixWorld(true);
+  gunGrp.updateMatrixWorld(true);
+  const world=_ironSightWorldReference(idx,_ironSightWorldTmp);
+  if(!world)return false;
+  const rearWorld=_ironSightWorldReference(idx,_ironSightRearWorldTmp,'rear');
+  let rotPitch=0,rotYaw=0,lineSlopeX=0,lineSlopeY=0,rearNdcX=null,rearNdcY=null;
+  if(rearWorld){
+    _ironSightCamTmp.copy(world);
+    _ironSightRearCamTmp.copy(rearWorld);
+    camera.worldToLocal(_ironSightCamTmp);
+    camera.worldToLocal(_ironSightRearCamTmp);
+    const lineX=_ironSightCamTmp.x-_ironSightRearCamTmp.x;
+    const lineY=_ironSightCamTmp.y-_ironSightRearCamTmp.y;
+    const lineDepth=-(_ironSightCamTmp.z-_ironSightRearCamTmp.z);
+    if(lineDepth>.018){
+      const lineWeight=Number.isFinite(ref.lineWeight)?ref.lineWeight:1;
+      lineSlopeX=lineX/lineDepth;
+      lineSlopeY=lineY/lineDepth;
+      const maxYaw=Number.isFinite(ref.maxYaw)?ref.maxYaw:.06;
+      const maxPitch=Number.isFinite(ref.maxPitch)?ref.maxPitch:.08;
+      const lineTargetY=Number.isFinite(ref.lineTargetY)?ref.lineTargetY:0;
+      rotYaw=THREE.MathUtils.clamp(lineSlopeX*lineWeight,-maxYaw,maxYaw)*alignAmt;
+      rotPitch=THREE.MathUtils.clamp((lineTargetY-lineSlopeY)*lineWeight,-maxPitch,maxPitch)*alignAmt;
+      gunGrp.rotation.y+=rotYaw;
+      gunGrp.rotation.x+=rotPitch;
+      gunGrp.updateMatrixWorld(true);
+      camera.updateMatrixWorld(true);
+      _ironSightWorldReference(idx,_ironSightWorldTmp);
+      _ironSightWorldReference(idx,_ironSightRearWorldTmp,'rear');
+      _ironSightRearNdcTmp.copy(_ironSightRearWorldTmp).project(camera);
+      rearNdcX=_ironSightRearNdcTmp.x;
+      rearNdcY=_ironSightRearNdcTmp.y;
+    }
+  }
+  _ironSightCamTmp.copy(world);
+  camera.worldToLocal(_ironSightCamTmp);
+  const depth=-_ironSightCamTmp.z;
+  if(!(depth>.02)){
+    P._ironSightAlign={active:false,weaponIdx:idx,reason:'behind-camera',depth:Number(depth.toFixed(4))};
+    return false;
+  }
+  _ironSightNdcTmp.copy(world).project(camera);
+  const preNdcX=_ironSightNdcTmp.x;
+  const preNdcY=_ironSightNdcTmp.y;
+  const fovRad=THREE.MathUtils.degToRad(camera.fov||SETTINGS.fov||75);
+  const tanY=Math.tan(fovRad*.5);
+  const aspect=camera.aspect||((innerWidth||16)/(innerHeight||9));
+  const postureState=_combatPostureAimState();
+  const postureAlign=!!postureState.active;
+  const reacquire=performance.now()<(P._ironSightReacquireUntil||0);
+  const targetNdcX=Number.isFinite(ref.aimNdcX)?ref.aimNdcX:0;
+  const targetNdcY=Number.isFinite(ref.aimNdcY)?ref.aimNdcY:0;
+  const maxX=(Number.isFinite(ref.maxX)?ref.maxX:.18)+(postureAlign?.078:0)+(reacquire?.026:0);
+  const maxY=(Number.isFinite(ref.maxY)?ref.maxY:.28)+(postureAlign?.055:0)+(reacquire?.030:0);
+  const corrX=THREE.MathUtils.clamp((targetNdcX-_ironSightNdcTmp.x)*depth*tanY*aspect,-maxX,maxX)*alignAmt;
+  const corrY=THREE.MathUtils.clamp((targetNdcY-_ironSightNdcTmp.y)*depth*tanY,-maxY,maxY)*alignAmt;
+  gunGrp.position.x+=corrX;
+  gunGrp.position.y+=corrY;
+  gunGrp.updateMatrixWorld(true);
+  const postWorld=_ironSightWorldReference(idx,_ironSightWorldTmp);
+  if(postWorld)_ironSightPostNdcTmp.copy(postWorld).project(camera);
+  else _ironSightPostNdcTmp.set(preNdcX,preNdcY,0);
+  P._ironSightAlign={
+    active:true,
+    weaponIdx:idx,
+    ads:Number(ads.toFixed(3)),
+    fov:Number((camera.fov||0).toFixed(3)),
+    ndcX:Number(_ironSightPostNdcTmp.x.toFixed(4)),
+    ndcY:Number(_ironSightPostNdcTmp.y.toFixed(4)),
+    preNdcX:Number(preNdcX.toFixed(4)),
+    preNdcY:Number(preNdcY.toFixed(4)),
+    targetNdcX:Number(targetNdcX.toFixed(4)),
+    targetNdcY:Number(targetNdcY.toFixed(4)),
+    rearNdcX:rearNdcX==null?null:Number(rearNdcX.toFixed(4)),
+    rearNdcY:rearNdcY==null?null:Number(rearNdcY.toFixed(4)),
+    lineSlopeX:Number(lineSlopeX.toFixed(4)),
+    lineSlopeY:Number(lineSlopeY.toFixed(4)),
+    lineTargetY:Number((Number.isFinite(ref.lineTargetY)?ref.lineTargetY:0).toFixed(4)),
+    postureAlign,
+    reacquire,
+    rotPitch:Number(rotPitch.toFixed(5)),
+    rotYaw:Number(rotYaw.toFixed(5)),
+    corrX:Number(corrX.toFixed(5)),
+    corrY:Number(corrY.toFixed(5)),
+    depth:Number(depth.toFixed(4))
+  };
+  return true;
 }
 function _copyHandBase(dst,src){
   dst.x=src.x;dst.y=src.y;dst.z=src.z;
@@ -13042,6 +15120,11 @@ const G={building:1,wave:1,wavesTotal:2,started:false,levelData:null,enemyMgr:nu
   // Phase 6 — AI/lean telemetry counters (read by __game.debug.snapshot)
   _aiPeekCount:0,_aiPeekShotsFired:0,_aiAllShotsFired:0,_aiPairsActive:0,_aiRepositions:0,_aiVaults:0,_aiReloads:0,
   _playerLeanShots:0,_playerTotalShots:0,  _floorplanDebugHud:false,_floorplanMapLabels:false};
+const CUSTOM_MAP_STORE=createCustomMapStore();
+const CUSTOM_LEVEL_KIT=createLevelKitRegistry();
+const CUSTOM_MAP_RUNTIME={pack:null,mapIndex:0,map:null,returnToEditor:false,lastResult:null};
+let CUSTOM_MAP_MENU=null;
+let CUSTOM_LEVEL_EDITOR=null;
 _gameRefForRenderExtras=G;
 try{_configureRenderStack();}catch(_){}
 function _nearestPlayerWorldPosForAi(wx,wz){
@@ -13096,24 +15179,39 @@ function _updatePlayerProxy(){
   PLAYER_PROXY.group.rotation.y=P.yaw;
   const crouch=P.crouchAmt||0,slide=P.slideAmt||0;
   const pr=playerAnimState0.resolved&&playerAnimState0.resolved.proxy?playerAnimState0.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,wallBrace:0,flinchTwist:0,footSwing:0,armSwing:0,jumpPose:0,fallPose:0,landSquash:0,deathCollapse:0};
-  PLAYER_PROXY.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10),1);
+  const dropPose=pr.dropkickPose||0;
+  const sprintPose=pr.sprintPose||0,footPlant=pr.footPlant||0,torsoTwist=pr.torsoTwist||0;
+  const shoulderRoll=pr.shoulderRoll||0,headCounter=pr.headCounter||0,kneeBend=pr.kneeBend||0,turnLean=pr.turnLean||0,combatReady=pr.combatReady||0,weaponBrace=pr.weaponBrace||0;
+  PLAYER_PROXY.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10-dropPose*.10),1);
   const wallSide=(playerAnimState0.inputs&&playerAnimState0.inputs.wallJumpSide)||0;
   for(const m of PLAYER_PROXY.parts){
     const part=m.userData.proxyPart||'';
     m.rotation.z=(part==='head'?0.04:0)*pr.adsSh+(part==='armL'||part==='armR'?0.12:0)*pr.vaultBend*Math.sign(part==='armL'?-1:1);
+    m.rotation.z+=(part==='torso'?shoulderRoll*.12:part==='head'?headCounter*.08:(part==='armL'||part==='armR')?shoulderRoll*(part==='armL' ? .10 : -.10):0);
+    m.rotation.y=(part==='torso'?torsoTwist*.22+turnLean*.026:part==='head'?-torsoTwist*.10+headCounter*.035:0);
     if(pr.wallBrace>0.01){
       if(part==='torso')m.rotation.z+=wallSide*pr.wallBrace*.08;
       if(part==='armL'||part==='armR')m.rotation.z+=wallSide*pr.wallBrace*(part==='armL'?0.20:-0.20);
     }
     m.rotation.x=pr.flinchTwist*(part==='torso'?.08:part==='head'?.12:0.04);
-    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12;
-    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08;
+    if(part==='torso'){m.rotation.x-=sprintPose*.070+combatReady*.020;m.rotation.z+=footPlant*.018+turnLean*.018;}
+    if(part==='head')m.rotation.x+=sprintPose*.030;
+    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12-weaponBrace*.10-combatReady*.055;
+    if(part==='armL'||part==='armR')m.rotation.z+=(part==='armL'?-1:1)*sprintPose*.030;
+    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08+sprintPose*.030-kneeBend*.075;
+    if(part==='footL'||part==='footR')m.rotation.x+=(part==='footL'?-footPlant:footPlant)*.045-kneeBend*.055;
+    if(dropPose>0.01){
+      if(part==='torso')m.rotation.x+=dropPose*.34;
+      if(part==='armL'||part==='armR')m.rotation.x-=dropPose*.20;
+      if(part==='legL'||part==='legR')m.rotation.x-=dropPose*.94;
+      if(part==='footL'||part==='footR')m.rotation.x-=dropPose*1.10;
+    }
     if(pr.deathCollapse>0.01){
       const d=pr.deathCollapse;
       m.rotation.x+=d*(part==='torso'?.35:part==='head'?-.2:.15);
     }
   }
-  PLAYER_PROXY.group.userData.proxyState={crouch:Number(crouch.toFixed(3)),slide:Number(slide.toFixed(3)),parts:PLAYER_PROXY.parts.length,mode:PLAYER_PROXY.proxyMode||'shadow',footPhase:Number((playerAnimState0.smoothed&&playerAnimState0.smoothed.footPhase)||0)};
+  PLAYER_PROXY.group.userData.proxyState={crouch:Number(crouch.toFixed(3)),slide:Number(slide.toFixed(3)),dropkick:Number(dropPose.toFixed(3)),parts:PLAYER_PROXY.parts.length,mode:PLAYER_PROXY.proxyMode||'shadow',footPhase:Number((playerAnimState0.smoothed&&playerAnimState0.smoothed.footPhase)||0)};
 }
 function _updatePlayerProxy2(){
   const show=PLAYER_PROXY2.enabled&&G.started&&(G.playMode==='coop'||G.playMode==='duel')&&G.splitScreenActive&&!P2.dead;
@@ -13124,18 +15222,33 @@ function _updatePlayerProxy2(){
   PLAYER_PROXY2.group.rotation.y=P2.yaw;
   const crouch=P2.crouchAmt||0,slide=P2.slideAmt||0;
   const pr=playerAnimState1.resolved&&playerAnimState1.resolved.proxy?playerAnimState1.resolved.proxy:{leanSh:0,adsSh:0,vaultBend:0,wallBrace:0,flinchTwist:0,footSwing:0,armSwing:0,jumpPose:0,fallPose:0,landSquash:0,deathCollapse:0};
-  PLAYER_PROXY2.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10),1);
+  const dropPose=pr.dropkickPose||0;
+  const sprintPose=pr.sprintPose||0,footPlant=pr.footPlant||0,torsoTwist=pr.torsoTwist||0;
+  const shoulderRoll=pr.shoulderRoll||0,headCounter=pr.headCounter||0,kneeBend=pr.kneeBend||0,turnLean=pr.turnLean||0,combatReady=pr.combatReady||0,weaponBrace=pr.weaponBrace||0;
+  PLAYER_PROXY2.group.scale.set(1,Math.max(.58,1-crouch*.18-slide*.28-(pr.landSquash||0)*.10-dropPose*.10),1);
   const wallSide=(playerAnimState1.inputs&&playerAnimState1.inputs.wallJumpSide)||0;
   for(const m of PLAYER_PROXY2.parts){
     const part=m.userData.proxyPart||'';
     m.rotation.z=(part==='head'?0.04:0)*pr.adsSh+(part==='armL'||part==='armR'?0.12:0)*pr.vaultBend*(part==='armL'?-1:1);
+    m.rotation.z+=(part==='torso'?shoulderRoll*.12:part==='head'?headCounter*.08:(part==='armL'||part==='armR')?shoulderRoll*(part==='armL' ? .10 : -.10):0);
+    m.rotation.y=(part==='torso'?torsoTwist*.22+turnLean*.026:part==='head'?-torsoTwist*.10+headCounter*.035:0);
     if(pr.wallBrace>0.01){
       if(part==='torso')m.rotation.z+=wallSide*pr.wallBrace*.08;
       if(part==='armL'||part==='armR')m.rotation.z+=wallSide*pr.wallBrace*(part==='armL'?0.20:-0.20);
     }
     m.rotation.x=pr.flinchTwist*(part==='torso'?.08:part==='head'?.12:0.04);
-    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12;
-    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08;
+    if(part==='torso'){m.rotation.x-=sprintPose*.070+combatReady*.020;m.rotation.z+=footPlant*.018+turnLean*.018;}
+    if(part==='head')m.rotation.x+=sprintPose*.030;
+    if(part==='armL'||part==='armR')m.rotation.x+=(pr.armSwing||0)*(part==='armL'?1:-1)*.34-(pr.jumpPose||0)*.16+(pr.fallPose||0)*.12-weaponBrace*.10-combatReady*.055;
+    if(part==='armL'||part==='armR')m.rotation.z+=(part==='armL'?-1:1)*sprintPose*.030;
+    if(part==='legL'||part==='legR')m.rotation.x=pr.footSwing*(part==='legL'?1:-1)*0.06+(pr.jumpPose||0)*.10-(pr.fallPose||0)*.08+sprintPose*.030-kneeBend*.075;
+    if(part==='footL'||part==='footR')m.rotation.x+=(part==='footL'?-footPlant:footPlant)*.045-kneeBend*.055;
+    if(dropPose>0.01){
+      if(part==='torso')m.rotation.x+=dropPose*.34;
+      if(part==='armL'||part==='armR')m.rotation.x-=dropPose*.20;
+      if(part==='legL'||part==='legR')m.rotation.x-=dropPose*.94;
+      if(part==='footL'||part==='footR')m.rotation.x-=dropPose*1.10;
+    }
   }
 }
 function _defaultAttachments(){
@@ -13172,6 +15285,7 @@ function normalizePlayerRuntime(){
   if(!Array.isArray(P.weaponRes)||P.weaponRes.length<WEAPONS.length)P.weaponRes=_weaponReserveDefaults().map((v,i)=>P.weaponRes?.[i]??v);
   _padWeaponState();
   if(typeof P.adsVis!=='number'||Number.isNaN(P.adsVis))P.adsVis=P.ads||0;
+  if(typeof P.dropkickActive!=='boolean')_resetDropkickState(P);
   P.smokes=P.smokes||0;P.flashes=P.flashes||0;P.healPacks=P.healPacks||0;P.grenades=P.grenades||0;
 }
 function _applyWeaponIdxToP2Player(idx){
@@ -13232,6 +15346,7 @@ function tryPistolWhip(){
     const h=hits[0];const enemy=h.object.userData.enemy;
     playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeImpactFrame',{});
     enemy.lastPlayerDir.set(fwd.x,0,fwd.z).normalize();
+    _primeEnemyHitFromObject(h.object,'torso');
     const killed=enemy.takeDamage(30,false,true);
     addBlood(h.point,false);showHM('body');sfxHit(false);
     if(killed){killFeed(false);awardKillMoney(enemy,false);cinematicKill(h.point);setTimeout(()=>checkZoneClears(),60);}
@@ -13250,20 +15365,32 @@ function updatePistolWhip(dt){
   if(!_whipActive)return;
   _whipT+=dt;
   const t=_whipT;
-  // 0..0.10s lurch forward, 0.10..0.30s settle back
-  if(t<.10){
-    const ph=t/.10;
-    gunGrp.position.x=_whipAnchorX+ph*-.04;
-    gunGrp.position.y=_whipAnchorY+ph*.02;
-    gunGrp.position.z=_whipAnchorZ+ph*-.18;
-    gunGrp.rotation.x=ph*-.32;
-  } else if(t<.30){
-    const ph=(t-.10)/.20;
-    const eo=1-Math.pow(1-ph,2);
-    gunGrp.position.x=_whipAnchorX+(-.04)*(1-eo);
-    gunGrp.position.y=_whipAnchorY+(.02)*(1-eo);
-    gunGrp.position.z=_whipAnchorZ+(-.18)*(1-eo);
-    gunGrp.rotation.x=-.32*(1-eo);
+  if(t<.12){
+    const ph=t/.12;
+    const wind=ph*ph*(3-2*ph);
+    gunGrp.position.x=_whipAnchorX+wind*.070;
+    gunGrp.position.y=_whipAnchorY-wind*.030;
+    gunGrp.position.z=_whipAnchorZ+wind*.060;
+    gunGrp.rotation.x=wind*.34;
+    gunGrp.rotation.z=-wind*.24;
+  } else if(t<.20){
+    const ph=(t-.12)/.08;
+    const hit=1-Math.pow(1-ph,3);
+    gunGrp.position.x=_whipAnchorX+.070-hit*.150;
+    gunGrp.position.y=_whipAnchorY-.030+hit*.060;
+    gunGrp.position.z=_whipAnchorZ+.060-hit*.245;
+    gunGrp.rotation.x=.34-hit*.86;
+    gunGrp.rotation.y=-hit*.16;
+    gunGrp.rotation.z=-.24+hit*.58;
+  } else if(t<.48){
+    const ph=(t-.20)/.28;
+    const eo=1-Math.pow(1-ph,3);
+    gunGrp.position.x=_whipAnchorX-.080*(1-eo);
+    gunGrp.position.y=_whipAnchorY+.030*(1-eo);
+    gunGrp.position.z=_whipAnchorZ-.185*(1-eo);
+    gunGrp.rotation.x=-.52*(1-eo);
+    gunGrp.rotation.y=-.16*(1-eo);
+    gunGrp.rotation.z=.34*(1-eo);
   } else {
     _whipActive=false;
   }
@@ -13308,6 +15435,7 @@ function updateExecution(dt){
     // Strike
     if(e&&!e.dead){
       e.lastPlayerDir.set(0,0,1);
+      _primeEnemyHitZone('head');
       const killed=e.takeDamage(999,true,true);
       if(killed){killFeed(true);awardKillMoney(e,true);setTimeout(()=>checkZoneClears(),60);}
     }
@@ -13354,7 +15482,7 @@ function tryLock(){
 }
 // Fullscreen DOM overlays: never steal pointer-lock or blanket preventDefault — otherwise
 // sliders, selects and pause SETTINGS don’t respond; Esc fights the browser lock exit.
-const POINTER_DOM_UI_SELECTOR='#pause-menu,#overlay,#loadout-viewer,#level-select,#full-map,#skill-tree,#achievements-panel,#dossier-card,#story-card,#ending-overlay,#radial';
+const POINTER_DOM_UI_SELECTOR='#pause-menu,#overlay,#loadout-viewer,#level-select,#custom-maps-panel,#custom-editor,#full-map,#skill-tree,#achievements-panel,#dossier-card,#story-card,#ending-overlay,#radial';
 function _evtTargetIsPointerDomUi(el){
   return !!(el&&typeof el.closest==='function'&&el.closest(POINTER_DOM_UI_SELECTOR));
 }
@@ -13424,9 +15552,13 @@ document.addEventListener('keydown',e=>{
     if(G.shopOpen){closeShop();return;}
     const dc=document.getElementById('dossier-card');
     if(dc&&dc.classList.contains('show')){hideDossier();return;}
-    const fm=document.getElementById('full-map');
-    if(fm&&fm.classList.contains('show')){hideFullMap();return;}
-    const ls=document.getElementById('level-select');
+	    const fm=document.getElementById('full-map');
+	    if(fm&&fm.classList.contains('show')){hideFullMap();return;}
+	    const ce=document.getElementById('custom-editor');
+	    if(ce&&ce.classList.contains('show')){CUSTOM_LEVEL_EDITOR&&CUSTOM_LEVEL_EDITOR.hide();return;}
+	    const cmp=document.getElementById('custom-maps-panel');
+	    if(cmp&&cmp.classList.contains('show')){CUSTOM_MAP_MENU&&CUSTOM_MAP_MENU.hide();return;}
+	    const ls=document.getElementById('level-select');
     if(ls&&ls.classList.contains('show')){hideLevelSelect();return;}
     const lv=document.getElementById('loadout-viewer');
     if(lv&&lv.classList.contains('show')){hideLoadoutViewer();return;}
@@ -13439,16 +15571,32 @@ document.addEventListener('keydown',e=>{
     return;
   }
   if(!G.started)return;
+  if((e.code==='AltLeft'||e.code==='AltRight')&&!P.dead&&!G.menuOpen){
+    e.preventDefault();
+    P.guardBehindHeld=true;
+  }
   const W=WEAPONS[P.weaponIdx];
-  if(e.code==='KeyR'&&!P.reloading&&W.mag>P.ammo&&P.ammoRes>0&&!P.dead)startReload();
+  if(e.code==='KeyR'&&!P.dead&&!G.menuOpen){
+    if(!P.reloading&&W.mag>P.ammo&&P.ammoRes>0)startReload();
+    else if(!e.repeat)_triggerReloadDeniedFeedback(P,0,W);
+  }
   if((e.code==='KeyR'||e.code==='Space')&&P.dead){
     e.preventDefault();
     if(!e.repeat&&_canRestartRunFromInput())restartGame();
     return;
   }
-  if(e.code==='Space'&&!P.dead&&!P.vaulting&&!e.repeat){e.preventDefault();if(P.grounded&&P.nearVault)doVault(P.nearVault);else doJump();}
+  if(e.code==='Space'&&!P.dead&&!P.vaulting&&!e.repeat){
+    e.preventDefault();
+    if(P.grounded&&P.nearVault){
+      P._vaultIntentUntil=0;
+      doVault(P.nearVault);
+    }else{
+      P._vaultIntentUntil=performance.now()+GAMEPLAY_QOL_FEEL.vaultBufferMs;
+      doJump();
+    }
+  }
   if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
-  if(e.code==='KeyF'&&!P.dead&&P.nearPickup){tryEquipPickup(P.nearPickup);}
+  if(e.code==='KeyF'&&!P.dead&&P.nearPickup){e.preventDefault();tryEquipPickup(P.nearPickup);return;}
   if(e.code==='KeyH'&&!P.dead)useHealPack();
   if(e.code==='KeyG'&&!P.dead)tryThrowGrenade();
   if(e.code==='KeyB'&&!P.dead){e.preventDefault();toggleShop();}
@@ -13471,6 +15619,7 @@ document.addEventListener('keydown',e=>{
   if(e.code==='KeyM'&&!P.dead&&G.started){showFullMap&&showFullMap();}
   // CROUCH: hold C to crouch
   if(e.code==='KeyC'&&!P.dead&&!G.menuOpen){P.crouching=true;}
+  if(e.code==='ControlLeft'&&!P.dead&&!G.menuOpen&&!e.repeat){P._slideIntentUntil=performance.now()+SLIDE_FEEL.bufferMs;}
   // FIRE MODE TOGGLE: X cycles through available modes for current weapon
   if(e.code==='KeyX'&&!P.dead&&!G.menuOpen){cycleFireMode();}
   // Dodge roll: double-tap movement key (within 280ms)
@@ -13485,7 +15634,7 @@ document.addEventListener('keydown',e=>{
   }
   if(e.code==='Tab'&&!P.dead){e.preventDefault();if(G.shopOpen)closeShop();toggleInventory();}
 });
-document.addEventListener('keyup',e=>{delete K[e.code];delete K2[e.code];if(e.code==='KeyC')P.crouching=false;});
+document.addEventListener('keyup',e=>{delete K[e.code];delete K2[e.code];if(e.code==='KeyC')P.crouching=false;if(e.code==='AltLeft'||e.code==='AltRight')P.guardBehindHeld=false;});
 // ── HUD & HELPERS ─────────────────────────────────────────────────────────────
 const $e=id=>document.getElementById(id);
 let _canvasPeMenuSync=null;
@@ -13528,10 +15677,15 @@ function showHM(kind='body',mag=1){
   // Phase AA: hit-marker scale punch — `mag` (0..1+) bumps a brief CSS
   // transform so heavier hits feel more substantial.
   const hm=$e('hitmark');if(!hm)return;
-  hm.style.opacity='1';hm.className='hm hm-'+kind;
-  const scale=kind==='head'?1.45:1.0+Math.min(0.6,mag*0.5);
+  const raw=String(kind||'body');
+  const tone=raw==='headkill'||raw==='head-kill'?'headkill':(raw==='kill'?'kill':(raw==='head'||raw==='hs'?'head':'body'));
+  hm.style.opacity='1';
+  hm.className='hm hm-'+tone+(tone==='head'?' hs':'');
+  const hitMag=THREE.MathUtils.clamp(Number(mag)||0,.08,1.65);
+  const scale=tone==='headkill'?1.74:(tone==='kill'?1.64:(tone==='head'?1.48:1.0+Math.min(0.58,hitMag*0.48)));
   hm.style.transform=`translate(-50%,-50%) scale(${scale.toFixed(2)})`;
-  G.hitMarkTimer=(kind==='head')?.22:.14;
+  hm.style.filter=tone==='headkill'?'brightness(1.28)':(tone==='kill'?'brightness(1.16)':'');
+  G.hitMarkTimer=tone==='headkill' ? .30 : (tone==='kill' ? .26 : (tone==='head' ? .22 : .14+Math.min(.04,hitMag*.025)));
 }
 function killFeed(hs,opts){
   const el=document.createElement('div');
@@ -13821,6 +15975,7 @@ function explodeGrenade(pos){
         const dmg=Math.max(40,300-d*55);
         // Direction: knock enemy outward from blast
         e.lastPlayerDir.set(-dx/Math.max(d,.01),0,-dz/Math.max(d,.01));
+        _primeEnemyHitZone('torso');
         const killed=e.takeDamage(dmg,false);
         if(killed){
           addBlood(e.group.position.clone(),false);
@@ -13986,7 +16141,7 @@ function updateGrenades(dt){
   }
 }
 // ── SETTINGS + PAUSE MENU ────────────────────────────────────────────────────
-const VISUAL_PATCH_SETTINGS_VERSION=13;
+const VISUAL_PATCH_SETTINGS_VERSION=14;
 const SETTINGS=(()=>{
   // Defaults FIRST — then merge the saved values on top. Phase 6: new tactical
   // and lean fields default to enabled; loading an older settings JSON simply
@@ -13994,7 +16149,7 @@ const SETTINGS=(()=>{
   // compatible.
   let s={
     sens:1.0,fov:75,quality:'high',adsens:1.0,vol:1.0,mouseDpi:800,lastSensRefGame:'valorant',invY:false,radar:true,dmgNum:true,
-    scopePipEnabled:false,scopePipResolution:0,gore:'med',aimAssist:false,
+    scopePipEnabled:true,scopePipResolution:0,gore:'med',aimAssist:false,
     pixelRatioCap:1.0,maxPointLightsEffective:24,perfHud:false,
     aiSkipFramesModulo:3,raycastSpatialIndex:true,
     maxParticlesBlood:120,maxParticlesSmoke:80,
@@ -14028,6 +16183,7 @@ const SETTINGS=(()=>{
       aoQuality:'off',
       rendererMode:'webgl',
       pixelRatioCap:1.0,
+      scopePipEnabled:true,
       scopePipResolution:0,
       lightingQuality:s.lightingQuality||(s.quality||'high'),
       shadowQuality:s.shadowQuality==='off'||s.shadowQuality==='medium'?'high':(s.shadowQuality||'high'),
@@ -14140,7 +16296,7 @@ function applyQuality(){
 const POST_STATE_PROFILES={
   normal:{},
   ads:{vignette:.05,sharpen:.025,grain:-.006,aberration:-.0002,bloomMultiplier:.90},
-  focus:{exposure:.05,contrast:-.03,saturation:-.12,cool:.12,vignette:.04,grain:.004,sharpen:.025,bloomMultiplier:1.02},
+  focus:{exposure:.08,contrast:.04,saturation:-.18,cool:.18,vignette:.10,grain:.006,aberration:.00018,sharpen:.045,bloomMultiplier:1.12},
   lowHp:{contrast:.10,saturation:-.10,warm:.14,vignette:.12,grain:.004,aberration:.00025,bloomMultiplier:.92},
   killBeat:{exposure:.08,contrast:.10,saturation:.05,warm:.06,bloomMultiplier:1.12},
   death:{exposure:-.14,contrast:.12,saturation:-.32,cool:.10,vignette:.16,grain:.006,aberration:.00035,bloomMultiplier:.76},
@@ -14199,11 +16355,11 @@ function _computePostContext(hpRatio=1){
     }
     mods.push(scaled);
   };
-  let ads=0,focus=false,dead=false,menu=false,deathcam=false,kill=0,setKind='',setActive=false;
-  try{ads=P.ads||0;focus=!!P.focusActive;dead=!!P.dead;menu=!!G.menuOpen;deathcam=!!DEATHCAM.active;kill=Math.min(1,(_killCamT||0)/Math.max(.001,_killCamDur||1));setKind=SETPIECE&&SETPIECE.kind;setActive=!!(SETPIECE&&SETPIECE.active);}catch(_){}
+  let ads=0,focus=false,focusW=0,dead=false,menu=false,deathcam=false,kill=0,setKind='',setActive=false;
+  try{ads=P.ads||0;focus=!!P.focusActive;focusW=THREE.MathUtils.clamp((P._focusVisual!=null?P._focusVisual:(focus?1:0))+(P._focusEnterPulse||0)*.18+(P._focusExitPulse||0)*.10,0,1);dead=!!P.dead;menu=!!G.menuOpen;deathcam=!!DEATHCAM.active;kill=Math.min(1,(_killCamT||0)/Math.max(.001,_killCamDur||1));setKind=SETPIECE&&SETPIECE.kind;setActive=!!(SETPIECE&&SETPIECE.active);}catch(_){}
   if(menu)addState('menu');
   if(!warmup&&ads>.08)addState('ads',THREE.MathUtils.clamp(ads,0,1));
-  if(!warmup&&focus)addState('focus');
+  if(!warmup&&(focus||focusW>.02))addState('focus',Math.max(focusW,focus ? .72 : 0));
   if(!warmup&&hpRatio<.34)addState('lowHp',THREE.MathUtils.clamp((.34-hpRatio)/.34,0,1));
   if(!warmup&&kill>0)addState('killBeat',kill);
   if(dead||deathcam)addState('death');
@@ -14218,7 +16374,7 @@ function _computePostContext(hpRatio=1){
     postProfile,
     bloomMultiplier:merged.bloomMultiplier,
     aoMultiplier:merged.aoMultiplier,
-    signature:`${visual.id}:${postProfile}:${Math.round(ads*20)}:${Math.round(hpRatio*20)}:${setKind||'-'}:${dead?1:0}:${menu?1:0}:${Math.round(((SETTINGS&&SETTINGS.gradeIntensity)!=null?SETTINGS.gradeIntensity:1)*100)}`
+    signature:`${visual.id}:${postProfile}:${Math.round(ads*20)}:${Math.round(focusW*10)}:${Math.round(hpRatio*20)}:${setKind||'-'}:${dead?1:0}:${menu?1:0}:${Math.round(((SETTINGS&&SETTINGS.gradeIntensity)!=null?SETTINGS.gradeIntensity:1)*100)}`
   };
 }
 function _rgbaFromHex(hex,alpha){
@@ -14310,7 +16466,19 @@ function _updatePostProfile(hpRatio=1){
   _applyScreenPostProfile(ctx);
   return ctx;
 }
-function openMenu(){G.menuOpen=true;$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}}
+function _editorPlaytestReturnAvailable(){
+  return G.playMode==='editor-test'&&CUSTOM_MAP_RUNTIME&&CUSTOM_MAP_RUNTIME.returnToEditor;
+}
+function _syncEditorPlaytestUi(){
+  const canReturn=_editorPlaytestReturnAvailable();
+  const pauseReturn=$e('pause-return-editor');
+  if(pauseReturn)pauseReturn.style.display=canReturn?'block':'none';
+  const esQuit=$e('es-quit');
+  if(esQuit)esQuit.textContent=canReturn?'RETURN TO EDITOR':'MAIN MENU';
+  const esRestart=$e('es-restart');
+  if(esRestart)esRestart.textContent=G.playMode==='editor-test'?'PLAYTEST AGAIN':'PLAY AGAIN';
+}
+function openMenu(){G.menuOpen=true;_syncEditorPlaytestUi();$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}}
 function closeMenu(relockPointer=true){
   G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';
   if(relockPointer&&G.started&&!P.dead)tryLock();
@@ -14340,10 +16508,14 @@ function quitToMain(){
   const h1=ov&&ov.querySelector('h1');
   const h2=ov&&ov.querySelector('h2');
   if(h1)h1.textContent='CLEARANCE';
-  if(h2)h2.textContent='Operator · Mission Brief';
-  $e('start-btn').textContent='▶ DEPLOY';
-  if(ov)ov.classList.remove('hidden');
-  const mp=$e('mp-submenu'),mb=$e('menu-buttons');
+	  if(h2)h2.textContent='Operator · Mission Brief';
+	  $e('start-btn').textContent='▶ DEPLOY';
+	  if(ov)ov.classList.remove('hidden');
+	  const cmp=$e('custom-maps-panel');if(cmp)cmp.classList.remove('show');
+	  const ce=$e('custom-editor');if(ce)ce.classList.remove('show');
+	  CUSTOM_MAP_RUNTIME.pack=null;CUSTOM_MAP_RUNTIME.map=null;CUSTOM_MAP_RUNTIME.mapIndex=0;CUSTOM_MAP_RUNTIME.returnToEditor=false;
+	  _syncEditorPlaytestUi();
+	  const mp=$e('mp-submenu'),mb=$e('menu-buttons');
   if(mp)mp.style.display='none';
   if(mb)mb.style.display='flex';
   GAMEPAD._menuPadA=false;
@@ -14357,18 +16529,52 @@ function _alignCyl(mesh,from,to){
   mesh.quaternion.copy(q);
   mesh.position.copy(from).add(to).multiplyScalar(.5);
 }
-function addTrail(from,to){
+function addTrail(from,to,opts={}){
   const dir=to.clone().sub(from);const len=dir.length();if(len<.05)return;
   const am=_additiveVfxTierMul();
+  const focusTrail=THREE.MathUtils.clamp(opts.focusLevel!=null?opts.focusLevel:(P._focusVisual||0),0,1);
+  const haloColor=opts.haloColor!=null?opts.haloColor:(focusTrail>.04?0x74eaff:0xffd070);
+  const coreColor=opts.coreColor!=null?opts.coreColor:(focusTrail>.04?0xf0ffff:0xfffce0);
+  const trailLife=opts.life!=null?opts.life:(.16*(1+focusTrail*1.75));
+  const haloRadius=(opts.haloRadius!=null?opts.haloRadius:.022)*(1+focusTrail*.55);
+  const coreRadius=(opts.coreRadius!=null?opts.coreRadius:.006)*(1+focusTrail*.42);
+  const haloOpacity=(opts.haloOpacity!=null?opts.haloOpacity:(.55+focusTrail*.20))*am;
+  const coreOpacity=(opts.coreOpacity!=null?opts.coreOpacity:Math.min(1,.95+focusTrail*.05))*am;
   // Outer halo — thick, soft additive glow
-  const matG=new THREE.MeshBasicMaterial({color:0xffd070,transparent:true,opacity:.55*am,depthWrite:false,blending:THREE.AdditiveBlending});
-  const mG=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,len,6,1,true),matG);
+  const matG=new THREE.MeshBasicMaterial({color:haloColor,transparent:true,opacity:haloOpacity,depthWrite:false,blending:THREE.AdditiveBlending});
+  const mG=new THREE.Mesh(new THREE.CylinderGeometry(haloRadius,haloRadius,len,6,1,true),matG);
   _alignCyl(mG,from,to);scene.add(mG);
   // Inner core — bright white-yellow streak
-  const matC=new THREE.MeshBasicMaterial({color:0xfffce0,transparent:true,opacity:.95*am,depthWrite:false,blending:THREE.AdditiveBlending});
-  const mC=new THREE.Mesh(new THREE.CylinderGeometry(.006,.006,len,6,1,true),matC);
+  const matC=new THREE.MeshBasicMaterial({color:coreColor,transparent:true,opacity:coreOpacity,depthWrite:false,blending:THREE.AdditiveBlending});
+  const mC=new THREE.Mesh(new THREE.CylinderGeometry(coreRadius,coreRadius,len,6,1,true),matC);
   _alignCyl(mC,from,to);scene.add(mC);
-  G.trails.push({mesh:mG,mat:matG,timer:.16,maxTime:.16,isTracer:true,extra:[{mesh:mC,mat:matC}]});
+  G.trails.push({mesh:mG,mat:matG,timer:trailLife,maxTime:trailLife,isTracer:true,focusTracer:focusTrail,gunplayKind:opts.kind||'neutral',extra:[{mesh:mC,mat:matC}]});
+}
+function spawnNearMissAirCut(cam,side=1,strength=.7){
+  if(!cam||STABLE_RENDERING_MODE)return;
+  const am=_additiveVfxTierMul();
+  const s=THREE.MathUtils.clamp(strength,.25,1.25);
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
+  const up=new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
+  const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion);
+  const pos=cam.position.clone()
+    .addScaledVector(fwd,.72+Math.random()*.36)
+    .addScaledVector(right,(side||1)*(.22+Math.random()*.22))
+    .addScaledVector(up,(Math.random()-.5)*.22);
+  const mat=new THREE.MeshBasicMaterial({
+    color:0xfff2c0,
+    transparent:true,
+    opacity:(.40+.22*s)*am,
+    depthWrite:false,
+    blending:THREE.AdditiveBlending,
+    side:THREE.DoubleSide
+  });
+  const slash=new THREE.Mesh(new THREE.PlaneGeometry((.18+.12*s),(.012+.010*s)),mat);
+  slash.position.copy(pos);
+  slash.lookAt(cam.position);
+  slash.rotation.z+=(side||1)*(.70+Math.random()*.45);
+  scene.add(slash);
+  G.trails.push({mesh:slash,mat,timer:.085+.040*s,maxTime:.085+.040*s,isFlash:true,gunplayKind:'near-miss-cut'});
 }
 function addParticle(pos,hs){
   const am=_additiveVfxTierMul();
@@ -14424,6 +16630,278 @@ function addBlood(pos,hs){
     }
   }
 }
+function _weaponImpactWeight(weaponIdx){
+  if(weaponIdx===1)return 1.22;
+  if(weaponIdx===3)return 1.42;
+  if(weaponIdx===5)return 1.18;
+  if(weaponIdx===7)return 1.55;
+  if(weaponIdx===6)return 1.08;
+  return 1.0;
+}
+const JUMP_FEEL={coyoteMs:120,bufferMs:165};
+const SLIDE_FEEL={bufferMs:230,landingWindowMs:190};
+function _weaponShotFeelWeight(weaponIdx){
+  if(weaponIdx===1)return 1.28;
+  if(weaponIdx===3)return 1.45;
+  if(weaponIdx===5)return 1.16;
+  if(weaponIdx===6)return 1.10;
+  if(weaponIdx===7)return 1.34;
+  if(weaponIdx===4)return .74;
+  return .96;
+}
+const GUNPLAY_FEEL={
+  default:{resetWindow:.46,settledMul:.16,settledFollowMul:.72,bloomPerShot:.075,maxBloom:.72,adsBloomMul:.46,recoilBloom:.34,pressureBloom:.18,suppressionBloom:.22,damageBloom:.25,heatPressureBloom:.17,singleYaw:.0035,randomYaw:.0045,recoilPitchMul:1.0,recoilReturn:.92,suppressionRadius:1.05,enemySuppression:1.0},
+  1:{resetWindow:.50,settledMul:.10,settledFollowMul:.66,bloomPerShot:.050,maxBloom:.40,adsBloomMul:.42,recoilBloom:.30,pressureBloom:.14,suppressionBloom:.18,damageBloom:.22,heatPressureBloom:.12,singleYaw:.0042,randomYaw:.0038,recoilPitchMul:1.05,recoilReturn:1.10,suppressionRadius:.92,enemySuppression:.80},
+  3:{resetWindow:.82,settledMul:.48,settledFollowMul:.88,bloomPerShot:.025,maxBloom:.20,adsBloomMul:.70,recoilBloom:.16,pressureBloom:.10,suppressionBloom:.12,damageBloom:.18,heatPressureBloom:.10,singleYaw:.012,randomYaw:.010,recoilPitchMul:1.18,recoilReturn:.74,suppressionRadius:1.95,enemySuppression:1.45},
+  4:{resetWindow:.36,settledMul:.34,settledFollowMul:.82,bloomPerShot:.095,maxBloom:.92,adsBloomMul:.56,recoilBloom:.42,pressureBloom:.22,suppressionBloom:.28,damageBloom:.25,heatPressureBloom:.22,singleYaw:.0022,randomYaw:.0042,recoilPitchMul:.86,recoilReturn:1.18,suppressionRadius:1.18,enemySuppression:1.18},
+  5:{resetWindow:.68,settledMul:.08,settledFollowMul:.56,bloomPerShot:.060,maxBloom:.32,adsBloomMul:.32,recoilBloom:.24,pressureBloom:.12,suppressionBloom:.18,damageBloom:.25,heatPressureBloom:.10,singleYaw:.0065,randomYaw:.0040,recoilPitchMul:1.12,recoilReturn:.86,suppressionRadius:1.22,enemySuppression:1.05},
+  6:{resetWindow:.42,settledMul:.12,settledFollowMul:.68,bloomPerShot:.055,maxBloom:.42,adsBloomMul:.42,recoilBloom:.30,pressureBloom:.14,suppressionBloom:.18,damageBloom:.22,heatPressureBloom:.12,singleYaw:.0038,randomYaw:.0036,recoilPitchMul:.98,recoilReturn:1.14,suppressionRadius:.92,enemySuppression:.80},
+  7:{resetWindow:1.05,settledMul:.05,settledFollowMul:.48,bloomPerShot:.050,maxBloom:.24,adsBloomMul:.24,recoilBloom:.18,pressureBloom:.10,suppressionBloom:.14,damageBloom:.28,heatPressureBloom:.08,singleYaw:.010,randomYaw:.0045,recoilPitchMul:1.30,recoilReturn:.66,suppressionRadius:1.35,enemySuppression:1.10}
+};
+function _weaponGunplayFeel(weaponIdx){
+  return GUNPLAY_FEEL[weaponIdx]||GUNPLAY_FEEL.default;
+}
+const COMBAT_FEEL_BASE={
+  shotImpulseMul:1.0,
+  hitPulseMul:1.0,
+  hitFlowMul:1.0,
+  hitStopMul:1.0,
+  enemyAimBreak:1.0,
+  enemyStagger:1.0,
+  enemyPush:1.0,
+  confidenceHit:.46,
+  confidenceKill:.64,
+  missBloom:.30,
+  confidenceTighten:.12,
+  rhythmTighten:.10,
+  suppressionMul:1.0,
+  markerMagMul:1.0
+};
+const COMBAT_FEEL={
+  1:{shotImpulseMul:1.08,hitPulseMul:1.12,hitFlowMul:1.10,hitStopMul:1.10,enemyAimBreak:1.14,enemyStagger:1.12,enemyPush:1.10,confidenceHit:.54,confidenceKill:.76,missBloom:.23,confidenceTighten:.17,rhythmTighten:.13,markerMagMul:1.08},
+  3:{shotImpulseMul:1.20,hitPulseMul:1.32,hitFlowMul:1.22,hitStopMul:1.20,enemyAimBreak:1.32,enemyStagger:1.30,enemyPush:1.42,confidenceHit:.36,confidenceKill:.72,missBloom:.18,confidenceTighten:.10,rhythmTighten:.08,suppressionMul:1.24,markerMagMul:1.28},
+  4:{shotImpulseMul:.88,hitPulseMul:.88,hitFlowMul:.96,hitStopMul:.82,enemyAimBreak:.92,enemyStagger:.82,enemyPush:.76,confidenceHit:.40,confidenceKill:.58,missBloom:.38,confidenceTighten:.10,rhythmTighten:.16,suppressionMul:1.14,markerMagMul:.88},
+  5:{shotImpulseMul:1.05,hitPulseMul:1.15,hitFlowMul:1.08,hitStopMul:1.12,enemyAimBreak:1.12,enemyStagger:1.08,enemyPush:1.12,confidenceHit:.52,confidenceKill:.70,missBloom:.24,confidenceTighten:.18,rhythmTighten:.11,markerMagMul:1.10},
+  6:{shotImpulseMul:1.00,hitPulseMul:1.04,hitFlowMul:1.06,hitStopMul:1.02,enemyAimBreak:1.02,enemyStagger:1.00,enemyPush:.92,confidenceHit:.50,confidenceKill:.68,missBloom:.25,confidenceTighten:.16,rhythmTighten:.13,markerMagMul:1.02},
+  7:{shotImpulseMul:1.18,hitPulseMul:1.38,hitFlowMul:1.16,hitStopMul:1.24,enemyAimBreak:1.24,enemyStagger:1.18,enemyPush:1.34,confidenceHit:.58,confidenceKill:.82,missBloom:.18,confidenceTighten:.20,rhythmTighten:.09,suppressionMul:1.08,markerMagMul:1.24}
+};
+function _weaponCombatProfile(weaponIdx){
+  return Object.assign({},COMBAT_FEEL_BASE,COMBAT_FEEL[weaponIdx]||{});
+}
+function _enemyGunplayProfile(type){
+  const t=String(type||'soldier');
+  const map={
+    soldier:{tracer:.085,hitReact:.90,nearMiss:.90,damageTell:.98},
+    heavy:{tracer:.105,hitReact:1.12,nearMiss:1.05,damageTell:1.12},
+    sniper:{tracer:.024,hitReact:1.24,nearMiss:.70,damageTell:1.18},
+    scout:{tracer:.145,hitReact:.78,nearMiss:1.18,damageTell:.82},
+    pistolero:{tracer:.118,hitReact:.82,nearMiss:1.10,damageTell:.86},
+    shielded:{tracer:.104,hitReact:.98,nearMiss:1.02,damageTell:1.02},
+    riot:{tracer:.112,hitReact:1.04,nearMiss:1.05,damageTell:1.08},
+    demolitions:{tracer:.092,hitReact:1.04,nearMiss:.94,damageTell:1.04},
+    drone:{tracer:.155,hitReact:.60,nearMiss:1.18,damageTell:.70},
+    marksman:{tracer:.034,hitReact:1.18,nearMiss:.78,damageTell:1.14},
+    lieutenant:{tracer:.070,hitReact:1.10,nearMiss:.86,damageTell:1.10},
+    boss:{tracer:.064,hitReact:1.16,nearMiss:.84,damageTell:1.16}
+  };
+  return map[t]||map.soldier;
+}
+function _rayPointDist(origin,dir,point,maxDist=60){
+  if(!origin||!dir||!point)return {d:Infinity,t:0};
+  const vx=point.x-origin.x,vy=point.y-origin.y,vz=point.z-origin.z;
+  const t=THREE.MathUtils.clamp(vx*dir.x+vy*dir.y+vz*dir.z,0,maxDist);
+  const px=origin.x+dir.x*t,py=origin.y+dir.y*t,pz=origin.z+dir.z*t;
+  const dx=point.x-px,dy=point.y-py,dz=point.z-pz;
+  return {d:Math.sqrt(dx*dx+dy*dy*.55+dz*dz),t};
+}
+function _registerEnemySuppressionAlongShot(origin,dir,maxDist,weaponIdx,hitEnemy=null){
+  if(!G.enemyMgr||!Array.isArray(G.enemyMgr._list)||!origin||!dir)return;
+  const feel=_weaponGunplayFeel(weaponIdx);
+  const combat=_weaponCombatProfile(weaponIdx);
+  const radius=feel.suppressionRadius||1.05;
+  const pressure=(feel.enemySuppression||1)*(combat.suppressionMul||1);
+  const nowMs=performance.now();
+  for(const e of G.enemyMgr._list){
+    if(!e||e.dead||e._roomFlowDormant||e===hitEnemy||!e.group)continue;
+    const cen=e.group.position.clone();
+    cen.y+=e.type==='drone' ? .90 : 1.05;
+    const q=_rayPointDist(origin,dir,cen,maxDist);
+    if(q.t<1.0||q.d>=radius)continue;
+    const prox=THREE.MathUtils.clamp(1-q.d/radius,0,1);
+    const dur=520+880*prox*pressure;
+    e._suppressedUntil=Math.max(e._suppressedUntil||0,nowMs+dur);
+    e._incomingNearMiss=Math.max(e._incomingNearMiss||0,prox);
+    e.aimReady=Math.max(0,(e.aimReady||0)-(.07+prox*.16)*pressure);
+    e.shootTimer=Math.max(e.shootTimer||0,.10+prox*.34);
+    e.burstCooldown=Math.max(e.burstCooldown||0,.06+prox*.18);
+  }
+}
+function _impactSideFromWorldPoint(hitPt,slot=0){
+  if(!hitPt)return 0;
+  const cam=slot===1?cameraP2:camera;
+  if(!cam)return 0;
+  const to=hitPt.clone().sub(cam.position);
+  if(to.lengthSq()<1e-5)return 0;
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
+  const side=to.normalize().dot(right);
+  return Math.abs(side)>.045?(side>0?1:-1):0;
+}
+function _addPlayerFeelImpulse(pl,opts={}){
+  if(!pl)return;
+  const body=Number.isFinite(opts.body)?opts.body:0;
+  const f=Number.isFinite(opts.forward)?opts.forward:0;
+  const r=Number.isFinite(opts.right)?opts.right:0;
+  const land=Number.isFinite(opts.landing)?opts.landing:0;
+  const stride=Number.isFinite(opts.stride)?opts.stride:0;
+  if(body)pl._bodyJolt=Math.max(pl._bodyJolt||0,body);
+  if(f){
+    pl._massInertiaF=f>0?Math.max(pl._massInertiaF||0,f):Math.min(pl._massInertiaF||0,f);
+  }
+  if(r){
+    pl._massInertiaR=r>0?Math.max(pl._massInertiaR||0,r):Math.min(pl._massInertiaR||0,r);
+  }
+  if(land)pl._landingSpring=Math.max(pl._landingSpring||0,land);
+  if(stride)pl._strideImpact=Math.max(pl._strideImpact||0,stride);
+}
+function spawnEnemyHitPulse(pos,isHead,killed,strength=1){
+  if(!pos||!scene)return;
+  const am=typeof _additiveVfxTierMul==='function'?_additiveVfxTierMul():1;
+  const s=THREE.MathUtils.clamp(strength||1,.45,1.75);
+  const col=isHead?0xfff0a0:(killed?0xff8060:0xff4038);
+  const p0=pos.clone().add(new THREE.Vector3(0,.015,0));
+  const mat=new THREE.MeshBasicMaterial({
+    color:col,
+    transparent:true,
+    opacity:(isHead?.92:.62)*am,
+    depthWrite:false,
+    depthTest:false,
+    blending:THREE.AdditiveBlending,
+    side:THREE.DoubleSide
+  });
+  const r0=(isHead?.035:.028)*s;
+  const r1=(isHead?.105:.082)*s;
+  const ring=new THREE.Mesh(new THREE.RingGeometry(r0,r1,18),mat);
+  ring.position.copy(p0);
+  ring.renderOrder=92;
+  _orientVfxBillboard(ring);
+  scene.add(ring);
+  G.trails.push({mesh:ring,mat,timer:isHead?.18:.13,maxTime:isHead?.18:.13,isFlash:true,faceCameraBillboard:true});
+  if((G.trails&&G.trails.length<(_trailBudget().total-6))||Math.random()<.65){
+    const coreMat=new THREE.MeshBasicMaterial({
+      color:isHead?0xffffff:0xffd0a8,
+      transparent:true,
+      opacity:(isHead?.70:.44)*am,
+      depthWrite:false,
+      depthTest:false,
+      blending:THREE.AdditiveBlending,
+      side:THREE.DoubleSide
+    });
+    const core=new THREE.Mesh(new THREE.CircleGeometry((isHead?.055:.042)*s,14),coreMat);
+    core.position.copy(p0);
+    core.renderOrder=93;
+    _orientVfxBillboard(core);
+    scene.add(core);
+    G.trails.push({mesh:core,mat:coreMat,timer:isHead?.105:.080,maxTime:isHead?.105:.080,isFlash:true,faceCameraBillboard:true});
+  }
+  const slashCount=isHead||killed?2:1;
+  for(let i=0;i<slashCount;i++){
+    if(G.trails&&G.trails.length>=_trailBudget().total-2)break;
+    const slashMat=new THREE.MeshBasicMaterial({
+      color:isHead?0xfff4b0:0xffb070,
+      transparent:true,
+      opacity:(isHead?.58:.38)*am,
+      depthWrite:false,
+      depthTest:false,
+      blending:THREE.AdditiveBlending,
+      side:THREE.DoubleSide
+    });
+    const slash=new THREE.Mesh(new THREE.PlaneGeometry((.16+.045*i)*s,.014*s),slashMat);
+    slash.position.copy(p0);
+    slash.renderOrder=94;
+    _orientVfxBillboard(slash);
+    slash.rotation.z+=(Math.random()<.5?-1:1)*(.32+Math.random()*.70);
+    slash.position.x+=(Math.random()-.5)*.018;
+    slash.position.y+=(Math.random()-.5)*.018;
+    scene.add(slash);
+    G.trails.push({mesh:slash,mat:slashMat,timer:.085+.030*i,maxTime:.085+.030*i,isFlash:true});
+  }
+  const shardCount=isHead?5:(killed?4:2);
+  for(let i=0;i<shardCount;i++){
+    if(G.trails&&G.trails.length>=_trailBudget().total-2)break;
+    const shardMat=new THREE.MeshBasicMaterial({
+      color:isHead?0xfff8c8:(killed?0xffb070:0xff8058),
+      transparent:true,
+      opacity:(isHead?.62:.34)*am,
+      depthWrite:false,
+      depthTest:false,
+      blending:THREE.AdditiveBlending,
+      side:THREE.DoubleSide
+    });
+    const shard=new THREE.Mesh(new THREE.PlaneGeometry((.035+Math.random()*.045)*s,.007*s),shardMat);
+    shard.position.copy(p0);
+    shard.renderOrder=95;
+    _orientVfxBillboard(shard);
+    shard.rotation.z+=Math.random()*Math.PI;
+    const side=(Math.random()-.5)*2;
+    const rise=.18+Math.random()*.24;
+    const vel=new THREE.Vector3(side*.30+(Math.random()-.5)*.18,rise,(Math.random()-.5)*.30);
+    scene.add(shard);
+    G.trails.push({mesh:shard,mat:shardMat,vel,timer:.105+Math.random()*.070,maxTime:.16,isParticle:true});
+  }
+}
+function triggerPlayerHitImpactFeedback(hitPt,isHead,killed,dmg,weaponIdx,slot=0){
+  const hState=slot===1?H2:H;
+  if(!hState)return;
+  const pl=slot===1?P2:P;
+  const profile=_weaponCombatProfile(weaponIdx);
+  const base=THREE.MathUtils.clamp((dmg||35)/115,.38,1.55);
+  const strength=base*_weaponImpactWeight(weaponIdx)*(profile.hitPulseMul||1)*(isHead?1.22:1)*(killed?1.18:1);
+  const weaponSnap=weaponIdx===3?1.14:(weaponIdx===7?1.10:(weaponIdx===4?.84:1));
+  const kickStrength=THREE.MathUtils.clamp(strength*weaponSnap,.35,2.35);
+  const wasActive=hState.hitKickT>0;
+  const impactSide=_impactSideFromWorldPoint(hitPt,slot);
+  hState.hitKickDur=THREE.MathUtils.clamp(.14+strength*.034+(killed?.040:0)+(weaponIdx===3?.026:0),.14,.34);
+  hState.hitKickT=Math.max(hState.hitKickT||0,hState.hitKickDur);
+  hState.hitKickStrength=wasActive?Math.max(kickStrength,(hState.hitKickStrength||0)*.72):kickStrength;
+  hState.hitKickSide=impactSide||(Math.random()<.5?-1:1);
+  hState.hitKickHead=!!isHead;
+  hState.hitKickKill=!!killed;
+  if(pl){
+    const flowGain=(.16*strength+(isHead?.10:0)+(killed?.18:0))*(profile.hitFlowMul||1);
+    pl._combatFlow=THREE.MathUtils.clamp((pl._combatFlow||0)+flowGain,0,1.35);
+    pl._combatFlowUntil=performance.now()+560+(isHead?220:0)+(killed?520:0);
+    pl._hitFlowPulse=Math.max(pl._hitFlowPulse||0,THREE.MathUtils.clamp(strength*.92*(profile.hitFlowMul||1),.26,1.45));
+    const confBase=killed?(profile.confidenceKill||.64):(profile.confidenceHit||.46);
+    pl._gunplayConfidence=Math.max(pl._gunplayConfidence||0,THREE.MathUtils.clamp(confBase+strength*.16+(isHead?.12:0),.26,.92));
+    pl._gunplayMissBloom=Math.max(0,(pl._gunplayMissBloom||0)-(.18+strength*.035));
+    pl._gunplayRhythm=Math.max(pl._gunplayRhythm||0,THREE.MathUtils.clamp(.16+strength*.070+(isHead?.04:0),.12,.42));
+    if(killed||isHead){
+      pl._killFlowPulse=Math.max(pl._killFlowPulse||0,THREE.MathUtils.clamp((killed?.82:.38)+strength*.20,.34,1.28));
+      pl._recoilSettleBoostUntil=performance.now()+(killed?500:280);
+      pl._criticalHitPulse=Math.max(pl._criticalHitPulse||0,THREE.MathUtils.clamp((isHead?.78:.42)+(killed?.18:0),.42,1.18));
+    }
+    _addPlayerFeelImpulse(pl,{
+      body:THREE.MathUtils.clamp(strength*.23,.08,.52),
+      forward:THREE.MathUtils.clamp(strength*.15,.045,.36),
+      right:(impactSide||0)*THREE.MathUtils.clamp(strength*.052,.012,.130),
+      landing:killed?.16:0,
+      stride:isHead||killed?THREE.MathUtils.clamp(strength*.21,.09,.38):0
+    });
+  }
+  if(slot===0){
+    const adsDamp=1-(P.adsVis||P.ads||0)*.42;
+    PP.shakeY-=.046*strength*adsDamp;
+    PP.shakeX+=(impactSide||Math.sign(Math.random()-.5)||1)*.030*strength*adsDamp+(Math.random()-.5)*.027*strength*adsDamp;
+    P.adsKick=Math.max(P.adsKick||0,.090*strength);
+    P._combatImpactKick=Math.max(P._combatImpactKick||0,THREE.MathUtils.clamp(strength*.70,.26,1.80));
+    P._combatImpactSide=impactSide||(Math.random()<.5?-1:1);
+    if(typeof triggerHitStop==='function'&&(killed||isHead||strength>1.05)){
+      const stop=killed?(isHead?52:42):(isHead?36:24);
+      triggerHitStop(Math.round(stop*(profile.hitStopMul||1)),!!(killed||isHead));
+    }
+  }
+  spawnEnemyHitPulse(hitPt,isHead,killed,strength);
+}
 // Wall impact — bullet hole decal + scorch + dust spray + sparks
 const _decalPool=[];const DECAL_LIMIT=80;
 function _orientVfxBillboard(mesh,cam=camera){
@@ -14445,12 +16923,14 @@ function addImpact(pos,normal){
       transparent:true,
       opacity:0.96,
       depthWrite:false,
-      depthTest:true
+      depthTest:true,
+      alphaTest:.045,
+      side:THREE.DoubleSide
     });
   }else{
-    holeMat=new THREE.MeshBasicMaterial({map:diff,color:0xffffff,transparent:true,opacity:.95,depthWrite:false,depthTest:true});
+    holeMat=new THREE.MeshBasicMaterial({map:diff,color:0xffffff,transparent:true,opacity:.95,depthWrite:false,depthTest:true,alphaTest:.045,side:THREE.DoubleSide});
   }
-  const holeSize=.13+Math.random()*.05;
+  const holeSize=.085+Math.random()*.025;
   const hole=new THREE.Mesh(new THREE.PlaneGeometry(holeSize,holeSize),holeMat);
   hole.position.copy(pos).addScaledVector(n,.008);
   hole.lookAt(pos.clone().add(n));
@@ -14515,22 +16995,24 @@ function addShell(originLocal,gunGroup){
 function addMuzzleRing(originLocal,gunGroup){
   const wp=originLocal.clone();gunGroup.localToWorld(wp);
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  const ringM=new THREE.MeshBasicMaterial({color:0xfff0a0,transparent:true,opacity:.55,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
-  const ring=new THREE.Mesh(new THREE.RingGeometry(.04,.10,16),ringM);
+  const focusTrail=THREE.MathUtils.clamp(P._focusVisual||0,0,1);
+  const ringM=new THREE.MeshBasicMaterial({color:focusTrail>.04?0x9feeff:0xfff0a0,transparent:true,opacity:.55+focusTrail*.18,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.04,.10+focusTrail*.045,16),ringM);
   ring.position.copy(wp);
   ring.lookAt(wp.clone().add(fwd));
   scene.add(ring);
-  G.trails.push({mesh:ring,mat:ringM,timer:.10,maxTime:.10,isMuzzleRing:true});
+  const ringLife=.10*(1+focusTrail*.90);
+  G.trails.push({mesh:ring,mat:ringM,timer:ringLife,maxTime:ringLife,isMuzzleRing:true});
   // Soft corona — toned to avoid bloom blowout (+ optional atlas cell)
   const mslice=_sliceAtlasCell(_optionalPubAssets.muzzleAtlas,Math.floor(Math.random()*13),4,4);
   const coronaM=mslice
-    ? new THREE.MeshBasicMaterial({map:mslice,color:0xffe080,transparent:true,opacity:.38,depthWrite:false,blending:THREE.AdditiveBlending})
-    : new THREE.MeshBasicMaterial({map:_softRadialTex,color:0xffe080,transparent:true,opacity:.45,depthWrite:false,blending:THREE.AdditiveBlending});
-  const corona=new THREE.Mesh(new THREE.PlaneGeometry(.16,.16),coronaM);
+    ? new THREE.MeshBasicMaterial({map:mslice,color:focusTrail>.04?0xbff8ff:0xffe080,transparent:true,opacity:.38+focusTrail*.12,depthWrite:false,blending:THREE.AdditiveBlending})
+    : new THREE.MeshBasicMaterial({map:_softRadialTex,color:focusTrail>.04?0xbff8ff:0xffe080,transparent:true,opacity:.45+focusTrail*.12,depthWrite:false,blending:THREE.AdditiveBlending});
+  const corona=new THREE.Mesh(new THREE.PlaneGeometry(.16*(1+focusTrail*.35),.16*(1+focusTrail*.35)),coronaM);
   corona.position.copy(wp);
   corona.lookAt(wp.clone().add(fwd));
   scene.add(corona);
-  const co={mesh:corona,mat:coronaM,timer:.06,maxTime:.06,isFlash:true,atlasOwnedMap:!!mslice,faceCameraBillboard:true};
+  const co={mesh:corona,mat:coronaM,timer:.06*(1+focusTrail*.55),maxTime:.06*(1+focusTrail*.55),isFlash:true,atlasOwnedMap:!!mslice,faceCameraBillboard:true};
   _orientVfxBillboard(corona);
   G.trails.push(co);
 }
@@ -15002,7 +17484,14 @@ function _maybeRicochet(hitPt,dir,normal){
     // Reduced damage from ricochet
     const W=WEAPONS[P.weaponIdx];
     const dmg=(isHead?W.hsDmg:W.dmg)*.45;
+    _primeEnemyHitFromObject(h.object,isHead?'head':'torso');
     const killed=enemy.takeDamage(dmg,isHead);
+    if(typeof triggerPlayerHitImpactFeedback==='function')triggerPlayerHitImpactFeedback(h.point,isHead,killed,dmg,P.weaponIdx,0);
+    if(typeof spawnDmgNumber==='function')spawnDmgNumber(h.point.clone().add(new THREE.Vector3(0,.4,0)),dmg,isHead,killed);
+    if(typeof showHM==='function')showHM(killed?(isHead?'headkill':'kill'):(isHead?'head':'body'),Math.min(1.35,dmg/120));
+    if(typeof sfxHit==='function')sfxHit(isHead);
+    if(typeof sfxHitConfirm==='function')sfxHitConfirm(isHead,killed,Math.min(1.35,dmg/120));
+    if(typeof _registerDmgDealt==='function')_registerDmgDealt(dmg);
     if(typeof addBlood==='function')addBlood(h.point,isHead);
     if(killed&&typeof killFeed==='function'){
       killFeed(isHead,{dist:hitPt.distanceTo(camera.position),wallbang:true});
@@ -15096,11 +17585,10 @@ function _falloffMul(weaponIdx,distance){
   const t=(distance-f.start)/(f.end-f.start);
   return 1.0+(f.minMul-1.0)*t;
 }
-// ── BALLISTIC PROJECTILES — for sniper/DMR/Deagle, bullets fly at finite speed
+// ── BALLISTIC PROJECTILES — for scoped precision rifles, bullets fly at finite speed
 const PROJECTILES={list:[]};
 const BALLISTICS={
   // weaponIdx → {speed (m/s), gravity (m/s²), enabled}
-  1:{speed:380,gravity:5.0,enabled:true},   // Deagle: heavy round, slight drop
   5:{speed:680,gravity:6.0,enabled:true},   // DMR: 7.62 NATO
   7:{speed:920,gravity:9.0,enabled:true}    // Sniper: .338 LM, fast + drop
 };
@@ -15155,11 +17643,24 @@ function tickProjectiles(dt){
         // Apply damage
         const dmg=isHead?p.damageHs:p.damageBase;
         Enemy._nextHitFlags=p.hitFlags||{weaponIdx:p.weaponIdx};
+        _primeEnemyHitFromObject(h.object,isHead?'head':'torso');
         if((isHead||dmg>120)&&typeof triggerHitStop==='function')triggerHitStop(isHead?44:34);
         const killed=enemy.takeDamage(dmg,isHead);
+        const ownerPl=(p.ownerSlot|0)===1?P2:P;
+        if(ownerPl){
+          const pFeel=_weaponCombatProfile(p.weaponIdx);
+          ownerPl.shotsHit=(ownerPl.shotsHit||0)+1;
+          ownerPl._gunplayConfidence=Math.max(ownerPl._gunplayConfidence||0,isHead ? Math.max(.64,pFeel.confidenceHit||.48) : (pFeel.confidenceHit||.48));
+          ownerPl._gunplayMissBloom=Math.max(0,(ownerPl._gunplayMissBloom||0)-.22);
+          ownerPl._gunplayRhythm=Math.max(ownerPl._gunplayRhythm||0,.22);
+          ownerPl._gunplayLastOutcome=isHead?'head':'hit';
+        }
+        if(typeof triggerPlayerHitImpactFeedback==='function')triggerPlayerHitImpactFeedback(h.point,isHead,killed,dmg,p.weaponIdx,p.ownerSlot||0);
         if(typeof spawnDmgNumber==='function')spawnDmgNumber(h.point.clone().add(new THREE.Vector3(0,.4,0)),dmg,isHead,killed);
-        if(typeof showHM==='function')showHM(isHead?'head':'body',Math.min(1,dmg/120));
+        if(typeof showHM==='function')showHM(killed?(isHead?'headkill':'kill'):(isHead?'head':'body'),Math.min(1.45,dmg/120));
         if(typeof sfxHit==='function')sfxHit(isHead);
+        if(typeof sfxHitConfirm==='function')sfxHitConfirm(isHead,killed,Math.min(1.45,dmg/120));
+        if(typeof _registerDmgDealt==='function')_registerDmgDealt(dmg);
         if(typeof addBlood==='function')addBlood(h.point,isHead);
         if(killed){
           if(typeof triggerHitStop==='function')triggerHitStop(isHead?46:36);
@@ -15167,7 +17668,7 @@ function tickProjectiles(dt){
           if(typeof awardKillMoney==='function')awardKillMoney(enemy,isHead);
           if(typeof comboKill==='function')comboKill(isHead);
           if(typeof _killKickFx==='function')_killKickFx(isHead);
-          P.kills++;if(isHead)P.headshots++;
+          if(ownerPl){ownerPl.kills=(ownerPl.kills||0)+1;if(isHead)ownerPl.headshots=(ownerPl.headshots||0)+1;}
         }
         // Remove projectile
         scene.remove(p.mesh);if(p.mat)p.mat.dispose();if(p.mesh.geometry)p.mesh.geometry.dispose();
@@ -15212,6 +17713,15 @@ function tickProjectiles(dt){
             const n=wh.face?wh.face.normal.clone().transformDirection(wh.object.matrixWorld):null;
             addImpact(wh.point,n);
           }
+          if(p.fromPlayer){
+            const ownerPl=(p.ownerSlot|0)===1?P2:P;
+            const pFeel=_weaponCombatProfile(p.weaponIdx);
+            if(ownerPl){
+              ownerPl._gunplayMissBloom=Math.max(ownerPl._gunplayMissBloom||0,.18*(pFeel.missBloom||.30)/.30);
+              ownerPl._gunplayConfidence=(ownerPl._gunplayConfidence||0)*.78;
+              ownerPl._gunplayLastOutcome='surface';
+            }
+          }
           scene.remove(p.mesh);if(p.mat)p.mat.dispose();if(p.mesh.geometry)p.mesh.geometry.dispose();
           PROJECTILES.list.splice(i,1);
           continue;
@@ -15220,6 +17730,15 @@ function tickProjectiles(dt){
     }
     // Expire
     if(p.age>p.maxAge){
+      if(p.fromPlayer){
+        const ownerPl=(p.ownerSlot|0)===1?P2:P;
+        const pFeel=_weaponCombatProfile(p.weaponIdx);
+        if(ownerPl){
+          ownerPl._gunplayMissBloom=Math.max(ownerPl._gunplayMissBloom||0,.24*(pFeel.missBloom||.30)/.30);
+          ownerPl._gunplayConfidence=(ownerPl._gunplayConfidence||0)*.72;
+          ownerPl._gunplayLastOutcome='miss';
+        }
+      }
       scene.remove(p.mesh);if(p.mat)p.mat.dispose();if(p.mesh.geometry)p.mesh.geometry.dispose();
       PROJECTILES.list.splice(i,1);
     }
@@ -15271,6 +17790,131 @@ function _playReloadReadyCue(){
     o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.13);
   }catch(_){}
 }
+function _clearTriggerBuffer(pl){
+  if(!pl)return;
+  pl._triggerBufferedUntil=0;
+  pl._triggerBufferReason='';
+  pl._triggerBufferedAt=0;
+}
+function _queueTriggerBuffer(pl,reason='cadence',ms=120){
+  if(!pl)return;
+  const now=performance.now();
+  pl._triggerBufferedUntil=Math.max(pl._triggerBufferedUntil||0,now+THREE.MathUtils.clamp(ms,45,420));
+  pl._triggerBufferReason=reason;
+  pl._triggerBufferedAt=now;
+  pl._triggerBufferPulse=Math.max(pl._triggerBufferPulse||0,.34);
+}
+function _triggerEmptyWeaponFeedback(pl,slot=0,hasReserve=false){
+  if(!pl)return false;
+  const now=performance.now();
+  const gated=now<(pl._lastEmptyClickAt||0)+90;
+  pl._emptyClickPulse=Math.max(pl._emptyClickPulse||0,hasReserve?.78:.62);
+  pl._dryFirePulse=Math.max(pl._dryFirePulse||0,hasReserve?.62:.50);
+  pl._gunplayMissBloom=Math.max(pl._gunplayMissBloom||0,hasReserve?.12:.18);
+  pl._shotImpulseSide=(Math.random()<.5?-1:1);
+  _addPlayerFeelImpulse(pl,{body:hasReserve?.070:.052,forward:hasReserve?-.045:-.030,right:(pl._shotImpulseSide||1)*(hasReserve?.034:.024)});
+  if(slot===0){
+    PP.shakeY-=hasReserve?.010:.006;
+    P.adsKick=Math.max(P.adsKick||0,hasReserve?.040:.026);
+  }
+  if(!gated){
+    pl._lastEmptyClickAt=now;
+    try{sfxDryFire(hasReserve);}catch(_){}
+  }
+  return !gated;
+}
+function _triggerReloadDeniedFeedback(pl,slot=0,W=null){
+  if(!pl)return false;
+  const now=performance.now();
+  const gated=now<(pl._lastReloadDeniedAt||0)+170;
+  const magFull=!!(W&&pl.ammo>=(W.mag||0));
+  const noReserve=!!(pl.ammoRes<=0);
+  const reloading=!!pl.reloading;
+  pl._lastReloadDeniedAt=now;
+  pl._reloadBlockedPulse=Math.max(pl._reloadBlockedPulse||0,reloading?.58:(noReserve?.84:.64));
+  pl._emptyClickPulse=Math.max(pl._emptyClickPulse||0,noReserve?.48:.28);
+  pl._dryFirePulse=Math.max(pl._dryFirePulse||0,noReserve?.36:.18);
+  pl._gunplayMissBloom=Math.max(pl._gunplayMissBloom||0,noReserve?.12:.06);
+  _addPlayerFeelImpulse(pl,{body:noReserve?.052:.034,forward:noReserve?-.028:-.016,right:(Math.random()<.5?-1:1)*(noReserve?.026:.016)});
+  if(slot===0){
+    PP.shakeY-=noReserve?.008:.004;
+    P.adsKick=Math.max(P.adsKick||0,noReserve?.032:.018);
+    if(!gated){
+      const label=reloading?'RELOAD IN PROGRESS':(noReserve?'NO RESERVE AMMO':(magFull?'MAG FULL':'CANNOT RELOAD'));
+      attachToast(`<div style="color:#ffcc66;letter-spacing:.26em">${label}</div>`,GAMEPLAY_QOL_FEEL.reloadDeniedToastMs);
+    }
+  }
+  if(!gated){
+    try{sfxDryFire(noReserve);}catch(_){}
+  }
+  return !gated;
+}
+function _markRoundSpentFeedback(pl,slot,W){
+  if(!pl||!W)return;
+  const mag=Math.max(1,W.mag||1);
+  const ratio=THREE.MathUtils.clamp(pl.ammo/mag,0,1);
+  if(pl.ammo<=0){
+    pl._lastRoundPulse=Math.max(pl._lastRoundPulse||0,1.0);
+    pl._lowAmmoPulse=Math.max(pl._lowAmmoPulse||0,.74);
+    if(slot===0){
+      PP.shakeY-=.012;
+      P.adsKick=Math.max(P.adsKick||0,.052);
+    }
+  }else if(ratio<=.25){
+    pl._lowAmmoPulse=Math.max(pl._lowAmmoPulse||0,THREE.MathUtils.lerp(.28,.58,1-ratio/.25));
+  }
+}
+function _processTriggerBuffer(slot=0,inputState=null){
+  const pl=slot===1?P2:P;
+  if(!pl||!pl._triggerBufferedUntil)return false;
+  const nowMs=performance.now();
+  pl._triggerBufferTicks=(pl._triggerBufferTicks||0)+1;
+  const bufferLateMs=nowMs-(pl._triggerBufferedUntil||0);
+  if(bufferLateMs>160){
+    pl._triggerBufferBlock='expired';
+    _clearTriggerBuffer(pl);
+    return false;
+  }
+  if(pl.dead||MELEE.out||G.invOpen||G.shopOpen||G.menuOpen||!gameFocused){
+    pl._triggerBufferBlock='blocked-state';
+    return false;
+  }
+  if(pl.weaponIdx===2||pl.reloading){
+    pl._triggerBufferBlock=pl.reloading?'reloading':'non-firearm';
+    return false;
+  }
+  const W=WEAPONS[pl.weaponIdx];
+  if(!W){pl._triggerBufferBlock='missing-weapon';return false;}
+  if(pl.ammo<=0){
+    pl._triggerBufferBlock='empty';
+    _clearTriggerBuffer(pl);
+    _triggerEmptyWeaponFeedback(pl,slot,pl.ammoRes>0);
+    if(pl.ammoRes>0){
+      if(slot===0)startReload();
+      else _startReloadP2();
+    }
+    return false;
+  }
+  const held=inputState&&inputState.lmbHeld;
+  if(held&&_currentFireModeFor(pl)==='auto'){pl._triggerBufferBlock='auto-held';return false;}
+  const nowS=nowMs/1000;
+  if(W.fireRate>nowS-(pl.lastShot||0)){
+    pl._triggerBufferBlock='rate';
+    return false;
+  }
+  pl._triggerBufferBlock='fire';
+  const waitAge=nowMs-(pl._triggerBufferedAt||nowMs);
+  if(waitAge>18){
+    const readyPulse=GAMEPLAY_QOL_FEEL.triggerReadyPulse||.42;
+    pl._triggerReadyPulse=Math.max(pl._triggerReadyPulse||0,readyPulse);
+    pl._gunplayRhythm=Math.max(pl._gunplayRhythm||0,.20);
+    _addPlayerFeelImpulse(pl,{body:.036,forward:-.020,right:(Math.random()<.5?-1:1)*.014});
+  }
+  _clearTriggerBuffer(pl);
+  _pendingShootSlot=slot;
+  shoot();
+  return true;
+}
 function _weaponRecoilMulFor(pl){
   let m=1.0;
   if(pl.attachments){
@@ -15285,8 +17929,14 @@ function _weaponSuppressedFor(pl){
   if(pl.attachments&&pl.attachments.muzzle&&pl.attachments.muzzle.suppressed)return true;
   return false;
 }
-function _aimRayDirWithSpreadFor(sp,cam,out=new THREE.Vector3()){
-  return out.set((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize().applyQuaternion(cam.quaternion);
+function _aimRayDirWithSpreadFor(sp,cam,out=new THREE.Vector3(),opts=null){
+  const o=opts||{};
+  const a=Math.random()*Math.PI*2;
+  const r=Math.sqrt(Math.random())*Math.max(0,sp||0);
+  const yScale=Number.isFinite(o.yScale)?o.yScale:.82;
+  const bx=Number.isFinite(o.biasX)?o.biasX:0;
+  const by=Number.isFinite(o.biasY)?o.biasY:0;
+  return out.set(Math.cos(a)*r+bx,Math.sin(a)*r*yScale+by,-1).normalize().applyQuaternion(cam.quaternion);
 }
 function _getRecoilDelta(weaponIdx,shotIdx){
   const pattern=RECOIL_PATTERNS_LEARNABLE[weaponIdx];
@@ -15303,22 +17953,48 @@ function shoot(){
   const keySrc=_slot===1?K2:K;
   const hState=_slot===1?H2:H;
   const rs=_slot===1?RECOIL_STATE_P2:RECOIL_STATE;
-  if(pl.weaponIdx===2)return; // throwing knife uses tryThrowKnife instead
-  if(pl.dead||!gameFocused||G.invOpen||G.shopOpen||G.menuOpen)return;
+  const finishEarly=()=>{_pendingShootSlot=0;Enemy._nextHitFlags=null;};
+  if(pl.weaponIdx===2){finishEarly();return false;} // throwing knife uses tryThrowKnife instead
+  if(pl.dead||!gameFocused||G.invOpen||G.shopOpen||G.menuOpen){finishEarly();return false;}
+  const W=WEAPONS[pl.weaponIdx];
+  if(!W){finishEarly();return false;}
   // Reload-cancel-on-fire: pulling the trigger mid-reload aborts (no ammo
   // gained) and fires the round in the chamber if we have one. Empty mid-reload
   // can't fire — let the reload finish.
   if(pl.reloading){
-    if(pl.ammo<=0)return;
+    if(pl.ammo<=0){
+      pl._reloadBlockedPulse=Math.max(pl._reloadBlockedPulse||0,.42);
+      finishEarly();return false;
+    }
     pl.reloading=false;
     reloadHoloTarget=0;
     $e('reload-bar').style.display='none';
+    pl._reloadReadyPulse=Math.max(pl._reloadReadyPulse||0,.58);
     _playReloadReadyCue();
   }
-  if(pl.ammo<=0)return;
-  const W=WEAPONS[pl.weaponIdx];
-  const now=performance.now()/1000;if(W.fireRate>now-pl.lastShot)return;
+  if(pl.ammo<=0){
+    _clearTriggerBuffer(pl);
+    _triggerEmptyWeaponFeedback(pl,_slot,pl.ammoRes>0);
+    if(pl.ammoRes>0&&!pl.reloading){
+      setTimeout(()=>{if(!pl.dead&&pl.ammo<=0&&!pl.reloading){if(pl===P)startReload();else _startReloadP2();}},75);
+    }
+    hudUpdate();
+    finishEarly();return false;
+  }
+  const gunFeel=_weaponGunplayFeel(pl.weaponIdx);
+  const combatFeel=_weaponCombatProfile(pl.weaponIdx);
+  const now=performance.now()/1000;
+  if(W.fireRate>now-pl.lastShot){
+    const mode=_currentFireModeFor(pl);
+    if(mode!=='auto'||!(mState&&mState.lmbHeld)){
+      const waitMs=Math.min(420,Math.max(55,(W.fireRate-(now-pl.lastShot))*1000+35));
+      _queueTriggerBuffer(pl,'cadence',waitMs);
+    }
+    finishEarly();return false;
+  }
+  _clearTriggerBuffer(pl);
   pl.lastShot=now;pl.ammo--;sfxShoot(pl.weaponIdx);if(typeof incrementMagShot==='function')incrementMagShot();
+  _markRoundSpentFeedback(pl,_slot,W);
   // Phase 6 telemetry — count lean-fire ratio
   if(G&&G._playerTotalShots!=null){
     G._playerTotalShots++;
@@ -15328,26 +18004,44 @@ function shoot(){
   // Phase E: stash this shot's weapon flags so takeDamage/die() can read
   // suppressed/shotgun/sniper for stagger and corpse-propagation gating.
   Enemy._nextHitFlags={
-    suppressed:!!W.suppressed,
+    suppressed:!!_weaponSuppressedFor(pl),
     shotgun:pl.weaponIdx===3,
     sniper:!!W.bigZoom||pl.weaponIdx===7,
+    dmr:pl.weaponIdx===5,
+    smg:pl.weaponIdx===4,
+    pistolHeavy:pl.weaponIdx===1||pl.weaponIdx===6,
     weaponIdx:pl.weaponIdx,
-    scoped:_hasScopedAds(pl)&&pl.ads>.82
+    scoped:_hasScopedAds(pl)&&pl.ads>.82,
+    impactWeight:_weaponImpactWeight(pl.weaponIdx),
+    enemyAimBreak:combatFeel.enemyAimBreak||1,
+    enemyStagger:combatFeel.enemyStagger||1,
+    enemyPush:combatFeel.enemyPush||1,
+    hitStopMul:combatFeel.hitStopMul||1
   };
   // ── RECOIL PATTERN — track shot index in current spray (resets after >.45s no fire)
   const _timeSinceLast=now-(rs.lastShotT||0);
-  if(_timeSinceLast>.45){
+  if(_timeSinceLast>(gunFeel.resetWindow||.46)){
     // New spray — reset shot index AND clear accumulated recoil delta
     rs.shotIndex=0;
     rs.accumPitch=0;
     rs.accumYaw=0;
     rs.recoveryActive=false;
   }
-  rs.lastShotT=now;
-  if(_slot===0)onWeaponFired(playerAnimState0,pl.weaponIdx,rs.shotIndex);
-  else onWeaponFired(playerAnimState1,pl.weaponIdx,rs.shotIndex);
+	  const shotIndexBefore=rs.shotIndex||0;
+	  rs.lastShotT=now;
+	  const shotAimQuat=cam.quaternion.clone();
+	  const shotAimAccumPitch=rs.accumPitch||0;
+	  const shotAimAccumYaw=rs.accumYaw||0;
+	  if(_slot===0)onWeaponFired(playerAnimState0,pl.weaponIdx,shotIndexBefore);
+	  else onWeaponFired(playerAnimState1,pl.weaponIdx,shotIndexBefore);
+  const rhythmCenter=Math.max(W.fireRate*1.45,.16);
+  const rhythmWindow=Math.max(W.fireRate*3.2,.34);
+  const cadenceDelta=Math.abs(_timeSinceLast-rhythmCenter);
+  const cadenceReady=_timeSinceLast>W.fireRate*1.04&&_timeSinceLast<rhythmWindow&&shotIndexBefore<5;
+  const cadence01=cadenceReady?THREE.MathUtils.clamp(1-cadenceDelta/Math.max(.001,rhythmWindow-rhythmCenter),0,1):0;
+  if(cadence01>0)pl._gunplayRhythm=Math.max(pl._gunplayRhythm||0,cadence01*(pl.ads>.45?.72:.48));
   // Apply learnable pattern delta if defined
-  const _patternDelta=_getRecoilDelta(pl.weaponIdx,rs.shotIndex);
+  const _patternDelta=_getRecoilDelta(pl.weaponIdx,shotIndexBefore);
   // Recoil reduction: ADS, crouch, foregrip
   const adsRecoilMul=pl.ads>.5?.45:1.0;
   const crouchRecoilMul=pl.crouching?.65:1.0;
@@ -15355,6 +18049,12 @@ function shoot(){
   const totalRecoilMul=adsRecoilMul*crouchRecoilMul*forearmRecoilMul;
   // Heat penalty — overheated guns recoil more
   const heatPenalty=1.0+(hState.heat||0)*.35;
+  const shotFeel=THREE.MathUtils.clamp(_weaponShotFeelWeight(pl.weaponIdx)*(combatFeel.shotImpulseMul||1)*(1+Math.min(8,shotIndexBefore)*.026)*totalRecoilMul*heatPenalty,.16,2.05);
+  pl._shotImpulse=Math.max(pl._shotImpulse||0,shotFeel);
+  pl._shotImpulseKick=Math.max(pl._shotImpulseKick||0,THREE.MathUtils.clamp(shotFeel*.78,.12,1.38));
+  pl._shotImpulseSide=(Math.random()<.5?-1:1)*(.72+Math.random()*.28);
+  pl._shotHeatPressure=THREE.MathUtils.clamp((pl._shotHeatPressure||0)+shotFeel*.11,0,1.15);
+  _addPlayerFeelImpulse(pl,{body:shotFeel*.14,forward:-shotFeel*.12,right:(pl._shotImpulseSide||1)*shotFeel*.035});
   PP.shakeX+=(Math.random()-.5)*W.shX*totalRecoilMul;PP.shakeY-=Math.random()*W.shY*totalRecoilMul;
   hState.firePlaying=true;hState.fireT=0;
   hState.heat=Math.min(1,hState.heat+(pl.weaponIdx===0?.18:.32));
@@ -15369,8 +18069,11 @@ function shoot(){
     pl.pitch+=_addedPitch;
     pl.yaw+=_addedYaw;
   } else {
-    _addedPitch=-(.012+Math.random()*.006)*totalRecoilMul*heatPenalty;
+    const _singleSide=(shotIndexBefore%2===0?1:-1);
+    _addedPitch=-(.012+Math.random()*.006)*(gunFeel.recoilPitchMul||1)*totalRecoilMul*heatPenalty;
+    _addedYaw=(_singleSide*(gunFeel.singleYaw||.0035)+(Math.random()-.5)*(gunFeel.randomYaw||.0045))*totalRecoilMul*heatPenalty;
     pl.pitch+=_addedPitch;
+    pl.yaw+=_addedYaw;
   }
   rs.accumPitch=(rs.accumPitch||0)+_addedPitch;
   rs.accumYaw=(rs.accumYaw||0)+_addedYaw;
@@ -15396,21 +18099,44 @@ function shoot(){
   const movementPenalty=isMoving?(pl.ads>.5?1.6:1.0):1.0;
   // SLIDE-SHOOT: shooting while sliding has bigger spread but possible
   const sliding=pl.sliding||pl.slideAmt>.5;
-  const slideSpreadMul=sliding?2.4:1.0;
-  // TAP-FIRE BONUS — if shots are spaced >.40s apart, treat as first-shot accuracy
-  const _tapFire=_timeSinceLast>.40;
-  const tapFireMul=_tapFire?.55:1.0;
+  const slideSpreadMul=sliding?(pl.ads>.65?1.45:1.72):1.0;
+  // TAP-FIRE BONUS — if shots are spaced long enough, tighten without becoming laser-stable forever.
+  const _tapFire=_timeSinceLast>(gunFeel.resetWindow||.46)*.86;
+  const tapFireMul=_tapFire?.64:1.0;
   // Crouch reduces spread
   const crouchSpreadMul=pl.crouching?.65:1.0;
   // Hold breath — for sniper, vastly tighter spread
   const breathSpreadMul=(typeof isBreathHeld==='function'&&isBreathHeld())?.20:1.0;
   // Foregrip
   const foregripSpreadMul=(pl.attachments&&pl.attachments.foregrip&&pl.attachments.foregrip.spreadMul)||1.0;
-  let sp=pl.ads>0.5?W.adsSpread*_adsSpreadMul:(1-pl.ads)*W.spread*_spreadMul;
-  sp*=movementPenalty*crouchSpreadMul*breathSpreadMul*foregripSpreadMul*slideSpreadMul*tapFireMul;
-  if(settled)sp=W.adsSpread*0.05*_adsSpreadMul; // perfect first shot
-  // Heat penalty
-  sp*=1.0+(hState.heat||0)*.30;
+	  const adsVisual=THREE.MathUtils.clamp(Number.isFinite(pl.adsVis)?pl.adsVis:(pl.ads||0),0,1);
+	  let sp=pl.ads>0.5?W.adsSpread*_adsSpreadMul:(1-pl.ads)*W.spread*_spreadMul;
+	  sp*=movementPenalty*crouchSpreadMul*breathSpreadMul*foregripSpreadMul*slideSpreadMul*tapFireMul;
+	  const firstShotReady=shotIndexBefore===0||_timeSinceLast>(gunFeel.resetWindow||.46);
+	  const ironSightAim=!!(!_hasScopedAds(pl)&&pl.weaponIdx!==3&&pl.weaponIdx!==2&&adsVisual>.72);
+	  const ironSightPrecision=!!(ironSightAim&&!sliding&&adsVisual>.94);
+	  if(ironSightPrecision)sp=0;
+	  else if(settled&&firstShotReady)sp=Math.min(sp,W.adsSpread*(gunFeel.settledMul||.16)*_adsSpreadMul);
+	  else if(settled)sp*=gunFeel.settledFollowMul||.72;
+  // Heat / pressure bloom adds hidden cone spread only outside true iron-sight ADS.
+  if(!ironSightPrecision)sp*=1.0+(hState.heat||0)*.30;
+  const sprayBloom=ironSightPrecision?0:Math.min(gunFeel.maxBloom||.72,Math.max(0,shotIndexBefore)*(gunFeel.bloomPerShot||.075));
+		  const recoilBloom=(Math.abs(shotAimAccumPitch)*14+Math.abs(shotAimAccumYaw)*18)*(gunFeel.recoilBloom||.34);
+	  const missBloom=(pl._gunplayMissBloom||0)*(combatFeel.missBloom||gunFeel.missBloom||.30);
+	  const pressureBloom=(pl._shotHeatPressure||0)*(gunFeel.heatPressureBloom||.17)+(pl._suppressionLevel||0)*(gunFeel.suppressionBloom||.22)+(pl._damageShock||0)*(gunFeel.damageBloom||.25)+missBloom;
+	  const adsBloomMul=pl.ads>.5?(gunFeel.adsBloomMul||.46):1.0;
+	  if(!ironSightPrecision)sp*=1+sprayBloom*adsBloomMul+recoilBloom*adsBloomMul+pressureBloom;
+  const confidenceTighten=(pl._gunplayConfidence||0)*(combatFeel.confidenceTighten||gunFeel.confidenceTighten||.12)+(pl._gunplayRhythm||0)*(combatFeel.rhythmTighten||gunFeel.rhythmTighten||.10);
+  if(confidenceTighten>0)sp*=Math.max(.72,1-confidenceTighten);
+  if(pl.running&&pl.ads<.35)sp*=1.18;
+  pl._gunplaySpreadVisual=Math.max(pl._gunplaySpreadVisual||0,THREE.MathUtils.clamp(sp/Math.max(.001,pl.ads>.5?W.adsSpread:W.spread),0,4.2));
+  pl._gunplayShotIndex=shotIndexBefore;
+		  const _rayOpts={
+		    biasX:ironSightAim?0:THREE.MathUtils.clamp(shotAimAccumYaw*.12,-sp*.32,sp*.32),
+		    biasY:ironSightAim?0:THREE.MathUtils.clamp(-shotAimAccumPitch*.09,-sp*.34,sp*.34),
+		    yScale:pl.ads>.55 ? .72 : .86
+		  };
+	  const shotAimCam={quaternion:shotAimQuat};
   const meshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
   // Multi-pellet (shotgun) or single shot
   const numShots=W.pellets||1;
@@ -15424,18 +18150,40 @@ function shoot(){
   let firstHitPt=null;
   pl.shotsFired++;
   let pelletHit=false;
-  // ── BALLISTIC PATH: spawn projectile for sniper/DMR/Deagle (single-shot only)
-  if(BALLISTICS[pl.weaponIdx]&&BALLISTICS[pl.weaponIdx].enabled&&numShots===1){
-    const dir=_aimRayDirWithSpreadFor(sp,cam);
+  let hitConfirmDone=false;
+  let killConfirmDone=false;
+		  // ── BALLISTIC PATH: spawn projectile for scoped precision rifles (single-shot only)
+	  if(BALLISTICS[pl.weaponIdx]&&BALLISTICS[pl.weaponIdx].enabled&&numShots===1){
+	    const dir=_aimRayDirWithSpreadFor(sp,shotAimCam,undefined,_rayOpts);
+	    _registerEnemySuppressionAlongShot(cam.position,dir,90,pl.weaponIdx);
     // Headhunter perk
     const dmgMul=hasPerk('hsBoost')?1.25:1.0;
     const apMul=(pl.attachments&&pl.attachments.mag&&pl.attachments.mag.dmgMul)||1.0;
     const berserkMul=hasActivePowerup('berserk')?2.0:1.0;
     const wraithMul=(G.operator==='wraith'&&_weaponSuppressedFor(pl))?1.25:1.0;
-    spawnProjectile(muzzleWorld.clone(),dir,pl.weaponIdx,W.dmg*dmgMul*apMul*berserkMul*wraithMul,W.hsDmg*dmgMul*apMul*berserkMul*wraithMul,_slot);
+	    const projectileOrigin=cam.position.clone().addScaledVector(dir,.10);
+	    if(pl===P)P._lastPlayerShotAim={
+	      weaponIdx:pl.weaponIdx,
+	      origin:'camera',
+		      muzzleDistance:Number(muzzleWorld.distanceTo(projectileOrigin).toFixed(4)),
+		      spread:Number(sp.toFixed(6)),
+		      precision:!!ironSightPrecision,
+		      recoilPitch:Number(shotAimAccumPitch.toFixed(5)),
+		      recoilYaw:Number(shotAimAccumYaw.toFixed(5)),
+			      ads:Number((pl.ads||0).toFixed(3)),
+			      adsVis:Number(adsVisual.toFixed(3))
+		    };
+	    spawnProjectile(projectileOrigin,dir,pl.weaponIdx,W.dmg*dmgMul*apMul*berserkMul*wraithMul,W.hsDmg*dmgMul*apMul*berserkMul*wraithMul,_slot);
     Enemy._nextHitFlags=null;
     // Tracer to the destination (visual)
-    addTrail(muzzleWorld,muzzleWorld.clone().addScaledVector(dir,3));
+    addTrail(muzzleWorld,muzzleWorld.clone().addScaledVector(dir,3),{
+      kind:_weaponSuppressedFor(pl)?'player-suppressed-projectile':'player-projectile',
+      haloColor:_weaponSuppressedFor(pl)?0x7ee8ff:0xffd070,
+      coreColor:0xfffff0,
+      haloRadius:pl.weaponIdx===7 ? .030 : .022,
+      coreRadius:pl.weaponIdx===7 ? .008 : .006,
+      life:pl.weaponIdx===7 ? .19 : .15
+    });
     // Brass + smoke
     const ejectFallback2=new THREE.Vector3(W.ejectX||.038,W.ejectY||.032,W.ejectZ||-.04);
     const ejectLocal2=(pl.weaponIdx===0&&_slot===0&&_isAuthoredM4RuntimeActive())?_m4SocketLocal('ejectionPort',ejectFallback2):ejectFallback2;
@@ -15445,13 +18193,25 @@ function shoot(){
     if(pl.ammo===0&&pl.ammoRes>0)setTimeout(()=>{if(!pl.dead&&pl===P)startReload();if(!pl.dead&&pl===P2)_startReloadP2();},220);
     hudUpdate();
     propagateGunfire(playerZone());
-    return;
-  }
-  // For multi-pellet weapons, only spawn full FX on the first 3 pellets to
+	    _pendingShootSlot=0;
+	    return true;
+	  }
+	  if(pl===P)P._lastPlayerShotAim={
+	    weaponIdx:pl.weaponIdx,
+	    origin:'camera-hitscan',
+	    spread:Number(sp.toFixed(6)),
+	    precision:!!ironSightPrecision,
+	    ironSightAim:!!ironSightAim,
+	    recoilPitch:Number(shotAimAccumPitch.toFixed(5)),
+	    recoilYaw:Number(shotAimAccumYaw.toFixed(5)),
+	    ads:Number((pl.ads||0).toFixed(3)),
+	    adsVis:Number(adsVisual.toFixed(3))
+	  };
+	  // For multi-pellet weapons, only spawn full FX on the first 3 pellets to
   // avoid creating dozens of meshes per shot (GC hitches at full auto).
   const FX_CAP=Math.min(numShots,1);
   for(let pellet=0;pellet<numShots;pellet++){
-    const dir=_aimRayDirWithSpreadFor(sp,cam);
+	    const dir=_aimRayDirWithSpreadFor(sp,shotAimCam,undefined,_rayOpts);
     if(G.playMode==='duel'){
       const opp=_slot===1?P:P2;
       const rsP=DUEL.respawnAt[_slot===0?1:0]||0;
@@ -15469,19 +18229,26 @@ function shoot(){
           const dmg=hsPv?W.hsDmg:W.dmg;
           duelApplyDamage(_slot===0?1:0,dmg*0.88);
           pelletHit=true;
-          if(typeof sfxHit==='function')sfxHit(hsPv);
-          if(typeof showHM==='function')showHM(hsPv?'head':'body',Math.min(1,dmg/120));
+          if(!hitConfirmDone){
+            if(typeof sfxHit==='function')sfxHit(hsPv);
+            if(typeof sfxHitConfirm==='function')sfxHitConfirm(hsPv);
+            if(typeof showHM==='function')showHM(hsPv?'head':'body',Math.min(1,dmg/120));
+            hitConfirmDone=true;
+          }
           if(!firstHitPt)firstHitPt=ro.clone().addScaledVector(dir,tPv);
           if(pellet<FX_CAP)addTrail(muzzleWorld,ro.clone().addScaledVector(dir,tPv));
           continue;
         }
       }
     }
-    rc.set(cam.position.clone(),dir);
-    const hits=rc.intersectObjects(meshes,false);
-    let hitPt=cam.position.clone().addScaledVector(dir,60);
-    const allowFx=pellet<FX_CAP;
-    const camPos=cam.position.clone();
+	    rc.set(cam.position.clone(),dir);
+	    const hits=rc.intersectObjects(meshes,false);
+	    let hitPt=cam.position.clone().addScaledVector(dir,60);
+	    let bulletEndDist=60;
+	    let pelletHitEnemy=null;
+	    let surfaceHit=false;
+	    const allowFx=pellet<FX_CAP;
+	    const camPos=cam.position.clone();
     const wh0=typeof wallRaycast==='function'?wallRaycast(camPos,dir):null;
     let h0=hits.length>0?hits[0]:null;
     if(h0&&h0.object&&h0.object.userData&&h0.object.userData.enemy&&wh0){
@@ -15489,10 +18256,12 @@ function shoot(){
       const dE=camPos.distanceTo(h0.point);
       if(dW<dE-0.06)h0=null;
     }
-    if(h0&&h0.object&&h0.object.userData&&h0.object.userData.enemy){
-      const h=h0;
-      hitPt=h.point.clone();
-      const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
+	    if(h0&&h0.object&&h0.object.userData&&h0.object.userData.enemy){
+	      const h=h0;
+	      hitPt=h.point.clone();
+	      const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
+	      pelletHitEnemy=enemy;
+	      bulletEndDist=hitPt.distanceTo(camPos);
       // Headhunter perk: +25% headshot damage
       const dmgMul=isHead&&hasPerk('hsBoost')?1.25:1.0;
       // AP mag attachment: +damage
@@ -15506,39 +18275,31 @@ function shoot(){
       // Ammo type modifies falloff
       const _ammoMul=(typeof getAmmoMul==='function')?getAmmoMul():{dmg:1,pen:1,falloff:1};
       const _falloff=Math.min(1.0,_falloffRaw*_ammoMul.falloff);
-      const _limb=_detectLimbHit(enemy,hitPt,isHead);
+      const _limbInfo=_primeEnemyHitFromObject(h.object,isHead?'head':'torso');
+      const _limb=_coarseLimbEffectFromZone(_limbInfo&&_limbInfo.id)||_detectLimbHit(enemy,hitPt,isHead);
       if(_limb)_applyLimbEffect(enemy,_limb);
       const _critInfo=_isCritHit(enemy,hitPt,isHead);
       const _critMul=_critInfo.crit?_critInfo.mul:(isHead?2.0:1.0);
       const baseDmg=isHead?W.hsDmg:W.dmg;
       const finalDmg=baseDmg*dmgMul*apMul*berserkMul*wraithMul*_falloff*_ammoMul.dmg*(_critInfo.crit?(_critInfo.mul/2.0):1.0);
-      // Hit-stop on heavy damage
-      if(isHead&&finalDmg>80&&typeof triggerHitStop==='function')triggerHitStop(38);
       const killed=enemy.takeDamage(finalDmg,isHead);
-      // Show CRIT label in floating damage number
-      if(_critInfo.crit&&typeof attachToast==='function'&&_critInfo.type==='BACK_HEAD'){
-        const cx=hitPt.clone().project(cam);
-        if(cx.z<1){
-          // Spawn a "BACK_CRIT" badge
-          const c=$e('dmg-numbers');
-          if(c){
-            const vp=_viewportCssPixels();
-            const el=document.createElement('div');
-            el.className='dmg-num crit';
-            el.style.color='#ff40c8';
-            el.style.fontSize='28px';
-            el.textContent='× '+_critInfo.mul.toFixed(1);
-            el.style.left=((cx.x*.5+.5)*vp.w)+'px';
-            el.style.top=((-cx.y*.5+.5)*vp.h-30)+'px';
-            c.appendChild(el);
-            setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1100);
-          }
-        }
-      }
-      // Floating damage number
-      spawnDmgNumber(hitPt.clone().add(new THREE.Vector3(0,.4,0)),finalDmg,isHead,killed);
+      if(isHead&&typeof triggerHitStop==='function')triggerHitStop(killed?58:(finalDmg>80?48:38));
+      if(typeof triggerPlayerHitImpactFeedback==='function')triggerPlayerHitImpactFeedback(hitPt,isHead,killed,finalDmg,pl.weaponIdx,_slot);
+	      // Floating damage counters are intentionally disabled; keep hit markers,
+	      // audio, blood, and impact feedback as the readable combat response.
       pelletHit=true;
-      if(pellet===0){showHM(isHead?'head':'body',Math.min(1,finalDmg/120));sfxHit(isHead);sfxHitConfirm(isHead);if(typeof _registerDmgDealt==='function')_registerDmgDealt(finalDmg);}
+      if(typeof _registerDmgDealt==='function')_registerDmgDealt(finalDmg);
+      if(!hitConfirmDone){
+        showHM(killed?(isHead?'headkill':'kill'):(isHead?'head':'body'),Math.min(1.45,(finalDmg/120)*(combatFeel.markerMagMul||1)));
+        sfxHit(isHead);
+        sfxHitConfirm(isHead,killed,Math.min(1.45,finalDmg/120));
+        hitConfirmDone=true;
+        if(killed)killConfirmDone=true;
+      }else if(killed&&!killConfirmDone){
+        showHM(isHead?'headkill':'kill',Math.min(1.45,(finalDmg/120)*(combatFeel.markerMagMul||1)));
+        sfxHitConfirm(isHead,true,Math.min(1.45,finalDmg/120));
+        killConfirmDone=true;
+      }
       if(allowFx&&!(P._suppressHitFxUntil&&performance.now()<P._suppressHitFxUntil)){
         addParticle(hitPt,isHead);
         if(isHead||killed||Math.random()<.35)addBlood(hitPt,isHead);
@@ -15589,10 +18350,12 @@ function shoot(){
         }
         setTimeout(()=>checkZoneClears(),60);
       }
-    } else if(allowFx){
-      const wh=wh0;
-      if(wh){
-        hitPt=wh.point.clone();
+	    } else if(allowFx){
+	      const wh=wh0;
+	      if(wh){
+	        hitPt=wh.point.clone();
+	        bulletEndDist=hitPt.distanceTo(camPos);
+	        surfaceHit=true;
         const _normal=wh.face?wh.face.normal.clone().transformDirection(wh.object.matrixWorld):null;
         addImpact(hitPt,_normal);
         // Per-surface dust/spark/sound
@@ -15633,12 +18396,21 @@ function shoot(){
           const enemyMeshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
           const hits2=rc2.intersectObjects(enemyMeshes,false);
           if(hits2.length){
-            const h2=hits2[0];
-            const enemyB=h2.object.userData.enemy;
-            const isHeadB=h2.object.userData.isHead===true;
+	            const h2=hits2[0];
+	            const enemyB=h2.object.userData.enemy;
+	            const isHeadB=h2.object.userData.isHead===true;
+	            pelletHit=true;
+	            pelletHitEnemy=enemyB;
             // 60% damage falloff through cover
             const dmg=isHeadB?(W.hsDmg*.55):(W.dmg*.55);
+            _primeEnemyHitFromObject(h2.object,isHeadB?'head':'torso');
             const killedB=enemyB.takeDamage(dmg,isHeadB);
+            if(typeof triggerPlayerHitImpactFeedback==='function')triggerPlayerHitImpactFeedback(h2.point,isHeadB,killedB,dmg,pl.weaponIdx,_slot);
+            if(typeof spawnDmgNumber==='function')spawnDmgNumber(h2.point.clone().add(new THREE.Vector3(0,.4,0)),dmg,isHeadB,killedB);
+            if(typeof showHM==='function')showHM(killedB?(isHeadB?'headkill':'kill'):(isHeadB?'head':'body'),Math.min(1.35,dmg/120));
+            if(typeof sfxHit==='function')sfxHit(isHeadB);
+            if(typeof sfxHitConfirm==='function')sfxHitConfirm(isHeadB,killedB,Math.min(1.35,dmg/120));
+            if(typeof _registerDmgDealt==='function')_registerDmgDealt(dmg);
             addBlood(h2.point,isHeadB);
             if(killedB){
               killFeed(isHeadB,{dist:past.distanceTo(cam.position),wallbang:true});awardKillMoney(enemyB,isHeadB);
@@ -15650,25 +18422,31 @@ function shoot(){
       }
     }
     if(!firstHitPt)firstHitPt=hitPt;
-    if(allowFx)addTrail(muzzleWorld,hitPt);
-    // Suppression: bullets whizzing within 1.2m of an enemy suppress them
-    if(G.enemyMgr){
-      for(const e of G.enemyMgr._list){
-        if(e.dead)continue;
-        // Distance from bullet endpoint to enemy
-        const dx=e.group.position.x-hitPt.x;
-        const dy=(e.group.position.y+1.0)-hitPt.y;
-        const dz=e.group.position.z-hitPt.z;
-        const d=Math.sqrt(dx*dx+dy*dy*.5+dz*dz);
-        if(d<1.5){
-          e._suppressedUntil=performance.now()+1500;
-          // Force them to duck/cover state
-          e.shootTimer=Math.max(e.shootTimer||0,.6);
-        }
-      }
-    }
+	    if(allowFx){
+	      const trKind=pelletHitEnemy?'player-hit':(surfaceHit?'player-surface':'player-miss');
+	      addTrail(muzzleWorld,hitPt,{
+	        kind:trKind,
+	        haloColor:pelletHitEnemy?0xfff080:(_weaponSuppressedFor(pl)?0x78d8ff:0xffd070),
+	        coreColor:pelletHitEnemy?0xffffff:0xfffce0,
+	        haloRadius:pelletHitEnemy ? .026 : .020,
+	        coreRadius:pelletHitEnemy ? .007 : .0055,
+	        life:pelletHitEnemy ? .18 : .14
+	      });
+	    }
+    _registerEnemySuppressionAlongShot(cam.position,dir,Math.min(60,bulletEndDist+0.7),pl.weaponIdx,pelletHitEnemy);
   }
   if(pelletHit)pl.shotsHit++;
+  if(pelletHit){
+    pl._gunplayConfidence=Math.max(pl._gunplayConfidence||0,pl.weaponIdx===3 ? Math.min(.48,combatFeel.confidenceHit||.36) : (combatFeel.confidenceHit||.46));
+    pl._gunplayMissBloom=Math.max(0,(pl._gunplayMissBloom||0)-(.18+(combatFeel.confidenceTighten||.12)*.20));
+    pl._gunplayRhythm=Math.max(pl._gunplayRhythm||0,pl.weaponIdx===4 ? .34 : .20);
+    pl._gunplayLastOutcome='hit';
+  }else{
+    const missAdd=(pl.running ? .16 : 0)+(sliding ? .22 : 0)+(pl.ads>.5 ? .10 : .18);
+    pl._gunplayMissBloom=Math.max(pl._gunplayMissBloom||0,(.20+missAdd)*(combatFeel.missBloom||.30)/.30);
+    pl._gunplayConfidence=(pl._gunplayConfidence||0)*.72;
+    pl._gunplayLastOutcome='miss';
+  }
   // Brass shell ejection — uses weapon-defined eject point
   const ejectFallback=new THREE.Vector3(W.ejectX||.038,W.ejectY||.032,W.ejectZ||-.04);
   const ejectLocal=(pl.weaponIdx===0&&_slot===0&&_isAuthoredM4RuntimeActive())?_m4SocketLocal('ejectionPort',ejectFallback):ejectFallback;
@@ -15699,6 +18477,7 @@ function shoot(){
   propagateGunfire(playerZone());
   _pendingShootSlot=0;
   Enemy._nextHitFlags=null;
+  return true;
 }
 let _reloadMagDropped=false;
 function spawnDroppedMag(){
@@ -15724,27 +18503,168 @@ function spawnDroppedMag(){
   G.trails.push({mesh:grp,mat:magM,vel,spin:new THREE.Vector3(3,1.5,2),timer:3.0,maxTime:3.0,isDroppedMag:true,extraMats:[lipM]});
 }
 // ── FOCUS MODE (bullet time) ────────────────────────────────────────────
-function toggleFocus(){
-  if(P.focusActive){
-    P.focusActive=false;
-    document.body.classList.remove('focus-on');
-    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'breathPeak',{focus:false});
-  } else {
-    if(P.focus<.28)return; // avoid accidental micro-focus taps
-    P.focusActive=true;
-    document.body.classList.add('focus-on');
-    sfxFocusOn();
-    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'breathPeak',{focus:true});
-  }
+const FOCUS_FEEL={
+  minStart:.22,
+  drain:.30,
+  regen:.20,
+  enterDur:.19,
+  exitDur:.30,
+  enterScale:.145,
+  holdScale:.245,
+  lowScale:.345
+};
+function _focusNow(){return performance.now()*.001;}
+function _focusEase01(v){return THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(v,0,1),0,1);}
+function _focusTone(c,type,from,to,gain,dur,delay=0){
+  const o=c.createOscillator(),g=c.createGain();
+  const t0=c.currentTime+delay,t1=t0+Math.max(.03,dur||.1);
+  o.type=type||'sine';
+  o.frequency.setValueAtTime(Math.max(1,from),t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(1,to),t1);
+  g.gain.setValueAtTime(0,t0);
+  g.gain.linearRampToValueAtTime(gain,t0+.015);
+  g.gain.exponentialRampToValueAtTime(.001,t1);
+  o.connect(g);g.connect(c.destination);o.start(t0);o.stop(t1+.03);
+}
+function _focusNoise(c,gain=.08,dur=.16,delay=0){
+  const sr=c.sampleRate||44100;
+  const len=Math.max(1,Math.floor(sr*dur));
+  const buf=c.createBuffer(1,len,sr);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<len;i++)data[i]=(Math.random()*2-1)*(1-i/len);
+  const src=c.createBufferSource();
+  const filter=c.createBiquadFilter();
+  const g=c.createGain();
+  const t0=c.currentTime+delay;
+  filter.type='highpass';filter.frequency.setValueAtTime(620,t0);
+  g.gain.setValueAtTime(gain,t0);
+  g.gain.exponentialRampToValueAtTime(.001,t0+dur);
+  src.buffer=buf;src.connect(filter);filter.connect(g);g.connect(c.destination);
+  src.start(t0);src.stop(t0+dur+.02);
 }
 function sfxFocusOn(){
   const c=getAC();
-  const o=c.createOscillator(),g=c.createGain();
-  o.type='sine';o.frequency.setValueAtTime(140,c.currentTime);
-  o.frequency.exponentialRampToValueAtTime(620,c.currentTime+.45);
-  g.gain.setValueAtTime(.35,c.currentTime);
-  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.50);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.55);
+  _focusTone(c,'sine',900,120,.30,.20,0);
+  _focusTone(c,'triangle',72,42,.18,.18,.015);
+  _focusTone(c,'sawtooth',1480,380,.055,.24,.035);
+  _focusNoise(c,.055,.12,.025);
+}
+function sfxFocusOff(empty=false){
+  const c=getAC();
+  _focusTone(c,'sine',empty?180:360,empty?68:150,empty?.20:.14,empty?.28:.18,0);
+  _focusTone(c,'triangle',empty?52:92,empty?38:70,empty?.10:.07,empty?.20:.14,.018);
+  if(empty)_focusNoise(c,.040,.18,.015);
+}
+function sfxFocusLow(){
+  const c=getAC();
+  _focusTone(c,'square',620,480,.035,.055,0);
+  _focusTone(c,'sine',118,98,.045,.09,.02);
+}
+function _resetFocusSequencer(){
+  P._focusSeqPhase='ready';
+  P._focusSeqAt=_focusNow();
+  P._focusVisual=0;
+  P._focusEnterPulse=0;
+  P._focusExitPulse=0;
+  P._focusWarnPulse=0;
+  P._focusTimeScaleTarget=1;
+  P._focusLowWarned=false;
+  P._focusLowTickAt=0;
+  document.body.classList.remove('focus-on','focus-enter','focus-exit','focus-low');
+  const fc=$e('focus-cinema');
+  if(fc){
+    fc.classList.remove('active','warn');fc.style.opacity='0';
+    fc.style.setProperty('--focus-overlay','.28');
+    fc.style.setProperty('--focus-scan','.10');
+    fc.style.setProperty('--focus-shift','0px');
+    fc.style.setProperty('--focus-tunnel-scale','1.02');
+    fc.style.setProperty('--focus-letter','18px');
+    fc.style.setProperty('--focus-radial-scale','1.10');
+    fc.style.setProperty('--focus-radial-opacity','0');
+    fc.style.setProperty('--focus-ring-inner','.86');
+    fc.style.setProperty('--focus-rift-scale','.30');
+    fc.style.setProperty('--focus-rift-opacity','0');
+    fc.style.setProperty('--focus-speed-opacity','0');
+    fc.style.setProperty('--focus-speed-scale','1.12');
+    fc.style.setProperty('--focus-speed-rot','0deg');
+  }
+  const fb=$e('focus-fill');if(fb){fb.style.height=((P.focus||0)*100).toFixed(1)+'%';fb.style.width='100%';}
+  const bar=$e('focus-bar');if(bar){bar.classList.remove('active','warn');}
+}
+function _setFocusActive(on,reason='manual'){
+  if(on){
+    if(P.focusActive)return true;
+    if((P.focus||0)<FOCUS_FEEL.minStart){
+      P._focusDeniedPulse=Math.max(P._focusDeniedPulse||0,.75);
+      return false;
+    }
+    P.focusActive=true;
+    P._focusSeqPhase='enter';
+    P._focusSeqAt=_focusNow();
+    P._focusEnterPulse=1;
+    P._focusExitPulse=0;
+    P._focusWarnPulse=0;
+    P._focusLowWarned=false;
+    document.body.classList.add('focus-on','focus-enter');
+    document.body.classList.remove('focus-exit');
+    setTimeout(()=>document.body.classList.remove('focus-enter'),220);
+    _onFocusActivated(reason);
+    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'breathPeak',{focus:true});
+    return true;
+  }
+  if(!P.focusActive&&!(P._focusVisual>0.02))return false;
+  const wasActive=!!P.focusActive;
+  P.focusActive=false;
+  P._focusSeqPhase='exit';
+  P._focusSeqAt=_focusNow();
+  P._focusExitPulse=Math.max(P._focusExitPulse||0,reason==='empty'?1:.72);
+  P._focusEnterPulse=0;
+  document.body.classList.remove('focus-on','focus-enter','focus-low');
+  document.body.classList.add('focus-exit');
+  setTimeout(()=>document.body.classList.remove('focus-exit'),360);
+  if(wasActive){
+    _onFocusEnded(reason);
+    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'breathPeak',{focus:false});
+  }
+  return true;
+}
+function toggleFocus(){
+  _setFocusActive(!P.focusActive,'manual');
+}
+function _syncFocusHud(dt){
+  const vis=THREE.MathUtils.clamp(P._focusVisual||0,0,1);
+  const enter=THREE.MathUtils.clamp(P._focusEnterPulse||0,0,1);
+  const exit=THREE.MathUtils.clamp(P._focusExitPulse||0,0,1);
+  const warn=THREE.MathUtils.clamp(P._focusWarnPulse||0,0,1);
+  const pulse=THREE.MathUtils.clamp(Math.max(enter,exit*.72,warn*.55,P._focusDeniedPulse||0),0,1);
+  const fc=$e('focus-cinema');
+  if(fc){
+    const active=vis>.015||pulse>.03;
+    fc.classList.toggle('active',active);
+    fc.classList.toggle('warn',warn>.12);
+    fc.style.opacity=active?String(THREE.MathUtils.clamp(vis*.88+pulse*.35+warn*.18,0,1)):'0';
+    fc.style.setProperty('--focus-overlay',THREE.MathUtils.clamp(.28+vis*.52+warn*.14,0,1).toFixed(3));
+    fc.style.setProperty('--focus-scan',THREE.MathUtils.clamp(.10+vis*.16+warn*.10,0,.42).toFixed(3));
+    fc.style.setProperty('--focus-shift',(-pulse*5).toFixed(2)+'px');
+    fc.style.setProperty('--focus-tunnel-scale',(1.02-pulse*.025).toFixed(3));
+    fc.style.setProperty('--focus-letter',(18+vis*18).toFixed(1)+'px');
+    fc.style.setProperty('--focus-radial-scale',(1.10+pulse*.72).toFixed(3));
+    fc.style.setProperty('--focus-radial-opacity',THREE.MathUtils.clamp(pulse*.82+warn*.18,0,1).toFixed(3));
+    fc.style.setProperty('--focus-ring-inner',(.86+pulse*.38).toFixed(3));
+    fc.style.setProperty('--focus-rift-scale',(.30+pulse*1.35).toFixed(3));
+    fc.style.setProperty('--focus-rift-opacity',THREE.MathUtils.clamp(pulse*.72+warn*.12,0,1).toFixed(3));
+    fc.style.setProperty('--focus-speed-opacity',THREE.MathUtils.clamp(vis*.18+pulse*.34,0,.75).toFixed(3));
+    fc.style.setProperty('--focus-speed-scale',(1.12+pulse*.18).toFixed(3));
+    fc.style.setProperty('--focus-speed-rot',(-pulse*4).toFixed(2)+'deg');
+  }
+  const fb=$e('focus-fill');
+  if(fb){fb.style.width='100%';fb.style.height=(THREE.MathUtils.clamp(P.focus||0,0,1)*100).toFixed(1)+'%';}
+  const bar=$e('focus-bar');
+  if(bar){
+    bar.classList.toggle('active',vis>.08||P.focusActive);
+    bar.classList.toggle('warn',warn>.12);
+  }
+  P._focusDeniedPulse=damp(Number.isFinite(P._focusDeniedPulse)?P._focusDeniedPulse:0,0,14,dt);
 }
 // Cinematic kill-cam slowmo — independent of focus mode
 let _killCamT=0,_killCamScale=1,_killCamDur=0;
@@ -15799,25 +18719,54 @@ function tickFocus(dt){
     _killCamT=Math.max(0,_killCamT-dt);
     P.timeScale+=(_killCamScale-P.timeScale)*Math.min(dt*9,1);
     if(_killCamT<=0)P.timeScale=1.0;
+    _syncFocusHud(dt);
     return;
   }
+  const nowS=_focusNow();
+  const wasActive=!!P.focusActive;
   if(P.focusActive){
-    P.focus=Math.max(0,P.focus-dt*.34); // longer, more useful burst
-    if(P.focus<=0){P.focusActive=false;document.body.classList.remove('focus-on');}
-    P.timeScale+=(.30-P.timeScale)*Math.min(dt*8,1);
+    P.focus=Math.max(0,P.focus-dt*FOCUS_FEEL.drain);
+    if(P.focus<=0)_setFocusActive(false,'empty');
   } else {
     const regenMul=(P._focusRegen||1.0)*(hasPerk('autoFocus')?1.25:1.0);
-    P.focus=Math.min(1,P.focus+dt*.20*regenMul);
-    P.timeScale+=(1.0-P.timeScale)*Math.min(dt*6,1);
+    P.focus=Math.min(1,P.focus+dt*FOCUS_FEEL.regen*regenMul);
   }
-  // Update focus HUD
-  const fb=$e('focus-fill');
-  if(fb){fb.style.width=(P.focus*100).toFixed(1)+'%';}
-  const fc=$e('focus-bar');
-  if(fc){fc.classList.toggle('active',P.focusActive);}
+  const active=!!P.focusActive;
+  if(active&&P._focusSeqPhase==='enter'&&(nowS-(P._focusSeqAt||nowS))>FOCUS_FEEL.enterDur)P._focusSeqPhase='hold';
+  if(!active&&P._focusSeqPhase==='exit'&&(nowS-(P._focusSeqAt||nowS))>FOCUS_FEEL.exitDur&&P._focusVisual<.025)P._focusSeqPhase='ready';
+  const visualTarget=active?1:0;
+  P._focusVisual=damp(Number.isFinite(P._focusVisual)?P._focusVisual:visualTarget,visualTarget,active?13.5:9.2,dt);
+  P._focusEnterPulse=damp(Number.isFinite(P._focusEnterPulse)?P._focusEnterPulse:0,0,active?9.5:13,dt);
+  P._focusExitPulse=damp(Number.isFinite(P._focusExitPulse)?P._focusExitPulse:0,0,8.5,dt);
+  const lowWarn=active&&P.focus<.22?THREE.MathUtils.clamp((.22-P.focus)/.22,0,1):0;
+  const warnBeat=lowWarn?(.45+.55*Math.sin(nowS*24)*Math.sin(nowS*24)):0;
+  P._focusWarnPulse=damp(Number.isFinite(P._focusWarnPulse)?P._focusWarnPulse:0,lowWarn*warnBeat,lowWarn?18:9,dt);
+  if(active&&lowWarn>.55&&nowS-(P._focusLowTickAt||0)>.52){
+    P._focusLowTickAt=nowS;
+    sfxFocusLow();
+  }
+  let targetScale=1;
+  if(active){
+    const age=nowS-(P._focusSeqAt||nowS);
+    const enterEase=_focusEase01(age/FOCUS_FEEL.enterDur);
+    const meterEase=THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(P.focus||0,0,1),.18,.70);
+    const hold=THREE.MathUtils.lerp(FOCUS_FEEL.lowScale,FOCUS_FEEL.holdScale,meterEase);
+    targetScale=THREE.MathUtils.lerp(FOCUS_FEEL.enterScale,hold,enterEase);
+    targetScale-=Math.max(P._focusEnterPulse||0,P._focusWarnPulse||0)*.018;
+    targetScale=THREE.MathUtils.clamp(targetScale,.125,.38);
+  }else{
+    targetScale=1.0;
+    if(wasActive&&P._focusSeqPhase!=='exit')P._focusSeqPhase='exit';
+  }
+  P._focusTimeScaleTarget=targetScale;
+  const timeLam=active?((P._focusSeqPhase==='enter')?18:8.5):((P._focusSeqPhase==='exit')?10.8:8.2);
+  P.timeScale+=(targetScale-P.timeScale)*Math.min(dt*timeLam,1);
+  if(!active&&Math.abs(P.timeScale-1)<.003)P.timeScale=1.0;
+  _syncFocusHud(dt);
 }
 function startReload(){
   if(P.reloading||P.ammoRes<=0)return;
+  _clearTriggerBuffer(P);
   const W=WEAPONS[P.weaponIdx];
   // Quick Hands perk reduces reload time by 30%
   const reloadMul=hasPerk('fastReload')?.70:1.0;
@@ -15841,6 +18790,7 @@ function startReload(){
 }
 function _startReloadP2(){
   if(P2.reloading||P2.ammoRes<=0)return;
+  _clearTriggerBuffer(P2);
   const W=WEAPONS[P2.weaponIdx];
   const reloadMul=hasPerk('fastReload')?.70:1.0;
   const magAttMul=(P2.attachments&&P2.attachments.mag&&P2.attachments.mag.reloadMul)||1.0;
@@ -15939,11 +18889,34 @@ const WALL_JUMP={
   shove:.115,
   hardenMs:580
 };
+const DROPKICK={
+  dur:.52,
+  landDur:.34,
+  cooldown:.58,
+  speed:18.2,
+  downKick:6.1,
+  damage:165,
+  landingDamage:195,
+  radius:.92,
+  landingRadius:1.18,
+  cone:.18,
+  hitStart:.225,
+  hitEnd:.390,
+  targetRange:9.6,
+  targetBoost:.46,
+  targetSteer:.38,
+  targetDownMul:.30,
+  minGroundClear:.16
+};
 function _resetWallJumpState(pl){
   if(!pl)return;
   pl.wallJumpTimer=0;pl.wallJumpHardenTimer=0;pl.wallJumpVx=0;pl.wallJumpVz=0;pl.wallJumpSide=0;pl.wallJumpImpact=0;pl.wallJumpNx=0;pl.wallJumpNz=0;pl.wallContact=null;
   pl._lastWallJumpT=0;pl._wallJumpLockWall=null;
   if(pl.grounded)pl._lastGroundedT=performance.now();
+}
+function _resetDropkickState(pl){
+  if(!pl)return;
+  pl.dropkickActive=false;pl.dropkickT=0;pl.dropkickTimer=0;pl.dropkickCooldown=0;pl.dropkickImpact=0;pl.dropkickContactTimer=0;pl.dropkickContactDur=.16;pl.dropkickLandTimer=0;pl.dropkickDirX=0;pl.dropkickDirZ=-1;pl.dropkickHitEnemies=null;pl.dropkickTargetEnemy=null;pl.dropkickTargeted=false;pl.dropkickTargetDist=0;pl.dropkickTargetLock=0;pl.dropkickTwirlSide=1;pl._dropkickLaunchSurge=0;pl._dropkickBodySurge=0;pl._dropkickHitStopPulse=0;pl._dropkickPrevFootX=0;pl._dropkickPrevFootZ=0;pl._dropkickImpactNotified=false;pl._dropkickImpactStopTimer=0;pl._dropkickImpactStopDur=.001;pl._dropkickImpactStopPower=0;pl._dropkickReboundTimer=0;pl._dropkickReboundDur=.001;pl._dropkickReboundPower=0;pl._dropkickContactStopDirX=0;pl._dropkickContactStopDirZ=-1;pl._dropkickContactWorldX=0;pl._dropkickContactWorldY=0;pl._dropkickContactWorldZ=0;pl._hitStopTimer=0;pl._hitStopDur=0;
 }
 function _wallJumpProbeFor(pl,walls,reach=WALL_JUMP.reach){
   if(!pl||!pl.pos||!walls||!walls.length)return null;
@@ -16028,7 +19001,7 @@ function _performWallJump(pl,probe,keys=K){
   pl.pos.z+=probe.nz*WALL_JUMP.shove;
   pl._jumpStartT=pl._lastWallJumpT;
   pl._didDoubleJump=false;
-  pl.sliding=false;pl.slideTimer=0;pl.slideTarget=0;pl.slideAmt=Math.min(pl.slideAmt||0,.08);
+  pl.sliding=false;pl.slideTimer=0;pl.slideTarget=0;pl.slideAmt=Math.min(pl.slideAmt||0,.08);pl.slideLocalR=0;pl.slideLocalF=1;
   if(pl===P){
     PP.shakeY-=.12;
     PP.shakeX+=probe.side*.12;
@@ -16039,43 +19012,478 @@ function _performWallJump(pl,probe,keys=K){
   }
   sfxWallJump();
 }
-function doJump(){
-  // Allow double-jump if perk + already in air with one jump used
-  if(!P.grounded&&P.vaulting)return;
-  if(P.dead)return;
-  if(!P.grounded){
-    const walls=G.levelData?G.levelData.walls:[];
-    const wallProbe=_wallJumpProbeFor(P,walls,WALL_JUMP.reach);
-    if(_canWallJump(P,wallProbe)){
-      _performWallJump(P,wallProbe,K);
-      return;
-    }
-    if(P._canDoubleJump&&!P._didDoubleJump){
-      P._didDoubleJump=true;
-      P.vy=5.5;
-      sfxJump();
-      return;
-    }
-    return;
+function _dropkickDirFor(pl=P,keys=K){
+  const intent=_wallJumpIntentDir(keys,pl.yaw||0);
+  if(intent&&Math.hypot(intent.x,intent.z)>0.1)return intent;
+  return {x:-Math.sin(pl.yaw||0),z:-Math.cos(pl.yaw||0)};
+}
+function _dropkickPhase01(pl=P){
+  return THREE.MathUtils.clamp((pl.dropkickT||0)/Math.max(.001,pl.dropkickDur||DROPKICK.dur),0,1);
+}
+function _dropkickFootExtend01(pl=P){
+  return THREE.MathUtils.smoothstep(_dropkickPhase01(pl),.085,.240);
+}
+function _dropkickTargetFor(pl=P){
+  if(pl!==P||!G.enemyMgr||!Array.isArray(G.enemyMgr._list)||P.dead)return null;
+  const meshes=typeof G.enemyMgr.getMeshes==='function'?G.enemyMgr.getMeshes():[];
+  if(!meshes.length)return null;
+  for(const m of meshes)if(m&&typeof m.updateMatrixWorld==='function')m.updateMatrixWorld(true);
+  const pitch=pl.pitch||0,yaw=pl.yaw||0,cp=Math.cos(pitch);
+  const origin=new THREE.Vector3(pl.pos.x,EYE+(pl.jumpH||0),pl.pos.z);
+  const dir=new THREE.Vector3(-Math.sin(yaw)*cp,Math.sin(pitch),-Math.cos(yaw)*cp).normalize();
+  const wallHit=typeof wallRaycast==='function'?wallRaycast(origin,dir):null;
+  const hits=_rayHits(origin,dir,0,DROPKICK.targetRange,meshes);
+  for(const h of hits){
+    const e=h&&h.object&&h.object.userData&&h.object.userData.enemy;
+    if(!e||e.dead)continue;
+    const dist=h.distance!=null?h.distance:origin.distanceTo(h.point);
+    if(wallHit&&wallHit.distance<dist-.08)continue;
+    return {enemy:e,dist,lineDist:0,lock:1};
   }
-  // SLIDE-CANCEL: jumping during a slide ends slide physics immediately. Must
-  // zero slideTarget/slideAmt — otherwise damp() still chases slideTarget=1 and
-  // the move branch treats slideAmt>.1 as "still sliding" (ignores WASD).
+  let best=null,bestScore=Infinity;
+  for(const e of G.enemyMgr._list){
+    if(!e||e.dead||e._roomFlowDormant)continue;
+    const ep=e.position||e.group&&e.group.position;
+    if(!ep)continue;
+    const center=new THREE.Vector3(ep.x,(ep.y||0)+.86,ep.z);
+    const to=center.sub(origin);
+    const dist=to.length();
+    if(dist<.45||dist>DROPKICK.targetRange)continue;
+    const toN=to.multiplyScalar(1/Math.max(dist,.001));
+    const dot=dir.dot(toN);
+    if(dot<.992)continue;
+    const lineDist=Math.sqrt(Math.max(0,dist*dist*(1-dot*dot)));
+    const r=e.isBoss?.70:.42;
+    if(lineDist>r)continue;
+    const wallToTarget=typeof wallRaycast==='function'?wallRaycast(origin,toN):null;
+    if(wallToTarget&&wallToTarget.distance<dist-.35)continue;
+    const score=lineDist+dist*.025;
+    if(score<bestScore){
+      bestScore=score;
+      best={enemy:e,dist,lineDist,lock:THREE.MathUtils.clamp(1-lineDist/Math.max(r,.001),.35,1)};
+    }
+  }
+  return best;
+}
+function _startDropkick(){
+  if(P.dead||P.grounded||P.vaulting||P.dropkickActive||(P.dropkickCooldown||0)>0)return false;
+  const groundY=_floorYAt(P.pos.x,P.pos.z,G.levelData&&G.levelData.floorRegions);
+  if((P.jumpH||0)<=groundY+DROPKICK.minGroundClear&&(P.vy||0)<=0.2)return false;
+  const target=_dropkickTargetFor(P);
+  let d=_dropkickDirFor(P,K);
+  if(target&&target.enemy){
+    const ep=target.enemy.position||target.enemy.group&&target.enemy.group.position;
+    if(ep){
+      const tx=ep.x-P.pos.x,tz=ep.z-P.pos.z;
+      if(Math.hypot(tx,tz)>0.001)d={x:tx,z:tz};
+    }
+  }
+  const dl=Math.hypot(d.x,d.z)||1;
+  P.dropkickDirX=d.x/dl;P.dropkickDirZ=d.z/dl;
+  P.dropkickActive=true;
+  P.dropkickT=0;
+  P.dropkickTargetEnemy=target&&target.enemy?target.enemy:null;
+  P.dropkickTargeted=!!P.dropkickTargetEnemy;
+  P.dropkickTargetDist=target&&Number.isFinite(target.dist)?target.dist:0;
+  P.dropkickTargetLock=target&&Number.isFinite(target.lock)?target.lock:0;
+  P.dropkickDur=DROPKICK.dur+(P.dropkickTargeted?Math.min(.08,Math.max(0,(P.dropkickTargetDist-2.0)*.020)):0);
+  P.dropkickTimer=P.dropkickDur;
+  P.dropkickLandDur=DROPKICK.landDur;
+  P.dropkickLandTimer=0;
+  P.dropkickContactTimer=0;
+  P.dropkickContactDur=.16;
+  P._dropkickImpactStopTimer=0;
+  P._dropkickImpactStopDur=.001;
+  P._dropkickImpactStopPower=0;
+  P._dropkickReboundTimer=0;
+  P._dropkickReboundDur=.001;
+  P._dropkickContactStopDirX=P.dropkickDirX;
+  P._dropkickContactStopDirZ=P.dropkickDirZ;
+  {
+    const sideTarget=target&&target.enemy&&target.enemy.position?Math.sign((target.enemy.position.x-P.pos.x)*Math.cos(P.yaw||0)+(target.enemy.position.z-P.pos.z)*-Math.sin(P.yaw||0)):0;
+    P.dropkickTwirlSide=sideTarget||(K.KeyA?-1:1);
+  }
+  P.dropkickCooldown=DROPKICK.cooldown;
+  P.dropkickImpact=0;
+  P.dropkickHitEnemies=new Set();
+  P.vy=Math.min(P.vy||0,P.dropkickTargeted?-.18:-.78);
+  P._dropkickLaunchSurge=P.dropkickTargeted?1.55:1.18;
+  P._dropkickBodySurge=1.28;
+  P._dropkickImpactNotified=false;
+  const startFoot=_dropkickHitPoint(false);
+  P._dropkickPrevFootX=startFoot.x;
+  P._dropkickPrevFootZ=startFoot.z;
+  P.grounded=false;
+  P.sliding=false;P.slideTimer=0;P.slideTarget=0;P.slideAmt=Math.min(P.slideAmt||0,.05);P.slideLocalR=0;P.slideLocalF=1;
+  P.sprintLatched=false;P.adsTarget=0;M.rmbDown=false;
+  PP.shakeY-=P.dropkickTargeted ? .12 : .085;
+  PP.shakeX+=(Math.random()-.5)*(P.dropkickTargeted ? .20 : .14);
+  gunGrp.position.y-=.038;
+  gunGrp.position.z+=.042;
+  sfxDropkickStart();
+  return true;
+}
+function _dropkickHitPoint(onLanding=false){
+  const fx=P.dropkickDirX||-Math.sin(P.yaw||0),fz=P.dropkickDirZ||-Math.cos(P.yaw||0);
+  const lunge=P.dropkickTargeted?1:0;
+  const extend=onLanding?1:_dropkickFootExtend01(P);
+  const maxReach=(onLanding ? .84 : 1.12)+lunge*(onLanding ? .20 : .40);
+  const reach=onLanding?maxReach:(.38+extend*(maxReach-.38));
+  const y=(P.jumpH||0)+(onLanding ? .34 : .46+extend*.16);
+  return new THREE.Vector3(P.pos.x+fx*reach,y,P.pos.z+fz*reach);
+}
+function _pointSegmentDistance2D(px,pz,ax,az,bx,bz){
+  const abx=bx-ax,abz=bz-az;
+  const len2=abx*abx+abz*abz;
+  if(len2<1e-8)return Math.hypot(px-ax,pz-az);
+  const t=THREE.MathUtils.clamp(((px-ax)*abx+(pz-az)*abz)/len2,0,1);
+  const cx=ax+abx*t,cz=az+abz*t;
+  return Math.hypot(px-cx,pz-cz);
+}
+function _spawnDropkickImpactFx(pos,killed=false,opts={}){
+  if(!pos)return;
+  const fx=Number.isFinite(opts.fx)?opts.fx:0;
+  const fz=Number.isFinite(opts.fz)?opts.fz:-1;
+  const dir=new THREE.Vector3(fx,0,fz);
+  if(dir.lengthSq()<.001)dir.set(0,0,-1);
+  dir.normalize();
+  const side=Number.isFinite(opts.side)?Math.sign(opts.side)||1:1;
+  const right=new THREE.Vector3(-dir.z,0,dir.x).normalize();
+  const up=new THREE.Vector3(0,1,0);
+  const power=killed?1.22:1;
+  const mat=new THREE.MeshBasicMaterial({color:killed?0xffd060:0xff7040,transparent:true,opacity:.72,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.055,.290*power,28),mat);
+  ring.rotation.x=-Math.PI/2;
+  ring.position.set(pos.x,Math.max(.43,pos.y-.45),pos.z);
+  scene.add(ring);
+  G.trails.push({mesh:ring,mat,timer:.30,maxTime:.30,isFlash:true});
+  const popMat=new THREE.MeshBasicMaterial({color:killed?0xfff4a8:0xffd7a0,transparent:true,opacity:.68,depthWrite:false,depthTest:true,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const pop=new THREE.Mesh(new THREE.RingGeometry(.035,.190*power,30),popMat);
+  pop.position.copy(pos).add(new THREE.Vector3(0,.040,0));
+  _orientVfxBillboard(pop);
+  scene.add(pop);
+  G.trails.push({mesh:pop,mat:popMat,timer:.145,maxTime:.145,isFlash:true,faceCameraBillboard:true});
+  const slashMat=new THREE.MeshBasicMaterial({color:killed?0xfff0a0:0xffa060,transparent:true,opacity:.70,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  for(let i=0;i<3;i++){
+    const slash=new THREE.Mesh(new THREE.PlaneGeometry((.42+i*.16)*power,.030+i*.006),slashMat.clone());
+    slash.position.copy(pos)
+      .addScaledVector(dir,.020+i*.020)
+      .addScaledVector(right,side*((i-1)*.045))
+      .addScaledVector(up,.045+i*.016);
+    _orientVfxBillboard(slash);
+    slash.rotation.z+=side*(.34+i*.34)+(Math.random()-.5)*.18;
+    scene.add(slash);
+    G.trails.push({mesh:slash,mat:slash.material,timer:.105+i*.030,maxTime:.105+i*.030,isFlash:true,faceCameraBillboard:true});
+  }
+  const bootStreakStart=pos.clone().addScaledVector(dir,-.72).addScaledVector(up,.080).addScaledVector(right,side*.040);
+  const bootStreakEnd=pos.clone().addScaledVector(dir,.18).addScaledVector(up,.020).addScaledVector(right,side*.010);
+  if(typeof addTrail==='function'){
+    addTrail(bootStreakStart,bootStreakEnd,{
+      kind:'dropkick-contact',
+      haloColor:killed?0xffd060:0xff8848,
+      coreColor:0xffffe8,
+      haloRadius:killed ? .040 : .034,
+      coreRadius:killed ? .010 : .008,
+      life:killed ? .18 : .14,
+      haloOpacity:.78,
+      coreOpacity:1
+    });
+  }
+  const sparkCount=killed?13:9;
+  for(let i=0;i<sparkCount;i++){
+    const p=pos.clone()
+      .addScaledVector(right,(Math.random()-.5)*.34)
+      .addScaledVector(up,(Math.random()-.15)*.24)
+      .addScaledVector(dir,(Math.random()-.35)*.26);
+    const sparkM=new THREE.MeshBasicMaterial({color:killed?0xffe090:0xffb060,transparent:true,opacity:.82,depthWrite:false,blending:THREE.AdditiveBlending});
+    const spark=new THREE.Mesh(new THREE.SphereGeometry(.020+Math.random()*.018,5,4),sparkM);
+    spark.position.copy(p);
+    const vel=dir.clone().multiplyScalar(1.2+Math.random()*2.2)
+      .addScaledVector(right,(Math.random()-.5)*3.6)
+      .addScaledVector(up,.6+Math.random()*2.6);
+    scene.add(spark);
+    G.trails.push({mesh:spark,mat:sparkM,vel,timer:.24+Math.random()*.18,maxTime:.36,isParticle:true});
+  }
+  for(let i=0;i<9;i++){
+    const p=pos.clone().add(new THREE.Vector3((Math.random()-.5)*.46,(Math.random()-.2)*.24,(Math.random()-.5)*.46));
+    addParticle(p,false);
+  }
+}
+function _spawnDropkickLandingFx(pos,hit=false){
+  if(!pos)return;
+  const power=hit?1.22:1;
+  const ringMat=new THREE.MeshBasicMaterial({color:hit?0xffd080:0x9ed8ff,transparent:true,opacity:hit ? .42 : .30,depthWrite:false,depthTest:true,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.075,.360*power,34),ringMat);
+  ring.rotation.x=-Math.PI/2;
+  ring.position.set(pos.x,Math.max(.026,pos.y+.026),pos.z);
+  scene.add(ring);
+  G.trails.push({mesh:ring,mat:ringMat,timer:hit ? .34 : .25,maxTime:hit ? .34 : .25,isFlash:true});
+  const dustMat=new THREE.MeshBasicMaterial({color:0xc8c0aa,transparent:true,opacity:.34,depthWrite:false,depthTest:true,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  for(let i=0;i<(hit?8:5);i++){
+    const puff=new THREE.Mesh(new THREE.PlaneGeometry(.080+Math.random()*.060,.024+Math.random()*.018),dustMat.clone());
+    const a=Math.random()*Math.PI*2;
+    const r=.08+Math.random()*.26*power;
+    puff.position.set(pos.x+Math.cos(a)*r,pos.y+.040+Math.random()*.050,pos.z+Math.sin(a)*r);
+    puff.rotation.set(-Math.PI/2,0,a);
+    scene.add(puff);
+    G.trails.push({mesh:puff,mat:puff.material,vel:new THREE.Vector3(Math.cos(a)*.40,.18+Math.random()*.22,Math.sin(a)*.40),timer:.22+Math.random()*.12,maxTime:.30,isParticle:true});
+  }
+}
+function _checkDropkickHit(onLanding=false){
+  if(!G.enemyMgr||!Array.isArray(G.enemyMgr._list))return false;
+  if(!(P.dropkickHitEnemies instanceof Set))P.dropkickHitEnemies=new Set();
+  const foot=_dropkickHitPoint(onLanding);
+  const phase=!onLanding?_dropkickPhase01(P):1;
+  if(!onLanding&&(phase<DROPKICK.hitStart||phase>DROPKICK.hitEnd)){
+    P._dropkickPrevFootX=foot.x;P._dropkickPrevFootZ=foot.z;
+    return false;
+  }
+  const fx=P.dropkickDirX||-Math.sin(P.yaw||0),fz=P.dropkickDirZ||-Math.cos(P.yaw||0);
+  const lunge=P.dropkickTargeted?1:0;
+  const radius=(onLanding?DROPKICK.landingRadius:DROPKICK.radius)+lunge*(onLanding ? .18 : .28);
+  const prevFootX=!onLanding&&Number.isFinite(P._dropkickPrevFootX)?P._dropkickPrevFootX:foot.x;
+  const prevFootZ=!onLanding&&Number.isFinite(P._dropkickPrevFootZ)?P._dropkickPrevFootZ:foot.z;
+  const sweptRadius=radius+(!onLanding ? .36 : 0);
+  const dmg=(onLanding?DROPKICK.landingDamage:DROPKICK.damage)|0;
+  let hit=false;
+  for(const e of G.enemyMgr._list){
+    if(!e||e.dead||P.dropkickHitEnemies.has(e))continue;
+    const ep=e.position||e.group&&e.group.position;
+    if(!ep)continue;
+    const dx=ep.x-P.pos.x,dz=ep.z-P.pos.z;
+    const dist=Math.hypot(dx,dz);
+    const dot=(dx*fx+dz*fz)/Math.max(dist,.001);
+    const footDx=ep.x-foot.x,footDz=ep.z-foot.z;
+    const footDist=Math.hypot(footDx,footDz);
+    const sweptDist=onLanding?Infinity:_pointSegmentDistance2D(ep.x,ep.z,prevFootX,prevFootZ,foot.x,foot.z);
+    if(dist>radius+1.1&&footDist>radius&&sweptDist>sweptRadius)continue;
+    if(!onLanding&&dist<.08&&sweptDist>sweptRadius)continue;
+    const verticalOk=onLanding||Math.abs((ep.y+.82)-foot.y)<1.05;
+    if(dot<DROPKICK.cone&&footDist>radius&&sweptDist>sweptRadius)continue;
+    if(!verticalOk)continue;
+    P.dropkickHitEnemies.add(e);
+    P.dropkickImpact=Math.max(P.dropkickImpact||0,1);
+    if(!onLanding){
+      P.dropkickContactDur=.46;
+      P.dropkickContactTimer=Math.max(P.dropkickContactTimer||0,P.dropkickContactDur);
+      P._dropkickImpactStopDur=.315;
+      P._dropkickImpactStopTimer=Math.max(P._dropkickImpactStopTimer||0,P._dropkickImpactStopDur);
+      P._dropkickImpactStopPower=Math.max(P._dropkickImpactStopPower||0,1.18);
+      P._dropkickReboundDur=.260;
+      P._dropkickReboundTimer=Math.max(P._dropkickReboundTimer||0,P._dropkickReboundDur);
+      P._dropkickReboundPower=Math.max(P._dropkickReboundPower||0,1.10);
+      P._dropkickContactStopDirX=fx;
+      P._dropkickContactStopDirZ=fz;
+      P._dropkickContactWorldX=ep.x;
+      P._dropkickContactWorldY=(ep.y||0)+.92;
+      P._dropkickContactWorldZ=ep.z;
+    }
+    P._dropkickBodySurge=Math.max(P._dropkickBodySurge||0,onLanding?1.15:1.60);
+    P._bodyJolt=Math.max(P._bodyJolt||0,onLanding ? 1.04 : .92);
+    P._massInertiaF=Math.max(P._massInertiaF||0,onLanding?.90:1.20);
+    if(!onLanding){
+      P.vy=Math.min(P.vy||0,-4.8);
+      P._dropkickLaunchSurge=Math.min(Number.isFinite(P._dropkickLaunchSurge)?P._dropkickLaunchSurge:0,.34);
+    }
+    if(e.lastPlayerDir)e.lastPlayerDir.set(P.pos.x-ep.x,0,P.pos.z-ep.z).normalize();
+    _primeEnemyHitZone(onLanding?'torso':'torso');
+    const impactSide=Math.sign((ep.x-P.pos.x)*Math.cos(P.yaw||0)+(ep.z-P.pos.z)*-Math.sin(P.yaw||0))||1;
+    const impactNow=performance.now();
+    e._dropkickImpactSide=impactSide;
+    e._dropkickImpactStrength=Math.max(e._dropkickImpactStrength||0,onLanding?1.62:1.96);
+    e._dropkickPushImpulse={x:fx,z:fz,start:impactNow,until:impactNow+(onLanding?420:560),dur:onLanding?420:560,power:onLanding?1.44:2.18};
+    e._dropkickFlyImpulse={x:fx,z:fz,start:impactNow,until:impactNow+(onLanding?520:720),dur:onLanding?520:720,power:onLanding?1.42:2.36,speedMul:onLanding?5.5:7.2,lift:onLanding?.18:.54};
+    e._dropkickDeathLift=onLanding?.22:.58;
+    e._deathByDropkick=false;
+    if(typeof e._showDropkickContactMark==='function')e._showDropkickContactMark(impactSide,false);
+    const killed=e.takeDamage(dmg,false,true);
+    if(e.staggerDir)e.staggerDir.set(fx,0,fz).normalize();
+    if(killed){
+      e._deathByDropkick=true;
+      if(e._dropkickFlyImpulse){
+        e._dropkickFlyImpulse.power=Math.max(e._dropkickFlyImpulse.power||0,onLanding?1.80:2.86);
+        e._dropkickFlyImpulse.speedMul=Math.max(e._dropkickFlyImpulse.speedMul||0,onLanding?6.0:8.1);
+        e._dropkickFlyImpulse.lift=Math.max(e._dropkickFlyImpulse.lift||0,onLanding?.24:.68);
+      }
+      e._dropkickImpactStrength=Math.max(e._dropkickImpactStrength||0,onLanding?1.82:2.18);
+    }
+    e.staggerTimer=Math.max(e.staggerTimer||0,onLanding ? .50 : .54);
+    e.staggerDur=Math.max(e.staggerDur||0,onLanding ? .50 : .54);
+    e.staggerAmt=Math.max(e.staggerAmt||0,onLanding?7.0:7.8);
+    e.meleeHitTimer=.10;
+    e._dropkickImpactTimer=Math.max(e._dropkickImpactTimer||0,onLanding ? 1.04 : 1.10);
+    e._dropkickImpactDur=Math.max(e._dropkickImpactDur||0,onLanding ? 1.04 : 1.10);
+    if(typeof e._showDropkickContactMark==='function')e._showDropkickContactMark(impactSide,killed);
+    e._pushImpulse={x:fx*(onLanding ? .50 : .64),z:fz*(onLanding ? .50 : .64),start:impactNow,until:impactNow+250};
+    hit=true;
+    const hitPt=new THREE.Vector3(ep.x,ep.y+.92,ep.z);
+    addBlood(hitPt,false);
+    showHM('body',Math.min(1,dmg/160));
+    sfxDropkickHit(killed);
+    triggerPlayerHitImpactFeedback(hitPt,false,killed,dmg,P.weaponIdx,0);
+    if(typeof triggerDropkickHitStop==='function')triggerDropkickHitStop(onLanding?(killed?86:66):(killed?124:104),onLanding ? .18 : .11);
+    _registerDmgDealt(dmg);
+    _spawnDropkickImpactFx(hitPt,killed,{fx,fz,side:impactSide,onLanding});
+    PP.shakeX+=(Math.random()-.5)*(onLanding ? .74 : .92)+impactSide*(onLanding?.08:.12);
+    PP.shakeY-=onLanding ? .42 : .48;
+    if(killed){
+      killFeed(false,{dist:Math.max(.5,dist)});
+      P.kills++;
+      comboKill(false);
+      awardKillMoney(e,false);
+      cinematicKill(e.group.position.clone());
+      if(typeof _registerMultikill==='function')_registerMultikill();
+      setTimeout(()=>checkZoneClears(),60);
+    }
+  }
+  if(!onLanding){P._dropkickPrevFootX=foot.x;P._dropkickPrevFootZ=foot.z;}
+  return hit;
+}
+function _finishDropkickLanding(impact=0){
+  const wasActive=!!P.dropkickActive;
+  P.dropkickActive=false;
+  P.dropkickTimer=0;
+  P._dropkickLaunchSurge=0;
+  P.dropkickLandTimer=DROPKICK.landDur;
+  P.dropkickLandDur=DROPKICK.landDur;
+  P.dropkickImpact=Math.max(P.dropkickImpact||0,1);
+  P._dropkickBodySurge=Math.max(P._dropkickBodySurge||0,.95);
+  P._landingSpring=Math.max(P._landingSpring||0,1.18);
+  P._strideImpact=Math.max(P._strideImpact||0,.92);
+  P.landKick=Math.max(P.landKick||0,Math.min(.62,.18+Math.abs(impact||0)*.042));
+  const hit=_checkDropkickHit(true);
+  const landDirX=P.dropkickDirX||-Math.sin(P.yaw||0),landDirZ=P.dropkickDirZ||-Math.cos(P.yaw||0);
+  const groundY=_floorYAt(P.pos.x,P.pos.z,G.levelData&&G.levelData.floorRegions);
+  _spawnDropkickLandingFx(new THREE.Vector3(P.pos.x+landDirX*.28,groundY,P.pos.z+landDirZ*.28),hit);
+  if(wasActive||hit){
+    PP.shakeY-=hit ? .30 : .20;
+    PP.shakeX+=(Math.random()-.5)*(hit ? .48 : .26);
+    sfxDropkickLand(hit);
+  }
+}
+function _slideIntentVector(fx,fz,rx,rz){
+  const localR=(K['KeyD']?1:0)-(K['KeyA']?1:0);
+  const localF=(K['KeyW']?1:0)-(K['KeyS']?1:0);
+  let x=fx*localF+rx*localR,z=fz*localF+rz*localR;
+  const len=Math.hypot(x,z);
+  if(len>0.001){
+    x/=len;z/=len;
+    const localLen=Math.hypot(localR,localF)||1;
+    return{x,z,localR:localR/localLen,localF:localF/localLen,len};
+  }
+  const sx=Number.isFinite(P.slideDirX)?P.slideDirX:fx;
+  const sz=Number.isFinite(P.slideDirZ)?P.slideDirZ:fz;
+  const sl=Math.hypot(sx,sz)||1;
+  return{x:sx/sl,z:sz/sl,localR:0,localF:1,len:0};
+}
+function _spawnSlideSkidFx(pl){
+  if(!pl||!scene||!G||!G.trails)return;
+  if(G.trails.length>=((_trailBudget&&_trailBudget().total)||180)-4)return;
+  const dir=new THREE.Vector3(pl.slideDirX||-Math.sin(pl.yaw||0),0,pl.slideDirZ||-Math.cos(pl.yaw||0));
+  if(dir.lengthSq()<.001)dir.set(-Math.sin(pl.yaw||0),0,-Math.cos(pl.yaw||0));
+  dir.normalize();
+  const right=new THREE.Vector3(-dir.z,0,dir.x);
+  const groundY=_floorYAt(pl.pos.x,pl.pos.z,G.levelData&&G.levelData.floorRegions);
+  const side=THREE.MathUtils.clamp(Number.isFinite(pl.slideLocalR)?pl.slideLocalR:0,-1,1);
+  const back=Math.max(0,-(Number.isFinite(pl.slideLocalF)?pl.slideLocalF:1));
+  const power=THREE.MathUtils.clamp((pl.slideAmt||0)*(Number.isFinite(pl._slidePower)?pl._slidePower:1),.25,1.45);
+  const mat=new THREE.MeshBasicMaterial({color:0xc9c0aa,transparent:true,opacity:.20*power,depthWrite:false,depthTest:true,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  for(let i=0;i<2;i++){
+    const offset=(i?1:-1)*(.16+Math.abs(side)*.08);
+    const puff=new THREE.Mesh(new THREE.PlaneGeometry(.105+power*.030,.026+power*.010),mat.clone());
+    puff.position.set(pl.pos.x,groundY+.040,pl.pos.z)
+      .addScaledVector(dir,-.34-i*.08)
+      .addScaledVector(right,offset+side*.08);
+    puff.rotation.set(-Math.PI/2,0,Math.atan2(dir.x,dir.z)+side*.25);
+    scene.add(puff);
+    const vel=dir.clone().multiplyScalar(-.44-.25*power-back*.20)
+      .addScaledVector(right,(Math.random()-.5)*.26+side*.12)
+      .add(new THREE.Vector3(0,.07+Math.random()*.08,0));
+    G.trails.push({mesh:puff,mat:puff.material,vel,timer:.22+Math.random()*.08,maxTime:.30,isParticle:true});
+  }
+}
+function _startPlayerSlide(fx,fz,landing=false,meta=null){
+  if(P.dead||P.vaulting||P.dropkickActive||P.sliding||P.slideAmt>=.12)return false;
+  const dl=Math.hypot(fx,fz)||1;
+  const localR=THREE.MathUtils.clamp(Number.isFinite(meta&&meta.localR)?meta.localR:0,-1,1);
+  const localF=THREE.MathUtils.clamp(Number.isFinite(meta&&meta.localF)?meta.localF:1,-1,1);
+  const side=Math.abs(localR),back=Math.max(0,-localF);
+  P.sliding=true;P.slideTarget=1;P.slideTimer=(landing?1.16:.98)+side*.080-back*.035;
+  P.slideDirX=fx/dl;P.slideDirZ=fz/dl;
+  P.slideLocalR=localR;P.slideLocalF=localF;
+  P._slideAnimSide=localR||(P._moveIntentR||P._turnDriveSide||1);
+  P._slideIntentUntil=0;
+  P._slidePower=Math.max(Number.isFinite(P._slidePower)?P._slidePower:1,(landing?1.18:1.02)+side*.045-back*.020);
+  P._slidePresentationUntil=performance.now()+P.slideTimer*1000+320;
+  P._landingSlidePulse=Math.max(P._landingSlidePulse||0,landing?1.0:.46);
+  _addPlayerFeelImpulse(P,{body:(landing?.30:.18)+side*.035,forward:(landing?.62:.42)*(localF||.35),right:localR*(landing?.30:.22),landing:landing?.26:.12,stride:landing?.32:.18});
+  PP.shakeY-=landing?.045:.026;
+  PP.shakeX+=localR*(landing?.050:.034)+(Math.random()-.5)*(landing?.060:.034);
+  const c=getAC(),o=c.createOscillator(),g=c.createGain();
+  o.type='sawtooth';o.frequency.setValueAtTime(landing?330:280,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(landing?92:120,c.currentTime+(.38+(landing?.10:0)));
+  g.gain.setValueAtTime(landing?.135:.10,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(.45+(landing?.10:0)));
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.58);
+  _spawnSlideSkidFx(P);
+  return true;
+}
+function _launchGroundJump(buffered=false){
+  const nowMs=performance.now();
   if(P.sliding||P.slideAmt>.08){
     P.sliding=false;P.slideTimer=0;P.slideTarget=0;P.slideAmt=0;
-    P.slideCarryTimer=Math.max(P.slideCarryTimer||0,.65); // longer carry boost = slide-cancel reward
+    P.slideLocalR=0;P.slideLocalF=1;
+    P.slideCarryTimer=Math.max(P.slideCarryTimer||0,.65);
   }
-  // BUNNYHOP: chain jumps preserve speed if landed within bhop window
   P._lastLandT=P._lastLandT||0;
-  const bhopWindow=performance.now()-P._lastLandT<200;
+  const bhopWindow=nowMs-P._lastLandT<200;
   if(bhopWindow){
     P._bhopChain=(P._bhopChain||0)+1;
     P.slideCarryTimer=Math.min(1.0,(P.slideCarryTimer||0)+.20);
   } else P._bhopChain=0;
   P.vy=5.8+(P._bhopChain<5?P._bhopChain*.05:0);P.grounded=false;
   P._didDoubleJump=false;
-  P._jumpStartT=performance.now();
+  P._jumpStartT=nowMs;
+  P._jumpBufferedUntil=0;
+  P._jumpInputPulse=Math.max(P._jumpInputPulse||0,buffered?.84:1.0);
+  P._jumpBufferConsumedUntil=buffered?nowMs+90:0;
+  _addPlayerFeelImpulse(P,{body:buffered?.28:.22,forward:buffered?.46:.34,landing:.16});
   sfxJump();
+}
+function doJump(){
+  // Allow double-jump if perk + already in air with one jump used
+  if(!P.grounded&&P.vaulting)return;
+  if(P.dead)return;
+  if(!P.grounded){
+    const nowMs=performance.now();
+    const walls=G.levelData?G.levelData.walls:[];
+    const wallProbe=_wallJumpProbeFor(P,walls,WALL_JUMP.reach);
+    if(_canWallJump(P,wallProbe)){
+      _performWallJump(P,wallProbe,K);
+      return;
+    }
+    if(_startDropkick())return;
+    const canCoyote=!P.dropkickActive&&nowMs-(P._lastGroundedT||0)<JUMP_FEEL.coyoteMs&&(P.vy||0)<=0.65&&!P._coyoteJumpConsumed;
+    if(canCoyote){
+      P._coyoteJumpConsumed=true;
+      _launchGroundJump(false);
+      return;
+    }
+    if(P._canDoubleJump&&!P._didDoubleJump){
+      P._didDoubleJump=true;
+      P.vy=5.5;
+      P._jumpBufferedUntil=0;
+      P._jumpInputPulse=Math.max(P._jumpInputPulse||0,.72);
+      _addPlayerFeelImpulse(P,{body:.24,forward:.22,landing:.10});
+      sfxJump();
+      return;
+    }
+    P._jumpBufferedUntil=nowMs+JUMP_FEEL.bufferMs;
+    P._jumpInputPulse=Math.max(P._jumpInputPulse||0,.42);
+    return;
+  }
+  P._coyoteJumpConsumed=false;
+  _launchGroundJump(false);
 }
 function doVault(v){
   if(P.vaulting||P.dead)return;
@@ -16107,7 +19515,289 @@ function doVault(v){
   P.vaultTo={x:P.pos.x+ndx*clearDist,z:P.pos.z+ndz*clearDist};
   P.vaultObH=v.height;P.grounded=false;P.nearVault=null;
   P.vaultGunRot=0;P.vaultGunX=gunGrp.position.x;P.vaultGunY=gunGrp.position.y;
+  P._vaultCuePulse=Math.max(P._vaultCuePulse||0,1.0);
+  P._combatFlow=Math.max(P._combatFlow||0,.38);
+  P._combatFlowUntil=performance.now()+360;
+  _addPlayerFeelImpulse(P,{body:.18,forward:dir==='backward'?-.18:.28,right:dir==='left'?-.18:dir==='right'?.18:0,landing:.10});
   sfxVault();
+}
+function _vaultableTopDeltaAt(v,x,z){
+  if(!v)return .95;
+  const top=Number(v.height);
+  if(!Number.isFinite(top))return .95;
+  const fy=(G&&G.levelData&&G.levelData.floorRegions)?_floorYAt(x,z,G.levelData.floorRegions):0;
+  return top-fy;
+}
+function _runtimeVaultableUsable(v,x,z){
+  if(!v)return false;
+  const w=(v.x1||0)-(v.x0||0),d=(v.z1||0)-(v.z0||0);
+  if(w<.16||d<.16||w>9.75||d>9.75)return false;
+  if(v.perimeter||v.isWindow||v.broken)return false;
+  const h=_vaultableTopDeltaAt(v,x,z);
+  return h>=.38&&h<=1.34;
+}
+function _normalizeRuntimeVaultables(levelData){
+  if(!levelData)return [];
+  const raw=Array.isArray(levelData.vaultables)?levelData.vaultables:[];
+  const out=[];
+  const add=v=>{
+    if(!v||!Number.isFinite(v.x0)||!Number.isFinite(v.x1)||!Number.isFinite(v.z0)||!Number.isFinite(v.z1))return;
+    const w=v.x1-v.x0,d=v.z1-v.z0;
+    if(w<.16||d<.16||w>10||d>10||v.perimeter||v.isWindow)return;
+    const cx=(v.x0+v.x1)*.5,cz=(v.z0+v.z1)*.5;
+    if(Number.isFinite(v.height)){
+      const h=_vaultableTopDeltaAt(v,cx,cz);
+      if(h<.34||h>1.38)return;
+    }
+    for(const e of out){
+      if(Math.abs((e.x0+e.x1)-(v.x0+v.x1))<.08&&Math.abs((e.z0+e.z1)-(v.z0+v.z1))<.08&&Math.abs((e.x1-e.x0)-w)<.08&&Math.abs((e.z1-e.z0)-d)<.08)return;
+    }
+    out.push(v);
+  };
+  raw.forEach(add);
+  if(Array.isArray(levelData.walls)){
+    for(const w of levelData.walls){
+      if(!w||w.isWindow||w.perimeter||w.broken)continue;
+      if(!Number.isFinite(w.height)&&!w.vaultCandidate)continue;
+      add(Object.assign({vaultAuto:true},w));
+    }
+  }
+  return out;
+}
+function _setRuntimeVaultablesFromLevel(){
+  G.vaultables=_normalizeRuntimeVaultables(G.levelData);
+  if(G.levelData){
+    G.levelData.vaultables=G.vaultables;
+    if(G.levelData.cornerEdges&&G.levelData.navGrid&&typeof _bakeCoverSlots==='function'){
+      G.levelData.coverSlots=_bakeCoverSlots(G.levelData.cornerEdges,G.vaultables);
+    }
+  }
+  return G.vaultables;
+}
+function _guardCoverInfoForAabb(v,pl,modeHint='wall'){
+  if(!v||!pl||!pl.pos)return null;
+  const x=pl.pos.x,z=pl.pos.z;
+  const x0=Math.min(v.x0,v.x1),x1=Math.max(v.x0,v.x1),z0=Math.min(v.z0,v.z1),z1=Math.max(v.z0,v.z1);
+  const cx=Math.max(x0,Math.min(x,x1));
+  const cz=Math.max(z0,Math.min(z,z1));
+  let dx=x-cx,dz=z-cz;
+  let dist=Math.hypot(dx,dz);
+  let nx,nz;
+  if(dist<.001){
+    const dl=Math.abs(x-x0),dr=Math.abs(x1-x),dn=Math.abs(z-z0),ds=Math.abs(z1-z);
+    const m=Math.min(dl,dr,dn,ds);
+    if(m===dl){nx=-1;nz=0;dist=dl;}
+    else if(m===dr){nx=1;nz=0;dist=dr;}
+    else if(m===dn){nx=0;nz=-1;dist=dn;}
+    else{nx=0;nz=1;dist=ds;}
+  }else{nx=dx/dist;nz=dz/dist;}
+  const explicitHeight=Number.isFinite(Number(v.height));
+  const h=_vaultableTopDeltaAt(v,cx,cz);
+  const low=(modeHint==='low'||(explicitHeight&&Number.isFinite(h)&&h<=1.38));
+  return{v,mode:low?'low':'wall',x:cx,z:cz,nx,nz,tx:-nz,tz:nx,dist,height:h};
+}
+function _guardCoverKey(info){
+  const v=info&&info.v;
+  if(!v)return '';
+  return v.geometryId||v.roomId||`${Math.round((v.x0||0)*20)}:${Math.round((v.x1||0)*20)}:${Math.round((v.z0||0)*20)}:${Math.round((v.z1||0)*20)}`;
+}
+function _guardWallEdgeState(info,pl){
+  const v=info&&info.v;
+  if(!v||!pl||!pl.pos||info.mode!=='wall')return null;
+  const x0=Math.min(v.x0,v.x1),x1=Math.max(v.x0,v.x1),z0=Math.min(v.z0,v.z1),z1=Math.max(v.z0,v.z1);
+  const w=Math.max(0,x1-x0),d=Math.max(0,z1-z0);
+  const axis=w>=d?'x':'z';
+  const len=axis==='x'?w:d;
+  if(len<.52)return {axis,len,coord:axis==='x'?pl.pos.x:pl.pos.z,min:axis==='x'?(x0+x1)*.5:(z0+z1)*.5,max:axis==='x'?(x0+x1)*.5:(z0+z1)*.5,clamped:axis==='x'?pl.pos.x:pl.pos.z,excess:0,edge01:0};
+  const rawMin=axis==='x'?x0:z0;
+  const rawMax=axis==='x'?x1:z1;
+  const margin=Math.min(.54,Math.max(.24,len*.12));
+  let min=rawMin+margin,max=rawMax-margin;
+  if(max<min){
+    const c=(rawMin+rawMax)*.5;
+    min=max=c;
+  }
+  const coord=axis==='x'?pl.pos.x:pl.pos.z;
+  const clamped=THREE.MathUtils.clamp(coord,min,max);
+  const excess=Math.abs(coord-clamped);
+  const edgeDist=Math.min(Math.abs(coord-min),Math.abs(max-coord));
+  return {axis,len,coord,min,max,clamped,excess,edge01:1-THREE.MathUtils.smoothstep(edgeDist,.00,.72)};
+}
+function _applyGuardWallEdgeClamp(pl,cover,dt){
+  const edge=_guardWallEdgeState(cover,pl);
+  if(!edge)return null;
+  pl.guardWallEdge=edge;
+  if(edge.excess>.001){
+    if(edge.axis==='x')pl.pos.x=edge.clamped;
+    else pl.pos.z=edge.clamped;
+    pl._guardEdgeBlockPulse=Math.max(pl._guardEdgeBlockPulse||0,THREE.MathUtils.clamp(edge.excess*3.2,.18,1));
+    pl._moveContactStall=Math.max(pl._moveContactStall||0,THREE.MathUtils.clamp(edge.excess*2.2,.10,.8));
+  }else{
+    pl._guardEdgeBlockPulse=damp(Number.isFinite(pl._guardEdgeBlockPulse)?pl._guardEdgeBlockPulse:0,edge.edge01*.22,8,dt);
+  }
+  return edge;
+}
+function _findGuardCover(pl,fx,fz,walls){
+  if(!pl||!pl.pos)return null;
+  let best=null,bestScore=Infinity;
+  const test=(v,modeHint,range)=>{
+    const info=_guardCoverInfoForAabb(v,pl,modeHint);
+    if(!info||info.dist>range)return;
+    if(info.mode==='low'&&(info.height<.45||info.height>1.42))return;
+    const front=fx*(-info.nx)+fz*(-info.nz);
+    const sideWeight=Math.abs(front)>.10?0:.14;
+    const score=info.dist-Math.max(0,front)*.30+(info.mode==='low'?-0.08:0)+sideWeight;
+    if(score<bestScore){bestScore=score;best=info;}
+  };
+  const vaults=G&&Array.isArray(G.vaultables)?G.vaultables:[];
+  for(const v of vaults)test(v,'low',1.35);
+  const wallList=walls||G&&G.levelData&&G.levelData.walls||[];
+  for(const w of wallList){
+    if(!w||w.broken||w.perimeter||w.isWindow)continue;
+    const sx=(w.x1||0)-(w.x0||0),sz=(w.z1||0)-(w.z0||0);
+    if(sx<.16||sz<.16)continue;
+    if(Number.isFinite(w.height)&&_runtimeVaultableUsable(w,pl.pos.x,pl.pos.z))test(w,'low',1.32);
+    else test(w,'wall',.78);
+  }
+  return best;
+}
+function _guardCoverHoldRange(info){
+  if(!info)return .9;
+  return info.mode==='low'?1.72:1.10;
+}
+function _guardCoverIdealDistance(info){
+  if(!info)return .62;
+  if(info.mode==='low'){
+    const h=Number.isFinite(info.height)?info.height:.92;
+    return THREE.MathUtils.clamp(.67+(h-.92)*.12,.60,.78);
+  }
+  return .48;
+}
+function _guardReuseCover(pl){
+  const prev=pl&&pl.guardCover&&pl.guardCover.v?pl.guardCover:null;
+  if(!prev||!pl||!pl.pos)return null;
+  const info=_guardCoverInfoForAabb(prev.v,pl,prev.mode||'wall');
+  if(!info)return null;
+  if(info.mode==='low'&&(info.height<.43||info.height>1.45))return null;
+  if(info.dist>_guardCoverHoldRange(info)+.38)return null;
+  if(info.mode==='wall'){
+    const edge=_guardWallEdgeState(info,pl);
+    if(edge&&edge.excess>.34)return null;
+  }
+  return info;
+}
+function _applyGuardCoverAnchor(pl,cover,dt){
+  if(!pl||!pl.pos||!cover)return;
+  const nx=Number.isFinite(cover.nx)?cover.nx:0,nz=Number.isFinite(cover.nz)?cover.nz:1;
+  const ideal=_guardCoverIdealDistance(cover);
+  const desiredX=cover.x+nx*ideal;
+  const desiredZ=cover.z+nz*ideal;
+  const dx=desiredX-pl.pos.x,dz=desiredZ-pl.pos.z;
+  const d=Math.hypot(dx,dz);
+  pl.guardCoverDist=cover.dist;
+  pl.guardCoverReady=THREE.MathUtils.clamp(1-Math.abs(cover.dist-ideal)/Math.max(.18,ideal),0,1);
+  if(d<.006)return;
+  const tooClose=cover.dist<ideal*.90;
+  const tooFar=cover.dist>ideal*1.20;
+  if(!tooClose&&!tooFar)return;
+  const peekRelief=cover.mode==='low'?THREE.MathUtils.clamp(pl.guardPeekForward||0,0,1):0;
+  const rate=tooClose?18:(cover.mode==='low'?8.5:7.0);
+  const maxStep=(tooClose?.18:.090)*(1+peekRelief*.35);
+  const step=Math.min(d,maxStep,d*Math.min(1,Math.max(dt,0)*rate));
+  pl.pos.x+=dx/d*step;
+  pl.pos.z+=dz/d*step;
+}
+function _guardAutoSideIntent(pl,cover,fx,fz,rx,rz){
+  if(!pl||!cover)return 0;
+  const tx=Number.isFinite(cover.tx)?cover.tx:0,tz=Number.isFinite(cover.tz)?cover.tz:1;
+  const aimAlong=THREE.MathUtils.clamp(fx*tx+fz*tz,-1,1);
+  const aimCommit=THREE.MathUtils.smoothstep(Math.abs(aimAlong),.08,.46);
+  const aimSide=Math.sign(aimAlong||0)*aimCommit;
+  const adsWeight=THREE.MathUtils.clamp((pl.adsVis||pl.ads||0),0,1);
+  const lookIntoCover=THREE.MathUtils.clamp(fx*(-cover.nx)+fz*(-cover.nz),-1,1);
+  const coverFocus=.30+THREE.MathUtils.smoothstep(lookIntoCover,-.38,.16)*.70;
+  const raw=aimSide*(.46+adsWeight*.82);
+  return THREE.MathUtils.clamp(raw*coverFocus,-1,1);
+}
+function _updateGuardBehind(dt,fx,fz,rx,rz,walls){
+  const held=!!(P.guardBehindHeld||K['AltLeft']||K['AltRight']);
+  const canGuard=held&&!P.dead&&!P.vaulting&&!P.dropkickActive&&!P.sliding&&P.slideAmt<.12&&P.grounded;
+  let cover=canGuard?_guardReuseCover(P):null;
+  const lockActive=held&&!!P._guardCoverLockKey;
+  if(canGuard&&!cover&&!lockActive)cover=_findGuardCover(P,fx,fz,walls);
+  const active=!!cover;
+  P.guardBehindActive=active;
+  P.guardCover=active?cover:null;
+  P.guardBehindAmt=damp(Number.isFinite(P.guardBehindAmt)?P.guardBehindAmt:0,active?1:0,active?14:12,dt);
+  if(active){
+    _applyGuardCoverAnchor(P,cover,dt);
+    const edge=_applyGuardWallEdgeClamp(P,cover,dt);
+    P._guardCoverLockKey=_guardCoverKey(cover);
+    P.guardNormalX=cover.nx;P.guardNormalZ=cover.nz;
+    P.guardTangentX=cover.tx;P.guardTangentZ=cover.tz;
+    P.guardMode=cover.mode||'wall';
+    P._guardVisualMode=P.guardMode;
+    const leanSide=(K['KeyE']?1:0)-(K['KeyQ']?1:0);
+    const moveSide=(K['KeyD']?1:0)-(K['KeyA']?1:0);
+    const adsHeld=!!(M.rmbDown||(P.adsTarget||0)>.45||(P.ads||0)>.45);
+    const nowMs=performance.now();
+    const shotAge=nowMs/1000-(P.lastShot||0);
+    if(cover.mode==='low'&&shotAge>=0&&shotAge<.085){
+      const durMs=adsHeld?340:240;
+      P._guardLowFirePeekUntil=Math.max(P._guardLowFirePeekUntil||0,nowMs+durMs);
+      P._guardLowFirePeekDurMs=durMs;
+    }
+    const fireMsLeft=cover.mode==='low'?Math.max(0,(P._guardLowFirePeekUntil||0)-nowMs):0;
+    const fireDur=Math.max(1,P._guardLowFirePeekDurMs||240);
+    P._guardLowFirePeekT=fireMsLeft/1000;
+    const firePeek=cover.mode==='low'?THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(fireMsLeft/fireDur,0,1),0,1):0;
+    const autoSide=cover.mode==='wall'?_guardAutoSideIntent(P,cover,fx,fz,rx,rz):0;
+    const manualSide=leanSide;
+    let wallAutoSide=autoSide;
+    if(cover.mode==='wall'&&!adsHeld&&!manualSide)wallAutoSide*=.58;
+    if(cover.mode==='wall'&&Math.abs(wallAutoSide)>.18)wallAutoSide=Math.sign(wallAutoSide)*Math.max(Math.abs(wallAutoSide),adsHeld?.70:.42);
+    let sideTarget=cover.mode==='wall'
+      ? (manualSide?manualSide*.94:THREE.MathUtils.clamp(wallAutoSide,-1,1))
+      : (leanSide*.35+moveSide*.18);
+    if(cover.mode==='wall'&&edge&&edge.edge01>.15){
+      const towardMin=edge.coord<=((edge.min+edge.max)*.5)?-1:1;
+      const pushingPast=(edge.coord<edge.min+.05&&sideTarget<0)||(edge.coord>edge.max-.05&&sideTarget>0);
+      if(pushingPast){
+        sideTarget*=1-edge.edge01*.62;
+        P._guardEdgeBlockPulse=Math.max(P._guardEdgeBlockPulse||0,edge.edge01*.72);
+      }else if(Math.sign(sideTarget||0)===towardMin){
+        sideTarget*=1-edge.edge01*.28;
+      }
+    }
+    if(cover.mode==='wall'&&!manualSide&&Math.abs(sideTarget)<.12)sideTarget=0;
+    const walkPeek=(cover.mode==='low'&&K['KeyW']) ? .44 : 0;
+    const upTarget=cover.mode==='low'?Math.max(adsHeld?1:0,firePeek*.72,walkPeek):0;
+    const forwardTarget=cover.mode==='low'?Math.max(adsHeld?.95:0,firePeek*.78,walkPeek*.75):0;
+    P.guardAutoPeekSide=autoSide;
+    P.guardLowFirePeek=firePeek;
+    P.guardPeekSide=damp(Number.isFinite(P.guardPeekSide)?P.guardPeekSide:0,THREE.MathUtils.clamp(sideTarget,-1,1),cover.mode==='wall'?24:12,dt);
+    P.guardPeekUp=damp(Number.isFinite(P.guardPeekUp)?P.guardPeekUp:0,upTarget,adsHeld?13:16,dt);
+    P.guardPeekForward=damp(Number.isFinite(P.guardPeekForward)?P.guardPeekForward:0,forwardTarget,adsHeld?12:15,dt);
+    P.running=false;P.sprintLatched=false;P._sprintIntentUntil=0;P._slideIntentUntil=0;
+    if(Number.isFinite(P.sprintBlend))P.sprintBlend=Math.min(P.sprintBlend,.18);
+  }else{
+    if(!held){
+      P._guardCoverLockKey=null;
+      P.guardWallEdge=null;
+    }
+    P.guardMode='none';
+    P.guardCoverReady=damp(Number.isFinite(P.guardCoverReady)?P.guardCoverReady:0,0,12,dt);
+    P.guardCoverDist=damp(Number.isFinite(P.guardCoverDist)?P.guardCoverDist:0,0,10,dt);
+    P.guardPeekSide=damp(Number.isFinite(P.guardPeekSide)?P.guardPeekSide:0,0,12,dt);
+    P.guardPeekUp=damp(Number.isFinite(P.guardPeekUp)?P.guardPeekUp:0,0,12,dt);
+    P.guardPeekForward=damp(Number.isFinite(P.guardPeekForward)?P.guardPeekForward:0,0,12,dt);
+    P.guardAutoPeekSide=damp(Number.isFinite(P.guardAutoPeekSide)?P.guardAutoPeekSide:0,0,12,dt);
+    P.guardLowFirePeek=damp(Number.isFinite(P.guardLowFirePeek)?P.guardLowFirePeek:0,0,14,dt);
+    P._guardEdgeBlockPulse=damp(Number.isFinite(P._guardEdgeBlockPulse)?P._guardEdgeBlockPulse:0,0,10,dt);
+    P._guardLowFirePeekT=0;
+    P._guardLowFirePeekUntil=0;
+    if((P.guardBehindAmt||0)<.035)P._guardVisualMode='none';
+  }
 }
 function sfxJump(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(200,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.12);g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);}
 function sfxWallJump(){
@@ -16127,6 +19817,41 @@ function sfxWallJump(){
   sg.gain.setValueAtTime(.035,c.currentTime);
   sg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.045);
   snap.connect(sg);sg.connect(c.destination);snap.start();snap.stop(c.currentTime+.055);
+}
+function sfxDropkickStart(){
+  const c=getAC();
+  const whooshLen=~~(c.sampleRate*.16),buf=c.createBuffer(1,whooshLen,c.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<whooshLen;i++){const t=i/whooshLen;d[i]=(Math.random()*2-1)*Math.pow(1-t,1.7)*.48+Math.sin(t*120)*Math.pow(1-t,.9)*.08;}
+  const src=c.createBufferSource();src.buffer=buf;
+  const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=520;bp.Q.value=.62;
+  const g=c.createGain();g.gain.setValueAtTime(.28,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
+  src.connect(bp);bp.connect(g);g.connect(c.destination);src.start();
+  const th=c.createOscillator(),tg=c.createGain();
+  th.type='triangle';th.frequency.setValueAtTime(165,c.currentTime);th.frequency.exponentialRampToValueAtTime(66,c.currentTime+.13);
+  tg.gain.setValueAtTime(.12,c.currentTime);tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.15);
+  th.connect(tg);tg.connect(c.destination);th.start();th.stop(c.currentTime+.17);
+}
+function sfxDropkickHit(killed=false){
+  const c=getAC();
+  const o=c.createOscillator(),g=c.createGain();
+  o.type='sawtooth';o.frequency.setValueAtTime(killed?95:118,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(killed?28:38,c.currentTime+.18);
+  g.gain.setValueAtTime(killed?.62:.50,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.24);
+  const nLen=~~(c.sampleRate*.045),buf=c.createBuffer(1,nLen,c.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<nLen;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/nLen,1.05)*.82;
+  const src=c.createBufferSource();src.buffer=buf;
+  const hp=c.createBiquadFilter();hp.type='highpass';hp.frequency.value=420;
+  const ng=c.createGain();ng.gain.value=killed?.42:.34;
+  src.connect(hp);hp.connect(ng);ng.connect(c.destination);src.start();
+}
+function sfxDropkickLand(hit=false){
+  const c=getAC();
+  const o=c.createOscillator(),g=c.createGain();
+  o.type='triangle';o.frequency.setValueAtTime(hit?88:72,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(24,c.currentTime+.16);
+  g.gain.setValueAtTime((hit ? .28 : .18),c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
 }
 // ── VOICE BARKS ────────────────────────────────────────────────────
 // Procedural formant-ish vocal grunts. Two oscillators tuned to vowel-ish
@@ -17401,29 +21126,44 @@ const ACHIEVEMENT_TRIGGERS={
   on_pickup:['collector']
 };
 // ── DEEPER FOCUS MODE BEHAVIOR — special interactions
-function _onFocusActivated(){
-  // Spawn radial pulse
-  const pulse=new THREE.Mesh(new THREE.SphereGeometry(.5,12,8),new THREE.MeshBasicMaterial({color:0x40c8ff,transparent:true,opacity:.55,blending:THREE.AdditiveBlending}));
-  pulse.position.copy(camera.position);
-  scene.add(pulse);
-  G.trails.push({mesh:pulse,mat:pulse.material,timer:.6,maxTime:.6,isFlash:true});
-  // Audio sweep
-  const c=getAC();
-  const o=c.createOscillator(),g=c.createGain();
-  o.type='sine';o.frequency.setValueAtTime(140,c.currentTime);
-  o.frequency.exponentialRampToValueAtTime(620,c.currentTime+.45);
-  g.gain.setValueAtTime(.45,c.currentTime);
-  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.55);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.60);
+function _spawnFocusScreenShockwave(strength=1,color=0x72eaff){
+  if(!camera||!scene)return;
+  const am=typeof _additiveVfxTierMul==='function'?_additiveVfxTierMul():1;
+  const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+  const up=new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion);
+  const center=camera.position.clone().addScaledVector(fwd,.92);
+  const ringM=new THREE.MeshBasicMaterial({color,transparent:true,opacity:.72*strength*am,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.12,.46,48),ringM);
+  ring.position.copy(center);
+  ring.quaternion.copy(camera.quaternion);
+  scene.add(ring);
+  G.trails.push({mesh:ring,mat:ringM,timer:.24*strength,maxTime:.24*strength,isFocusShock:true,faceCameraBillboard:true});
+  for(let i=0;i<5;i++){
+    const side=(i-2)*.18+(Math.random()-.5)*.05;
+    const high=(Math.random()-.5)*.16;
+    const len=.34+Math.random()*.42;
+    const streakM=new THREE.MeshBasicMaterial({color:i%2?0xffd060:color,transparent:true,opacity:.24*strength*am,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+    const streak=new THREE.Mesh(new THREE.PlaneGeometry(len,.010+Math.random()*.010),streakM);
+    streak.position.copy(center).addScaledVector(right,side).addScaledVector(up,high).addScaledVector(fwd,Math.random()*.20);
+    streak.quaternion.copy(camera.quaternion);
+    streak.rotation.z+=(Math.random()-.5)*.22;
+    scene.add(streak);
+    G.trails.push({mesh:streak,mat:streakM,timer:.16+Math.random()*.08,maxTime:.20,isFlash:true,faceCameraBillboard:true});
+  }
 }
-function _onFocusEnded(){
-  const c=getAC();
-  const o=c.createOscillator(),g=c.createGain();
-  o.type='sine';o.frequency.setValueAtTime(620,c.currentTime);
-  o.frequency.exponentialRampToValueAtTime(180,c.currentTime+.30);
-  g.gain.setValueAtTime(.18,c.currentTime);
-  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.34);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.40);
+function _onFocusActivated(){
+  _spawnFocusScreenShockwave(1,0x72eaff);
+  sfxFocusOn();
+  PP.shakeX+=(Math.random()-.5)*.18;
+  PP.shakeY-=.10;
+  P.dmgPitch-=.010;
+  P._focusCameraKick=Math.max(P._focusCameraKick||0,1);
+}
+function _onFocusEnded(reason='manual'){
+  _spawnFocusScreenShockwave(reason==='empty'?.62:.48,reason==='empty'?0xffd060:0x9fe8ff);
+  sfxFocusOff(reason==='empty');
+  PP.shakeY+=reason==='empty'?.08:.04;
 }
 // ── EXTENDED CONFIG OBJECT — game-wide settings constants
 const CONFIG={
@@ -17507,6 +21247,7 @@ const INPUT_BINDINGS={
     right:'KeyD',
     sprint:'ShiftLeft',
     crouch:'ControlLeft',
+    guardBehind:'AltLeft',
     jump:'Space',
     leanLeft:'KeyQ',
     leanRight:'KeyE'
@@ -20011,18 +23752,26 @@ function spawnReinforcementWave(zoneId,count){
   const doorsZ=sd.filter(d=>d.zoneId===zoneId);
   if(!doorsZ.length)return;
   const types=G.building>=5?['scout','riot','soldier','demolitions']:['scout','soldier','soldier'];
+  const peers=[];
+  for(const e of G.enemyMgr._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
   for(let i=0;i<count;i++){
     const door=doorsZ[i%doorsZ.length];
     const id=1.14;
     const bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
-    const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46);
-    if(!pos)continue;
     const t=types[Math.floor(Math.random()*types.length)];
+    const opts={zoneId,peerR:_enemySpawnPeerRadius(t),requireNav:true,strictZone:false};
+    const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46,peers,opts)
+      ||_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_walls,.46,peers,opts);
+    if(!pos)continue;
     const e=new Enemy(scene,pos,Math.min(4,G.building+1),t);
     e.zoneId=zoneId;e.spawnIntro={t:0,door};
     G.enemyMgr._list.push(e);
+    peers.push({x:pos.x,z:pos.z});
+    G.enemyMgr._needsSpawnAudit=true;
     _flagSsrSolidsDirty();
   }
+  G.enemyMgr._repairSpawnOverlaps(_walls);
+  G.enemyMgr._needsSpawnAudit=false;
   attachToast('<div style="color:#ff5048;letter-spacing:.30em">▼ REINFORCEMENTS</div>',2000);
 }
 // Trigger reinforcement based on zone progress (kicks in for hard+ difficulty)
@@ -20315,7 +24064,7 @@ function tickDuelRespawns(){
     if(sp){pl.pos.set(sp.x,.2,sp.z);pl.yaw=Number.isFinite(sp.yaw)?sp.yaw:0;pl.pitch=0;}
     pl.hp=pl.maxHp||100;pl.dead=false;pl.dmgFlash=0;
     pl.reloading=false;pl.reloadTimer=0;
-    pl.vy=0;pl.jumpH=0;pl.grounded=true;_resetWallJumpState(pl);
+    pl.vy=0;pl.jumpH=0;pl.grounded=true;_resetWallJumpState(pl);_resetDropkickState(pl);
     DUEL.respawnAt[slot]=0;
   }
 }
@@ -20337,7 +24086,7 @@ function _tickSplitSecondPlayerFrame(dt,walls){
   if(K2.KeyQ||GAMEPAD._gpLeanP2Left)_lt2=-1;
   else if(K2.KeyE||GAMEPAD._gpLeanP2Right)_lt2=1;
   P2.leanTarget=_lt2;
-  if(P2.sprintLatched||P2.sliding||P2.slideAmt>0.2||P2.dead||P2.vaulting)P2.leanTarget=0;
+  if(P2.sliding||P2.slideAmt>0.2||P2.dead||P2.vaulting)P2.leanTarget=0;
   P2.lean=damp(P2.lean,P2.leanTarget,10,dt);
   const _m2=K2.KeyW||K2.KeyS||K2.KeyA||K2.KeyD;
   if((K2.ShiftLeft||GAMEPAD._gpSprintP2FromPad)&&_m2&&!P2.dead&&!P2.vaulting&&!P2.crouching&&!M1.rmbDown)P2.sprintLatched=true;
@@ -20411,7 +24160,7 @@ function startDuelMode(){
   clearPickups();
   G.levelData=buildDuelArena(THREE,scene,WT);
   DUEL.spawns=G.levelData.spawns||[{x:-10,z:0,yaw:0},{x:10,z:0,yaw:Math.PI}];
-  G.vaultables=G.levelData.vaultables||[];
+  _setRuntimeVaultablesFromLevel();
   G.zoneClears=[false,false,false];G.zoneEverPopulated=[false,false,false];
   G.exitUnlocked=false;G.advancePending=false;
   G.levelState={alarm:false,powerDown:false,hazardPrimed:false,masteryFailed:true};
@@ -20461,7 +24210,7 @@ async function startEndlessMode(){
   _spawnLightProbeWalker();
   _applyShadowQuality();
   _syncEncounterDirectorFromLevel();
-  G.levelState={alarm:false,powerDown:false,hazardPrimed:false};G.vaultables=G.levelData.vaultables||[];
+  G.levelState={alarm:false,powerDown:false,hazardPrimed:false};_setRuntimeVaultablesFromLevel();
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   const startYaw=G.building===1?0:Math.PI;
@@ -20495,21 +24244,29 @@ function endlessNextWave(){
   // Spawn enemies via spawn doors
   const sd=G.levelData&&G.levelData.spawnDoors||[];
   const _walls=G.levelData?G.levelData.walls:[];
+  const peers=[];
+  for(const e of G.enemyMgr._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
   for(let i=0;i<ENDLESS.waveTotal;i++){
     const door=sd[i%sd.length];
     if(!door)break;
     const id=1.14;
     const bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
-    const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46);
-    if(!pos)continue;
     const t=baseTypes[Math.floor(Math.random()*baseTypes.length)];
+    const opts={zoneId:door.zoneId,peerR:_enemySpawnPeerRadius(t),requireNav:true,strictZone:false};
+    const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46,peers,opts)
+      ||_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_walls,.46,peers,opts);
+    if(!pos)continue;
     const e=new Enemy(scene,pos,Math.min(5,2+Math.floor(ENDLESS.wave/2)),t);
     e.zoneId=door.zoneId;
     if(t==='lieutenant'){e.maxHp*=1.5;e.hp=e.maxHp;}
     e.spawnIntro={t:0,door};
     G.enemyMgr._list.push(e);
+    peers.push({x:pos.x,z:pos.z});
+    G.enemyMgr._needsSpawnAudit=true;
     _flagSsrSolidsDirty();
   }
+  G.enemyMgr._repairSpawnOverlaps(_walls);
+  G.enemyMgr._needsSpawnAudit=false;
   attachToast(`<div style="color:#ff5048;letter-spacing:.30em">WAVE ${ENDLESS.wave}</div><div style="font-size:11px;opacity:.78;margin-top:3px">${ENDLESS.waveTotal} HOSTILES INBOUND</div>`,2400);
   // Update boss-bar to reflect wave info
   $e('boss-name').textContent='WAVE '+ENDLESS.wave;
@@ -20679,6 +24436,7 @@ function _explodeProp(mesh,hitPt){
       const d=Math.sqrt(dx*dx+dz*dz);
       if(d<RADIUS){
         const dmg=140*(1-d/RADIUS);
+        _primeEnemyHitZone('torso');
         const killed=e.takeDamage(dmg,false);
         if(killed){killFeed(false,{dist:d});P.kills++;comboKill(false);P.money+=20;}
       }
@@ -20941,8 +24699,36 @@ function ambientStart(bn){
 }
 // ── FOOTSTEPS ────────────────────────────────────────────────────────
 let _lastStepT=0;
-function sfxFootstep(){
+let _footstepNoiseSeq=0;
+const _FOOTSTEP_NOISE_CACHE=new Map();
+function _audioClamp01(v){return Math.max(0,Math.min(1,Number.isFinite(v)?v:0));}
+function _connectWithPan(c,node,side=0){
+  if(c&&typeof c.createStereoPanner==='function'){
+    const pan=c.createStereoPanner();
+    pan.pan.value=THREE.MathUtils.clamp(side||0,-1,1)*.18;
+    node.connect(pan);pan.connect(c.destination);
+    return pan;
+  }
+  node.connect(c.destination);
+  return node;
+}
+function _footstepNoiseBuffer(c,dur,sprint=false){
+  const sr=c&&c.sampleRate?c.sampleRate:44100;
+  const variant=(_footstepNoiseSeq++&3);
+  const key=`${sr}:${Math.round((dur||.08)*1000)}:${sprint?1:0}:${variant}`;
+  let buf=_FOOTSTEP_NOISE_CACHE.get(key);
+  if(buf)return buf;
+  buf=c.createBuffer(1,Math.max(1,~~(sr*dur)),sr);
+  const d=buf.getChannelData(0);
+  const pow=2.2+(sprint ? .35 : 0);
+  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,pow)*.7;
+  _FOOTSTEP_NOISE_CACHE.set(key,buf);
+  return buf;
+}
+function sfxFootstep(strength=1,side=0,sprint=false){
   const c=getAC();
+  const stepStrength=THREE.MathUtils.clamp(Number.isFinite(strength)?strength:1,.35,1.55);
+  const sprintMul=sprint?1.22:1.0;
   // Surface profile by building: dock=concrete (low thud), continental=carpet (muffled), nightclub=metal/stage, penthouse=marble
   const profile={
     1:{freq:90, type:'sine',     gain:.10,dur:.08,filter:120},
@@ -20950,46 +24736,202 @@ function sfxFootstep(){
     3:{freq:120,type:'square',   gain:.08,dur:.06,filter:600},
     4:{freq:220,type:'triangle', gain:.07,dur:.06,filter:1400}
   }[G.building]||{freq:90,type:'sine',gain:.08,dur:.08,filter:120};
-  const buf=c.createBuffer(1,~~(c.sampleRate*profile.dur),c.sampleRate),d=buf.getChannelData(0);
-  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2.5)*.7;
+  const dur=profile.dur*(sprint ? .82 : 1.0)*(1+Math.max(0,stepStrength-1)*.12);
+  const buf=_footstepNoiseBuffer(c,dur,sprint);
   const s=c.createBufferSource();s.buffer=buf;
   const o=c.createOscillator();o.type=profile.type;o.frequency.value=profile.freq;
-  const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=profile.filter;
-  const g=c.createGain();g.gain.value=profile.gain;
-  s.connect(f);o.connect(f);f.connect(g);g.connect(c.destination);
-  s.start();o.start();s.stop(c.currentTime+profile.dur);o.stop(c.currentTime+profile.dur);
+  const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=profile.filter*(sprint?1.08:1.0);
+  const g=c.createGain();g.gain.value=profile.gain*stepStrength*sprintMul;
+  s.connect(f);o.connect(f);f.connect(g);_connectWithPan(c,g,side);
+  s.start();o.start();s.stop(c.currentTime+dur);o.stop(c.currentTime+dur);
+  if(sprint||stepStrength>1.05){
+    const th=c.createOscillator(),tg=c.createGain();
+    th.type='triangle';
+    th.frequency.setValueAtTime(74+stepStrength*10,c.currentTime);
+    th.frequency.exponentialRampToValueAtTime(32,c.currentTime+.105);
+    tg.gain.setValueAtTime(.055*stepStrength*(sprint?1.25:1),c.currentTime);
+    tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.13);
+    th.connect(tg);_connectWithPan(c,tg,side*.55);
+    th.start();th.stop(c.currentTime+.15);
+  }
+}
+function sfxSprintGear(kind='start',strength=1){
+  const c=getAC();
+  const s=THREE.MathUtils.clamp(strength||1,.35,1.45);
+  const dur=kind==='stop' ? .11 : .15;
+  const len=~~(c.sampleRate*dur),buf=c.createBuffer(1,len,c.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<len;i++){const t=i/len;d[i]=(Math.random()*2-1)*Math.pow(1-t,kind==='stop'?1.4:1.0)*.34;}
+  const src=c.createBufferSource();src.buffer=buf;
+  const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=kind==='stop'?640:920;bp.Q.value=1.1;
+  const g=c.createGain();g.gain.setValueAtTime((kind==='stop' ? .075 : .105)*s,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+dur);
+  src.connect(bp);bp.connect(g);g.connect(c.destination);src.start();src.stop(c.currentTime+dur);
+  const o=c.createOscillator(),og=c.createGain();
+  o.type='triangle';
+  o.frequency.setValueAtTime(kind==='stop'?86:112,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(kind==='stop'?42:58,c.currentTime+.12);
+  og.gain.setValueAtTime((kind==='stop' ? .045 : .060)*s,c.currentTime);
+  og.gain.exponentialRampToValueAtTime(.001,c.currentTime+.15);
+  o.connect(og);og.connect(c.destination);o.start();o.stop(c.currentTime+.16);
+}
+function sfxLandingGear(strength=1,hit=false){
+  const c=getAC();
+  const s=THREE.MathUtils.clamp(strength||1,.35,1.75);
+  const o=c.createOscillator(),g=c.createGain();
+  o.type='triangle';
+  o.frequency.setValueAtTime(hit?92:78,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(24,c.currentTime+.18);
+  g.gain.setValueAtTime((hit ? .22 : .16)*s,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.24);
+  const len=~~(c.sampleRate*.07),buf=c.createBuffer(1,len,c.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,1.8)*.44*s;
+  const src=c.createBufferSource();src.buffer=buf;
+  const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=260+(hit?160:0);
+  const ng=c.createGain();ng.gain.value=.12*s;
+  src.connect(lp);lp.connect(ng);ng.connect(c.destination);src.start();src.stop(c.currentTime+.08);
+}
+function _currentPlayerAnimFrameNotifies(st){
+  const ring=st&&st.notifyRing;
+  if(!ring||!ring.size||ring.frameId==null)return [];
+  const cap=(ring.ring&&ring.ring.length)||48;
+  const out=[];
+  for(let k=0;k<ring.size;k++){
+    const idx=(ring.head+k)%cap;
+    const e=ring.ring[idx];
+    if(e&&e.frameId===ring.frameId)out.push(e);
+  }
+  return out;
+}
+function _alertEnemiesFromFootstep(pl,sprint=false){
+  if(!sprint||!pl||!pl.pos||hasPerk('silentSteps')||!G.enemyMgr)return;
+  for(const e of G.enemyMgr._list){
+    if(e.dead)continue;
+    const dx=e.group.position.x-pl.pos.x,dz=e.group.position.z-pl.pos.z;
+    const d=Math.sqrt(dx*dx+dz*dz);
+    if(d<8&&e.state===0/*PATROL*/){
+      e.state=1/*ALERT*/;
+      e.alertTimer=Math.max(e.alertTimer||0,2);
+    }
+  }
+}
+function _consumePlayerAnimNotifies(st,pl=P,slot=0){
+  const ring=st&&st.notifyRing;
+  if(!ring||ring.frameId==null||!pl)return;
+  const consumedKey='_animNotifyConsumedFrame'+slot;
+  if(pl[consumedKey]===ring.frameId)return;
+  pl[consumedKey]=ring.frameId;
+  const events=_currentPlayerAnimFrameNotifies(st);
+  if(!events.length)return;
+  for(const ev of events){
+    const payload=ev&&ev.payload?ev.payload:{};
+    switch(ev.name){
+      case 'footstepLeft':
+      case 'footstepRight': {
+        const side=ev.name==='footstepRight'?1:-1;
+        const sprint=!!payload.sprint||!!pl.running;
+        const strength=THREE.MathUtils.clamp((payload.strength||.72)*(sprint?.98:1),.38,1.04);
+        if(slot===0){
+          sfxFootstep(strength,side,sprint);
+          _lastStepT=performance.now()/1000;
+          _alertEnemiesFromFootstep(pl,sprint);
+          PP.shakeY-=.0010*strength*(sprint?.70:.80);
+          PP.shakeX+=side*.0012*strength;
+        }
+        const visualStrength=strength*(sprint?.54:.62);
+        pl._strideImpact=Math.max(pl._strideImpact||0,visualStrength*(sprint?.18:.20));
+        pl._strideImpactSide=side;
+        pl._strideImpactTimer=.085;
+        pl._locomotionSurge=Math.max(pl._locomotionSurge||0,visualStrength*.045);
+        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,visualStrength*(sprint?.105:.13));
+        pl._footPlantSide=side;
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,visualStrength*(sprint ? .014 : .018));
+        break;
+      }
+      case 'sprintStart':
+        if(slot===0)sfxSprintGear('start',1.0);
+        pl._sprintSurge=Math.max(pl._sprintSurge||0,.62);
+        pl._locomotionSurge=Math.max(pl._locomotionSurge||0,.38);
+        pl._massInertiaF=Math.max(pl._massInertiaF||0,.36);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,.12);
+        if(slot===0){PP.shakeY-=.012;PP.shakeX+=(Math.random()-.5)*.016;}
+        break;
+      case 'sprintStop':
+        if(slot===0)sfxSprintGear('stop',.95);
+        pl._sprintStopSurge=Math.max(pl._sprintStopSurge||0,.56);
+        pl._landingSpring=Math.max(pl._landingSpring||0,.22);
+        pl._massInertiaF=Math.min(pl._massInertiaF||0,-.30);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,.12);
+        if(slot===0){PP.shakeY-=.008;PP.shakeX+=(Math.random()-.5)*.014;}
+        break;
+      case 'landHeavy':
+      case 'landLight': {
+        const heavy=ev.name==='landHeavy';
+        const strength=heavy?1.15:.62;
+        if(slot===0)sfxLandingGear(strength,false);
+        pl._landingSpring=Math.max(pl._landingSpring||0,heavy ? .90 : .42);
+        pl._strideImpact=Math.max(pl._strideImpact||0,heavy ? .75 : .38);
+        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,heavy ? .86 : .42);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,heavy ? .80 : .35);
+        if(slot===0)PP.shakeY-=heavy ? .045 : .018;
+        break;
+      }
+      case 'dropkickStart':
+        pl._dropkickBodySurge=Math.max(pl._dropkickBodySurge||0,1);
+        pl._massInertiaF=Math.max(pl._massInertiaF||0,.74);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,.26);
+        if(slot===0)PP.shakeY-=.028;
+        break;
+      case 'dropkickImpact':
+        pl._dropkickBodySurge=Math.max(pl._dropkickBodySurge||0,1.48);
+        pl._massInertiaF=Math.max(pl._massInertiaF||0,1.14);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,.82);
+        if(slot===0){
+          PP.shakeY-=.115;
+          PP.shakeX+=(Math.random()-.5)*.155;
+        }
+        break;
+      case 'dropkickLand':
+        pl._landingSpring=Math.max(pl._landingSpring||0,1.15);
+        pl._strideImpact=Math.max(pl._strideImpact||0,1.05);
+        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,1.12);
+        pl._bodyJolt=Math.max(pl._bodyJolt||0,1.10);
+        if(slot===0)sfxLandingGear(1.28,true);
+        break;
+      default:
+        break;
+    }
+  }
+}
+function _tickPlayerBodyMass(pl,dt,fx,fz,rx,rz){
+  if(!pl||!pl.pos||!(dt>0))return;
+  const prevX=Number.isFinite(pl._massPrevX)?pl._massPrevX:pl.pos.x;
+  const prevZ=Number.isFinite(pl._massPrevZ)?pl._massPrevZ:pl.pos.z;
+  const invDt=1/Math.max(dt,0.0005);
+  const vx=(pl.pos.x-prevX)*invDt;
+  const vz=(pl.pos.z-prevZ)*invDt;
+  pl._massPrevX=pl.pos.x;pl._massPrevZ=pl.pos.z;
+  const velF=vx*fx+vz*fz;
+  const velR=vx*rx+vz*rz;
+  if(!Number.isFinite(pl._massVelF))pl._massVelF=velF;
+  if(!Number.isFinite(pl._massVelR))pl._massVelR=velR;
+  const oldF=pl._massVelF,oldR=pl._massVelR;
+  pl._massVelF=damp(pl._massVelF,velF,18,dt);
+  pl._massVelR=damp(pl._massVelR,velR,18,dt);
+  const accF=(pl._massVelF-oldF)*invDt;
+  const accR=(pl._massVelR-oldR)*invDt;
+  const targetF=THREE.MathUtils.clamp(accF/52,-1,1);
+  const targetR=THREE.MathUtils.clamp(accR/42,-1,1);
+  pl._massInertiaF=damp(Number.isFinite(pl._massInertiaF)?pl._massInertiaF:0,targetF,targetF>0?12:9,dt);
+  pl._massInertiaR=damp(Number.isFinite(pl._massInertiaR)?pl._massInertiaR:0,targetR,11,dt);
+  const speedN=THREE.MathUtils.clamp(Math.hypot(vx,vz)/12,0,1);
+  pl._speedPressure=damp(Number.isFinite(pl._speedPressure)?pl._speedPressure:0,speedN,8,dt);
+  pl._footPlantCompression=damp(Number.isFinite(pl._footPlantCompression)?pl._footPlantCompression:0,0,18,dt);
+  pl._bodyJolt=damp(Number.isFinite(pl._bodyJolt)?pl._bodyJolt:0,0,14,dt);
 }
 // ── FLOATING DAMAGE NUMBERS ─────────────────────────────────────
 function spawnDmgNumber(worldPos,amt,isHead,killed,labelExtra){
-  if(!SETTINGS.dmgNum)return;
-  const now=performance.now();
-  if(!killed&&!isHead&&now<(spawnDmgNumber._bodyGateUntil||0))return;
-  if(!killed&&!isHead)spawnDmgNumber._bodyGateUntil=now+90;
-  const c=$e('dmg-numbers');if(!c)return;
-  // Project to screen
-  const v=worldPos.clone();
-  v.project(camera);
-  if(v.z>1)return; // behind camera
-  const vp=_viewportCssPixels();
-  const sx=(v.x*.5+.5)*vp.w;
-  const sy=(-v.y*.5+.5)*vp.h;
-  const el=document.createElement('div');
-  el.className='dmg-num'+(isHead?' crit':'')+(killed?' kill':'');
-  // Phase AA: scale damage number with magnitude — heavy hits read bigger.
-  const big=amt>=80,med=amt>=40;
-  const scale=big?1.45:med?1.18:1.0;
-  // Headshot gold tint via inline style override (works alongside any CSS).
-  if(isHead){el.style.color='#ffd060';el.style.textShadow='0 0 8px rgba(255,200,80,.65)';}
-  el.style.fontSize=(15*scale)+'px';
-  let text=Math.round(amt);
-  if(labelExtra)text=text+' '+labelExtra;
-  else if(isHead)text=text+'  HS';
-  el.textContent=text;
-  el.style.left=sx+'px';el.style.top=sy+'px';
-  // Slight randomization so multiple don't stack perfectly
-  el.style.transform=`translate(-50%,${Math.random()*-12-2}px)`;
-  c.appendChild(el);
-  setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1000);
+  const c=$e('dmg-numbers');
+  if(c)c.innerHTML='';
 }
 // ── WEAPON INSPECT — hold N to inspect viewmodel + show details
 const INSPECT={active:false,t:0,baseGunRot:null,baseGunPos:null};
@@ -21081,6 +25023,8 @@ window.addEventListener('keydown',e=>{
 // ── AIM ASSIST — gentle reticle magnetism toward enemies in ADS
 function tickAimAssist(dt){
   if(!SETTINGS.aimAssist||!P.ads||P.ads<.5||!G.enemyMgr||P.dead)return;
+  const nowMs=performance.now();
+  const flowLive=nowMs<(P._combatFlowUntil||0)?THREE.MathUtils.clamp(P._combatFlow||0,0,1.35):0;
   // Find closest enemy in ADS cone (within ~6° from reticle)
   const dir=_aimRayDir(_aimHudDir);
   let best=null,bestAng=Infinity;
@@ -21095,7 +25039,8 @@ function tickAimAssist(dt){
     // Angle between reticle and enemy
     const dot=(tx*dir.x+ty*dir.y+tz*dir.z)/d;
     const ang=Math.acos(Math.min(1,Math.max(-1,dot)));
-    if(ang<.10&&ang<bestAng){bestAng=ang;best=e;}
+    const cone=.10+flowLive*.030;
+    if(ang<cone&&ang<bestAng){bestAng=ang;best=e;}
   }
   if(!best)return;
   // Pull yaw/pitch toward enemy (very gentle)
@@ -21109,7 +25054,7 @@ function tickAimAssist(dt){
   while(dyaw<-Math.PI)dyaw+=Math.PI*2;
   const dpitch=targetPitch-P.pitch;
   // Strength scales with ADS amount
-  const pull=Math.min(dt*1.8,1)*P.ads*.45;
+  const pull=Math.min(dt*(1.8+flowLive*.72),1)*P.ads*(.45+flowLive*.16);
   P.yaw+=dyaw*pull;
   P.pitch+=dpitch*pull;
 }
@@ -21118,13 +25063,25 @@ P._shotsThisMag=0;
 function incrementMagShot(){P._shotsThisMag=(P._shotsThisMag||0)+1;}
 function resetMagShots(){P._shotsThisMag=0;}
 // ── HIT-STOP — brief time freeze on heavy damage for visceral impact
-function triggerHitStop(durationMs){
+function triggerHitStop(durationMs,force=false){
   const now=performance.now();
-  if(now-_lastHitStopAt<140)return;
+  if(now-_lastHitStopAt<(force?52:140))return;
   _lastHitStopAt=now;
-  const dur=Math.min(durationMs||36,55);
+  const dur=Math.min(durationMs||36,force?68:55);
   P._hitStopUntil=performance.now()+dur;
-  P._hitStopScale=0.42;
+  P._hitStopDur=dur/1000;
+  P._hitStopTimer=Math.max(P._hitStopTimer||0,P._hitStopDur);
+  P._hitStopScale=force?Math.min(P._hitStopScale||1,0.34):0.42;
+}
+function triggerDropkickHitStop(durationMs=72,scale=.16){
+  const now=performance.now();
+  _lastHitStopAt=now;
+  const dur=THREE.MathUtils.clamp(durationMs||72,48,132);
+  P._hitStopUntil=Math.max(P._hitStopUntil||0,now+dur);
+  P._hitStopDur=dur/1000;
+  P._hitStopTimer=Math.max(P._hitStopTimer||0,P._hitStopDur);
+  P._hitStopScale=Math.min(Number.isFinite(P._hitStopScale)?P._hitStopScale:1,THREE.MathUtils.clamp(scale,.10,.30));
+  P._dropkickHitStopPulse=Math.max(P._dropkickHitStopPulse||0,1);
 }
 // ── SLIDE HP REGEN — sliding without taking damage triggers a small regen
 function tickSlideRegen(dt){
@@ -21173,33 +25130,10 @@ function _announceMultikill(label,bonus,color){
     o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.05);o.stop(c.currentTime+i*.05+.22);
   });
 }
-// ── ENEMY ALERTNESS INDICATOR — float above enemy heads (yellow=alert, red=engaged)
+// ── ENEMY ALERTNESS INDICATOR — disabled for cleaner enemy silhouettes
 function tickEnemyAlertness(){
-  if(!G.enemyMgr)return;
   const c=$e('alert-indicators');if(!c)return;
-  // Reuse and clear children each tick
   c.innerHTML='';
-  for(const e of G.enemyMgr._list){
-    if(e.dead)continue;
-    const d=distance2(e.group.position,P.pos);
-    if(d>22)continue;
-    // Only show when we can see them (in front of camera + not far)
-    const v=new THREE.Vector3(e.group.position.x,e.group.position.y+2.0,e.group.position.z);
-    v.project(camera);
-    if(v.z>1)continue;
-    let icon=null;
-    if(e.state===2||e.state===3||e.state===5){icon='!';}
-    else if(e.state===1||e.state===4){icon='?';}
-    if(!icon)continue;
-    const vp=_viewportCssPixels();
-    const sx=(v.x*.5+.5)*vp.w;
-    const sy=(-v.y*.5+.5)*vp.h;
-    const el=document.createElement('div');
-    el.className='alert-ind '+(icon==='!'?'engaged':'alert');
-    el.textContent=icon;
-    el.style.left=sx+'px';el.style.top=sy+'px';
-    c.appendChild(el);
-  }
 }
 // ── HEADSHOT KILL CHAIN — successive HS kills give escalating credits
 const HS_CHAIN={count:0,lastT:0,resetMs:5000};
@@ -21236,24 +25170,33 @@ function sfxGunshotEcho(distance){
 }
 // ── HIT CONFIRMATION STACK — chip-pip ascending tone on consecutive hits
 const HIT_STACK={count:0,lastHitT:0,resetMs:1200};
-function sfxHitConfirm(isHead){
+function sfxHitConfirm(isHead,killed=false,strength=1){
   const c=getAC();
   const now=performance.now();
   if(now-HIT_STACK.lastHitT>HIT_STACK.resetMs)HIT_STACK.count=0;
   HIT_STACK.lastHitT=now;
   HIT_STACK.count=Math.min(HIT_STACK.count+1,8);
   // Pitch ascends with stack
-  const baseFreq=isHead?920:560;
-  const freq=baseFreq+HIT_STACK.count*60;
+  const impact=THREE.MathUtils.clamp(Number(strength)||1,.65,1.85);
+  const baseFreq=isHead?960:(killed?640:560);
+  const freq=baseFreq+HIT_STACK.count*60+(killed?80:0);
   const o=c.createOscillator(),g=c.createGain();
-  o.type='sine';o.frequency.value=freq;
-  g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(isHead?.10:.07));
+  o.type=isHead?'triangle':'sine';o.frequency.value=freq;
+  g.gain.setValueAtTime((killed?.24:.18)*impact,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(isHead?.11:.075)+(killed?.025:0));
   o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.12);
   // Layered overtone for depth
   const o2=c.createOscillator(),g2=c.createGain();
-  o2.type='triangle';o2.frequency.value=freq*1.5;
-  g2.gain.setValueAtTime(.06,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.08);
+  o2.type=killed?'square':'triangle';o2.frequency.value=freq*(isHead?1.62:1.48);
+  g2.gain.setValueAtTime((killed?.075:.06)*impact,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+(killed?.105:.08));
   o2.connect(g2);g2.connect(c.destination);o2.start();o2.stop(c.currentTime+.10);
+  if(killed){
+    const th=c.createOscillator(),tg=c.createGain();
+    th.type='sine';th.frequency.setValueAtTime(isHead?116:92,c.currentTime);
+    th.frequency.exponentialRampToValueAtTime(isHead?58:48,c.currentTime+.13);
+    tg.gain.setValueAtTime(.10*impact,c.currentTime);
+    tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.16);
+    th.connect(tg);tg.connect(c.destination);th.start();th.stop(c.currentTime+.18);
+  }
 }
 // ── AI COUNTER-ATTACK WINDOW — when player reloads, enemies push aggressively
 let _aiCounterAttackUntil=0;
@@ -21542,7 +25485,9 @@ function _applyPadToSlot(pad,slot,dt){
     if(P.nearVault&&!P.dead&&!P.vaulting&&P.grounded)doVault&&doVault(P.nearVault);
     else useHealPack&&useHealPack();
   }
-  if(pressed(11)&&slot===0&&P.sprintLatched&&(K['KeyW']||keys.KeyW)&&!P.sliding&&P.slideAmt<.05&&P.grounded&&!P.vaulting){
+  const gpMove=Math.hypot(pad.axes&&pad.axes[0]||0,pad.axes&&pad.axes[1]||0)>.35;
+  const keyMove=!!(K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']||keys.KeyW||keys.KeyA||keys.KeyS||keys.KeyD);
+  if(pressed(11)&&slot===0&&P.sprintLatched&&(keyMove||gpMove)&&!P.sliding&&P.slideAmt<.05&&P.grounded&&!P.vaulting){
     GAMEPAD._slidePulseUntil=performance.now()+160;
   }
   if(pressed(13)&&slot===0)tryThrowGrenade&&tryThrowGrenade();
@@ -21772,26 +25717,9 @@ function tickCompass(){
   }
 }
 function tickFootsteps(){
-  if(P.dead||P.vaulting)return;
-  const moving=K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD'];
-  if(!moving)return;
-  if(P.crouching)return; // silent crouch
-  const now=performance.now()/1000;
-  const cadence=P.running?0.32:0.50;
-  if(now-_lastStepT>cadence){
-    _lastStepT=now;sfxFootstep();
-    // Sprint alerts nearby enemies in 8m radius (silent steps perk negates)
-    if(P.running&&!hasPerk('silentSteps')&&G.enemyMgr){
-      for(const e of G.enemyMgr._list){
-        if(e.dead)continue;
-        const dx=e.group.position.x-P.pos.x,dz=e.group.position.z-P.pos.z;
-        const d=Math.sqrt(dx*dx+dz*dz);
-        if(d<8&&e.state===0/*PATROL*/){
-          e.state=1/*ALERT*/;e.alertTimer=Math.max(e.alertTimer||0,2);
-        }
-      }
-    }
-  }
+  // Footsteps are phase-locked to playerAnimation notifies. The old wall-clock
+  // ticker fought that cadence and allocated audio work mid-sprint, which read
+  // as a periodic hitch.
 }
 function sfxVault(){const c=getAC();[[0,300,.12],[.08,200,.09],[.18,260,.07]].forEach(([t,f,dur])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.2,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+dur);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+dur+.02);});}
 // ── CLEAR-ROOM ZONE GATE ───────────────────────────────────────────────────
@@ -21913,15 +25841,19 @@ function _spawnAuthoredZoneRoster(enemyMgr,specs,bn,walls,zoneId,faceTx,faceTz,e
   for(const e of enemyMgr._list){if(!e.dead)_peers.push({x:e.group.position.x,z:e.group.position.z});}
   for(const spec of specs){
     if(!spec||!Number.isFinite(spec.x)||!Number.isFinite(spec.z))continue;
-    let pos=_snapSpawnOutOfWalls(spec.x,spec.z,WT,_walls,_spawnR,_peers);
-    if(!pos)pos=_findClearEnemySpawn(new THREE.Vector3(spec.x,WT,spec.z),_walls,_spawnR,_peers);
+    const type=spec.type||'soldier';
+    const _spawnOpts={zoneId:zid,peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+    let pos=_snapSpawnOutOfWalls(spec.x,spec.z,WT,_walls,_spawnR,_peers,_spawnOpts);
+    if(!pos)pos=_findClearEnemySpawn(new THREE.Vector3(spec.x,WT,spec.z),_walls,_spawnR,_peers,_spawnOpts);
     if(!pos)continue;
-    if(!_isPosClearForEnemy(pos.x,pos.z,_walls,_spawnR)){
-      const snap=_snapSpawnOutOfWalls(pos.x,pos.z,WT,_walls,_spawnR,_peers);
+    if(!_enemySpawnCandidateClear(pos.x,pos.z,_walls,_spawnR,_peers,_spawnOpts)){
+      const snap=_snapSpawnOutOfWalls(pos.x,pos.z,WT,_walls,_spawnR,_peers,_spawnOpts)
+        ||_findClearEnemySpawn(pos,_walls,_spawnR,_peers,_spawnOpts);
       if(snap)pos.copy(snap);
+      else continue;
     }
     _peers.push({x:pos.x,z:pos.z});
-    const enemy=new Enemy(enemyMgr.scene,pos,diff,spec.type||'soldier');
+    const enemy=new Enemy(enemyMgr.scene,pos,diff,type);
     enemy.zoneId=zid;
     const fy=Number.isFinite(spec.facing)?spec.facing:Math.atan2(faceTx-pos.x,faceTz-pos.z);
     enemy.group.rotation.y=fy;
@@ -21934,8 +25866,11 @@ function _spawnAuthoredZoneRoster(enemyMgr,specs,bn,walls,zoneId,faceTx,faceTz,e
     else if(spec.role)applyEncounterRole(enemy,spec.role);
     _initEncounterPatrolFromTag(enemy);
     enemyMgr._list.push(enemy);
+    enemyMgr._needsSpawnAudit=true;
     _flagSsrSolidsDirty();
   }
+  enemyMgr._repairSpawnOverlaps(_walls);
+  enemyMgr._needsSpawnAudit=false;
 }
 function _initEncounterPatrolFromTag(enemy){
   if(!enemy||!enemy.encounterPatrolTag)return;
@@ -21969,8 +25904,9 @@ function _spawnB01AlarmReinforcements(enemyMgr,scene,bn,walls,squadId,entry){
   for(let i=0;i<2;i++){
     const id=1.14+i*0.85;
     let bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
-    let pos=_snapSpawnOutOfWalls(bx,bz,WT,_w,_spawnR,_peers);
-    if(!pos)pos=_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_w,_spawnR,_peers);
+    const _spawnOpts={zoneId:0,peerR:_enemySpawnPeerRadius('soldier'),requireNav:true,strictZone:false};
+    let pos=_snapSpawnOutOfWalls(bx,bz,WT,_w,_spawnR,_peers,_spawnOpts);
+    if(!pos)pos=_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_w,_spawnR,_peers,_spawnOpts);
     if(!pos)continue;
     _peers.push({x:pos.x,z:pos.z});
     const enemy=new Enemy(scene,pos,bn,'soldier');
@@ -21981,11 +25917,15 @@ function _spawnB01AlarmReinforcements(enemyMgr,scene,bn,walls,squadId,entry){
     enemy.roomId=fp?pickFloorplanSpaceId(pos.x,pos.z,fp)||'dock_intake':'dock_intake';
     enemy.group.rotation.y=Math.atan2(-door.inwardX,-door.inwardZ);
     enemyMgr._list.push(enemy);
+    enemyMgr._needsSpawnAudit=true;
     _flagSsrSolidsDirty();
   }
+  enemyMgr._repairSpawnOverlaps(_w);
+  enemyMgr._needsSpawnAudit=false;
   attachToast('<div style="color:#ff5040;letter-spacing:.22em">WIDE ALERT</div><div style="font-size:11px;margin-top:4px">East flank response incoming</div>',2500);
 }
 function populateBuilding(){
+  if(G.playMode==='custom'||G.playMode==='editor-test'){populateCustomMap();return;}
   // Total enemy count escalating with building number, back-loaded so the
   // final approach is the hardest fight. Difficulty multiplier:
   const diffMul={normal:1.0,hard:1.25,lethal:1.45}[G.difficulty||'normal']||1.0;
@@ -22187,7 +26127,7 @@ async function startBuilding(){
     _applyShadowQuality();
     _syncEncounterDirectorFromLevel();
   });
-  G.levelState={alarm:false,powerDown:false,hazardPrimed:false,signature:campaignLevel.signaturePressure,masteryFailed:false};G.vaultables=G.levelData.vaultables||[];
+  G.levelState={alarm:false,powerDown:false,hazardPrimed:false,signature:campaignLevel.signaturePressure,masteryFailed:false};_setRuntimeVaultablesFromLevel();
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   const levelPlayerSpawn=G.levelData&&G.levelData.playerSpawn;
@@ -22198,7 +26138,7 @@ async function startBuilding(){
   P.pos.set(spawnX,spawnFloorY,spawnZ);
   const spawnSnap=_snapSpawnOutOfWalls(P.pos.x,P.pos.z,spawnFloorY,G.levelData&&G.levelData.walls,PR,null);
   if(spawnSnap)P.pos.copy(spawnSnap);
-  P.vy=0;P.jumpH=spawnFloorY;_resetWallJumpState(P);
+  P.vy=0;P.jumpH=spawnFloorY;_resetWallJumpState(P);_resetDropkickState(P);
   P.yaw=campaignStartYaw;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
   P.weaponIdx=START_WEAPON_IDX;M4_MESHES.forEach(m=>m.visible=false);DE_MESHES.forEach(m=>m.visible=false);throwGrp.visible=false;TK.active=false;lGrp.visible=true;_syncAuthoredM4Visibility();
   refreshAttachmentVisuals();
@@ -22233,7 +26173,7 @@ async function startBuilding(){
   }
   const WNow=WEAPONS[P.weaponIdx]||W0;
   $e('weapon-name').textContent=WNow.name;$e('weapon-num').textContent=WNow.slot;
-    P.vy=0;P.jumpH=spawnFloorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);
+    P.vy=0;P.jumpH=spawnFloorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);_resetDropkickState(P);
     MELEE.out=false;MELEE.swinging=false;MELEE.cooldown=0;MELEE.returnTimer=0;knifGrp.visible=false;gunGrp.visible=true;
   hudUpdate();
   // Per-building reverb tail
@@ -22266,22 +26206,25 @@ const PROGRESS=(()=>{
   let s={
     xp:0,level:1,bestScore:0,bestGrade:'-',runs:0,wins:0,seenTutorial:false,
     unlocks:{startGrenade:false,startHeal:false,startCredits:false,extraFocus:false},
-    perks:{},perkPoints:0,
-    achievements:{},
-    daily:{seed:0,done:false},
-    mastery:{},
-    runSave:null
-  };
+	    perks:{},perkPoints:0,
+	    achievements:{},
+	    daily:{seed:0,done:false},
+	    mastery:{},
+	    customMaps:{packs:{},runs:0,wins:0,bestScore:0,bestGrade:'-'},
+	    runSave:null
+	  };
   try{const raw=localStorage.getItem('clearance_progress');if(raw){
     const parsed=JSON.parse(raw);
     Object.assign(s,parsed);
     // Defensive merge for new fields on existing saves
     s.unlocks=Object.assign({startGrenade:false,startHeal:false,startCredits:false,extraFocus:false},s.unlocks||{});
     s.perks=s.perks||{};
-    s.achievements=s.achievements||{};
-    s.daily=s.daily||{seed:0,done:false};
-    s.mastery=s.mastery||{};
-  }}catch(_){}
+	    s.achievements=s.achievements||{};
+	    s.daily=s.daily||{seed:0,done:false};
+	    s.mastery=s.mastery||{};
+	    s.customMaps=Object.assign({packs:{},runs:0,wins:0,bestScore:0,bestGrade:'-'},s.customMaps||{});
+	    s.customMaps.packs=s.customMaps.packs||{};
+	  }}catch(_){}
   return s;
 })();
 function saveProgressFile(){try{localStorage.setItem('clearance_progress',JSON.stringify(PROGRESS));}catch(_){}}
@@ -22623,8 +26566,13 @@ try{
 function saveRunState(){
   if(!G.started||P.dead)return;
   normalizePlayerRuntime();
-  PROGRESS.runSave={
-    building:G.building,money:P.money,hp:P.hp,
+	  PROGRESS.runSave={
+	    mode:G.playMode||'solo',
+	    building:G.building,
+	    packId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.pack?CUSTOM_MAP_RUNTIME.pack.id:null,
+	    mapId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.map?CUSTOM_MAP_RUNTIME.map.id:null,
+	    mapIndex:(G.playMode==='custom'||G.playMode==='editor-test')?CUSTOM_MAP_RUNTIME.mapIndex:0,
+	    money:P.money,hp:P.hp,
     healPacks:P.healPacks,grenades:P.grenades,smokes:P.smokes,flashes:P.flashes,
     weaponIdx:P.weaponIdx,weaponAmmo:P.weaponAmmo.slice(0,WEAPONS.length),weaponRes:P.weaponRes.slice(0,WEAPONS.length),
     attachments:P.attachments?{
@@ -22642,6 +26590,15 @@ function saveRunState(){
 function clearRunState(){PROGRESS.runSave=null;saveProgressFile();}
 function resumeRunState(){
   const r=PROGRESS.runSave;if(!r)return false;
+  if(r.mode==='custom'){
+    G._resumeState={hp:r.hp,weaponIdx:normalizeWeaponIdx(r.weaponIdx||START_WEAPON_IDX),weaponAmmo:Array.isArray(r.weaponAmmo)?r.weaponAmmo.slice(0,WEAPONS.length):null,weaponRes:Array.isArray(r.weaponRes)?r.weaponRes.slice(0,WEAPONS.length):null};
+	    P.money=r.money||0;P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
+	    P.attachments=_normalizeAttachments(r.attachments);G.difficulty=r.difficulty||'normal';
+	    P.kills=r.kills||0;P.headshots=r.headshots||0;P.shotsFired=r.shotsFired||0;P.shotsHit=r.shotsHit||0;P.runStart=r.runStart||performance.now();
+	    G._resumeCustomStats={money:P.money,healPacks:P.healPacks,grenades:P.grenades,smokes:P.smokes,flashes:P.flashes,kills:P.kills,headshots:P.headshots,shotsFired:P.shotsFired,shotsHit:P.shotsHit,runStart:P.runStart};
+    startCustomMapPack(r.packId,r.mapIndex||0).catch(err=>{console.error('[custom-map] resume failed',err);clearRunState();quitToMain();});
+    return true;
+  }
   G.building=r.building;P.money=r.money;
   P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
   P.attachments=_normalizeAttachments(r.attachments);
@@ -22895,18 +26852,27 @@ function setpieceTickProgress(){
     // Spawn extra wave through spawn doors in middle zone
     const sd=G.levelData&&G.levelData.spawnDoors||[];
     const _walls=G.levelData?G.levelData.walls:[];
+    const peers=[];
+    for(const e of G.enemyMgr._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
     for(let i=0;i<SETPIECE.def.wave;i++){
       const door=sd.filter(d=>d.zoneId===1)[i%2];
       if(!door)break;
       const id=1.14;
       const bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
-      const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46);
-      if(!pos)continue;
       const types=['scout','soldier','soldier','pistolero','riot'];
-      const e=new Enemy(scene,pos,Math.min(4,G.building+1),types[i%types.length]);
+      const type=types[i%types.length];
+      const opts={zoneId:1,peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+      const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46,peers,opts)
+        ||_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_walls,.46,peers,opts);
+      if(!pos)continue;
+      const e=new Enemy(scene,pos,Math.min(4,G.building+1),type);
       e.zoneId=1;e.spawnIntro={t:0,door};
       G.enemyMgr._list.push(e);
+      peers.push({x:pos.x,z:pos.z});
+      G.enemyMgr._needsSpawnAudit=true;
     }
+    G.enemyMgr._repairSpawnOverlaps(_walls);
+    G.enemyMgr._needsSpawnAudit=false;
     _flagSsrSolidsDirty();
     attachToast('<div style="color:#ff5048;letter-spacing:.30em">▼ AMBUSH</div>',2000);
   }
@@ -22933,16 +26899,25 @@ function setpieceTick(dt){
       // Spawn extra wave
       const sd=G.levelData&&G.levelData.spawnDoors||[];
       const _walls=G.levelData?G.levelData.walls:[];
+      const peers=[];
+      for(const e of G.enemyMgr._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
       for(let i=0;i<3;i++){
         const door=sd[i%sd.length];if(!door)break;
         const id=1.14;
         const bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
-        const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46);
+        const type=i===0?'heavy':'soldier';
+        const opts={zoneId:Math.min(2,door.zoneId+1),peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+        const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46,peers,opts)
+          ||_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_walls,.46,peers,opts);
         if(!pos)continue;
-        const e=new Enemy(scene,pos,Math.min(4,G.building+1),i===0?'heavy':'soldier');
+        const e=new Enemy(scene,pos,Math.min(4,G.building+1),type);
         e.zoneId=Math.min(2,door.zoneId+1);e.spawnIntro={t:0,door};
         G.enemyMgr._list.push(e);
+        peers.push({x:pos.x,z:pos.z});
+        G.enemyMgr._needsSpawnAudit=true;
       }
+      G.enemyMgr._repairSpawnOverlaps(_walls);
+      G.enemyMgr._needsSpawnAudit=false;
       _flagSsrSolidsDirty();
     }
     // Update HUD timer (reuse compass-area or attach toast intermittently)
@@ -23080,6 +27055,7 @@ function updateTakedown(dt){
   if(!t||t.dead||TAKEDOWN.t>=TAKEDOWN.dur){
     if(t&&!t.dead){
       // Apply lethal damage
+      _primeEnemyHitZone('head');
       t.takeDamage(9999,true,true);
       // Reward + variant labels per weapon
       let bonus=400;
@@ -23408,6 +27384,7 @@ function showVictoryScreen(){
     '<div class="es-lbl">Score</div><div class="es-val" style="color:#ffd060">'+score.toLocaleString()+'</div>';
   $e('es-grade').textContent=grade;
   $e('es-grade').style.color=gColor;
+  _syncEditorPlaytestUi();
   es.classList.add('show');
   P.dead=true;G.menuOpen=true;
   if(locked)try{document.exitPointerLock();}catch(_){}
@@ -23428,6 +27405,7 @@ function showDefeatScreen(){
     '<div class="es-lbl">Building Reached</div><div class="es-val">'+G.building+' / '+campaignLength()+'</div>';
   $e('es-grade').textContent='—';
   $e('es-grade').style.color='#666';
+  _syncEditorPlaytestUi();
   es.classList.add('show');
 }
 function hideEndScreen(){
@@ -23435,8 +27413,10 @@ function hideEndScreen(){
   $e('es-title').textContent='MISSION COMPLETE';
   $e('es-title').style.color='#ffd060';
   $e('es-sub').textContent='TARGET ELIMINATED';
+  _syncEditorPlaytestUi();
 }
 function advanceBuilding(){
+  if(G.playMode==='custom'||G.playMode==='editor-test'){advanceCustomMap();return;}
   if(G.advancePending)return;G.advancePending=true;
   // Track that this building was cleared
   if(typeof recordBuildingClear==='function')recordBuildingClear(G.building);
@@ -23546,11 +27526,23 @@ function takeDamage(amt,slot=0){
   comboBreak('damage');
   if(_execActive&&performance.now()<_execIFrameUntil)return;
   if(G.mastery&&amt>0){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+  const hpBefore=pl.hp;
   pl.hp-=amt;pl.dmgFlash=.2;if(slot===0)$e('dmg-flash').style.opacity='.9';sfxDamage();
   if(slot===0){
     PP.shakeX=(Math.random()-.5)*.88;PP.shakeY=(Math.random()-.5)*.60;
     pl.dmgRoll+=((Math.random()<.5?-1:1))*(.07+Math.min(.10,amt*.005));
     pl.dmgPitch+=.04+Math.min(.06,amt*.003);
+    pl._damageShock=Math.max(pl._damageShock||0,THREE.MathUtils.clamp(amt/42,.24,1.35));
+    const criticalHp=(pl.maxHp||100)*GAMEPLAY_QOL_FEEL.criticalHpRatio;
+    if(hpBefore>criticalHp&&pl.hp>0&&pl.hp<=criticalHp){
+      pl._criticalHitPulse=Math.max(pl._criticalHitPulse||0,1.0);
+      pl._damageShock=Math.max(pl._damageShock||0,.95);
+      PP.shakeY-=.10;
+      PP.shakeX+=(Math.random()-.5)*.16;
+    }
+    pl._damageShockSide=Math.random()<.5?-1:1;
+    pl._nearMissPulse=0;
+    _addPlayerFeelImpulse(pl,{body:THREE.MathUtils.clamp(amt/65,.18,.70),forward:-THREE.MathUtils.clamp(amt/120,.08,.36),right:(pl._damageShockSide||1)*THREE.MathUtils.clamp(amt/180,.04,.22),landing:.10});
     playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'damageFlinch',{amt});
   }
   if(pl.hp<=0){
@@ -23574,13 +27566,13 @@ function takeDamage(amt,slot=0){
       return;
     }
     pl.hp=0;pl.dead=true;if(locked)try{document.exitPointerLock();}catch(_){}
-    startDeathCam();
-    setTimeout(()=>{
-      saveProgress(0,'-');
-      showDefeatScreen();
-    },1700);
-  }
-}
+	    startDeathCam();
+	    setTimeout(()=>{
+	      if(G.playMode==='custom'||G.playMode==='editor-test')showCustomMapEndScreen(false);
+	      else{saveProgress(0,'-');showDefeatScreen();}
+	    },1700);
+	  }
+	}
 // Tick last-stand recovery
 function tickLastStand(){
   if(!P._inLastStand)return;
@@ -23594,11 +27586,11 @@ function tickLastStand(){
   }
   if(now>=P._lastStandUntil){
     P._inLastStand=false;
-    P.hp=0;P.dead=true;if(locked)document.exitPointerLock();
-    startDeathCam();
-    setTimeout(()=>{saveProgress(0,'-');showDefeatScreen();},1700);
-  }
-}
+	    P.hp=0;P.dead=true;if(locked)document.exitPointerLock();
+	    startDeathCam();
+	    setTimeout(()=>{if(G.playMode==='custom'||G.playMode==='editor-test')showCustomMapEndScreen(false);else{saveProgress(0,'-');showDefeatScreen();}},1700);
+	  }
+	}
 const BUILDING_INFO=[
   {name:'LOADING DOCK',     time:'0312 HRS', sub:'PROCEED TO TARGET',           threat:'LOW',target:'EUGENE PRADO',role:'CARTEL ENFORCER',intel:['Lieutenant in the Vasari syndicate','Runs the harbor smuggling lane','Armed bodyguards likely heavy']},
   {name:'CONTINENTAL LOBBY',time:'0345 HRS', sub:'CIVILIANS NEUTRAL · STAY QUIET', threat:'MED',target:'IRINA KOVAC',role:'BAGMAN / FIXER',     intel:['Hosting laundry meeting tonight','Carries decryption key','Hotel staff are paid loyalty']},
@@ -23948,13 +27940,13 @@ function _clearDamageVisuals(){
   const chrom=$e('chrom');if(chrom)chrom.classList.remove('show');
   PP.shakeX=0;PP.shakeY=0;
   P.dmgRoll=0;P.dmgPitch=0;P.dmgFlash=0;P.landKick=0;
-  P._hitStopUntil=0;P._hitStopScale=1;
+  P._hitStopUntil=0;P._hitStopScale=1;P._hitStopTimer=0;P._hitStopDur=0;
 }
 function _resetRunStats(){
   P.kills=0;P.headshots=0;P.shotsFired=0;P.shotsHit=0;P.runStart=performance.now();P.score=0;
   P.focus=1.0;P.focusActive=false;P.timeScale=1.0;
   P.maxHp=P.maxHp||100;P.hp=P.maxHp;P.dead=false;P.reloading=false;
-  document.body.classList.remove('focus-on');
+  _resetFocusSequencer();
   _clearDamageVisuals();
   G.boss=null;P._lastStandUsed=false;P._inLastStand=false;P._spawnVisualGraceUntil=performance.now()+5200;P._spawnPerfGraceUntil=performance.now()+6500;
 }
@@ -24071,7 +28063,7 @@ const B01_MEGAPLEX_MAP={
   exit:{x0:-6,x1:6,z0:-109,z1:-102},
   bounds:{x0:-57,x1:57,z0:-110,z1:110},
   zoneBounds:{halfWidth:57,halfDepth:110,zSplit:22},
-  zoneEnemyCounts:[18,12,18],
+  zoneEnemyCounts:[20,30,32],
   dims:{RW:114,RD:220,RH:6.6}
 };
 function _b01MegaplexZoneForZ(z,cfg=B01_MEGAPLEX_MAP){
@@ -24327,8 +28319,11 @@ async function buildMegaplexB01Map(scene){
         object.userData.breakSound=object.userData.breakSound||'glass';
         object.userData.linkedAABB=entry;
       }
-      if(collision==='cover_aabb'&&height<=1.65&&width<=9.5&&depth<=9.5){
-        vaultables.push(Object.assign({height:box.max.y},entry));
+      const topDelta=box.max.y-cfg.floorY;
+      const footprintOk=width<=9.5&&depth<=9.5&&width>=.18&&depth>=.18;
+      const matchingVaultHeight=topDelta>=.38&&topDelta<=1.36;
+      if(footprintOk&&matchingVaultHeight&&(collision==='cover_aabb'||collision==='wall_aabb')){
+        vaultables.push(Object.assign({height:box.max.y,objectHeight:height,vaultCandidate:true},entry));
       }
     }
   });
@@ -24764,7 +28759,7 @@ async function startDemoMap(){
       _flagSsrSolidsDirty();
     });
     await _deploySpan('LUT color grade',84,async()=>{try{await _visualResourceJob('LUT color grade',()=>_applyLutForBuilding(1));}catch(err){console.warn('[demo-map] LUT failed',err);}});
-    G.vaultables=G.levelData.vaultables||[];
+    _setRuntimeVaultablesFromLevel();
     G.levelState={alarm:false,powerDown:false,hazardPrimed:false,masteryFailed:true,demoMap:true};
     G.encounterDirector=null;G.boss=null;G.waveActive=false;
     if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
@@ -24778,7 +28773,7 @@ async function startDemoMap(){
     const snapped=_snapSpawnOutOfWalls(P.pos.x,P.pos.z,AIM_DEMO_MAP.floorY,G.levelData.walls,PR,null);
     if(snapped)P.pos.copy(snapped);
     P.yaw=Number.isFinite(sp.yaw)?sp.yaw:Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
-    P.vy=0;P.jumpH=AIM_DEMO_MAP.floorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);
+    P.vy=0;P.jumpH=AIM_DEMO_MAP.floorY;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);_resetDropkickState(P);
 	    P.weaponIdx=START_WEAPON_IDX;
 	    M4_MESHES.forEach(m=>m.visible=false);
 	    _syncAuthoredM4Visibility();
@@ -24801,6 +28796,210 @@ async function startDemoMap(){
     G.started=false;gameFocused=false;
     _deployFail(err);
     throw err;
+	  }
+	}
+async function ensureCustomMapSystems(){
+  await CUSTOM_LEVEL_KIT.load();
+  await CUSTOM_MAP_STORE.init();
+  return CUSTOM_LEVEL_KIT.manifest;
+}
+function showCustomBriefingCard(pack,map,durMs=1900){
+  const br=map&&map.briefing||{};
+  $e('brief-tag').textContent='CUSTOM · '+(br.callsign||'MAP PACK');
+  $e('brief-name').textContent=(map&&map.title)||'CUSTOM MAP';
+  $e('brief-time').textContent=br.time||'CUSTOM RUN';
+  $e('brief-sub').textContent=br.introText||'CLEAR THE ROUTE';
+  const svg=$e('brief-svg');if(svg)svg.innerHTML=_briefSilhouette((map&&map.environmentBuilding)||1);
+  const el=$e('briefing-card');
+  el.classList.remove('brief-hidden');
+  void el.offsetWidth;
+  setTimeout(()=>el.classList.add('brief-hidden'),durMs);
+}
+function _customMapRunScore(){
+  const acc=P.shotsFired>0?Math.round(P.shotsHit/P.shotsFired*100):0;
+  const hsRate=P.kills>0?Math.round(P.headshots/P.kills*100):0;
+  const elapsed=P.runStart?Math.max(0,(performance.now()-P.runStart)/1000):0;
+  const raw=P.kills*100+P.headshots*120+acc*25+hsRate*12+Math.floor(P.money/3)+(P.hp>50?300:P.hp>0?120:0);
+  const diffMul=({normal:1,hard:1.35,lethal:1.85}[G.difficulty||'normal'])||1;
+  const score=Math.round(raw*diffMul);
+  const grade=score>=7000?'S':score>=5200?'A':score>=3300?'B':score>=1800?'C':'D';
+  return{acc,hsRate,elapsed,score,grade};
+}
+function _recordCustomMapResult(won,stats){
+  PROGRESS.customMaps=Object.assign({packs:{},runs:0,wins:0,bestScore:0,bestGrade:'-'},PROGRESS.customMaps||{});
+  PROGRESS.customMaps.packs=PROGRESS.customMaps.packs||{};
+  PROGRESS.customMaps.runs=(PROGRESS.customMaps.runs||0)+1;
+  if(won)PROGRESS.customMaps.wins=(PROGRESS.customMaps.wins||0)+1;
+  if(stats.score>(PROGRESS.customMaps.bestScore||0)){PROGRESS.customMaps.bestScore=stats.score;PROGRESS.customMaps.bestGrade=stats.grade;}
+  const packId=CUSTOM_MAP_RUNTIME.pack&&CUSTOM_MAP_RUNTIME.pack.id;
+  if(packId){
+    const row=PROGRESS.customMaps.packs[packId]||{attempts:0,completions:0,bestScore:0,bestGrade:'-'};
+    row.attempts=(row.attempts||0)+1;
+    if(won)row.completions=(row.completions||0)+1;
+    if(stats.score>(row.bestScore||0)){row.bestScore=stats.score;row.bestGrade=stats.grade;}
+    row.lastPlayedAt=new Date().toISOString();
+    PROGRESS.customMaps.packs[packId]=row;
+  }
+  clearRunState();
+  saveProgressFile();
+}
+function showCustomMapEndScreen(won=true){
+  const stats=_customMapRunScore();
+  _recordCustomMapResult(won,stats);
+  const min=Math.floor(stats.elapsed/60),sec=Math.floor(stats.elapsed%60);
+  const time=min+':'+(sec<10?'0':'')+sec;
+  const es=$e('endscreen');
+  $e('es-title').textContent=won?'CUSTOM MAP COMPLETE':'CUSTOM MAP FAILED';
+  $e('es-title').style.color=won?'#ffd060':'#ff5048';
+  $e('es-sub').textContent=(CUSTOM_MAP_RUNTIME.pack&&CUSTOM_MAP_RUNTIME.pack.title)||'CUSTOM MAP';
+  $e('es-grade').textContent=won?stats.grade:'—';
+  $e('es-grade').style.color=won?({S:'#ffd060',A:'#5fcb52',B:'#3aa6ff',C:'#bbb',D:'#ff8060'}[stats.grade]||'#ffd060'):'#666';
+  $e('es-stats').innerHTML=
+    '<div class="es-lbl">Kills</div><div class="es-val">'+P.kills+'</div>'+
+    '<div class="es-lbl">Headshots</div><div class="es-val">'+P.headshots+' ('+stats.hsRate+'%)</div>'+
+    '<div class="es-lbl">Accuracy</div><div class="es-val">'+stats.acc+'%</div>'+
+    '<div class="es-lbl">Time</div><div class="es-val">'+time+'</div>'+
+    '<div class="es-lbl">Score</div><div class="es-val" style="color:#ffd060">'+stats.score.toLocaleString()+'</div>'+
+    '<div class="es-lbl">Rewards</div><div class="es-val">CUSTOM STATS ONLY</div>';
+  _syncEditorPlaytestUi();
+  es.classList.add('show');
+  P.dead=true;G.menuOpen=true;
+  if(locked)try{document.exitPointerLock();}catch(_){}
+  sfxWaveClear();
+}
+function populateCustomMap(){
+  if(!G.enemyMgr||!G.levelData)return;
+  G.enemyMgr.clear();
+  const counts=Array.isArray(G.levelData.zoneEnemyCounts)?G.levelData.zoneEnemyCounts:[0,0,0];
+  const spawns=G.levelData.zoneSpawns||[[],[],[]];
+  G.enemyMgr.spawnByZone(counts,spawns,Math.max(1,G.building||1),G.levelData.walls,G.levelData.spawnDoors);
+  G.zoneEverPopulated=counts.map(n=>n>0);
+}
+async function startCustomMapPack(packOrId,mapIndex=0,opts={}){
+  const kit=await ensureCustomMapSystems();
+  const pack=typeof packOrId==='string'?await CUSTOM_MAP_STORE.getPack(packOrId):packOrId;
+  if(!pack||!pack.maps||!pack.maps.length)throw new Error('Custom map pack not found');
+  const idx=Math.max(0,Math.min(pack.maps.length-1,Number(mapIndex)||0));
+  CUSTOM_MAP_RUNTIME.pack=pack;
+  CUSTOM_MAP_RUNTIME.mapIndex=idx;
+  CUSTOM_MAP_RUNTIME.map=pack.maps[idx];
+  CUSTOM_MAP_RUNTIME.returnToEditor=!!opts.returnToEditor;
+  return startCustomMapLevel(pack,idx,Object.assign({},opts,{kit}));
+}
+async function startCustomMapLevel(pack,mapIndex=0,opts={}){
+  const map=pack.maps[mapIndex]||pack.maps[0];
+  const kit=opts.kit||await ensureCustomMapSystems();
+  const deployName=(opts.editorTest?'EDITOR TEST · ':'CUSTOM MAP · ')+(map.title||pack.title||'MAP');
+  _deployBegin(deployName);
+  try{
+    RANGE.active=false;ENDLESS.active=false;G.endlessMode=false;DUEL.active=false;DUEL.winner=-1;DUEL.respawnAt=[0,0];DUEL.spawns=null;
+    G.playMode=opts.editorTest?'editor-test':'custom';
+    G.splitScreenActive=false;
+    G.building=Math.max(1,Math.min(campaignLength(),Number(map.environmentBuilding)||1));
+    G.campaignLevel={id:map.id,name:map.title||pack.title||'Custom Map',callsign:(map.briefing&&map.briefing.callsign)||'CUSTOM MAP',time:(map.briefing&&map.briefing.time)||'CUSTOM RUN',missionVerb:(map.briefing&&map.briefing.introText)||'CLEAR ROUTE'};
+    G.mastery=null;G.currentBeat={meta:{label:'CUSTOM MAP',announce:'Clear the authored route'}};G.runModifiers=null;
+    P.money=0;P.healPacks=1;P.grenades=1;P.smokes=1;P.flashes=1;P.attachments=_defaultAttachments();
+    G.started=true;gameFocused=true;
+    $e('overlay').classList.add('hidden');hideEndScreen();
+    const cm=$e('custom-maps-panel');if(cm)cm.classList.remove('show');
+    const ce=$e('custom-editor');if(ce)ce.classList.remove('show');
+    await _deploySpan('player reset',8,async()=>{
+      _resetRunStats();applyUnlocks();applyOperator();normalizePlayerRuntime();applyPerks();comboInit();
+      if(G._resumeCustomStats){
+        const rs=G._resumeCustomStats;G._resumeCustomStats=null;
+        P.money=rs.money||0;P.healPacks=rs.healPacks||0;P.grenades=rs.grenades||0;P.smokes=rs.smokes||0;P.flashes=rs.flashes||0;
+        P.kills=rs.kills||0;P.headshots=rs.headshots||0;P.shotsFired=rs.shotsFired||0;P.shotsHit=rs.shotsHit||0;P.runStart=rs.runStart||performance.now();
+      }
+      P.maxHp=P.maxHp||100;P.hp=P.maxHp;P.dead=false;P.reloading=false;
+      P._spawnVisualGraceUntil=performance.now()+5200;P._spawnPerfGraceUntil=performance.now()+6500;
+      _clearDamageVisuals();
+    });
+    tryLock();musicInit();showCustomBriefingCard(pack,map,1900);
+    await _deploySpan('cleanup previous scene',18,async()=>{
+      if(G.levelData)G.levelData.cleanup();
+      _disposeLightProbeWalker();
+      if(G.enemyMgr)G.enemyMgr.clear();
+      G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});
+      G.trails=[];clearPickups();
+      if(typeof setpieceEnd==='function')setpieceEnd();
+      G.exitUnlocked=false;G.advancePending=false;G.zoneClears=[false,false,false];G.zoneEverPopulated=[false,false,false];
+      const ep=$e('exit-prompt');if(ep)ep.style.opacity='0';
+      const sb=$e('setpiece-bar');if(sb)sb.classList.remove('show');
+    });
+    await _deploySpan('HDR environment',32,async()=>{try{await _visualResourceJob('HDR environment',()=>loadBuildingEnvironment(THREE,renderer,G.building||1));}catch(err){console.warn('[custom-map] HDR failed',err);}});
+    await _deploySpan('compile custom map',58,async()=>{
+      G.levelData=compileCustomMapToLevelData(map,kit,{
+        THREE,scene,
+        setLevelDimensions:(dims)=>{RW=dims.RW;RD=dims.RD;RH=dims.RH;},
+        buildNavGrid:_buildNavGrid,
+        buildWallSpatialIndex:_buildWallSpatialIndex,
+        bakeCornerEdges:_bakeCornerEdges,
+        bakeCoverSlots:_bakeCoverSlots,
+        flagSsrSolidsDirty:_flagSsrSolidsDirty,
+        isExitUnlocked:()=>G.exitUnlocked
+      });
+    });
+    await _deploySpan('lighting probes',72,async()=>{_applyShadowQuality();_syncEncounterDirectorFromLevel();_flagSsrSolidsDirty();});
+    await _deploySpan('LUT color grade',80,async()=>{try{await _visualResourceJob('LUT color grade',()=>_applyLutForBuilding(G.building||1));}catch(err){console.warn('[custom-map] LUT failed',err);}});
+    _setRuntimeVaultablesFromLevel();
+    G.levelState={alarm:false,powerDown:false,hazardPrimed:false,masteryFailed:true,customMap:true};
+    G.encounterDirector=null;G.boss=null;G.waveActive=false;
+    if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);else G.enemyMgr.scene=scene;
+    populateCustomMap();
+    const sp=G.levelData.playerSpawn||{x:0,z:0,yaw:Math.PI,floorY:WT};
+    P.pos.set(sp.x,Number.isFinite(sp.floorY)?sp.floorY:WT,sp.z);
+    const snapped=_snapSpawnOutOfWalls(P.pos.x,P.pos.z,Number.isFinite(sp.floorY)?sp.floorY:WT,G.levelData.walls,PR,null);
+    if(snapped)P.pos.copy(snapped);
+    P.yaw=Number.isFinite(sp.yaw)?sp.yaw:Math.PI;P.pitch=0;P.lean=0;P.ads=0;P.adsVis=0;P._xhScaleSmooth=1;P._camBobY=0;P._camBobX=0;
+    P.vy=0;P.jumpH=Number.isFinite(sp.floorY)?sp.floorY:WT;P.grounded=true;P.vaulting=false;P.vaultT=0;P.vaultFrom=null;P.vaultTo=null;_resetWallJumpState(P);_resetDropkickState(P);
+    P.weaponIdx=START_WEAPON_IDX;M4_MESHES.forEach(m=>m.visible=false);_syncAuthoredM4Visibility();
+    DE_MESHES.forEach(m=>m.visible=false);SG_MESHES.forEach(m=>m.visible=false);SM_MESHES.forEach(m=>m.visible=false);
+    if(typeof DMR_MESHES!=='undefined')DMR_MESHES.forEach(m=>m.visible=false);
+    if(typeof SPP_MESHES!=='undefined')SPP_MESHES.forEach(m=>m.visible=false);
+    if(typeof SNI_MESHES!=='undefined')SNI_MESHES.forEach(m=>m.visible=false);
+    throwGrp.visible=false;TK.active=false;lGrp.visible=true;knifGrp.visible=false;gunGrp.visible=true;
+    const resumeState=G._resumeState||null;G._resumeState=null;
+    resetWeaponAmmoState(12,6,false);
+    if(resumeState){
+      if(Number.isFinite(resumeState.hp))P.hp=Math.max(1,Math.min(P.maxHp||100,resumeState.hp));
+      if(Array.isArray(resumeState.weaponAmmo))P.weaponAmmo=resumeState.weaponAmmo.slice(0,WEAPONS.length);
+      if(Array.isArray(resumeState.weaponRes))P.weaponRes=resumeState.weaponRes.slice(0,WEAPONS.length);
+      P.weaponIdx=normalizeWeaponIdx(resumeState.weaponIdx||START_WEAPON_IDX);
+      P.ammo=P.weaponAmmo[P.weaponIdx]??WEAPONS[P.weaponIdx].mag;
+      P.ammoRes=P.weaponRes[P.weaponIdx]??WEAPONS[P.weaponIdx].res;
+      switchWeapon(P.weaponIdx,true);
+    }else switchWeapon(START_WEAPON_IDX,true);
+    const W0=START_WEAPON;P.FIRE_RATE=W0.fireRate;P.RELOAD_TIME=W0.reloadTime;
+    refreshAttachmentVisuals();
+    if(typeof reverbSetBuilding==='function')reverbSetBuilding(G.building||1);
+    hudUpdate();
+    attachToast('<div style="color:#ffd060;letter-spacing:.30em">CUSTOM MAP</div><div style="font-size:11px;opacity:.78;margin-top:4px">'+(map.title||pack.title||'Loaded')+'</div>',3200);
+    await _deploySpan('shader prewarm',92,async()=>{await _prewarmVisibleSceneForDeploy();});
+    await _deploySpan('settle first frames',98,async()=>{await _deployLoadingPaint();await _deployLoadingPaint();});
+    _deployEnd();
+    return G.levelData;
+  }catch(err){
+    G.started=false;gameFocused=false;
+    _deployFail(err);
+    throw err;
+  }
+}
+function advanceCustomMap(){
+  if(G.advancePending)return;G.advancePending=true;
+  $e('exit-prompt').style.opacity='0';
+  const pack=CUSTOM_MAP_RUNTIME.pack;
+  if(!pack||G.playMode==='editor-test'){
+    setTimeout(()=>showCustomMapEndScreen(true),550);
+    return;
+  }
+  const next=(CUSTOM_MAP_RUNTIME.mapIndex|0)+1;
+  if(next<pack.maps.length){
+    CUSTOM_MAP_RUNTIME.mapIndex=next;CUSTOM_MAP_RUNTIME.map=pack.maps[next];
+    saveRunState();
+    showCustomBriefingCard(pack,pack.maps[next],1600);
+    setTimeout(()=>startCustomMapLevel(pack,next),1200);
+  }else{
+    setTimeout(()=>showCustomMapEndScreen(true),700);
   }
 }
 // ── TRAINING RANGE — score-attack mode with target dummies ──────────
@@ -24826,7 +29025,7 @@ async function startRange(){
   G.levelData=buildLevel(scene,1);
   console.timeEnd('buildLevel');
   _syncEncounterDirectorFromLevel();
-  G.vaultables=G.levelData.vaultables||[];
+  _setRuntimeVaultablesFromLevel();
   if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
   else G.enemyMgr.scene=scene;
   G.enemyMgr.clear();
@@ -24993,11 +29192,69 @@ function applyOperator(){
   // Apply passive bonuses
   if(op.id==='havoc'){P.grenades=(P.grenades||0)+1;P.smokes=(P.smokes||0)+1;}
 }
+function _initCustomMapControllers(){
+  if(CUSTOM_MAP_MENU&&CUSTOM_LEVEL_EDITOR)return;
+  CUSTOM_MAP_MENU=createCustomMapMenuController({
+    store:CUSTOM_MAP_STORE,
+    kitRegistry:CUSTOM_LEVEL_KIT,
+    validator:validateCustomMapPack,
+    onStart:(packId,mapIndex)=>{G.menuOpen=false;startCustomMapPack(packId,mapIndex).catch(err=>{console.error('[custom-map] start failed',err);attachToast('<div style="color:#ff8060;letter-spacing:.22em">CUSTOM MAP FAILED</div><div style="font-size:11px;margin-top:4px">'+String(err.message||err)+'</div>',4200);});},
+    onEdit:(packId,mapIndex)=>{const panel=$e('custom-maps-panel');if(panel)panel.classList.remove('show');CUSTOM_LEVEL_EDITOR.openPack(packId,mapIndex);},
+    onBack:()=>{G.menuOpen=false;}
+  });
+  CUSTOM_LEVEL_EDITOR=createLevelEditorController({
+    store:CUSTOM_MAP_STORE,
+    kitRegistry:CUSTOM_LEVEL_KIT,
+    validator:validateCustomMapPack,
+    onPlaytest:(pack,mapIndex,opts={})=>{
+      G.menuOpen=false;
+      startCustomMapPack(pack,mapIndex,{editorTest:true,returnToEditor:!!opts.returnToEditor}).catch(err=>{
+        console.error('[custom-map] playtest failed',err);
+        attachToast('<div style="color:#ff8060;letter-spacing:.22em">PLAYTEST FAILED</div><div style="font-size:11px;margin-top:4px">'+String(err.message||err)+'</div>',4200);
+        CUSTOM_LEVEL_EDITOR&&CUSTOM_LEVEL_EDITOR.restoreAfterPlaytest();
+      });
+    },
+    onBack:()=>{G.menuOpen=false;}
+  });
+}
+function showCustomMapsPanel(){
+  _initCustomMapControllers();
+  G.menuOpen=true;
+  CUSTOM_MAP_MENU.show().catch(err=>{console.error('[custom-maps] menu failed',err);attachToast('<div style="color:#ff8060;letter-spacing:.22em">CUSTOM MAPS FAILED</div>',3000);});
+}
+function showCustomEditor(){
+  _initCustomMapControllers();
+  G.menuOpen=true;
+  (async()=>{
+    await ensureCustomMapSystems();
+    const builtins=await CUSTOM_MAP_STORE.listBuiltInPacks();
+    const base=builtins&&builtins[0]?await CUSTOM_MAP_STORE.copyPack(builtins[0],'New Custom Map'):null;
+    await CUSTOM_LEVEL_EDITOR.openPack(base&&base.id,0);
+  })().catch(err=>{console.error('[custom-editor] open failed',err);attachToast('<div style="color:#ff8060;letter-spacing:.22em">EDITOR FAILED</div>',3000);});
+}
+function returnToCustomEditorAfterPlaytest(){
+  hideEndScreen();
+  const pm=$e('pause-menu');if(pm)pm.classList.add('pause-hidden');
+  const pb=$e('pause-buttons');if(pb)pb.style.display='flex';
+  const ps=$e('pause-settings');if(ps)ps.style.display='none';
+  if(G.levelData){try{G.levelData.cleanup();}catch(_){}G.levelData=null;}
+  _disposeLightProbeWalker();
+  if(G.enemyMgr)G.enemyMgr.clear();
+  G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});
+  G.trails=[];
+  clearPickups();
+  G.started=false;P.dead=false;gameFocused=false;G.menuOpen=true;
+  if(locked)try{document.exitPointerLock();}catch(_){}
+  const ov=$e('overlay');if(ov)ov.classList.add('hidden');
+  CUSTOM_LEVEL_EDITOR&&CUSTOM_LEVEL_EDITOR.restoreAfterPlaytest();
+}
 $e('menu-stats-btn').addEventListener('click',showStatsPanel);
 $e('stats-back').addEventListener('click',hideStatsPanel);
 $e('menu-tutorial-btn').addEventListener('click',()=>{startRange&&startRange();});
 $e('menu-demo-map-btn').addEventListener('click',()=>{startDemoMap&&startDemoMap();});
 $e('menu-endless-btn').addEventListener('click',()=>{startEndlessMode&&startEndlessMode();});
+$e('menu-custom-maps-btn').addEventListener('click',()=>showCustomMapsPanel());
+$e('menu-editor-btn').addEventListener('click',()=>showCustomEditor());
 $e('menu-levelsel-btn').addEventListener('click',()=>showLevelSelect());
 $e('ls-back').addEventListener('click',()=>hideLevelSelect());
 $e('menu-skills-btn').addEventListener('click',showSkillTree);
@@ -25007,11 +29264,11 @@ $e('menu-continue-btn').addEventListener('click',()=>{
 });
 function refreshMenuContinue(){
   const b=$e('menu-continue-btn');if(!b)return;
-  if(PROGRESS.runSave){
-    const r=PROGRESS.runSave;
-    b.style.display='inline-block';
-    b.innerHTML='▶ CONTINUE · BLDG '+r.building;
-  } else b.style.display='none';
+	  if(PROGRESS.runSave){
+	    const r=PROGRESS.runSave;
+	    b.style.display='inline-block';
+	    b.innerHTML=r.mode==='custom'?'▶ CONTINUE · CUSTOM':'▶ CONTINUE · BLDG '+r.building;
+	  } else b.style.display='none';
 }
 document.querySelectorAll('.menu-mode').forEach(btn=>{
   btn.addEventListener('click',()=>{
@@ -25047,8 +29304,15 @@ if(_mpBtn&&_mpSub&&_mpBar){
   $e('menu-duel-btn').addEventListener('click',()=>{startDuelMode();});
 }
 // End-screen buttons
-$e('es-restart').addEventListener('click',()=>{hideEndScreen();G.menuOpen=false;P.dead=false;restartGame();});
-$e('es-quit').addEventListener('click',()=>{hideEndScreen();G.menuOpen=false;P.dead=false;quitToMain();});
+$e('es-restart').addEventListener('click',()=>{
+  hideEndScreen();G.menuOpen=false;P.dead=false;
+  if((G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.pack)startCustomMapPack(CUSTOM_MAP_RUNTIME.pack,CUSTOM_MAP_RUNTIME.mapIndex,{editorTest:G.playMode==='editor-test',returnToEditor:CUSTOM_MAP_RUNTIME.returnToEditor});
+  else restartGame();
+});
+$e('es-quit').addEventListener('click',()=>{
+  if(G.playMode==='editor-test'&&CUSTOM_MAP_RUNTIME.returnToEditor){returnToCustomEditorAfterPlaytest();return;}
+  hideEndScreen();G.menuOpen=false;P.dead=false;quitToMain();
+});
 // Dossier breach button
 $e('dc-breach').addEventListener('click',hideDossier);
 // Skill tree handlers
@@ -25072,6 +29336,10 @@ $e('lv-back').addEventListener('click',hideLoadoutViewer);
 $e('fm-back').addEventListener('click',hideFullMap);
 $e('pause-skills-btn').addEventListener('click',()=>{closeMenu(false);showSkillTree();});
 $e('pause-ach-btn').addEventListener('click',()=>{closeMenu(false);showAchievements();});
+const _pauseReturnEditorBtn=$e('pause-return-editor');
+if(_pauseReturnEditorBtn)_pauseReturnEditorBtn.addEventListener('click',()=>{
+  if(_editorPlaytestReturnAvailable())returnToCustomEditorAfterPlaytest();
+});
 $e('pause-quit').addEventListener('click',quitToMain);
 $e('set-back').addEventListener('click',()=>{$e('pause-buttons').style.display='flex';$e('pause-settings').style.display='none';});
 $e('set-sens').min='0.2';
@@ -25289,16 +29557,34 @@ function updateHands(dt){
   const handFit=H.handFit||_handFitForWeapon(_wi);
   const _animVM=playerAnimState0.resolved&&playerAnimState0.resolved.viewmodel?playerAnimState0.resolved.viewmodel:null;
   const _vaultForearmCrop=!!(P.vaulting&&(P.vaultT||0)>.05&&(P.vaultT||0)<.78);
-  const _cropM4RightForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop;
+  const _adsVisForSight=P.adsVis||0;
+  const _cropPistolAdsForearm=(_wi===1||_wi===6)&&!P.reloading&&_adsVisForSight>.34;
+  const _cropSupportAdsForearm=(_wi===3||_wi===4)&&!P.reloading&&_adsVisForSight>.52;
+  const _cropM4RightForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop||_cropPistolAdsForearm;
   for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4RightForearm;
-  const _cropM4LeftForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop;
+  const _cropM4LeftForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop||_cropPistolAdsForearm||_cropSupportAdsForearm;
   for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4LeftForearm;
   const _m4RuntimeGrip=_wi===0&&_isAuthoredM4RuntimeActive();
   for(const part of _M4_SUPPORT_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
   for(const part of _M4_SUPPORT_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
   for(const part of _M4_TRIGGER_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
   for(const part of _M4_TRIGGER_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
-  rGrp.scale.setScalar(_HAND_PROM_SCALE*(_m4RuntimeGrip?.92:1));
+  const _cropPistolSupportSightline=false;
+  if(_wi===1||_wi===6){
+    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=!_cropPistolSupportSightline;
+    P._pistolSupportSightlineCropActive=_cropPistolSupportSightline;
+    rGrp.visible=true;
+    lGrp.visible=!!handFit.left;
+    P._pistolSightlineHandsHidden=false;
+  }else if(P._pistolSupportSightlineCropActive){
+    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
+    P._pistolSupportSightlineCropActive=false;
+    P._pistolSightlineHandsHidden=false;
+  }else{
+    P._pistolSightlineHandsHidden=false;
+  }
+  let _rHandScale=1;
+  rGrp.scale.setScalar(_HAND_PROM_SCALE*_rHandScale*(_m4RuntimeGrip?.92:1));
   let _lHandScale=handFit.leftScale||1.04;
   lGrp.scale.setScalar(_HAND_PROM_SCALE*_lHandScale*(_m4RuntimeGrip?.98:1));
   // Smooth breathing oscillation
@@ -25332,6 +29618,10 @@ function updateHands(dt){
   let sniperBolt=0;
   // ── ADS: pull hands together and up — gun rises to eye level along sight line
   const a=P.adsVis;
+  const adsFocus=THREE.MathUtils.smoothstep(a,.12,.94);
+  const adsRaise=Number.isFinite(P._adsRaisePulse)?P._adsRaisePulse:0;
+  const adsShoulder=Number.isFinite(P._adsShoulderPulse)?P._adsShoulderPulse:0;
+  const adsLower=Number.isFinite(P._adsLowerPulse)?P._adsLowerPulse:0;
   // Hipfire cant (CS-style): yaw+roll on wrists / gun so viewmodel isn't parallel to the view plane; fades with ADS
   const _hipAim=1-a*.88;
   if(_wi===0){
@@ -25356,6 +29646,20 @@ function updateHands(dt){
   lTRY+=a*.024;
   lTRZ+=a*(-.03);
   idxTRX+=a*.038;
+  if(adsFocus>.001){
+    const shoulderCue=adsFocus*(adsShoulder*.62+adsRaise*.28);
+    rTY-=shoulderCue*.014;
+    rTZ-=shoulderCue*.022;
+    rTRX-=shoulderCue*.105;
+    rTRZ+=shoulderCue*.025;
+    if(lGrp.visible){
+      lTY-=shoulderCue*.010;
+      lTZ-=shoulderCue*.016;
+      lTRX-=shoulderCue*.060;
+      lTRZ-=shoulderCue*.020;
+    }
+    idxTRX+=shoulderCue*.045;
+  }
   // ADS: tuck hands onto weapon + micro parallax so metal doesn't read "through" gloves (procedural overlap)
   if(a>.12&&lGrp.visible&&_wi!==2){
     const c=a,pr=c*c*.00042;
@@ -25364,9 +29668,11 @@ function updateHands(dt){
       lTRX+=c*.048;lTRZ+=c*.052;
       rTZ+=c*.01;rTX+=c*.006;
     }else if(_wi===1||_wi===6){
-      lTX+=c*.03;lTY-=c*.014;lTZ+=c*.028;
-      lTRX+=c*.095;lTRY-=c*.042;lTRZ+=c*.08;
-      rTX+=c*.01;rTZ+=c*.016;idxTRX-=c*.032;
+      lTX+=c*.030;lTY-=c*.078;lTZ-=c*.064;
+      lTRX+=c*.036;lTRY-=c*.094;lTRZ-=c*.050;
+      rTX+=c*.012;rTY-=c*.028;rTZ-=c*.004;rTRX-=c*.024;idxTRX-=c*.040;
+      _lHandScale*=1-c*.155;
+      _rHandScale*=1-c*.055;
     }else if(_wi===3||_wi===4||_wi===5||_wi===7){
       lTX+=c*.02;lTY+=c*.007;lTZ-=c*.014;
       lTRX+=c*.042;lTRZ+=c*.048;
@@ -25428,34 +29734,119 @@ function updateHands(dt){
   // ── SPRINT POSE (Phase C5) — gun lower, more forward tilt, looser grip
   const sprAmt=P.sprintAmt||0;
   if(sprAmt>0){
+    const sprintCarryMul=(_wi===1||_wi===6)?.52:1;
     rTX+=sprAmt*.014;
-    rTY-=sprAmt*.050;
-    rTZ+=sprAmt*.040;
-    rTRX+=sprAmt*.36;       // barrel angles down
-    rTRZ-=sprAmt*.22;       // gun tilts inward (cradle pose)
+    rTY-=sprAmt*.050*sprintCarryMul;
+    rTZ+=sprAmt*.040*sprintCarryMul;
+    rTRX+=sprAmt*.36*sprintCarryMul;       // barrel angles down
+    rTRZ-=sprAmt*.22*sprintCarryMul;       // gun tilts inward (cradle pose)
     lTX-=sprAmt*.032;
-    lTY+=sprAmt*.018;
-    lTZ+=sprAmt*.034;
-    lTRX+=sprAmt*.22;
-    lTRY+=sprAmt*.12;
-    lTRZ+=sprAmt*.16;
+    lTY+=sprAmt*.018*sprintCarryMul;
+    lTZ+=sprAmt*.034*sprintCarryMul;
+    lTRX+=sprAmt*.22*sprintCarryMul;
+    lTRY+=sprAmt*.12*sprintCarryMul;
+    lTRZ+=sprAmt*.16*sprintCarryMul;
     vaultHandOpen=Math.max(vaultHandOpen,sprAmt*.28);
   }
   if(_animVM){
     const airLift=_animVM.airLift||0,fallDrop=_animVM.fallDrop||0,apexFloat=_animVM.apexFloat||0,landPunch=_animVM.landPunch||0;
     const stepX=_animVM.runStepX||0,stepY=_animVM.runStepY||0,stepRoll=_animVM.runStepRoll||0,stepPitch=_animVM.runStepPitch||0;
+    const runInertiaX=_animVM.runInertiaX||0,runInertiaY=_animVM.runInertiaY||0,shoulderSway=_animVM.shoulderSway||0;
+    const footKick=_animVM.footstepKick||0,footRoll=_animVM.footstepRoll||0,sprintStart=_animVM.sprintStartKick||0,sprintStop=_animVM.sprintStopKick||0;
+	    const dropTuck=_animVM.dropkickTuck||0,dropKick=_animVM.dropkickKick||0,dropImpact=_animVM.dropkickImpact||0;
+	    const supportBrace=_animVM.supportBrace||0,triggerSqueeze=_animVM.triggerSqueeze||0,combatSettle=_animVM.combatSettle||0,landSettle=_animVM.landSettle||0;
+	    const vmWeightX=_animVM.weaponWeightX||0,vmWeightY=_animVM.weaponWeightY||0,vmWeightZ=_animVM.weaponWeightZ||0;
+	    const vmGaitYaw=_animVM.gaitYaw||0,vmGaitRoll=_animVM.gaitRoll||0,vmIdleRoll=_animVM.idleMicroRoll||0;
+	    const vmPlant=_animVM.plantDip||0,vmToe=_animVM.toePush||0,vmPivot=_animVM.pivotTuck||0,vmPivotSide=_animVM.pivotSide||0;
+	    const vmFireSnap=_animVM.fireSnap||0,vmFireRecover=_animVM.fireRecover||0,vmFireTail=_animVM.fireTail||0,vmFireSide=_animVM.fireSide||1;
+	    const stridePunch=Number.isFinite(P._strideImpact)?P._strideImpact:0;
+    const strideSide=Number.isFinite(P._strideImpactSide)?P._strideImpactSide:0;
+    const landingSpring=Number.isFinite(P._landingSpring)?P._landingSpring:0;
+    const bodySurge=Number.isFinite(P._dropkickBodySurge)?P._dropkickBodySurge:0;
+    const massF=Number.isFinite(P._massInertiaF)?P._massInertiaF:0;
+    const massR=Number.isFinite(P._massInertiaR)?P._massInertiaR:0;
+    const bodyJolt=Number.isFinite(P._bodyJolt)?P._bodyJolt:0;
+    const footComp=Number.isFinite(P._footPlantCompression)?P._footPlantCompression:0;
+    const footSide=Number.isFinite(P._footPlantSide)?P._footPlantSide:0;
     const airY=airLift+fallDrop+apexFloat;
-    rTX+=stepX*.55;
-    rTY+=airY*.52+stepY*.55-landPunch*.30;
-    rTZ+=fallDrop*.44-airLift*.20+landPunch*.26;
-    rTRX+=stepPitch*.60+fallDrop*1.25-landPunch*.90;
-    rTRZ+=stepRoll*.75;
+	    rTX+=stepX*.55+runInertiaX*.62+shoulderSway*.90+strideSide*stridePunch*.0035-massR*.012+footSide*footComp*.003+vmPivotSide*vmPivot*.010+vmFireSide*vmFireSnap*.0035;
+	    rTY+=airY*.52+stepY*.48+runInertiaY*.50-landPunch*.30-footKick*.004-sprintStart*.010+sprintStop*.006-stridePunch*.004-landingSpring*.012-bodyJolt*.006-footComp*.0022-vmPlant*.006-vmFireSnap*.006+vmToe*.002;
+	    rTZ+=fallDrop*.44-airLift*.20+landPunch*.26+sprintStart*.026-sprintStop*.010+stridePunch*.006+landingSpring*.012+bodySurge*.012+massF*.008+vmToe*.008-vmFireSnap*.016+vmFireRecover*.006+vmFireTail*.004;
+	    rTRX+=stepPitch*.52+fallDrop*1.25-landPunch*.90+sprintStart*.12-sprintStop*.07+footKick*.010+stridePunch*.014+landingSpring*.060+bodyJolt*.026+massF*.034-bodySurge*.030+vmPlant*.024-vmToe*.018-vmFireSnap*.070+vmFireRecover*.026+vmFireTail*.012;
+	    rTRZ+=stepRoll*.62+footRoll*.52-sprintStart*.030+sprintStop*.020+strideSide*stridePunch*.016-massR*.048+footSide*footComp*.012+vmPivotSide*vmPivot*.020+vmFireSide*(vmFireSnap*.028+vmFireRecover*.014);
+    rTX+=vmWeightX*.48+(_animVM.breathX||0)*.38+(_animVM.idleMicroX||0)*.52;
+    rTY+=vmWeightY*.42+(_animVM.breathY||0)*.34+(_animVM.idleMicroY||0)*.46-landSettle*.006-supportBrace*.002;
+    rTZ+=vmWeightZ*.42-combatSettle*.004;
+	    rTRY+=vmGaitYaw*.34+supportBrace*.028-combatSettle*.018+vmPivotSide*vmPivot*.014+vmFireSide*vmFireRecover*.012;
+	    rTRZ+=vmGaitRoll*.38+vmIdleRoll*.55+(_animVM.adsMicroRoll||0)*.38+vmFireSide*vmFireTail*.010;
+	    rTRX-=supportBrace*.038+triggerSqueeze*.020+vmFireSnap*.018;
+	    idxTRX-=triggerSqueeze*.16+vmFireSnap*.055;
+    fingerSnap=Math.max(fingerSnap,Math.min(1,triggerSqueeze*.52));
     if(lGrp.visible){
-      lTX-=stepX*.38;
-      lTY+=airY*.45+stepY*.45-landPunch*.24;
-      lTZ+=fallDrop*.34-airLift*.16+landPunch*.20;
-      lTRX+=stepPitch*.48+fallDrop*1.05-landPunch*.70;
-      lTRZ-=stepRoll*.55;
+	      lTX-=stepX*.38+runInertiaX*.40+shoulderSway*.74-strideSide*stridePunch*.0025-massR*.010+footSide*footComp*.002-vmPivotSide*vmPivot*.006+vmFireSide*vmFireSnap*.002;
+	      lTY+=airY*.45+stepY*.40+runInertiaY*.42-landPunch*.24-footKick*.0035-sprintStart*.008+sprintStop*.005-stridePunch*.0035-landingSpring*.010-bodyJolt*.005-footComp*.0018-vmPlant*.005-vmFireSnap*.004+vmToe*.0016;
+	      lTZ+=fallDrop*.34-airLift*.16+landPunch*.20+sprintStart*.020-sprintStop*.008+stridePunch*.005+landingSpring*.010+bodySurge*.010+massF*.006+vmToe*.006-vmFireSnap*.012+vmFireRecover*.004;
+	      lTRX+=stepPitch*.42+fallDrop*1.05-landPunch*.70+sprintStart*.095-sprintStop*.055+footKick*.009+stridePunch*.012+landingSpring*.048+bodyJolt*.020+massF*.028-bodySurge*.026+vmPlant*.020-vmToe*.014+vmFireSnap*.038+vmFireRecover*.018;
+	      lTRZ-=stepRoll*.44+footRoll*.38-sprintStart*.024+sprintStop*.016-strideSide*stridePunch*.012+massR*.040-footSide*footComp*.010-vmPivotSide*vmPivot*.014-vmFireSide*(vmFireSnap*.018+vmFireRecover*.010);
+      lTX-=vmWeightX*.32-(_animVM.breathX||0)*.22;
+      lTY+=vmWeightY*.34+(_animVM.breathY||0)*.24+(_animVM.idleMicroY||0)*.30-landSettle*.005-supportBrace*.004;
+      lTZ+=vmWeightZ*.32-supportBrace*.018-combatSettle*.004;
+      lTRX+=supportBrace*.070+triggerSqueeze*.014+landSettle*.030;
+      lTRY-=vmGaitYaw*.24+supportBrace*.032;
+      lTRZ-=vmGaitRoll*.30-vmIdleRoll*.35;
+      vaultHandOpen=Math.max(vaultHandOpen,Math.min(.42,supportBrace*.24+landSettle*.28));
+    }
+		    if(dropTuck>0.001||dropKick>0.001||dropImpact>0.001){
+		      const dk=Math.max(dropKick,dropImpact*.88);
+		      const brace=THREE.MathUtils.clamp(dropKick*.82+dropImpact*.45,0,1);
+		      rTX+=brace*.320;
+		      rTY-=dropTuck*.505+dropImpact*.115;
+		      rTZ+=dropTuck*.175+dropKick*.055+dropImpact*.050;
+		      rTRX+=dropKick*1.42-dropImpact*.32;
+		      rTRY+=brace*.46;
+		      rTRZ-=dropKick*.72;
+		      _rHandScale*=1-dk*.070;
+		      if(lGrp.visible){
+		        lTX-=brace*.330;
+		        lTY-=dropTuck*.485+dropImpact*.105;
+		        lTZ+=dropTuck*.165+dropKick*.050+dropImpact*.045;
+		        lTRX+=dropKick*1.30-dropImpact*.30;
+		        lTRY-=brace*.44;
+		        lTRZ+=dropKick*.68;
+		        _lHandScale*=1-dk*.070;
+		      }
+	      vaultHandOpen=Math.max(vaultHandOpen,THREE.MathUtils.clamp(dropKick*.76+dropImpact*.48,0,.90));
+	    }
+    if(_whipActive){
+      const t=THREE.MathUtils.clamp(_whipT||0,0,.48);
+      const wind=1-THREE.MathUtils.smoothstep(t,.10,.20);
+      const strike=THREE.MathUtils.smoothstep(t,.10,.18)*(1-THREE.MathUtils.smoothstep(t,.20,.42));
+      const recover=THREE.MathUtils.smoothstep(t,.22,.48);
+      rTX+=wind*.050-strike*.070+recover*.020;
+      rTY-=wind*.020; rTY+=strike*.034;
+      rTZ+=wind*.052-strike*.155+recover*.035;
+      rTRX+=wind*.32-strike*.58;
+      rTRY-=strike*.18;
+      rTRZ-=wind*.20; rTRZ+=strike*.46;
+      if(lGrp.visible){
+        lTX-=wind*.030; lTX+=strike*.046;
+        lTY+=wind*.012-strike*.024;
+        lTZ+=wind*.025-strike*.050;
+        lTRX+=wind*.18-strike*.24;
+        lTRZ-=strike*.18;
+      }
+      vaultHandOpen=Math.max(vaultHandOpen,strike*.74+wind*.26);
+    }
+    if(_execActive){
+      const t=THREE.MathUtils.clamp(_execT||0,0,.60);
+      const reach=THREE.MathUtils.smoothstep(t,.04,.30)*(1-THREE.MathUtils.smoothstep(t,.42,.60));
+      rTX-=reach*.075;rTY+=reach*.040;rTZ-=reach*.190;
+      rTRX-=reach*.72;rTRY-=reach*.18;rTRZ+=reach*.34;
+      if(lGrp.visible){
+        lTX+=reach*.060;lTY+=reach*.028;lTZ-=reach*.110;
+        lTRX-=reach*.46;lTRY+=reach*.16;lTRZ-=reach*.26;
+      }
+      vaultHandOpen=Math.max(vaultHandOpen,reach*.88);
     }
     vaultHandOpen=Math.max(vaultHandOpen,THREE.MathUtils.clamp(fallDrop*4+landPunch*3,0,.32));
   }
@@ -25575,6 +29966,28 @@ function updateHands(dt){
     }
     rTRY-=snap*recoilProf.kickRZ*.14*P.adsVis;
   }
+  const hitKick=_viewmodelHitKickEnvelope(H);
+  if(hitKick>0){
+    const hkSide=H.hitKickSide||1;
+    const hkHead=H.hitKickHead?1.18:1;
+    const hkKill=H.hitKickKill?1.18:1;
+    const hk=hitKick*hkHead*hkKill*(1-P.adsVis*.42);
+    rTY-=hk*.008;
+    rTZ-=hk*.016;
+    rTRX-=hk*.145;
+    rTRY+=hkSide*hk*.025;
+    rTRZ+=hkSide*hk*.040;
+    idxTRX-=hk*.20;
+    if(lGrp.visible){
+      lTY-=hk*.004;
+      lTZ-=hk*.010;
+      lTRX+=hk*.070;
+      lTRZ-=hkSide*hk*.024;
+      vaultHandOpen=Math.max(vaultHandOpen,Math.min(.34,hk*.45));
+    }
+    fingerSnap=Math.max(fingerSnap,Math.min(1,hk*.75));
+  }
+  if(H.hitKickT>0)H.hitKickT=Math.max(0,H.hitKickT-dt);
   if(typeof sgPump!=='undefined'){
     const p=P.weaponIdx===3?shotgunPump:0;
     sgPump.position.z=-.20+p*.050;
@@ -25706,8 +30119,21 @@ function updateHands(dt){
     lTRX+=(hf.hipRX||0)*h+(hf.adsRX||0)*a;
     lTRY+=(hf.hipRY||0)*h+(hf.adsRY||0)*a;
     lTRZ+=(hf.hipRZ||0)*h+(hf.adsRZ||0)*a;
+    if((_wi===1||_wi===6)&&!P.reloading){
+      const pistolAds=THREE.MathUtils.smoothstep(a,.18,.92);
+      lTX+=pistolAds*.012;
+      lTY-=pistolAds*.060;
+      lTZ-=pistolAds*.054;
+      lTRX+=pistolAds*.010;
+      lTRY-=pistolAds*.038;
+      lTRZ-=pistolAds*.020;
+      _lHandScale*=1-pistolAds*.125;
+      _rHandScale*=1-pistolAds*.040;
+    }
   }
   // ── Smooth toward targets — exponential damping keeps motion frame-rate stable
+  rGrp.scale.setScalar(_HAND_PROM_SCALE*_rHandScale*(_m4RuntimeGrip?.92:1));
+  lGrp.scale.setScalar(_HAND_PROM_SCALE*_lHandScale*(_m4RuntimeGrip?.98:1));
   const ls=22,lm=14;
   rGrp.position.x=damp(rGrp.position.x,rTX,ls,dt);
   rGrp.position.y=damp(rGrp.position.y,rTY,ls,dt);
@@ -25738,17 +30164,19 @@ function updateHands(dt){
   const ipf=ip;
   const vOpen=THREE.MathUtils.clamp(vaultHandOpen||0,0,1);
   const animGrip=THREE.MathUtils.clamp((_animVM&&_animVM.fingerCurl)||0,0,1);
-  const rMidT=Math.sin(ipf*.73)*.07*fAds+Math.sin(ipf*1.27+.4)*.026+adsTight+relDig*.1+relRack*.095+animGrip*.055;
-  const rRingT=Math.sin(ipf*.67)*.065*fAds+Math.sin(ipf*1.19)*.023+adsTight*.92+relDig*.085+relRack*.088+animGrip*.052;
-  const rPinkT=Math.sin(ipf*.81)*.078*fAds+Math.sin(ipf*1.41+.6)*.029+adsTight*.85+relDig*.07+relRack*.078+animGrip*.048;
-  rMidGrp.rotation.x=damp(rMidGrp.rotation.x,rMidT+relMagBtn*.04-fingerSnap*.16-vOpen*.20,_fSp,dt);
-  rRingGrp.rotation.x=damp(rRingGrp.rotation.x,rRingT-relMagBtn*.055-fingerSnap*.14-vOpen*.19,_fSp,dt);
-  rPinkGrp.rotation.x=damp(rPinkGrp.rotation.x,rPinkT-relMagBtn*.062-fingerSnap*.12-vOpen*.18,_fSp,dt);
-  rMid2.rotation.x=damp(rMid2.rotation.x,.26+Math.sin(ipf*.69)*.062-relDig*.05-fingerSnap*.22+relMagBtn*.05+relRack*.07-vOpen*.22+animGrip*.060,_fSp,dt);
-  rRing2.rotation.x=damp(rRing2.rotation.x,.24+Math.sin(ipf*.71)*.058-relDig*.045-fingerSnap*.2-relMagBtn*.04+relRack*.065-vOpen*.20+animGrip*.055,_fSp,dt);
-  rPink2.rotation.x=damp(rPink2.rotation.x,.3+Math.sin(ipf*.77)*.068-relDig*.055-fingerSnap*.24-relMagBtn*.045+relRack*.06-vOpen*.19+animGrip*.050,_fSp,dt);
-  rIdx2.rotation.x=damp(rIdx2.rotation.x,.28+Math.sin(ipf*.66)*.052-fingerSnap*.28-adsTrigFlat+relIns*.04-vOpen*.18+animGrip*.030,_fSp,dt);
-  rThGrp.rotation.x=damp(rThGrp.rotation.x,.06+Math.sin(ipf*.52)*.042+relDig*.02+relMagBtn*.16-relRack*.05-vOpen*.08+animGrip*.025,_fSp,dt);
+  const animTrigger=THREE.MathUtils.clamp((_animVM&&_animVM.triggerSqueeze)||0,0,1);
+  const animBrace=THREE.MathUtils.clamp((_animVM&&_animVM.supportBrace)||0,0,1);
+  const rMidT=Math.sin(ipf*.73)*.07*fAds+Math.sin(ipf*1.27+.4)*.026+adsTight+relDig*.1+relRack*.095+animGrip*.055+animBrace*.030;
+  const rRingT=Math.sin(ipf*.67)*.065*fAds+Math.sin(ipf*1.19)*.023+adsTight*.92+relDig*.085+relRack*.088+animGrip*.052+animBrace*.026;
+  const rPinkT=Math.sin(ipf*.81)*.078*fAds+Math.sin(ipf*1.41+.6)*.029+adsTight*.85+relDig*.07+relRack*.078+animGrip*.048+animBrace*.020;
+  rMidGrp.rotation.x=damp(rMidGrp.rotation.x,rMidT+relMagBtn*.04-fingerSnap*.16-vOpen*.20+animTrigger*.035,_fSp,dt);
+  rRingGrp.rotation.x=damp(rRingGrp.rotation.x,rRingT-relMagBtn*.055-fingerSnap*.14-vOpen*.19+animTrigger*.026,_fSp,dt);
+  rPinkGrp.rotation.x=damp(rPinkGrp.rotation.x,rPinkT-relMagBtn*.062-fingerSnap*.12-vOpen*.18+animTrigger*.018,_fSp,dt);
+  rMid2.rotation.x=damp(rMid2.rotation.x,.26+Math.sin(ipf*.69)*.062-relDig*.05-fingerSnap*.22+relMagBtn*.05+relRack*.07-vOpen*.22+animGrip*.060+animBrace*.030,_fSp,dt);
+  rRing2.rotation.x=damp(rRing2.rotation.x,.24+Math.sin(ipf*.71)*.058-relDig*.045-fingerSnap*.2-relMagBtn*.04+relRack*.065-vOpen*.20+animGrip*.055+animBrace*.026,_fSp,dt);
+  rPink2.rotation.x=damp(rPink2.rotation.x,.3+Math.sin(ipf*.77)*.068-relDig*.055-fingerSnap*.24-relMagBtn*.045+relRack*.06-vOpen*.19+animGrip*.050+animBrace*.020,_fSp,dt);
+  rIdx2.rotation.x=damp(rIdx2.rotation.x,.28+Math.sin(ipf*.66)*.052-fingerSnap*.28-adsTrigFlat+relIns*.04-vOpen*.18+animGrip*.030-animTrigger*.170,_fSp,dt);
+  rThGrp.rotation.x=damp(rThGrp.rotation.x,.06+Math.sin(ipf*.52)*.042+relDig*.02+relMagBtn*.16-relRack*.05-vOpen*.08+animGrip*.025+animBrace*.018,_fSp,dt);
   rThGrp.rotation.y=damp(rThGrp.rotation.y,Math.sin(ipf*.39)*.028-relMagBtn*.12+vOpen*.05,_fSp,dt);
   rThGrp.rotation.z=damp(rThGrp.rotation.z,.5+Math.sin(ipf*.48)*.038-fingerSnap*.075-relMagBtn*.08+relRack*.06-vOpen*.12,_fSp,dt);
   if(lGrp.visible){
@@ -25760,10 +30188,10 @@ function updateHands(dt){
     const lWave=Math.sin(ipf*.64)*.048*fAdsL*_uAmp;
     const lGrab=relGrab*.38;
     const lIns=relIns*.22;
-    lIdxGrp.rotation.x=damp(lIdxGrp.rotation.x,lBase+lWave-lGrab*1.1+lIns*.12-fingerSnap*.052-_m4Grip*.26-vOpen*.30-animGrip*.034,_fSp,dt);
-    lMidGrp.rotation.x=damp(lMidGrp.rotation.x,lBase+.02+lWave*.92-lGrab*1.05+lIns*.18-fingerSnap*.048-_m4Grip*.30-vOpen*.31-animGrip*.038,_fSp,dt);
-    lRingGrp.rotation.x=damp(lRingGrp.rotation.x,lBase+.04+lWave*.85-lGrab*.88+lIns*.14-fingerSnap*.042-_m4Grip*.29-vOpen*.29-animGrip*.035,_fSp,dt);
-    lPinkGrp.rotation.x=damp(lPinkGrp.rotation.x,lBase+.065+lWave*.78-lGrab*.72+lIns*.08-fingerSnap*.036-_m4Grip*.24-vOpen*.26-animGrip*.030,_fSp,dt);
+    lIdxGrp.rotation.x=damp(lIdxGrp.rotation.x,lBase+lWave-lGrab*1.1+lIns*.12-fingerSnap*.052-_m4Grip*.26-vOpen*.30-animGrip*.034-animBrace*.070,_fSp,dt);
+    lMidGrp.rotation.x=damp(lMidGrp.rotation.x,lBase+.02+lWave*.92-lGrab*1.05+lIns*.18-fingerSnap*.048-_m4Grip*.30-vOpen*.31-animGrip*.038-animBrace*.082,_fSp,dt);
+    lRingGrp.rotation.x=damp(lRingGrp.rotation.x,lBase+.04+lWave*.85-lGrab*.88+lIns*.14-fingerSnap*.042-_m4Grip*.29-vOpen*.29-animGrip*.035-animBrace*.074,_fSp,dt);
+    lPinkGrp.rotation.x=damp(lPinkGrp.rotation.x,lBase+.065+lWave*.78-lGrab*.72+lIns*.08-fingerSnap*.036-_m4Grip*.24-vOpen*.26-animGrip*.030-animBrace*.062,_fSp,dt);
     const lIdxD=lIdxGrp.children[1],lMidD=lMidGrp.children[1],lRingD=lRingGrp.children[1],lPinkD=lPinkGrp.children[1];
     if(lIdxD)lIdxD.rotation.x=damp(lIdxD.rotation.x,-.22+Math.sin(ipf*.58)*.052*_uAmp-relDig*.04-lGrab*.28+lIns*.1-fingerSnap*.072-_m4Grip*.30-vOpen*.24-animGrip*.042,_fSp,dt);
     if(lMidD)lMidD.rotation.x=damp(lMidD.rotation.x,-.22+Math.sin(ipf*.54)*.05*_uAmp-relDig*.036-lGrab*.32+lIns*.14-fingerSnap*.065-_m4Grip*.34-vOpen*.25-animGrip*.045,_fSp,dt);
@@ -25784,10 +30212,43 @@ function updateHands(dt){
   }
   if(P.weaponIdx===1){
     if(deagleGlbRig){
-      // GLB-mode slide animation deferred: bone semantics in this rig (Bone_000
-      // through Bone_004) aren't named, so a guess could send geometry flying.
-      // The fire envelope still drives the whole gunGrp recoil/kick below, so
-      // the weapon still feels alive on shot.
+      const nodes=deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes;
+      if(nodes){
+        const slide=nodes.chargingHandle,triggerNode=nodes.trigger,magNode=nodes.mag;
+        const suppressor=nodes.suppressor,cap=nodes.suppressor_front_cap;
+        if(slide&&slide.userData.uspRest){
+          const r=slide.userData.uspRest;
+          slide.position.copy(r.pos);
+          slide.rotation.copy(r.rot);
+          slide.position.y-=slideOff*.096;
+          slide.rotation.x+=slideOff*.018;
+        }
+        if(triggerNode&&triggerNode.userData.uspRest){
+          const r=triggerNode.userData.uspRest;
+          triggerNode.position.copy(r.pos);
+          triggerNode.rotation.copy(r.rot);
+          triggerNode.rotation.x-=slideOff*.34;
+        }
+        if(magNode&&magNode.userData.uspRest){
+          const r=magNode.userData.uspRest;
+          magNode.position.copy(r.pos);
+          magNode.rotation.copy(r.rot);
+          if(P.reloading&&P.RELOAD_TIME>0){
+            const rt=THREE.MathUtils.clamp(1-P.reloadTimer/P.RELOAD_TIME,0,1);
+            const mDrop=rt<.55?Math.sin(THREE.MathUtils.clamp(rt/.55,0,1)*Math.PI):0;
+            magNode.position.z-=mDrop*.10;
+            magNode.rotation.x-=mDrop*.12;
+          }
+        }
+        for(const node of [suppressor,cap]){
+          if(node&&node.userData.uspRest){
+            const r=node.userData.uspRest;
+            node.position.copy(r.pos);
+            node.rotation.copy(r.rot);
+            node.rotation.z+=slideOff*.010*Math.sin(ip*28);
+          }
+        }
+      }
     } else {
       const off=slideOff*.014;
       deSlide.position.z   = -.008 + off;
@@ -25841,6 +30302,8 @@ function updateHands(dt){
 // Tag all viewmodel groups to layer 1 so the scope camera (layer 0 only) ignores them
 _setLayer(gunGrp,1);
 _setLayer(knifGrp,1);
+_setLayer(dropkickFeetGrp,1);
+_setLayer(slideLegsGrp,1);
 _setLayer(wristGrp,1);
 _setLayer(shopGrp,1);
 _setLayer(reloadHoloGrp,1);
@@ -25910,7 +30373,7 @@ function _enforceTrailBudgets(){
 }
 function _visualRuntimeStats(){
   const trails=Array.isArray(G.trails)?G.trails:[];
-  const stats={vfx:trails.length,decals:0,particles:0,blood:0,smoke:0,shells:0,flashes:0,tracers:0,vfxBudget:_trailBudget(),vfxBudgetDrops:G._vfxBudgetDrops||0,characters:0,activeCharacters:0,dormantCharacters:0,characterParts:0,characterDamageOverlays:0,characterLods:{high:0,medium:0,low:0},activeCharacterLods:{high:0,medium:0,low:0},characterAnimationStates:{},characterTypes:{},playerProxyParts:PLAYER_PROXY.parts.length,playerProxyVisible:!!PLAYER_PROXY.group.visible,viewmodelParts:gunGrp.userData.viewmodelParts|0,weaponParts:gunGrp.userData.weaponDetailParts|0,shadowCasters:0,atmosphereQuality:SETTINGS.atmosphereQuality||'high',visualStats:null,lighting:null};
+  const stats={vfx:trails.length,decals:0,particles:0,blood:0,smoke:0,shells:0,flashes:0,tracers:0,vfxBudget:_trailBudget(),vfxBudgetDrops:G._vfxBudgetDrops||0,characters:0,activeCharacters:0,dormantCharacters:0,characterParts:0,characterDamageOverlays:0,characterLimbZones:0,characterLimbHitProxies:0,characterBrokenLimbs:0,characterLods:{high:0,medium:0,low:0},activeCharacterLods:{high:0,medium:0,low:0},characterAnimationStates:{},characterTypes:{},playerProxyParts:PLAYER_PROXY.parts.length,playerProxyVisible:!!PLAYER_PROXY.group.visible,viewmodelParts:gunGrp.userData.viewmodelParts|0,weaponParts:gunGrp.userData.weaponDetailParts|0,shadowCasters:0,atmosphereQuality:SETTINGS.atmosphereQuality||'high',visualStats:null,lighting:null};
   for(const t of trails){
     if(t.isDecal||t.isBloodPool)stats.decals++;
     if(t.isBlood)stats.blood++;
@@ -25925,6 +30388,10 @@ function _visualRuntimeStats(){
     for(const e of G.enemyMgr._list){
       stats.characterParts+=(Array.isArray(e.humanVisualParts)?e.humanVisualParts.length:0);
       stats.characterDamageOverlays+=(Array.isArray(e.damageOverlays)?e.damageOverlays.length:0);
+      const limbIds=e.limbRig?Object.keys(e.limbRig):[];
+      stats.characterLimbZones+=limbIds.length;
+      stats.characterLimbHitProxies+=(Array.isArray(e.limbHitMeshes)?e.limbHitMeshes.length:0);
+      for(const id of limbIds)if(e.limbRig[id]&&e.limbRig[id].disabled)stats.characterBrokenLimbs++;
       if(!e.dead&&e.characterLod&&stats.characterLods[e.characterLod]!=null)stats.characterLods[e.characterLod]++;
       if(!e.dead&&e._roomFlowDormant)stats.dormantCharacters++;
       if(!e.dead&&!e._roomFlowDormant){
@@ -26184,6 +30651,18 @@ function _weaponVisualStatus(){
   return {
     weaponIdx:P.weaponIdx,
     name:WEAPONS[P.weaponIdx]?WEAPONS[P.weaponIdx].name:'unknown',
+    ammo:P.ammo,
+    ammoReserve:P.ammoRes,
+    reloading:!!P.reloading,
+    triggerBufferMsLeft:Math.max(0,(P._triggerBufferedUntil||0)-performance.now()),
+    triggerBufferReason:P._triggerBufferReason||'',
+    triggerBufferBlock:P._triggerBufferBlock||'',
+    triggerBufferTicks:P._triggerBufferTicks||0,
+    emptyClickPulse:P._emptyClickPulse||0,
+    dryFirePulse:P._dryFirePulse||0,
+    lastRoundPulse:P._lastRoundPulse||0,
+    lowAmmoPulse:P._lowAmmoPulse||0,
+    reloadReadyPulse:P._reloadReadyPulse||0,
     activeManifestId,
     quality:SETTINGS.weaponQuality||'high',
     stableRenderingMode:!!STABLE_RENDERING_MODE,
@@ -26251,19 +30730,21 @@ function _characterVisualStatus(){
   const rows=[];
   for(const e of enemies){
     const profile=e.characterProfile||getCharacterProfile(e.type);
-    const humanParts=Array.isArray(e.humanVisualParts)?e.humanVisualParts:[];
-    const visibleHumanParts=humanParts.filter(_meshVisibleInHierarchy).length;
-    const weaponMeshes=_countVisibleMeshes(e.weaponGrp)+(e.weapon2Grp?_countVisibleMeshes(e.weapon2Grp):0);
-    const hasHumanShell=!!(e.torsoShell&&e.headShell&&e.leftUpperArmShell&&e.rightUpperArmShell&&e.leftThighShell&&e.rightThighShell);
-    const hasHitboxes=!!(e.bMesh&&e.hMesh&&e.bMesh.userData.enemy===e&&e.hMesh.userData.enemy===e&&e.hMesh.userData.isHead);
-    const flags={
-      boss:!!e.isBoss,
-      lieutenant:!!e.isLieutenant,
-      drone:!!e.isDrone,
-      shield:!!e.shield,
-      riotShield:!!e.riotShield,
-      hasWeakPoint:!!(e.visorGlow||e.classBeacon||e.droneEye)
-    };
+	    const humanParts=Array.isArray(e.humanVisualParts)?e.humanVisualParts:[];
+	    const visibleHumanParts=humanParts.filter(_meshVisibleInHierarchy).length;
+	    const weaponMeshes=_countVisibleMeshes(e.weaponGrp)+(e.weapon2Grp?_countVisibleMeshes(e.weapon2Grp):0);
+	    const hasHumanShell=!!(e.torsoShell&&e.headShell&&e.leftUpperArmShell&&e.rightUpperArmShell&&e.leftThighShell&&e.rightThighShell);
+	    const hasHitboxes=!!(e.bMesh&&e.hMesh&&e.bMesh.userData.enemy===e&&e.hMesh.userData.enemy===e&&e.hMesh.userData.isHead);
+	    const limbIds=e.limbRig?Object.keys(e.limbRig):[];
+	    const flags={
+	      boss:!!e.isBoss,
+	      lieutenant:!!e.isLieutenant,
+	      drone:!!e.isDrone,
+	      shield:!!e.shield,
+	      riotShield:!!e.riotShield,
+	      hasWeakPoint:!!(e.visorGlow||e.classBeacon||e.droneEye),
+	      futureDismembermentReady:!!(e.group&&e.group.userData&&e.group.userData.futureDismembermentReady)
+	    };
     rows.push({
       type:e.type,
       label:profile.label,
@@ -26272,20 +30753,26 @@ function _characterVisualStatus(){
       animationState:e.animationState||e.group?.userData?.animationState||'idle',
       humanParts:humanParts.length,
       visibleHumanParts,
-      hasHumanShell,
-      hasHitboxes,
-      weaponMeshes,
+	      hasHumanShell,
+	      hasHitboxes,
+	      limbZones:limbIds.length,
+	      limbHitProxies:Array.isArray(e.limbHitMeshes)?e.limbHitMeshes.length:0,
+	      brokenLimbs:limbIds.filter(id=>e.limbRig[id]&&e.limbRig[id].disabled).length,
+	      lastHitLimb:e.group&&e.group.userData?e.group.userData.lastHitLimb||null:null,
+	      weaponMeshes,
       damageOverlays:Array.isArray(e.damageOverlays)?e.damageOverlays.length:0,
       flags
     });
-    if(!archetypes[e.type]){
-      archetypes[e.type]={label:profile.label,silhouette:profile.silhouette,count:0,humanShells:0,weaponMeshes:0,hitboxAligned:0,weakPoints:0};
-    }
+	    if(!archetypes[e.type]){
+	      archetypes[e.type]={label:profile.label,silhouette:profile.silhouette,count:0,humanShells:0,weaponMeshes:0,hitboxAligned:0,weakPoints:0,limbRigged:0,limbHitProxies:0};
+	    }
     archetypes[e.type].count++;
     if(hasHumanShell||e.isDrone)archetypes[e.type].humanShells++;
-    if(weaponMeshes>0||e.isDrone)archetypes[e.type].weaponMeshes++;
-    if(hasHitboxes)archetypes[e.type].hitboxAligned++;
-    if(flags.hasWeakPoint)archetypes[e.type].weakPoints++;
+	    if(weaponMeshes>0||e.isDrone)archetypes[e.type].weaponMeshes++;
+	    if(hasHitboxes)archetypes[e.type].hitboxAligned++;
+	    if(flags.hasWeakPoint)archetypes[e.type].weakPoints++;
+	    if(limbIds.length)archetypes[e.type].limbRigged++;
+	    archetypes[e.type].limbHitProxies+=Array.isArray(e.limbHitMeshes)?e.limbHitMeshes.length:0;
   }
   return {
     count:rows.length,
@@ -26451,6 +30938,7 @@ function _debugForcePostState(state='normal'){
     G.menuOpen=false;
     P.dead=false;
     P.focusActive=false;
+    if(typeof _resetFocusSequencer==='function')_resetFocusSequencer();
     P.ads=0;P.adsVis=0;
     P.hp=P.maxHp||100;
     if(typeof DEATHCAM!=='undefined')DEATHCAM.active=false;
@@ -26463,7 +30951,7 @@ function _debugForcePostState(state='normal'){
   }catch(_){}
   if(s==='menu')G.menuOpen=true;
   if(s==='ads'){P.ads=1;P.adsVis=1;}
-  if(s==='focus')P.focusActive=true;
+  if(s==='focus'){P.focusActive=true;P._focusVisual=1;P._focusSeqPhase='hold';document.body.classList.add('focus-on');}
   if(s==='lowHp')P.hp=Math.max(1,Math.round((P.maxHp||100)*.22));
   if(s==='killBeat'&&typeof _killCamT!=='undefined'){
     _killCamT=Math.max(.08,(_killCamDur||1)*.65);
@@ -26598,7 +31086,11 @@ renderer.setAnimationLoop(()=>{
   tickAaaMuzzleWorldSpills(THREE,scene,dt);
   if(P&&typeof tickFocus==='function')tickFocus(dt);
   // Hit-stop overrides time scale briefly
-  if(P._hitStopUntil&&performance.now()<P._hitStopUntil){
+  if((P._hitStopTimer||0)>0){
+    P.timeScale=Math.min(P.timeScale,P._hitStopScale||.05);
+    P._hitStopTimer=Math.max(0,(P._hitStopTimer||0)-dt);
+    if(P._hitStopTimer<=0&&(!P._hitStopUntil||performance.now()>=P._hitStopUntil))P._hitStopScale=1;
+  }else if(P._hitStopUntil&&performance.now()<P._hitStopUntil){
     P.timeScale=Math.min(P.timeScale,P._hitStopScale||.05);
   }
   if(typeof comboTick==='function')comboTick(dt);
@@ -26660,31 +31152,68 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickInspect==='function'&&G.started)tickInspect(dt);
   if(typeof tickLastStand==='function'&&G.started)tickLastStand();
   if(typeof tickSlideRegen==='function'&&G.started)tickSlideRegen(dt);
-  // PLAYER SUPPRESSION DECAY — fades over 1.5s
-  if(P._suppressionLevel){
-    P._suppressionLevel=Math.max(0,(P._suppressionLevel||0)-dt*.8);
-    if(P._suppressionLevel>.10){
-      // Aim wobble + screen shake
-      const wob=P._suppressionLevel;
-      P.yaw+=(Math.random()-.5)*.0015*wob;
-      P.pitch+=(Math.random()-.5)*.0010*wob;
-      PP.shakeY-=.005*wob;
-    }
-  }
+	  // PLAYER SUPPRESSION DECAY — fades over 1.5s
+	  if(P._suppressionLevel){
+	    P._suppressionLevel=Math.max(0,(P._suppressionLevel||0)-dt*.8);
+	    if(P._suppressionLevel>.10){
+	      // Aim wobble + screen shake
+	      const wob=P._suppressionLevel;
+	      P.yaw+=(Math.random()-.5)*.0015*wob;
+	      P.pitch+=(Math.random()-.5)*.0010*wob;
+	      PP.shakeY-=.005*wob;
+	    }
+	  }
+	  P._gunplaySpreadVisual=damp(Number.isFinite(P._gunplaySpreadVisual)?P._gunplaySpreadVisual:0,0,9.0,dt);
+	  P._gunplayConfidence=damp(Number.isFinite(P._gunplayConfidence)?P._gunplayConfidence:0,0,4.6,dt);
+	  P._gunplayMissBloom=damp(Number.isFinite(P._gunplayMissBloom)?P._gunplayMissBloom:0,0,3.8,dt);
+		  P._gunplayRhythm=damp(Number.isFinite(P._gunplayRhythm)?P._gunplayRhythm:0,0,5.2,dt);
+		  P._enemyShotPressure=damp(Number.isFinite(P._enemyShotPressure)?P._enemyShotPressure:0,0,8.5,dt);
+		  P._triggerBufferPulse=damp(Number.isFinite(P._triggerBufferPulse)?P._triggerBufferPulse:0,0,13.0,dt);
+		  P._triggerReadyPulse=damp(Number.isFinite(P._triggerReadyPulse)?P._triggerReadyPulse:0,0,15.0,dt);
+		  P._emptyClickPulse=damp(Number.isFinite(P._emptyClickPulse)?P._emptyClickPulse:0,0,16.0,dt);
+		  P._dryFirePulse=damp(Number.isFinite(P._dryFirePulse)?P._dryFirePulse:0,0,18.0,dt);
+	  P._lastRoundPulse=damp(Number.isFinite(P._lastRoundPulse)?P._lastRoundPulse:0,0,8.8,dt);
+	  P._lowAmmoPulse=damp(Number.isFinite(P._lowAmmoPulse)?P._lowAmmoPulse:0,0,5.2,dt);
+	  P._reloadReadyPulse=damp(Number.isFinite(P._reloadReadyPulse)?P._reloadReadyPulse:0,0,8.5,dt);
+	  P._reloadBlockedPulse=damp(Number.isFinite(P._reloadBlockedPulse)?P._reloadBlockedPulse:0,0,12.0,dt);
+	  P._vaultCuePulse=damp(Number.isFinite(P._vaultCuePulse)?P._vaultCuePulse:0,0,10.5,dt);
+	  P._pickupPromptPulse=damp(Number.isFinite(P._pickupPromptPulse)?P._pickupPromptPulse:0,0,8.0,dt);
+	  P._criticalHitPulse=damp(Number.isFinite(P._criticalHitPulse)?P._criticalHitPulse:0,0,4.8,dt);
+	  if(typeof P2!=='undefined'){
+	    P2._gunplaySpreadVisual=damp(Number.isFinite(P2._gunplaySpreadVisual)?P2._gunplaySpreadVisual:0,0,9.0,dt);
+	    P2._gunplayConfidence=damp(Number.isFinite(P2._gunplayConfidence)?P2._gunplayConfidence:0,0,4.6,dt);
+	    P2._gunplayMissBloom=damp(Number.isFinite(P2._gunplayMissBloom)?P2._gunplayMissBloom:0,0,3.8,dt);
+		    P2._gunplayRhythm=damp(Number.isFinite(P2._gunplayRhythm)?P2._gunplayRhythm:0,0,5.2,dt);
+		    P2._enemyShotPressure=damp(Number.isFinite(P2._enemyShotPressure)?P2._enemyShotPressure:0,0,8.5,dt);
+		    P2._triggerBufferPulse=damp(Number.isFinite(P2._triggerBufferPulse)?P2._triggerBufferPulse:0,0,13.0,dt);
+		    P2._triggerReadyPulse=damp(Number.isFinite(P2._triggerReadyPulse)?P2._triggerReadyPulse:0,0,15.0,dt);
+		    P2._emptyClickPulse=damp(Number.isFinite(P2._emptyClickPulse)?P2._emptyClickPulse:0,0,16.0,dt);
+	    P2._dryFirePulse=damp(Number.isFinite(P2._dryFirePulse)?P2._dryFirePulse:0,0,18.0,dt);
+	    P2._lastRoundPulse=damp(Number.isFinite(P2._lastRoundPulse)?P2._lastRoundPulse:0,0,8.8,dt);
+	    P2._lowAmmoPulse=damp(Number.isFinite(P2._lowAmmoPulse)?P2._lowAmmoPulse:0,0,5.2,dt);
+	    P2._reloadReadyPulse=damp(Number.isFinite(P2._reloadReadyPulse)?P2._reloadReadyPulse:0,0,8.5,dt);
+	    P2._reloadBlockedPulse=damp(Number.isFinite(P2._reloadBlockedPulse)?P2._reloadBlockedPulse:0,0,12.0,dt);
+	  }
+	  _processTriggerBuffer(0,M);
+	  if(_splitVsActive())_processTriggerBuffer(1,M1);
   if(typeof tickMissionHud==='function'&&G.started)tickMissionHud();
   if(typeof tickGamepad==='function')tickGamepad(dt);
   if(typeof ambientEventTick==='function')ambientEventTick(dt);
   // Low-HP visual: red vignette + chromatic aberration when below 30% HP (DOM throttle)
   const hpRatio=P.hp/(P.maxHp||100);
   const spawnVisualGrace=performance.now()<(P._spawnVisualGraceUntil||0);
+  const criticalVisual=THREE.MathUtils.clamp(P._criticalHitPulse||0,0,1);
   if(STABLE_RENDERING_MODE){
     if((G._frame|0)%3===0){
       $e('low-hp').style.opacity='0';
       $e('chrom').classList.remove('show');
     }
   }else{
-    if((G._frame|0)%3===0)$e('low-hp').style.opacity=!spawnVisualGrace&&hpRatio<.30?String(.85*(1-hpRatio/.30)):'0';
-    $e('chrom').classList.toggle('show',!spawnVisualGrace&&SETTINGS.chromaticAberration!==false&&hpRatio<.30&&!P.dead);
+    if((G._frame|0)%3===0){
+      const lowHpOpacity=hpRatio<.30?.85*(1-hpRatio/.30):0;
+      $e('low-hp').style.opacity=!spawnVisualGrace?String(Math.max(lowHpOpacity,criticalVisual*.26)):'0';
+    }
+    $e('chrom').classList.toggle('show',!spawnVisualGrace&&SETTINGS.chromaticAberration!==false&&(hpRatio<.30||criticalVisual>.22)&&!P.dead);
   }
   _updatePostProfile(hpRatio);
   if(VIS_DEBUG.postIsolation!=='none')_applyPostIsolation();
@@ -26754,8 +31283,11 @@ renderer.setAnimationLoop(()=>{
     const ap=RECOIL_STATE.accumPitch||0;
     const ay=RECOIL_STATE.accumYaw||0;
     if(ap||ay){
-      // Recover gradually: ~70% of remaining delta per second (smooth ease-out)
-      const recover=1-Math.pow(1-Math.min(1,dt*6.8),1.38);
+	      // Recover gradually: ~70% of remaining delta per second (smooth ease-out)
+	      const recoilFeel=_weaponGunplayFeel(P.weaponIdx);
+	      const aimStable=(P.ads>.55 ? .18 : 0)+(P.crouching ? .16 : 0);
+	      const recoilFlowBoost=((performance.now()<(P._recoilSettleBoostUntil||0)?1.58:1.0)+Math.min(.38,(P._combatFlow||0)*.20)+aimStable)*(recoilFeel.recoilReturn||1);
+	      const recover=1-Math.pow(1-Math.min(1,dt*6.8*recoilFlowBoost),1.38);
       const dp=-ap*recover;
       const dy=-ay*recover;
       // Subtract from BOTH accumulator and current aim — net effect: undo recoil
@@ -26773,7 +31305,10 @@ renderer.setAnimationLoop(()=>{
     const ap2=RECOIL_STATE_P2.accumPitch||0;
     const ay2=RECOIL_STATE_P2.accumYaw||0;
     if(ap2||ay2){
-      const recover=1-Math.pow(1-Math.min(1,dt*6.8),1.38);
+	      const recoilFeel2=_weaponGunplayFeel(P2.weaponIdx);
+	      const aimStable2=(P2.ads>.55 ? .18 : 0)+(P2.crouching ? .16 : 0);
+	      const recoilFlowBoost2=((performance.now()<(P2._recoilSettleBoostUntil||0)?1.58:1.0)+Math.min(.38,(P2._combatFlow||0)*.20)+aimStable2)*(recoilFeel2.recoilReturn||1);
+	      const recover=1-Math.pow(1-Math.min(1,dt*6.8*recoilFlowBoost2),1.38);
       const dp2=-ap2*recover;
       const dy2=-ay2*recover;
       RECOIL_STATE_P2.accumPitch=ap2+dp2;
@@ -26787,13 +31322,13 @@ renderer.setAnimationLoop(()=>{
   M.dx=0;M.dy=0;
   if(P.pitch>1.35)P.pitch=1.35;if(-1.35>P.pitch)P.pitch=-1.35;
   if(P2.pitch>1.35)P2.pitch=1.35;if(-1.35>P2.pitch)P2.pitch=-1.35;
-  // Lean — Phase 5 upgrade with anti-clip + sprint/slide cancel.
+  // Lean — Phase 5 upgrade with anti-clip. Sprint keeps lean available;
+  // slide/vault still own the body pose and suppress it.
   let _lt=0;
   if(K['KeyQ']||GAMEPAD._gpLeanLeft)_lt=-1;
   else if(K['KeyE']||GAMEPAD._gpLeanRight)_lt=1;
   P.leanTarget=_lt;
-  // Cancel lean when sprinting or sliding — the body can't sustain lean while running.
-  if(P.sprintLatched||P.sliding||P.slideAmt>0.2||P.dead||P.vaulting)P.leanTarget=0;
+  if(P.sliding||P.slideAmt>0.2||P.dead||P.vaulting)P.leanTarget=0;
   P.lean=damp(P.lean,P.leanTarget,10,dt);
   // Anti-clip: cast a horizontal ray from player center along the right vector
   // by leanOff distance; if a wall AABB intersects, scale lean toward 0 so the
@@ -26854,21 +31389,61 @@ renderer.setAnimationLoop(()=>{
     const _moveNowMs=performance.now();
     if(K['ShiftLeft']||GAMEPAD._gpSprintFromPad)P._sprintIntentUntil=_moveNowMs+190;
     const _sprintBuffered=_moveNowMs<(P._sprintIntentUntil||0);
-    if(_sprintBuffered&&_moving&&!P.dead&&!P.vaulting&&!P.crouching&&!M.rmbDown)P.sprintLatched=true;
-    if(!_moving||P.crouching||P.dead||P.vaulting)P.sprintLatched=false;
+    if(_sprintBuffered&&_moving&&!P.dead&&!P.vaulting&&!P.crouching&&!P.dropkickActive&&!M.rmbDown)P.sprintLatched=true;
+    if(!_moving||P.crouching||P.dead||P.vaulting||P.dropkickActive)P.sprintLatched=false;
     if(M.rmbDown&&P.sprintLatched){P.sprintLatched=false;P._adsSprintCancelUntil=_moveNowMs+140;}
     const _sprintBlendTarget=P.sprintLatched?1:0;
+    const _prevSprintBlend=Number.isFinite(P.sprintBlend)?P.sprintBlend:(P.sprintLatched?1:0);
     if(typeof P.sprintBlend!=='number')P.sprintBlend=P.sprintLatched?1:0;
     P.sprintBlend=damp(P.sprintBlend,_sprintBlendTarget,_sprintBlendTarget>P.sprintBlend?14:10,dt);
+    const _sprintStarted=P.sprintBlend>.52&&_prevSprintBlend<=.52&&_moving&&!P.dead&&!P.vaulting&&!P.dropkickActive;
+    const _sprintStopped=P.sprintBlend<=.24&&_prevSprintBlend>.24;
+    if(_sprintStarted){
+      P._sprintSurge=Math.max(P._sprintSurge||0,.55);
+      PP.shakeY-=.010;
+      P.dmgPitch-=.0025;
+    }
+    if(_sprintStopped&&_moving){
+      P._sprintStopSurge=Math.max(P._sprintStopSurge||0,.48);
+      PP.shakeY-=.006;
+      P.dmgPitch+=.002;
+    }
+    const _intentR=(K['KeyD']?1:0)-(K['KeyA']?1:0);
+    const _intentF=(K['KeyW']?1:0)-(K['KeyS']?1:0);
+    const _prevIntentR=Number.isFinite(P._moveIntentR)?P._moveIntentR:0;
+    const _prevIntentF=Number.isFinite(P._moveIntentF)?P._moveIntentF:0;
+    if(_intentR&&_prevIntentR&&Math.sign(_intentR)!==Math.sign(_prevIntentR)){
+      P._counterStrafePulse=Math.max(P._counterStrafePulse||0,.72);
+      _addPlayerFeelImpulse(P,{body:.12,right:_intentR*.36,stride:.20});
+    }
+    if(_intentF&&_prevIntentF&&Math.sign(_intentF)!==Math.sign(_prevIntentF)){
+      P._counterStrafePulse=Math.max(P._counterStrafePulse||0,.58);
+      _addPlayerFeelImpulse(P,{body:.10,forward:_intentF*.30,stride:.16});
+    }
+    P._moveIntentR=_intentR;P._moveIntentF=_intentF;
+    P._counterStrafePulse=damp(Number.isFinite(P._counterStrafePulse)?P._counterStrafePulse:0,0,9,dt);
+    P._sprintSurge=damp(Number.isFinite(P._sprintSurge)?P._sprintSurge:0,0,8,dt);
+    P._sprintStopSurge=damp(Number.isFinite(P._sprintStopSurge)?P._sprintStopSurge:0,0,10,dt);
     const isRunning=P.sprintBlend>.18&&_moving&&!P.dead&&!P.vaulting&&!P.crouching;
     P.running=isRunning;
+    const _turnDriveRaw=THREE.MathUtils.clamp((P._animMouseDx||0)/52,-1,1);
+    if(isRunning&&Math.abs(_turnDriveRaw)>.38){
+      P._turnDrivePulse=Math.max(P._turnDrivePulse||0,Math.min(1,Math.abs(_turnDriveRaw))*.24);
+      P._turnDriveSide=Math.sign(_turnDriveRaw)||1;
+      _addPlayerFeelImpulse(P,{body:.016+Math.abs(_turnDriveRaw)*.014,right:(P._turnDriveSide||1)*.030});
+    }
+    P._turnDrivePulse=damp(Number.isFinite(P._turnDrivePulse)?P._turnDrivePulse:0,0,18,dt);
     const _adsPrevTarget=Number.isFinite(P.adsTarget)?P.adsTarget:0;
-    P.adsTarget=M.rmbDown&&!P.reloading&&P.sprintBlend<.38?1:0;
+    const _adsHeld=!!(M.rmbDown||P._debugAdsHold);
+    P.adsTarget=_adsHeld&&!P.reloading&&P.sprintBlend<.38&&!P.dropkickActive?1:0;
     if(P.adsTarget>.5&&_adsPrevTarget<=.5){
       P.adsKick=Math.max(P.adsKick||0,1.0);
       P.adsSettle=0;
+      P._adsRaisePulse=Math.max(P._adsRaisePulse||0,1.0);
+      P._adsShoulderPulse=Math.max(P._adsShoulderPulse||0,.88);
     }else if(P.adsTarget<.5&&_adsPrevTarget>.5){
       P.adsKick=Math.max(P.adsKick||0,.34);
+      P._adsLowerPulse=Math.max(P._adsLowerPulse||0,.72);
     }
     const _adsLamIn=32*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
     const _adsLamOut=22*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
@@ -26882,10 +31457,26 @@ renderer.setAnimationLoop(()=>{
     P.adsSettle=damp(Number.isFinite(P.adsSettle)?P.adsSettle:_adsSettleTarget,_adsSettleTarget,_opticForFov?(_adsSettleTarget?8.5:14):(_adsSettleTarget?12:16),dt);
     P.adsKick=damp(Number.isFinite(P.adsKick)?P.adsKick:0,0,_opticForFov?10:13,dt);
     P.scopeSettle=damp(Number.isFinite(P.scopeSettle)?P.scopeSettle:_scopeEaseForFov,_scopeEaseForFov,_opticForFov?10:16,dt);
+    P._adsRaisePulse=damp(Number.isFinite(P._adsRaisePulse)?P._adsRaisePulse:0,0,_opticForFov?10:13,dt);
+    P._adsShoulderPulse=damp(Number.isFinite(P._adsShoulderPulse)?P._adsShoulderPulse:0,0,_opticForFov?7.5:9.5,dt);
+    P._adsLowerPulse=damp(Number.isFinite(P._adsLowerPulse)?P._adsLowerPulse:0,0,12,dt);
     const _adsFovDelta=_opticForFov?(_opticForFov.adsFovDelta||44):32;
     const _adsKickFov=(P.adsKick||0)*(_opticForFov?1.8:.9);
     const _scopeSettleFov=_opticForFov?(1-(P.adsSettle||0))*1.2*_scopeEaseForFov:0;
-    const targetFov=Math.max(_opticForFov?18:34,SETTINGS.fov-_adsEaseForFov*_adsFovDelta+(P.sprintBlend*6)+_adsKickFov+_scopeSettleFov);
+    const _flowTarget=performance.now()<(P._combatFlowUntil||0)?THREE.MathUtils.clamp(P._combatFlow||0,0,1.35):0;
+    P._combatFlow=damp(Number.isFinite(P._combatFlow)?P._combatFlow:0,_flowTarget,_flowTarget>0?2.4:4.8,dt);
+    P._hitFlowPulse=damp(Number.isFinite(P._hitFlowPulse)?P._hitFlowPulse:0,0,13,dt);
+    P._killFlowPulse=damp(Number.isFinite(P._killFlowPulse)?P._killFlowPulse:0,0,8.5,dt);
+    P._nearMissPulse=damp(Number.isFinite(P._nearMissPulse)?P._nearMissPulse:0,0,7.5,dt);
+    P._damageShock=damp(Number.isFinite(P._damageShock)?P._damageShock:0,0,9.5,dt);
+    const _combatFlowFov=(P._combatFlow||0)*(_opticForFov ? .46 : (P.ads>.5 ? .72 : 1.55));
+    const _threatFov=(P._nearMissPulse||0)*.80+(P._damageShock||0)*1.35+(P._enemyShotPressure||0)*.46+(P._turnDrivePulse||0)*(P.running?.22:0);
+    const _focusVis=THREE.MathUtils.clamp(P._focusVisual||0,0,1);
+    const _focusEnter=THREE.MathUtils.clamp(P._focusEnterPulse||0,0,1);
+    const _focusExit=THREE.MathUtils.clamp(P._focusExitPulse||0,0,1);
+    const _focusWarn=THREE.MathUtils.clamp(P._focusWarnPulse||0,0,1);
+    const _focusFov=(_opticForFov?-.85:-(P.adsVis>.45?1.25:4.35))*_focusVis+(_opticForFov?.65:2.75)*_focusEnter+(_opticForFov?.40:1.20)*_focusExit+_focusWarn*.80;
+    const targetFov=Math.max(_opticForFov?18:34,SETTINGS.fov-_adsEaseForFov*_adsFovDelta+(P.sprintBlend*6)+_adsKickFov+_scopeSettleFov+_combatFlowFov+_threatFov+_focusFov);
     P.scopeViewFov=targetFov;
     camera.fov=damp(camera.fov,targetFov,_opticForFov?10:8,dt);
     camera.updateProjectionMatrix();
@@ -26915,19 +31506,22 @@ renderer.setAnimationLoop(()=>{
     if(_xhEl&&((G._frameAlt|0)&1)===0){
       const _W=WEAPONS[P.weaponIdx];
       const baseSpread=(_W&&_W.spread)||.025;
-      const sinceShot=Math.max(0,1-(performance.now()/1000-P.lastShot)/.18);
-      const scopedAim=_scopedAdsAmt(P);
-      const moveScale=((K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']) ? .4 : 0)+(P.running ? .5 : 0);
-      const adsScale=P.adsVis*-.5;
-      const crosshairRaw=Math.max(.45,1.0+baseSpread*22+sinceShot*1.2+moveScale-adsScale);
+	      const sinceShot=Math.max(0,1-(performance.now()/1000-P.lastShot)/.18);
+	      const scopedAim=_scopedAdsAmt(P);
+	      const ironAim=THREE.MathUtils.smoothstep(P.adsVis||0,.62,.96);
+	      const moveScale=((K['KeyW']||K['KeyA']||K['KeyS']||K['KeyD']) ? .4 : 0)+(P.running ? .5 : 0);
+	      const adsScale=P.adsVis*-.5;
+	      const gunplayBloom=Math.min(1.8,(P._gunplaySpreadVisual||0)*.38+(P._suppressionLevel||0)*.22+(P._damageShock||0)*.20);
+		      const crosshairRaw=Math.max(.40,1.0+baseSpread*22+sinceShot*1.2+moveScale+gunplayBloom-adsScale-(P._counterStrafePulse||0)*.18-(P._combatFlow||0)*.055-(P._triggerReadyPulse||0)*.10);
       if(typeof P._xhScaleSmooth!=='number')P._xhScaleSmooth=crosshairRaw;
       P._xhScaleSmooth=damp(P._xhScaleSmooth,crosshairRaw,19,dt);
       _xhEl.style.transform=`translate(-50%,-50%) scale(${P._xhScaleSmooth.toFixed(3)})`;
-      _xhEl.style.opacity=String(1-scopedAim*scopedAim);
+      _xhEl.style.opacity=String(1-Math.max(scopedAim*scopedAim,ironAim));
       _xhEl.classList.toggle('scoped',scopedAim>.72);
     }
     // Direction vectors — shared by move + camera
     const fx=-Math.sin(P.yaw),fz=-Math.cos(P.yaw),rx=Math.cos(P.yaw),rz=-Math.sin(P.yaw);
+    _updateGuardBehind(dt,fx,fz,rx,rz,walls);
     // ── Vault animation tick
     if(P.vaulting){
       P.vaultT+=dt/P.vaultDur;
@@ -26967,10 +31561,12 @@ renderer.setAnimationLoop(()=>{
         if(P.jumpH<=_groundY){
           // Landing — kick camera + shake based on impact velocity
           const impact=Math.abs(P.vy);
+          const _wasDropkick=!!P.dropkickActive;
           P.jumpH=_groundY;P.vy=0;P.grounded=true;
           P._lastLandT=performance.now();
           P._didDoubleJump=false;
           P._lastGroundedT=P._lastLandT;
+          P._coyoteJumpConsumed=false;
           P._wallJumpLockWall=null;
           P.wallJumpTimer=0;P.wallJumpHardenTimer=0;P.wallJumpVx=0;P.wallJumpVz=0;P.wallJumpSide=0;P.wallJumpImpact=0;P.wallJumpNx=0;P.wallJumpNz=0;P.wallContact=null;
           if(impact>3.25){
@@ -26980,11 +31576,19 @@ renderer.setAnimationLoop(()=>{
             PP.shakeX+=(Math.random()-.5)*Math.min(.30,impact*.040*landT);
             // Gun absorbs the impact too — quick downward dip via shake
             gunGrp.position.y-=Math.min(.052,impact*.0065);
+            P._landingSlideWindowUntil=P._lastLandT+SLIDE_FEEL.landingWindowMs;
+          }
+          if(_wasDropkick){_finishDropkickLanding(impact);P._jumpBufferedUntil=0;}
+          else if(P._jumpBufferedUntil&&P._lastLandT<=P._jumpBufferedUntil&&!P.dead&&!P.vaulting){
+            _launchGroundJump(true);
+          }else if(P._jumpBufferedUntil&&P._lastLandT>P._jumpBufferedUntil){
+            P._jumpBufferedUntil=0;
           }
         }
       }
       if(P.grounded){
         P._lastGroundedT=performance.now();
+        P._coyoteJumpConsumed=false;
         P._wallJumpLockWall=null;
         P._wallJumpHardenUntil=0;
         P.wallJumpHardenTimer=0;
@@ -26994,14 +31598,15 @@ renderer.setAnimationLoop(()=>{
         P.wallContact=_wp?{nx:_wp.nx,nz:_wp.nz,dist:_wp.dist,side:_wp.side,geometryId:_wp.geometryId,roomId:_wp.roomId}:null;
       }
       // ── Near-vault detection (proximity to vaultable barriers while grounded)
-      let nearV=null;
+      let nearV=null,nearVInfo=null,nearVScore=Infinity;
       if(P.grounded){
         for(const v of G.vaultables){
+          if(!_runtimeVaultableUsable(v,P.pos.x,P.pos.z))continue;
           const cx=Math.max(v.x0,Math.min(P.pos.x,v.x1));
           const cz=Math.max(v.z0,Math.min(P.pos.z,v.z1));
           const ddx=P.pos.x-cx,ddz=P.pos.z-cz;
           const dist=Math.sqrt(ddx*ddx+ddz*ddz);
-          if(dist<1.4){
+          if(dist<1.48){
             const ndLen=Math.max(dist,.01);
             const bDirX=-ddx/ndLen,bDirZ=-ddz/ndLen;
             const faceDot=fx*bDirX+fz*bDirZ;           // barrier is in front
@@ -27009,36 +31614,149 @@ renderer.setAnimationLoop(()=>{
             // Accept: facing toward it, OR strafing toward it, OR S-backing into it
             const sideApproach=(K['KeyA']&&rightDot<-0.3)||(K['KeyD']&&rightDot>0.3);
             const backApproach=K['KeyS']&&faceDot<-0.25;
-            if(faceDot>0.2||sideApproach||backApproach){nearV=v;break;}
+            const approachOk=faceDot>0.16||sideApproach||backApproach;
+            if(approachOk){
+              const h=_vaultableTopDeltaAt(v,P.pos.x,P.pos.z);
+              const heightPenalty=Math.abs((Number.isFinite(h)?h:.92)-.90)*.12;
+              const score=dist-Math.max(0,faceDot)*.48-(sideApproach?.14:0)-(backApproach?.10:0)+heightPenalty+(v.vaultAuto?.035:0);
+              if(score<nearVScore){
+                nearVScore=score;
+                nearV=v;
+                nearVInfo={dist,faceDot,rightDot,height:h,score,geometryId:v.geometryId||null,roomId:v.roomId||null};
+              }
+            }
           }
         }
       }
       P.nearVault=nearV;
+      P.nearVaultInfo=nearVInfo;
+      const vaultIntentActive=_moveNowMs<(P._vaultIntentUntil||0);
+      if(P._vaultIntentUntil&&_moveNowMs>=P._vaultIntentUntil)P._vaultIntentUntil=0;
+      if(nearV&&!P.vaulting&&!P.dead){
+        if(!P._lastVaultPromptId||P._lastVaultPromptId!==(nearV.geometryId||nearV.roomId||nearV.x0+','+nearV.z0)){
+          P._vaultCuePulse=Math.max(P._vaultCuePulse||0,.55);
+          P._lastVaultPromptId=nearV.geometryId||nearV.roomId||nearV.x0+','+nearV.z0;
+        }
+        P._nearVaultStickyUntil=_moveNowMs+GAMEPLAY_QOL_FEEL.vaultPromptGraceMs;
+      }else if(!nearV&&_moveNowMs>=(P._nearVaultStickyUntil||0)){
+        P._lastVaultPromptId=null;
+      }
+      if(nearV&&vaultIntentActive&&!P.vaulting&&!P.dead&&P.grounded){
+        P._vaultIntentUntil=0;
+        P._vaultCuePulse=Math.max(P._vaultCuePulse||0,1.0);
+        doVault(nearV);
+      }
       const vp=$e('vault-prompt');
-      if(vp)vp.style.opacity=(nearV&&!P.vaulting)?'1':'0';
-      // ── Slide trigger: Ctrl while sprinting forward starts a slide. Captures
-      // the current forward direction; momentum carries even if the player
-      // releases keys mid-slide. Brief speed boost after slide ends.
-      if((K['ControlLeft']||GAMEPAD._gpCtrl)&&P.sprintBlend>.45&&K['KeyW']&&!P.sliding&&P.slideAmt<.05&&P.grounded&&!P.vaulting){
-        P.sliding=true;P.slideTarget=1;P.slideTimer=.55;
-        P.slideDirX=fx;P.slideDirZ=fz;
-        // SFX: scrape
-        const c=getAC(),o=c.createOscillator(),g=c.createGain();
-        o.type='sawtooth';o.frequency.setValueAtTime(280,c.currentTime);
-        o.frequency.exponentialRampToValueAtTime(120,c.currentTime+.4);
-        g.gain.setValueAtTime(.10,c.currentTime);
-        g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.45);
-        o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.5);
+      if(vp){
+        const showVault=(nearV||_moveNowMs<(P._nearVaultStickyUntil||0))&&!P.vaulting&&!P.dead;
+        const cue=THREE.MathUtils.clamp(P._vaultCuePulse||0,0,1);
+        vp.style.opacity=showVault?String(0.72+cue*.28):'0';
+        vp.style.transform=`translate(-50%,-50%) scale(${(1+cue*.045).toFixed(3)})`;
+      }
+      // ── Slide trigger: Ctrl while sprinting in any movement direction starts
+      // a directional slide. Momentum carries even if the player releases keys.
+      if(K['ControlLeft']||GAMEPAD._gpCtrl)P._slideIntentUntil=Math.max(P._slideIntentUntil||0,_moveNowMs+80);
+      const _slideIntent=_moveNowMs<(P._slideIntentUntil||0);
+      const _landingSlideReady=_moveNowMs<(P._landingSlideWindowUntil||0);
+      const _slideVec=_slideIntentVector(fx,fz,rx,rz);
+      if(_slideIntent&&_slideVec.len>0&&!P.guardBehindActive&&P.guardBehindAmt<.20&&!P.sliding&&P.slideAmt<.05&&P.grounded&&!P.vaulting&&(P.sprintBlend>.45||(_landingSlideReady&&P.sprintBlend>.18))){
+        _startPlayerSlide(_slideVec.x,_slideVec.z,_landingSlideReady,{localR:_slideVec.localR,localF:_slideVec.localF});
       }
       if(P.sliding){
         P.slideTimer-=dt;
-        if(P.slideTimer<.18)P.slideTarget=0;
-        if(P.slideTimer<=0){P.sliding=false;P.slideCarryTimer=.46;P.slideExitGrace=.16;}
-      } else if(P.slideCarryTimer>0){
-        P.slideCarryTimer-=dt;
+        if(_moving&&P.slideTimer>.12){
+          const steer=_slideIntentVector(fx,fz,rx,rz);
+          if(steer.len>0){
+            const steerAmt=Math.min(1,dt*(3.4+Math.abs(steer.localR)*1.4));
+            P.slideDirX=P.slideDirX+(steer.x-P.slideDirX)*steerAmt;
+            P.slideDirZ=P.slideDirZ+(steer.z-P.slideDirZ)*steerAmt;
+            const sl=Math.hypot(P.slideDirX,P.slideDirZ)||1;
+            P.slideDirX/=sl;P.slideDirZ/=sl;
+            P.slideLocalR+=(steer.localR-P.slideLocalR)*Math.min(1,dt*7.5);
+            P.slideLocalF+=(steer.localF-P.slideLocalF)*Math.min(1,dt*7.5);
+          }
+        }
+        P._slideSkidT=(P._slideSkidT||0)-dt;
+        if(P._slideSkidT<=0){
+          P._slideSkidT=.045+Math.random()*.025;
+          _spawnSlideSkidFx(P);
+        }
+        if(P.slideTimer<.34)P.slideTarget=0;
+	        if(P.slideTimer<=0){
+	          const _slideEndNow=performance.now();
+	          const _slideAdsHeld=!!(M.rmbDown||(P.adsTarget||0)>.45||(P.ads||0)>.45||(P.adsVis||0)>.45);
+	          P.sliding=false;
+	          P.slideTimer=0;
+	          P.slideTarget=0;
+	          P.slideCarryTimer=_slideAdsHeld?.10:.46;
+	          P.slideExitGrace=_slideAdsHeld?.05:.14;
+	          P._slideSkidT=0;
+	          P._slidePresentationUntil=Math.max(P._slidePresentationUntil||0,_slideEndNow+(_slideAdsHeld?70:190));
+	          P._viewmodelPoseSnapUntil=Math.max(P._viewmodelPoseSnapUntil||0,_slideEndNow+(_slideAdsHeld?340:240));
+	          P._ironSightReacquireUntil=Math.max(P._ironSightReacquireUntil||0,_slideEndNow+(_slideAdsHeld?360:260));
+	        }
+	      } else if(P.slideCarryTimer>0){
+	        P.slideCarryTimer=Math.max(0,P.slideCarryTimer-dt);
+	      }
+	      if(P.slideExitGrace>0)P.slideExitGrace=Math.max(0,P.slideExitGrace-dt);
+	      P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dt);
+	      if(!P.sliding&&(P.slideAmt||0)<.035&&(P._slideLegVis||0)<.050){
+	        P.slideLocalR=0;
+	        P.slideLocalF=1;
+	      }
+      P._landingSlidePulse=damp(Number.isFinite(P._landingSlidePulse)?P._landingSlidePulse:0,0,8.5,dt);
+      P._slidePower=damp(Number.isFinite(P._slidePower)?P._slidePower:1,1,4.0,dt);
+      if(P.dropkickCooldown>0)P.dropkickCooldown=Math.max(0,P.dropkickCooldown-dt);
+      if(P.dropkickLandTimer>0){
+        P.dropkickLandTimer=Math.max(0,P.dropkickLandTimer-dt);
       }
-      if(P.slideExitGrace>0)P.slideExitGrace=Math.max(0,P.slideExitGrace-dt);
-      P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dt);
+      if(P.dropkickContactTimer>0){
+        P.dropkickContactTimer=Math.max(0,P.dropkickContactTimer-dt);
+      }
+      if((P._dropkickHitStopPulse||0)>0){
+        P._dropkickHitStopPulse=Math.max(0,(P._dropkickHitStopPulse||0)-dt*6.4);
+      }
+      if((P._dropkickImpactStopTimer||0)>0){
+        P._dropkickImpactStopTimer=Math.max(0,P._dropkickImpactStopTimer-dt);
+        if(P._dropkickImpactStopTimer<=0)P._dropkickImpactStopPower=0;
+      }
+      if((P._dropkickReboundTimer||0)>0){
+        P._dropkickReboundTimer=Math.max(0,P._dropkickReboundTimer-dt);
+        if(P._dropkickReboundTimer<=0)P._dropkickReboundPower=0;
+      }
+      if((P.dropkickImpact||0)>0)P.dropkickImpact=Math.max(0,(P.dropkickImpact||0)-dt*(P.dropkickActive?5.4:3.2));
+      if(P.dropkickActive){
+        const _dkAnimStopDur=Math.max(.001,P._dropkickImpactStopDur||.001);
+        const _dkAnimStopRemain=(P._dropkickImpactStopTimer||0)>0?THREE.MathUtils.clamp((P._dropkickImpactStopTimer||0)/_dkAnimStopDur,0,1):0;
+        const _dkAnimStopAge=_dkAnimStopRemain>0?1-_dkAnimStopRemain:1;
+        const _dkAnimPlant=_dkAnimStopRemain>0?(1-THREE.MathUtils.smoothstep(_dkAnimStopAge,.020,.250))*THREE.MathUtils.clamp(P._dropkickImpactStopPower||1,0,1.22):0;
+        P.dropkickT+=dt*(1-THREE.MathUtils.clamp(_dkAnimPlant*.82,0,.86));
+        P.dropkickTimer=Math.max(0,(P.dropkickDur||DROPKICK.dur)-P.dropkickT);
+        P.adsTarget=0;P.ads=Math.min(P.ads,.55);P.adsVis=Math.min(P.adsVis,.58);
+        const _dkPhase=_dropkickPhase01(P);
+        const _dkTargetLive=P.dropkickTargeted&&P.dropkickTargetEnemy&&!P.dropkickTargetEnemy.dead;
+        if(_dkTargetLive){
+          const ep=P.dropkickTargetEnemy.position||P.dropkickTargetEnemy.group&&P.dropkickTargetEnemy.group.position;
+          if(ep){
+            const tx=ep.x-P.pos.x,tz=ep.z-P.pos.z,tl=Math.hypot(tx,tz);
+            if(tl>.001){
+              const nx=tx/tl,nz=tz/tl;
+              const steer=DROPKICK.targetSteer*(P.dropkickTargetLock||1)*(1-THREE.MathUtils.smoothstep(_dkPhase,.48,.80));
+              P.dropkickDirX=THREE.MathUtils.lerp(P.dropkickDirX||nx,nx,steer);
+              P.dropkickDirZ=THREE.MathUtils.lerp(P.dropkickDirZ||nz,nz,steer);
+              const dl=Math.hypot(P.dropkickDirX,P.dropkickDirZ)||1;
+              P.dropkickDirX/=dl;P.dropkickDirZ/=dl;
+            }
+          }
+        }
+        const _dkStomp=.34+THREE.MathUtils.smoothstep(_dkPhase,.16,.34)*.66;
+        P.vy-=DROPKICK.downKick*(_dkTargetLive?DROPKICK.targetDownMul:1)*_dkStomp*dt;
+        _checkDropkickHit(false);
+        if(P.dropkickTimer<=0&&P.jumpH>_groundY+DROPKICK.minGroundClear){
+          P.dropkickActive=false;
+          P.dropkickLandTimer=Math.max(P.dropkickLandTimer||0,.28);
+        }
+      }
       if(P.wallJumpTimer>0){
         P.wallJumpTimer=Math.max(0,P.wallJumpTimer-dt);
         P.wallJumpImpact=Math.max(0,(P.wallJumpImpact||0)-dt*5.5);
@@ -27054,20 +31772,25 @@ renderer.setAnimationLoop(()=>{
       let mx=0,mz=0;
       if(P.grounded&&(P.sliding||P.slideAmt>.1)){
         // Sliding — boosted speed in the captured direction, ignore WASD
-        spd=(12.5*Math.max(P.slideAmt,.4))*dt;
+        const slidePower=THREE.MathUtils.clamp(Number.isFinite(P._slidePower)?P._slidePower:1,1,1.32);
+        const side=Math.abs(THREE.MathUtils.clamp(Number.isFinite(P.slideLocalR)?P.slideLocalR:0,-1,1));
+        const back=Math.max(0,-THREE.MathUtils.clamp(Number.isFinite(P.slideLocalF)?P.slideLocalF:1,-1,1));
+        const directionalMul=1.0+side*.045-back*.075;
+        spd=(10.9*slidePower*directionalMul*Math.max(P.slideAmt,.42))*dt;
         mx=P.slideDirX*spd;mz=P.slideDirZ*spd;
       } else {
         const carryBoost=P.slideCarryTimer>0?1.16+Math.min(1,P.slideCarryTimer/.46)*.10:1.0;
         // Light Feet perk gives +15% sprint speed
         const sprintMul=hasPerk('fastSprint')?1.15:1.0;
         const crouchSpdMul=P.crouching?.55:1.0;
+        const guardSpdMul=(P.guardBehindAmt||0)>.22?(.42+(P.guardPeekUp||0)*.20+Math.abs(P.guardPeekSide||0)*.10):1.0;
         // Air control: limited horizontal movement while jumping/falling
         const airMul=P.grounded?1.0:.65;
         // Adrenaline boost (close kill)
         const adrenMul=(P._adrenalineUntil&&performance.now()<P._adrenalineUntil)?(P._adrenalineSpeedMul||1.20):1.0;
         const wMul=_weaponWeightMul();
         const runSpeed=5+(9.8-5)*THREE.MathUtils.clamp(P.sprintBlend||0,0,1);
-        spd=(P.ads>.5?2.8:runSpeed*carryBoost*sprintMul*wMul)*crouchSpdMul*airMul*adrenMul*dt;
+        spd=(P.ads>.5?2.8:runSpeed*carryBoost*sprintMul*wMul)*crouchSpdMul*guardSpdMul*airMul*adrenMul*dt;
         if(K['KeyW']){mx+=fx*spd;mz+=fz*spd;}if(K['KeyS']){mx-=fx*spd;mz-=fz*spd;}
         if(K['KeyA']){mx-=rx*spd;mz-=rz*spd;}if(K['KeyD']){mx+=rx*spd;mz+=rz*spd;}
       }
@@ -27078,19 +31801,48 @@ renderer.setAnimationLoop(()=>{
           mz-=(P.wallJumpNz||0)*into*1.35;
         }
       }
+      const dkStopDur=Math.max(.001,P._dropkickImpactStopDur||.001);
+      const dkStopRemain=(P._dropkickImpactStopTimer||0)>0?THREE.MathUtils.clamp((P._dropkickImpactStopTimer||0)/dkStopDur,0,1):0;
+      const dkStopAge=dkStopRemain>0?1-dkStopRemain:1;
+      const dkStop=dkStopRemain>0?(1-THREE.MathUtils.smoothstep(dkStopAge,.015,.260))*THREE.MathUtils.clamp(P._dropkickImpactStopPower||1,0,1.28):0;
+      const dkReboundDur=Math.max(.001,P._dropkickReboundDur||.001);
+      const dkReboundRemain=(P._dropkickReboundTimer||0)>0?THREE.MathUtils.clamp((P._dropkickReboundTimer||0)/dkReboundDur,0,1):0;
+      const dkReboundAge=dkReboundRemain>0?1-dkReboundRemain:1;
+      const dkRebound=dkReboundRemain>0?THREE.MathUtils.smoothstep(dkReboundAge,.035,.170)*(1-THREE.MathUtils.smoothstep(dkReboundAge,.220,.460))*THREE.MathUtils.clamp(P._dropkickReboundPower||1,0,1.30):0;
+      if(P.dropkickActive){
+        const kp=_dropkickPhase01(P);
+        const lunge=P.dropkickTargeted?DROPKICK.targetBoost*(P.dropkickTargetLock||1):0;
+        const launchSurge=Number.isFinite(P._dropkickLaunchSurge)?P._dropkickLaunchSurge:0;
+        P._dropkickLaunchSurge=damp(launchSurge,0,6.2,dt);
+        const earlySnap=1+launchSurge*.34*(1-THREE.MathUtils.smoothstep(kp,.20,.54));
+        const plantBrake=(1-THREE.MathUtils.clamp(P.dropkickImpact||0,0,1)*.42)*(1-dkStop*.94);
+        const recoverBrake=1-THREE.MathUtils.smoothstep(kp,.45,.74)*.48;
+        const drive=(.70+Math.sin(Math.min(1,kp/.54)*Math.PI)*.44)*(DROPKICK.speed*(1+lunge))*earlySnap*recoverBrake*plantBrake;
+        mx+=(P.dropkickDirX||0)*drive*dt;
+        mz+=(P.dropkickDirZ||-1)*drive*dt;
+      }
+      if(dkStop>0){
+        const stopMul=1-dkStop*.985;
+        mx*=stopMul;
+        mz*=stopMul;
+      }
+      if(dkRebound>0){
+        const sdx=P._dropkickContactStopDirX||P.dropkickDirX||0;
+        const sdz=P._dropkickContactStopDirZ||P.dropkickDirZ||-1;
+        mx-=sdx*DROPKICK.speed*.145*dkRebound*dt;
+        mz-=sdz*DROPKICK.speed*.145*dkRebound*dt;
+      }
       if((P.wallJumpTimer||0)>0||Math.hypot(P.wallJumpVx||0,P.wallJumpVz||0)>0.04){
         const jt=THREE.MathUtils.clamp(P.wallJumpTimer/(P.wallJumpDur||WALL_JUMP.dur),0,1);
         const je=(P.wallJumpTimer||0)>0?THREE.MathUtils.smoothstep(jt,0,1):.22;
         mx+=(P.wallJumpVx||0)*je*dt;
         mz+=(P.wallJumpVz||0)*je*dt;
       }
-      const _moveStepLen=Math.hypot(mx,mz)/Math.max(dt,0.0001);
-      if(typeof P._moveSpeedSmooth!=='number')P._moveSpeedSmooth=_moveStepLen;
-      const _prevMoveSpeed=P._moveSpeedSmooth;
-      P._moveSpeedSmooth=damp(P._moveSpeedSmooth,_moveStepLen,_moveStepLen>_prevMoveSpeed?13:9,dt);
-      P._moveAccel=(P._moveSpeedSmooth-_prevMoveSpeed)/Math.max(dt,0.0001);
+      const _moveDt=Math.max(dt,0.0001);
+      const _moveIntentLen=Math.hypot(mx,mz)/_moveDt;
+      let _moveStepLen=_moveIntentLen;
       if(mx||mz){
-        const R=PR,nx=P.pos.x+mx,nz=P.pos.z+mz;
+        const R=PR,px0=P.pos.x,pz0=P.pos.z,nx=P.pos.x+mx,nz=P.pos.z+mz;
         let okX=true,okZ=true;
         // Phase BA: spatial index — limit wall checks to nearby cells.
         const _pIdx=(G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
@@ -27124,18 +31876,50 @@ renderer.setAnimationLoop(()=>{
           }
         }
         if(okX)P.pos.x=nx;if(okZ)P.pos.z=nz;
+        if(P.guardBehindActive&&P.guardMode==='wall'&&P.guardCover){
+          _applyGuardWallEdgeClamp(P,P.guardCover,dt);
+        }
+        _moveStepLen=Math.hypot(P.pos.x-px0,P.pos.z-pz0)/_moveDt;
+        const _moveRatio=_moveIntentLen>.001?THREE.MathUtils.clamp(_moveStepLen/_moveIntentLen,0,1):0;
+        P._moveContactStall=damp(Number.isFinite(P._moveContactStall)?P._moveContactStall:0,1-_moveRatio,_moveRatio<.55?18:10,dt);
+        if(P.sliding&&_moveIntentLen>4.2&&_moveRatio<.32){
+          P.slideTimer=Math.min(P.slideTimer,.18);
+          P.slideTarget=0;
+          P.slideCarryTimer=0;
+          P._slideBlockedPulse=Math.max(P._slideBlockedPulse||0,1-_moveRatio);
+          PP.shakeY-=.012*(1-_moveRatio);
+          PP.shakeX+=(Math.random()-.5)*.030*(1-_moveRatio);
+          if((P._slideSkidT||0)>.025)P._slideSkidT=.005;
+        }
         const _bobT=locomotionStrafeBobTuning(K,isRunning,true);
-        P.bobPhase+=dt*(6+(P.sprintBlend||0)*6)*_bobT.phaseMul;
-        P.bobAmt=Math.min(P.bobAmt+dt*(7+(P.sprintBlend||0)*2)*_bobT.ampBuildMul,(.04+(P.sprintBlend||0)*.035)*_bobT.ampCapMul);
-      }else{P.bobAmt=Math.max(P.bobAmt-dt*8,0);}
+        const _bobMove=THREE.MathUtils.clamp(_moveStepLen/Math.max(.001,5+(P.sprintBlend||0)*4.7),0,1);
+        if(_bobMove>.045){
+          const _sprintAnimSurge=(P._sprintSurge||0)*.035+(P._sprintStopSurge||0)*.02;
+          P.bobPhase+=dt*(4.4+(P.sprintBlend||0)*2.65)*(1+_sprintAnimSurge)*_bobT.phaseMul*(.35+_bobMove*.65);
+          const _bobCap=(.023+(P.sprintBlend||0)*.023)*(1+(P._sprintSurge||0)*.035)*_bobT.ampCapMul*_bobMove;
+          P.bobAmt=Math.min(P.bobAmt+dt*(5.6+(P.sprintBlend||0)*1.0)*_bobT.ampBuildMul,_bobCap);
+        }else{
+          P.bobAmt=Math.max(P.bobAmt-dt*(9+Math.min(1,P.sprintBlend||0)*3),0);
+        }
+      }else{
+        P._moveContactStall=damp(Number.isFinite(P._moveContactStall)?P._moveContactStall:0,0,12,dt);
+        P.bobAmt=Math.max(P.bobAmt-dt*8,0);
+      }
+      if(typeof P._moveSpeedSmooth!=='number')P._moveSpeedSmooth=_moveStepLen;
+      const _prevMoveSpeed=P._moveSpeedSmooth;
+      P._moveSpeedSmooth=damp(P._moveSpeedSmooth,_moveStepLen,_moveStepLen>_prevMoveSpeed?13:10,dt);
+      P._moveAccel=(P._moveSpeedSmooth-_prevMoveSpeed)/_moveDt;
   }
+  _tickPlayerBodyMass(P,dt,fx,fz,rx,rz);
   _playerAnimFrameSeq++;
   const _nowSecAnim=performance.now()/1000;
   updatePlayerAnimInputs(playerAnimState0,{P,dt,now:_nowSecAnim,keys:K,mouseDx:P._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
   resolvePlayerAnimLayers(playerAnimState0,dt);
+  _consumePlayerAnimNotifies(playerAnimState0,P,0);
   if(typeof _splitVsActive==='function'&&_splitVsActive()){
     updatePlayerAnimInputs(playerAnimState1,{P:P2,dt,now:_nowSecAnim,keys:K2,mouseDx:P2._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
     resolvePlayerAnimLayers(playerAnimState1,dt);
+    _consumePlayerAnimNotifies(playerAnimState1,P2,1);
   }
   if(_animDebugHud){
     let el=document.getElementById('anim-debug-hud');
@@ -27147,8 +31931,13 @@ renderer.setAnimationLoop(()=>{
   const _leanEff=P.lean*(P.leanClipScale==null?1:P.leanClipScale);
   const _adsBobDamp=1-Math.min(.82,(P.adsVis||0)*.82);
   const _accelN=THREE.MathUtils.clamp((P._moveAccel||0)/34,-1,1);
-  const leanOff=_leanEff*.4,bY=Math.sin(P.bobPhase)*P.bobAmt*_adsBobDamp,bX=(Math.cos(P.bobPhase*.5)*P.bobAmt*.5+_accelN*.010)*_adsBobDamp;
+  const _legacyBobMix=.50-Math.min(.14,Math.max(0,P.sprintBlend||0)*.14);
   const _mw=!!(K['KeyW']||K['KeyS']||K['KeyA']||K['KeyD']);
+  const _animFootPhase=playerAnimState0&&playerAnimState0.smoothed?playerAnimState0.smoothed.footPhase:NaN;
+  const _bobPhaseTarget=(Number.isFinite(_animFootPhase)&&_mw&&P.bobAmt>.0001)?_animFootPhase:P.bobPhase;
+  P._bobPhaseVisual=dampAngle(Number.isFinite(P._bobPhaseVisual)?P._bobPhaseVisual:_bobPhaseTarget,_bobPhaseTarget,_mw?20:10,dt);
+  const _bobPhase=P._bobPhaseVisual;
+  const leanOff=_leanEff*.4,bY=Math.sin(_bobPhase)*P.bobAmt*_adsBobDamp*_legacyBobMix,bX=(Math.cos(_bobPhase*.5)*P.bobAmt*.32+_accelN*.007)*_adsBobDamp;
   const _bobAx=locomotionStrafeBobTuning(K,isRunning,_mw);
   if(typeof P._camStrafeRoll!=='number')P._camStrafeRoll=0;
   P._camStrafeRoll=damp(P._camStrafeRoll,_bobAx.camRollStrafe,11,dt);
@@ -27172,14 +31961,92 @@ renderer.setAnimationLoop(()=>{
   const adsBX=Math.sin(now*1.15)*.0018*_adsBreathMul+(P.scopeEyeX||0);
   // Crouch lowers eye height
   P.crouchAmt=P.crouchAmt||0;
-  P.crouching=!!((K['KeyC']||GAMEPAD._gpL3Crouch)&&!(P.slideExitGrace>0));
-  const crouchTarget=P.crouching?.45:0;
+  const _manualCrouch=!!((K['KeyC']||GAMEPAD._gpL3Crouch)&&!(P.slideExitGrace>0));
+  const _guardCrouchAmt=THREE.MathUtils.clamp(P.guardBehindAmt||0,0,1);
+  const _guardLowProfile=P.guardMode==='low';
+  const _guardWallSideAbs=P.guardMode==='wall'?Math.abs(P.guardPeekSide||0):0;
+  P.crouching=!!(_manualCrouch||_guardCrouchAmt>.22);
+  const _guardHideBase=_guardLowProfile?.70:.30;
+  const _guardPeekReduce=_guardLowProfile?.46:.18;
+  const _guardMinCoverCrouch=_guardLowProfile?.20:.10;
+  const _guardWallSightRelief=_guardWallSideAbs*.17+THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1)*_guardWallSideAbs*.07;
+  const _guardCrouchTarget=_guardCrouchAmt*Math.max(_guardMinCoverCrouch,_guardHideBase-(P.guardPeekUp||0)*_guardPeekReduce-(P.guardPeekForward||0)*.035-_guardWallSightRelief);
+  const crouchTarget=Math.max(_manualCrouch?.45:0,_guardCrouchTarget);
   P.crouchAmt=damp(P.crouchAmt,crouchTarget,8,dt);
   const _pa0=playerAnimState0.resolved.camera;
+  const _combatKick=Number.isFinite(P._combatImpactKick)?P._combatImpactKick:0;
+  const _combatKickSide=Number.isFinite(P._combatImpactSide)?P._combatImpactSide:1;
+  const _strideKick=Number.isFinite(P._strideImpact)?P._strideImpact:0;
+  const _strideSide=Number.isFinite(P._strideImpactSide)?P._strideImpactSide:0;
+  const _landingSpring=Number.isFinite(P._landingSpring)?P._landingSpring:0;
+  const _locomotionSurge=Number.isFinite(P._locomotionSurge)?P._locomotionSurge:0;
+  const _dropkickBodySurge=Number.isFinite(P._dropkickBodySurge)?P._dropkickBodySurge:0;
+  const _massF=Number.isFinite(P._massInertiaF)?P._massInertiaF:0;
+  const _massR=Number.isFinite(P._massInertiaR)?P._massInertiaR:0;
+  const _bodyJolt=Number.isFinite(P._bodyJolt)?P._bodyJolt:0;
+  const _footPlantCompression=Number.isFinite(P._footPlantCompression)?P._footPlantCompression:0;
+  const _footPlantSide=Number.isFinite(P._footPlantSide)?P._footPlantSide:0;
+  const _speedPressure=Number.isFinite(P._speedPressure)?P._speedPressure:0;
+  const _shotImpulse=Number.isFinite(P._shotImpulse)?P._shotImpulse:0;
+  const _shotImpulseKick=Number.isFinite(P._shotImpulseKick)?P._shotImpulseKick:0;
+  const _shotImpulseSide=Number.isFinite(P._shotImpulseSide)?P._shotImpulseSide:1;
+  const _shotHeatPressure=Number.isFinite(P._shotHeatPressure)?P._shotHeatPressure:0;
+  const _jumpInputPulse=Number.isFinite(P._jumpInputPulse)?P._jumpInputPulse:0;
+  const _counterStrafePulse=Number.isFinite(P._counterStrafePulse)?P._counterStrafePulse:0;
+  const _combatFlow=Number.isFinite(P._combatFlow)?P._combatFlow:0;
+  const _hitFlowPulse=Number.isFinite(P._hitFlowPulse)?P._hitFlowPulse:0;
+  const _killFlowPulse=Number.isFinite(P._killFlowPulse)?P._killFlowPulse:0;
+  const _nearMissPulse=Number.isFinite(P._nearMissPulse)?P._nearMissPulse:0;
+  const _nearMissSide=Number.isFinite(P._nearMissSide)?P._nearMissSide:1;
+  const _damageShock=Number.isFinite(P._damageShock)?P._damageShock:0;
+  const _damageShockSide=Number.isFinite(P._damageShockSide)?P._damageShockSide:1;
+  const _emptyClickPulse=Number.isFinite(P._emptyClickPulse)?P._emptyClickPulse:0;
+  const _dryFirePulse=Number.isFinite(P._dryFirePulse)?P._dryFirePulse:0;
+  const _lastRoundPulse=Number.isFinite(P._lastRoundPulse)?P._lastRoundPulse:0;
+  const _lowAmmoPulse=Number.isFinite(P._lowAmmoPulse)?P._lowAmmoPulse:0;
+  const _reloadReadyPulse=Number.isFinite(P._reloadReadyPulse)?P._reloadReadyPulse:0;
+  const _reloadBlockedPulse=Number.isFinite(P._reloadBlockedPulse)?P._reloadBlockedPulse:0;
+  const _vaultCuePulse=Number.isFinite(P._vaultCuePulse)?P._vaultCuePulse:0;
+  const _pickupPromptPulse=Number.isFinite(P._pickupPromptPulse)?P._pickupPromptPulse:0;
+  const _criticalHitPulse=Number.isFinite(P._criticalHitPulse)?P._criticalHitPulse:0;
+  const _moveContactStall=Number.isFinite(P._moveContactStall)?P._moveContactStall:0;
+  const _triggerBufferPulse=Number.isFinite(P._triggerBufferPulse)?P._triggerBufferPulse:0;
+  const _triggerReadyPulse=Number.isFinite(P._triggerReadyPulse)?P._triggerReadyPulse:0;
+  const _turnDrivePulse=Number.isFinite(P._turnDrivePulse)?P._turnDrivePulse:0;
+  const _turnDriveSide=Number.isFinite(P._turnDriveSide)?P._turnDriveSide:1;
+  const _landingSlidePulse=Number.isFinite(P._landingSlidePulse)?P._landingSlidePulse:0;
+  const _slideBlockedPulse=Number.isFinite(P._slideBlockedPulse)?P._slideBlockedPulse:0;
+  const _focusKick=Number.isFinite(P._focusCameraKick)?P._focusCameraKick:0;
+  const _guardAmt=THREE.MathUtils.clamp(P.guardBehindAmt||0,0,1);
+  const _guardPeekSide=THREE.MathUtils.clamp(P.guardPeekSide||0,-1,1);
+  const _guardPeekUp=THREE.MathUtils.clamp(P.guardPeekUp||0,0,1);
+  const _guardPeekForward=THREE.MathUtils.clamp(P.guardPeekForward||0,0,1);
+  const _guardReady=THREE.MathUtils.clamp(P.guardCoverReady||0,0,1);
+  const _guardNX=Number.isFinite(P.guardNormalX)?P.guardNormalX:0,_guardNZ=Number.isFinite(P.guardNormalZ)?P.guardNormalZ:1;
+  const _guardTX=Number.isFinite(P.guardTangentX)?P.guardTangentX:1,_guardTZ=Number.isFinite(P.guardTangentZ)?P.guardTangentZ:0;
+  const _guardLowMode=P.guardMode==='low'?1:0;
+  const _guardWallMode=P.guardMode==='wall'?1:0;
+  const _guardWallPeek=Math.abs(_guardPeekSide)*_guardWallMode;
+  const _guardCamSide=_guardAmt*_guardPeekSide*((_guardLowMode?.30:.52)+_guardReady*(_guardLowMode?.08:.15));
+  const _guardCamForward=_guardAmt*(_guardPeekForward*(.18+_guardReady*.06)+_guardWallPeek*(.030+_guardReady*.020));
+  const _guardCamX=_guardTX*_guardCamSide-_guardNX*_guardCamForward;
+  const _guardCamZ=_guardTZ*_guardCamSide-_guardNZ*_guardCamForward;
+  const _guardCamY=_guardAmt*((_guardLowMode?-.175:-.075)+_guardReady*.026+_guardWallPeek*.040+_guardPeekUp*((_guardLowMode?.405:.300)+_guardReady*.060));
+  P._combatImpactKick=damp(_combatKick,0,18,dt);
+  P._strideImpact=damp(_strideKick,0,20,dt);
+  P._landingSpring=damp(_landingSpring,0,12,dt);
+  P._locomotionSurge=damp(_locomotionSurge,0,10,dt);
+  P._slideBlockedPulse=damp(_slideBlockedPulse,0,16,dt);
+  P._dropkickBodySurge=damp(_dropkickBodySurge,0,8,dt);
+  P._shotImpulse=damp(_shotImpulse,0,24,dt);
+  P._shotImpulseKick=damp(_shotImpulseKick,0,20,dt);
+  P._shotHeatPressure=damp(_shotHeatPressure,0,3.2,dt);
+  P._jumpInputPulse=damp(_jumpInputPulse,0,16,dt);
+  P._focusCameraKick=damp(_focusKick,0,8.5,dt);
   camera.position.set(
-    P.pos.x+rx*leanOff+P._camBobX*rx+PP.shakeX*.012+adsBX+_pa0.headBobX*rx+_pa0.accelLagX,
-    EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY-P.slideAmt*0.55-P.crouchAmt+_pa0.headBobY+_pa0.landDip+_pa0.landRebound+(_pa0.airFloat||0)+_pa0.slideDrop,
-    P.pos.z+rz*leanOff+P._camBobX*rz+_pa0.headBobX*rz+_pa0.accelLagZ
+    P.pos.x+_guardCamX+rx*leanOff+P._camBobX*rx+PP.shakeX*.012+adsBX+_pa0.headBobX*rx+(_pa0.breathX||0)*rx+_pa0.accelLagX+rx*_strideSide*_strideKick*.0035+rx*(-_massR*.006+_footPlantSide*_footPlantCompression*.0025+_shotImpulseSide*_shotImpulse*.0025+_counterStrafePulse*.002+_nearMissSide*_nearMissPulse*.004+_damageShockSide*_damageShock*.005+_turnDriveSide*_turnDrivePulse*.0025+_shotImpulseSide*_lastRoundPulse*.003+_shotImpulseSide*_dryFirePulse*.0018)+fx*(-_massF*.004+_combatFlow*.0018+(_pa0.dropkickForward||0)+_focusVis*.010+_focusEnter*.040-_focusExit*.006+_focusKick*.020+_reloadReadyPulse*.003-_reloadBlockedPulse*.002+_vaultCuePulse*.004-_moveContactStall*.002),
+    EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+adsBY+_guardCamY-P.slideAmt*0.55-P.crouchAmt+_pa0.headBobY+(_pa0.breathY||0)+(_pa0.braceDip||0)+(_pa0.footstepDip||0)+(_pa0.adsSettleY||0)-_combatKick*.004-_strideKick*.0030-_landingSpring*.012-_bodyJolt*.006-_footPlantCompression*.0024-_shotImpulse*.006-_jumpInputPulse*.010-_damageShock*.014-_landingSlidePulse*.008-_slideBlockedPulse*.018+_killFlowPulse*.010+_combatFlow*.004-_emptyClickPulse*.003-_lastRoundPulse*.006+_reloadReadyPulse*.005+_triggerReadyPulse*.004+_vaultCuePulse*.006-_criticalHitPulse*.010-_moveContactStall*.004+_pa0.landDip+_pa0.landRebound+(_pa0.airFloat||0)+_pa0.slideDrop+(_pa0.dropkickDip||0)-_dropkickBodySurge*.010-_focusEnter*.016+_focusExit*.010+Math.sin(now*8.2)*_focusVis*.0018-_focusWarn*.004,
+    P.pos.z+_guardCamZ+rz*leanOff+P._camBobX*rz+_pa0.headBobX*rz+(_pa0.breathX||0)*rz+_pa0.accelLagZ+rz*_strideSide*_strideKick*.0035+rz*(-_massR*.006+_footPlantSide*_footPlantCompression*.0025+_shotImpulseSide*_shotImpulse*.0025+_counterStrafePulse*.002+_nearMissSide*_nearMissPulse*.004+_damageShockSide*_damageShock*.005+_turnDriveSide*_turnDrivePulse*.0025+_shotImpulseSide*_lastRoundPulse*.003+_shotImpulseSide*_dryFirePulse*.0018)+fz*(-_massF*.004+_combatFlow*.0018+(_pa0.dropkickForward||0)+_focusVis*.010+_focusEnter*.040-_focusExit*.006+_focusKick*.020+_reloadReadyPulse*.003-_reloadBlockedPulse*.002+_vaultCuePulse*.004-_moveContactStall*.002)
   );
   // ── Vault camera animation: direction-specific pitch + roll
   let vaultPitch=0,vaultRoll=0;
@@ -27217,10 +32084,10 @@ renderer.setAnimationLoop(()=>{
   // Damage cam decay (additive roll/pitch from takeDamage)
   P.dmgRoll*=Math.exp(-dt*7);
   P.dmgPitch*=Math.exp(-dt*7);
-  camera.rotation.y=P.yaw+_pa0.turnLagYaw;
-  camera.rotation.x=P.pitch+vaultPitch+P.dmgPitch+_pa0.headPitch+_pa0.slideForwardPitch;
+  camera.rotation.y=P.yaw+_pa0.turnLagYaw+(_pa0.dropkickYaw||0)+Math.sin(now*1.9)*_focusVis*.0018;
+  camera.rotation.x=P.pitch+vaultPitch+P.dmgPitch+_guardAmt*(-.018+_guardPeekUp*.052)+_pa0.headPitch+(_pa0.gaitPitch||0)+(_pa0.impactSettlePitch||0)+(_pa0.sprintStartPitch||0)+(_pa0.sprintStopPitch||0)+(_pa0.sprintLeanPitch||0)+(_pa0.adsShoulderPitch||0)+_combatKick*.010+_strideKick*.0034+_landingSpring*.018+_bodyJolt*.010+_massF*.018+_shotImpulseKick*.018+_shotHeatPressure*.004-_jumpInputPulse*.018-_combatFlow*.005-_killFlowPulse*.008+_damageShock*.026+_nearMissPulse*.010+_landingSlidePulse*.018+_slideBlockedPulse*.032+_emptyClickPulse*.006+_lastRoundPulse*.016+_reloadReadyPulse*.010-_reloadBlockedPulse*.008-_vaultCuePulse*.008+_criticalHitPulse*.020+_moveContactStall*.006-_dropkickBodySurge*.020+_pa0.slideForwardPitch+(_pa0.dropkickPitch||0)-_focusEnter*.018+_focusExit*.012-_focusKick*.026+Math.sin(now*2.7)*_focusVis*.0025;
   const _adsRollDamp=1-_scopeAimEase*.52;
-  camera.rotation.z=_leanEff*-.12+vaultRoll+P.dmgRoll+_pa0.headRoll+_pa0.turnLagRoll+_pa0.slideRoll+P._camStrafeRoll*_adsRollDamp;
+  camera.rotation.z=_leanEff*-.12+_guardPeekSide*_guardAmt*.070+vaultRoll+P.dmgRoll+_pa0.headRoll+(_pa0.gaitRoll||0)+(_pa0.impactSettleRoll||0)+_pa0.turnLagRoll+(_pa0.footstepRoll||0)+(_pa0.adsSettleRoll||0)+_combatKickSide*_combatKick*.008+_strideSide*_strideKick*.006-_massR*.018+_shotImpulseSide*_shotImpulse*.006+_footPlantSide*_footPlantCompression*.004+_counterStrafePulse*_intentR*.004+_nearMissSide*_nearMissPulse*.022+_damageShockSide*_damageShock*.038+_damageShockSide*_criticalHitPulse*.018+_turnDriveSide*_turnDrivePulse*.006+_shotImpulseSide*_lastRoundPulse*.010+_shotImpulseSide*_dryFirePulse*.006+_locomotionSurge*.002+_moveContactStall*_intentR*.006+_pa0.slideRoll+(_pa0.dropkickRoll||0)+P._camStrafeRoll*_adsRollDamp+Math.sin(now*3.1)*_focusVis*.0035+_focusEnter*.010-_focusExit*.006;
   _syncAimHud();
   _updatePlayerProxy();
   _updatePlayerProxy2();
@@ -27269,19 +32136,22 @@ renderer.setAnimationLoop(()=>{
     {const _opticPose=_currentOpticProfile();
      const _zT=_opticGunZ(_opticPose);
      gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);}
-    } else {
-      // Smoothly decay vault rotation back to zero
-      gunGrp.rotation.z=damp(gunGrp.rotation.z,0,11,dt);
-      gunGrp.rotation.x=damp(gunGrp.rotation.x,0,12,dt);
-      gunGrp.rotation.y=damp(gunGrp.rotation.y,0,11,dt);
+	    } else {
+	      const _viewPoseSnap=performance.now()<(P._viewmodelPoseSnapUntil||0);
+	      // Smoothly decay vault rotation back to zero
+	      gunGrp.rotation.z=damp(gunGrp.rotation.z,0,_viewPoseSnap?30:11,dt);
+	      gunGrp.rotation.x=damp(gunGrp.rotation.x,0,_viewPoseSnap?32:12,dt);
+	      gunGrp.rotation.y=damp(gunGrp.rotation.y,0,_viewPoseSnap?30:11,dt);
       // Sprint pose: gun drops + tilts down + extra bob amplitude.
       // Smoothed lerp so the transition into / out of sprint feels heavy.
       const _sprintTarget=(P.running&&!P.ads&&!P.reloading)?1:0;
-      P.sprintAmt=damp(P.sprintAmt,_sprintTarget,7,dt);
+      P.sprintAmt=damp(P.sprintAmt,_sprintTarget,5,dt);
       const _pv=playerAnimState0.resolved.viewmodel;
       const _opticPose=_currentOpticProfile();
       const _scopePose=_opticPose?THREE.MathUtils.smoothstep(P.adsVis||0,.20,.92):0;
       const _pvf=1-Math.min(1,P.adsVis*(_opticPose?1.45:1.15));
+      const _focusVm=_focusVis*(1-Math.min(.78,(P.adsVis||0)*.78));
+      const _focusVmPulse=(_focusEnter*.78+_focusExit*.38+_focusWarn*.18)*(1-Math.min(.58,(P.adsVis||0)*.58));
       // Idle figure-8 sway — disappears when ADS active; sprint amplifies bob.
       // Phase U: enriched with weapon-weight cues —
       //   • lateral drift opposite to recent strafe (inertia carry),
@@ -27302,21 +32172,52 @@ renderer.setAnimationLoop(()=>{
       const _adsGunX=_opticGunX(_opticPose);
       const _adsGunY=_opticGunY(_opticPose);
       const _adsPose=THREE.MathUtils.clamp(P.adsVis||0,0,1);
+      const _pistolIronAds=(!_opticPose&&(P.weaponIdx===1||P.weaponIdx===6))?_adsPose:0;
+      const _sprintCarryMul=(P.weaponIdx===1||P.weaponIdx===6)?.52:1;
+      const _adsFit=_adsWeaponViewFit(P.weaponIdx);
+      const _adsFitW=(_adsFit&&!_opticPose)?_adsPose:0;
+      const _adsFitX=((_adsFit&&Number.isFinite(_adsFit.x))?_adsFit.x:0)*_adsFitW;
+      const _adsFitY=((_adsFit&&Number.isFinite(_adsFit.y))?_adsFit.y:0)*_adsFitW;
+      const _adsFitZ=((_adsFit&&Number.isFinite(_adsFit.z))?_adsFit.z:0)*_adsFitW;
+      const _adsFitRX=((_adsFit&&Number.isFinite(_adsFit.rx))?_adsFit.rx:0)*_adsFitW;
+      const _adsFitScale=1+(((_adsFit&&Number.isFinite(_adsFit.scale))?_adsFit.scale:1)-1)*_adsFitW;
       const _baseGunX=.12+(_adsGunX-.12)*_adsPose;
-      const _baseGunY=-.11+(_adsGunY+.11)*_adsPose;
+      const _baseGunY=-.11+(_adsGunY+.11)*_adsPose+_pistolIronAds*.045;
       const _adsKickAmt=P.adsKick||0;
-      gunGrp.position.x=_baseGunX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias-_accelLag*.018-(P.scopeEyeX||0)*.72*_scopePose;
-      gunGrp.position.y=_baseGunY-P.sprintAmt*.05+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip-Math.abs(_accelLag)*.006-(P.scopeEyeY||0)*.55*_scopePose+_adsKickAmt*.006*_scopePose;
-      {const _zT=_opticGunZ(_opticPose);
-     gunGrp.position.z=damp(gunGrp.position.z,_zT+_adsKickAmt*.012*_scopePose,18,dt);}
+      gunGrp.position.x=_baseGunX+_adsFitX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias-_accelLag*.018-(P.scopeEyeX||0)*.72*_scopePose+_shotImpulseSide*_shotImpulse*.006+_shotImpulseSide*_lastRoundPulse*.010+_shotImpulseSide*_emptyClickPulse*.006+_counterStrafePulse*_intentR*.007+_nearMissSide*_nearMissPulse*.010+_damageShockSide*_damageShock*.014+_turnDriveSide*_turnDrivePulse*.010+_pickupPromptPulse*.003-_moveContactStall*_intentR*.006+Math.sin(_gT*.92)*_focusVm*.010+_focusVmPulse*.020;
+      gunGrp.position.y=_baseGunY+_adsFitY-P.sprintAmt*.05*_sprintCarryMul+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip-Math.abs(_accelLag)*.006-(P.scopeEyeY||0)*.55*_scopePose+_adsKickAmt*.006*_scopePose-_shotImpulse*.010-_lastRoundPulse*.012+_reloadReadyPulse*.008-_emptyClickPulse*.004-_reloadBlockedPulse*.006+_vaultCuePulse*.006-_criticalHitPulse*.010-_moveContactStall*.004-_jumpInputPulse*.012-_damageShock*.018-_landingSlidePulse*.016-_slideBlockedPulse*.018+_killFlowPulse*.010+_combatFlow*.004-_focusVm*.018-_focusVmPulse*.026;
+	      {const _zT=_opticGunZ(_opticPose);
+	     gunGrp.position.z=damp(gunGrp.position.z,_zT+_adsFitZ+_adsKickAmt*.012*_scopePose-_shotImpulse*.026-_lastRoundPulse*.026+_emptyClickPulse*.018+_triggerBufferPulse*.008-_triggerReadyPulse*.010+_reloadReadyPulse*.016+_vaultCuePulse*.014+_hitFlowPulse*.010+_killFlowPulse*.016-_damageShock*.020-_criticalHitPulse*.014+_landingSlidePulse*.020-_slideBlockedPulse*.026-_moveContactStall*.010+_focusVm*.030-_focusVmPulse*.032,_viewPoseSnap?42:18,dt);}
       // Sprint tilt — barrel angles down + slight roll
-      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.32-_adsKickAmt*.018*_scopePose,9,dt);
-      gunGrp.rotation.z=damp(gunGrp.rotation.z,P.sprintAmt*-.18,9,dt);
-      gunGrp.position.x+=_pv.lagX*_pvf+_pv.shoulderPump*_pvf+(_pv.runStepX||0)*_pvf;
-      gunGrp.position.y+=_pv.lagY*_pvf+_pv.landWrist+(_pv.airLift||0)+(_pv.fallDrop||0)+(_pv.apexFloat||0)-(_pv.landPunch||0)*.35+(_pv.runStepY||0)*_pvf;
-      gunGrp.position.z+=_pv.lagZ+_pv.slideTuck*(1-P.adsVis*.9)+(_pv.fallDrop||0)*.42-(_pv.airLift||0)*.20+(_pv.landPunch||0)*.18;
-      gunGrp.rotation.x+=_pv.crouchTuck+(_pv.runStepPitch||0)*_pvf+(_pv.fallDrop||0)*.85-(_pv.landPunch||0)*.50;
-      gunGrp.rotation.z+=(_pv.runStepRoll||0)*_pvf;
+	      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.285*_sprintCarryMul-_adsKickAmt*.018*_scopePose-_pistolIronAds*.040+_adsFitRX+_shotImpulseKick*.030+_lastRoundPulse*.050+_emptyClickPulse*.026-_triggerReadyPulse*.018-_reloadReadyPulse*.020+_reloadBlockedPulse*.028-_vaultCuePulse*.018-_jumpInputPulse*.035-_combatFlow*.010-_killFlowPulse*.020+_damageShock*.040+_criticalHitPulse*.040+_landingSlidePulse*.045+_slideBlockedPulse*.050+_moveContactStall*.025-_focusVm*.030+_focusVmPulse*.052,_viewPoseSnap?24:7,dt);
+	      gunGrp.rotation.z=damp(gunGrp.rotation.z,P.sprintAmt*-.085*_sprintCarryMul+_shotImpulseSide*_shotImpulse*.010+_shotImpulseSide*_lastRoundPulse*.030+_shotImpulseSide*_dryFirePulse*.020+_counterStrafePulse*_intentR*.010+_nearMissSide*_nearMissPulse*.024+_damageShockSide*_damageShock*.044+_damageShockSide*_criticalHitPulse*.018+_turnDriveSide*_turnDrivePulse*.008+_moveContactStall*_intentR*.018+Math.sin(_gT*1.15)*_focusVm*.012-_focusVmPulse*.016,_viewPoseSnap?24:7,dt);
+	      const _vmSprintStart=_pv.sprintStartKick||0,_vmSprintStop=_pv.sprintStopKick||0,_vmFootKick=_pv.footstepKick||0;
+	      const _vmPlant=_pv.plantDip||0,_vmToe=_pv.toePush||0,_vmPivot=_pv.pivotTuck||0,_vmPivotSide=_pv.pivotSide||0;
+	      const _vmFireSnap=_pv.fireSnap||0,_vmFireRecover=_pv.fireRecover||0,_vmFireTail=_pv.fireTail||0,_vmFireSide=_pv.fireSide||1;
+	      const _vmBreathX=(_pv.breathX||0)+(_pv.idleMicroX||0)+(_pv.adsMicroX||0);
+	      const _vmBreathY=(_pv.breathY||0)+(_pv.idleMicroY||0)+(_pv.adsMicroY||0);
+	      gunGrp.position.x+=_pv.lagX*_pvf+_pv.shoulderPump*_pvf+(_pv.runStepX||0)*_pvf+(_pv.runInertiaX||0)*_pvf+(_pv.shoulderSway||0)*_pvf+(_pv.adsSettleX||0)+(_pv.weaponWeightX||0)*_pvf+_vmBreathX*_pvf-_massR*.032*_pvf+_footPlantSide*_footPlantCompression*.006*_pvf+_vmPivotSide*_vmPivot*.016*_pvf+_vmFireSide*_vmFireSnap*.004;
+	      gunGrp.position.y+=_pv.lagY*_pvf+_pv.landWrist+(_pv.airLift||0)+(_pv.fallDrop||0)+(_pv.apexFloat||0)-(_pv.landPunch||0)*.35+(_pv.runStepY||0)*_pvf+(_pv.runInertiaY||0)*_pvf+(_pv.gaitLift||0)*_pvf+(_pv.adsSettleY||0)+(_pv.weaponWeightY||0)*_pvf+_vmBreathY*_pvf-(_pv.supportBrace||0)*.003-_vmFootKick*.006*_pvf-_vmSprintStart*.010*_pvf+_vmSprintStop*.006*_pvf-_combatKick*.010-_strideKick*.006*_pvf-_landingSpring*.018-_bodyJolt*.009-_footPlantCompression*.0035-_shotImpulse*.012-_lowAmmoPulse*.003+_reloadReadyPulse*.006-_jumpInputPulse*.010-_damageShock*.012-_landingSlidePulse*.014+_killFlowPulse*.008-_vmPlant*.006*_pvf+_vmToe*.002*_pvf-_vmFireSnap*.007+_vmFireRecover*.003;
+		      {const _pistolSlideView=!!((P.weaponIdx===1||P.weaponIdx===6)&&(P.sliding||(P.slideAmt||0)>.025));
+		      const _slideTuckMul=_pistolSlideView ? .14 : .48;
+		      gunGrp.position.z+=_pv.lagZ+(_pv.adsSettleZ||0)+(_pv.weaponWeightZ||0)*_pvf+_pv.slideTuck*_slideTuckMul*(1-THREE.MathUtils.smoothstep(P.adsVis||0,.24,.92)*.985)+(_pv.fallDrop||0)*.42-(_pv.airLift||0)*.20+(_pv.landPunch||0)*.18+(_pv.landSettle||0)*.010+_vmSprintStart*.026-_vmSprintStop*.012+_combatKick*.014+_strideKick*.010+_landingSpring*.014+_dropkickBodySurge*.018+_massF*.018+_speedPressure*.006-_shotImpulse*.018-_lastRoundPulse*.014+_reloadReadyPulse*.010+_hitFlowPulse*.010+_combatFlow*.006+_killFlowPulse*.014-_damageShock*.018-_landingSlidePulse*.022+_vmToe*.010*_pvf-_vmPlant*.003*_pvf-_vmFireSnap*.020+_vmFireRecover*.008+_vmFireTail*.006;}
+	      gunGrp.rotation.x+=_pv.crouchTuck+(_pv.runStepPitch||0)*_pvf+(_pv.adsSettlePitch||0)+(_pv.fallDrop||0)*.85-(_pv.landPunch||0)*.50+(_pv.landSettle||0)*.045+(_pv.supportBrace||0)*-.020+_vmSprintStart*.075-_vmSprintStop*.045+_vmFootKick*.013*_pvf+_combatKick*.038+_strideKick*.022*_pvf+_landingSpring*.080+_bodyJolt*.042+_massF*.078+_shotImpulseKick*.055+_shotHeatPressure*.020+_lastRoundPulse*.045+_emptyClickPulse*.016-_reloadReadyPulse*.018-_jumpInputPulse*.028-_combatFlow*.012-_killFlowPulse*.028+_damageShock*.055+_landingSlidePulse*.070-_dropkickBodySurge*.10+_vmPlant*.028*_pvf-_vmToe*.018*_pvf-_vmFireSnap*.040+_vmFireRecover*.020+_vmFireTail*.010;
+	      gunGrp.rotation.y+=(_pv.gaitYaw||0)*_pvf+(_pv.combatSettle||0)*.012+_vmPivotSide*_vmPivot*.014*_pvf+_vmFireSide*_vmFireRecover*.010;
+	      gunGrp.rotation.z+=(_pv.runStepRoll||0)*_pvf+(_pv.gaitRoll||0)*_pvf+(_pv.footstepRoll||0)*_pvf+(_pv.adsSettleRoll||0)+(_pv.idleMicroRoll||0)*_pvf+(_pv.adsMicroRoll||0)-_vmSprintStart*.016+_vmSprintStop*.012+_combatKickSide*_combatKick*.026+_strideSide*_strideKick*.012*_pvf-_massR*.050+_shotImpulseSide*_shotImpulse*.028+_shotImpulseSide*_lastRoundPulse*.020+_shotImpulseSide*_dryFirePulse*.014+_footPlantSide*_footPlantCompression*.008*_pvf+_counterStrafePulse*_intentR*.014+_nearMissSide*_nearMissPulse*.024+_damageShockSide*_damageShock*.040+_turnDriveSide*_turnDrivePulse*.008+_vmPivotSide*_vmPivot*.026*_pvf+_vmFireSide*(_vmFireSnap*.020+_vmFireRecover*.012+_vmFireTail*.006);
+	      if((_pv.dropkickTuck||0)>0.001||(_pv.dropkickKick||0)>0.001||(_pv.dropkickImpact||0)>0.001){
+	        const dkT=_pv.dropkickTuck||0,dkK=_pv.dropkickKick||0,dkI=_pv.dropkickImpact||0;
+	        const dkP=Math.max(dkK,dkI*.9);
+	        const dkClear=Math.max(dkK*.86,dkI*.96);
+	        gunGrp.position.x+=dkP*1.080+dkI*.105;
+	        gunGrp.position.y-=dkT*1.360+dkI*.320+dkClear*.260;
+	        gunGrp.position.z+=dkT*.040-dkK*.240-dkI*.125;
+	        gunGrp.rotation.x+=dkK*2.34-dkI*.48;
+	        gunGrp.rotation.y+=dkP*.66+dkI*.13;
+	        gunGrp.rotation.z-=dkK*1.42+dkI*.18;
+	        gunGrp.scale.setScalar((1-dkP*.190-dkI*.060)*_adsFitScale);
+	      }else{
+	        gunGrp.scale.setScalar(_adsFitScale);
+	      }
       if(_scopePose>0){
         gunGrp.rotation.x+=(1-(P.scopeSettle||0))*-.014*_scopePose+_adsKickAmt*.010*_scopePose;
         gunGrp.rotation.z+=-(P.scopeEyeX||0)*2.0*_scopePose;
@@ -27346,12 +32247,24 @@ renderer.setAnimationLoop(()=>{
         gunGrp.position.x+=_leanEff*-0.07*_adsFade;
         gunGrp.rotation.z+=_leanEff*-0.06;          // full roll always
       }
+		      _tickCombatPostureAimState(dt);
       if(P.reloading&&P.RELOAD_TIME>0){
         const rt=1-P.reloadTimer/P.RELOAD_TIME;
         const tl=reloadStoryGunTilt01(rt,P.weaponIdx);
         gunGrp.rotation.x+=tl.x;
         gunGrp.rotation.y+=tl.y;
         gunGrp.rotation.z+=tl.z;
+      }
+      const _hk=_viewmodelHitKickEnvelope(H);
+      if(_hk>0&&P.adsVis<.96){
+        const _hkFade=1-Math.min(1,P.adsVis*.62);
+        const _hkSide=H.hitKickSide||1;
+        const _hkAmt=_hk*_hkFade*(H.hitKickKill?1.14:1);
+        gunGrp.position.y-=_hkAmt*.010;
+        gunGrp.position.z-=_hkAmt*.030;
+        gunGrp.position.x+=_hkSide*_hkAmt*.004;
+        gunGrp.rotation.x-=_hkAmt*.075;
+        gunGrp.rotation.z+=_hkSide*_hkAmt*.026;
       }
       if((_pv.wallKickX||_pv.wallKickY||_pv.wallKickZ||_pv.wallKickPitch||_pv.wallKickRoll)&&P.adsVis<.92){
         const _wkFade=1-Math.min(1,P.adsVis*.95);
@@ -27361,7 +32274,60 @@ renderer.setAnimationLoop(()=>{
         gunGrp.rotation.x+=_pv.wallKickPitch*_wkFade;
         gunGrp.rotation.z+=_pv.wallKickRoll*_wkFade;
       }
-    }
+	      if((P.sliding||P.slideAmt>.025)&&!P.dropkickActive){
+	        const sAmt=THREE.MathUtils.clamp(P.slideAmt||(P.sliding?.45:0),0,1);
+	        const sSide=THREE.MathUtils.clamp(Number.isFinite(P.slideLocalR)?P.slideLocalR:0,-1,1);
+	        const sBack=Math.max(0,-THREE.MathUtils.clamp(Number.isFinite(P.slideLocalF)?P.slideLocalF:1,-1,1));
+	        const adsHold=THREE.MathUtils.clamp(P.adsVis||0,0,1);
+	        const adsLock=THREE.MathUtils.smoothstep(adsHold,.34,.92);
+	        const pistolSlide=(P.weaponIdx===1||P.weaponIdx===6);
+	        const hipPresent=sAmt*(1-adsLock);
+	        const aimPresent=sAmt*adsLock;
+	        const hipShow=hipPresent*(1-Math.min(.92,adsHold*1.15));
+	        gunGrp.position.x+=sSide*(hipPresent*.034+aimPresent*.004)+hipShow*.030;
+	        gunGrp.position.y+=hipPresent*(.055+sBack*.018)-aimPresent*(sBack*.006);
+	        const slideHipZ=pistolSlide ? .006 : .030;
+	        const slideAimZ=pistolSlide ? .002 : .004;
+		        gunGrp.position.z+=hipPresent*slideHipZ+aimPresent*slideAimZ;
+	        gunGrp.rotation.x-=hipPresent*.040+aimPresent*.004;
+	        gunGrp.rotation.y+=sSide*hipPresent*.026;
+	        gunGrp.rotation.z+=sSide*(hipPresent*.044+aimPresent*.006);
+	      }
+	      if((P.guardBehindAmt||0)>.025){
+	        const gAmt=THREE.MathUtils.clamp(P.guardBehindAmt||0,0,1);
+        const gUp=THREE.MathUtils.clamp(P.guardPeekUp||0,0,1);
+        const gSide=THREE.MathUtils.clamp(P.guardPeekSide||0,-1,1);
+        const gFwd=THREE.MathUtils.clamp(P.guardPeekForward||0,0,1);
+        const gReady=THREE.MathUtils.clamp(P.guardCoverReady||0,0,1);
+        const gEdge=THREE.MathUtils.clamp(P._guardEdgeBlockPulse||0,0,1);
+	        const gMode=_guardViewmodelMode();
+	        const gLow=gMode==='low'?1:0;
+	        const gWall=gMode==='wall'?1:0;
+	        const gSideAbs=Math.abs(gSide)*gWall;
+	        const adsHold=THREE.MathUtils.clamp(P.adsVis||0,0,1);
+	        const wallSight=gAmt*gSideAbs;
+	        if(gLow){
+	          gunGrp.position.x+=gSide*gAmt*(.042+.020*adsHold+.018*gReady);
+          gunGrp.position.y-=gAmt*(.130-gUp*(.042+.020*gReady+.076));
+          gunGrp.position.z+=gAmt*(.085-gFwd*(.060+.018*gReady+.038));
+          gunGrp.rotation.x+=gAmt*(.145-gUp*(.074+.022*gReady+.076));
+          gunGrp.rotation.y-=gSide*gAmt*(.050+.014*gReady);
+          gunGrp.rotation.z+=gSide*gAmt*(.095+.026*gReady);
+		        }else if(gWall){
+		          const adsLock=THREE.MathUtils.smoothstep(adsHold,.34,.92);
+		          const hipW=1-adsLock;
+	          const wallGunSide=(.118+.030*gReady)*hipW+(.044+.018*gReady)*adsLock;
+	          gunGrp.position.x+=gSide*gAmt*wallGunSide;
+	          gunGrp.position.y+=gAmt*(gSideAbs*(.032*hipW+.018*adsLock)-.016*hipW-.004*adsLock);
+	          gunGrp.position.z+=gAmt*(gSideAbs*(.020*hipW-.012*adsLock)-gFwd*.030*hipW)+wallSight*((.008+.006*gEdge)*hipW+.006*adsLock);
+	          gunGrp.rotation.x+=gAmt*((.030*hipW)-gSideAbs*(.038*hipW+.010*adsLock));
+	          gunGrp.rotation.y-=gSide*gAmt*((.064+.020*gReady)*hipW+(.024+.010*gReady)*adsLock);
+	          gunGrp.rotation.z+=gSide*gAmt*((.108+.028*gReady)*hipW+(.032+.012*gReady)*adsLock);
+	        }
+	      }
+	      _keepCombatViewmodelInFrame(dt);
+	      _alignIronSightToAimCenter(dt);
+	    }
   _tickSplitSecondPlayerFrame(dt,walls);
   // Fire / throw — fire mode controls auto vs burst vs single
   if(M.lmbHeld&&!MELEE.out){
@@ -27447,6 +32413,8 @@ renderer.setAnimationLoop(()=>{
         const W=WEAPONS[P.weaponIdx];const need=W.mag-P.ammo,fill=Math.min(need,P.ammoRes);
         P.ammo+=fill;P.ammoRes-=fill;P.reloading=false;$e('reload-bar').style.display='none';
         reloadHoloTarget=0;
+        P._reloadReadyPulse=Math.max(P._reloadReadyPulse||0,.86);
+        P._lowAmmoPulse=0;
         _playReloadReadyCue();
         hudUpdate();
     }
@@ -27456,6 +32424,8 @@ renderer.setAnimationLoop(()=>{
     if(P2.reloadTimer<=0){
       const W2=WEAPONS[P2.weaponIdx];const need2=W2.mag-P2.ammo,fill2=Math.min(need2,P2.ammoRes);
       P2.ammo+=fill2;P2.ammoRes-=fill2;P2.reloading=false;
+      P2._reloadReadyPulse=Math.max(P2._reloadReadyPulse||0,.72);
+      P2._lowAmmoPulse=0;
       hudUpdate();
     }
   }
@@ -27473,7 +32443,9 @@ renderer.setAnimationLoop(()=>{
   // Hitmark fade
   if(G.hitMarkTimer>0){G.hitMarkTimer-=dt;if(G.hitMarkTimer<=0)$e('hitmark').style.opacity='0';}
     // Enemy AI
-    if(G.enemyMgr&&G.enemyMgr.aliveCount>0&&!G.exitUnlocked){
+    const _enemyListForTick=G.enemyMgr&&Array.isArray(G.enemyMgr._list)?G.enemyMgr._list:null;
+    const _enemyCorpsesAnimating=!!(_enemyListForTick&&_enemyListForTick.some(e=>e&&e.dead&&!e.removeNeeded));
+    if(G.enemyMgr&&((G.enemyMgr.aliveCount>0&&!G.exitUnlocked)||_enemyCorpsesAnimating)){
       const shots=G.enemyMgr.update(dts,P.pos,walls);
         for(const s of shots){
           let tgtCam=camera;
@@ -27485,19 +32457,8 @@ renderer.setAnimationLoop(()=>{
             dmgSlot=ppTgt===P2.pos?1:0;
             tgtCam=dmgSlot?cameraP2:camera;
           }
-          if(s.muzzlePos){
-            // Visual tracer spread varies by enemy type: sniper tight, scout wide
-            const typeSpread={soldier:.085,heavy:.10,sniper:.028,scout:.145};
-            const sp=(typeSpread[s.src&&s.src.type]||.085)*(1+s.dist*.06);
-            const tgt=new THREE.Vector3(
-              tgtCam.position.x+(Math.random()-.5)*sp,
-              tgtCam.position.y+(Math.random()-.5)*sp*.38,
-              tgtCam.position.z+(Math.random()-.5)*sp
-            );
-            addTrail(s.muzzlePos,tgt);
-          }
-          // Per-type base hit chance at close range, decaying with distance
-          const typeAcc={
+	          // Per-type base hit chance at close range, decaying with distance
+	          const typeAcc={
             soldier:{base:.65,decay:.042},
             heavy:  {base:.56,decay:.036},
             sniper: {base:.87,decay:.015},
@@ -27512,40 +32473,119 @@ renderer.setAnimationLoop(()=>{
             boss:{base:.80,decay:.026}
           };
           const ta=typeAcc[s.src&&s.src.type]||typeAcc.soldier;
+          const targetPl=dmgSlot?P2:P;
+          const enemyFeel=_enemyGunplayProfile(s.src&&s.src.type);
           const diffBonus=(s.src?s.src.diff:1)*.030;
           const aimMul=s.aimReady==null?1.0:(.72+s.aimReady*.36);
           const spreadPenalty=Math.max(.58,Math.min(1.10,1.06-(s.accuracy||.08)*1.9));
           const persona=(s.src&&s.src.personality)||null;
           const nerveMul=persona?Math.max(.78,Math.min(1.08,1.04-(persona.jitter||1)*.045+(persona.courage||.7)*.045)):1.0;
-          // Running target is harder to hit
-          const movePen=(dmgSlot?P2:P).running?0.68:1.0;
-          const hitP=Math.max(.04,Math.min(.92,(ta.base-s.dist*ta.decay+diffBonus)*movePen*aimMul*spreadPenalty*nerveMul));
-          if(hitP>Math.random()){
+          const leanAmt=Math.abs(targetPl.lean||0)*(targetPl.leanClipScale==null?1:targetPl.leanClipScale);
+          const movePen=targetPl.running?0.68:1.0;
+          const crouchPen=(targetPl.crouching||(targetPl.crouchAmt||0)>.35)?0.86:1.0;
+          const leanPen=leanAmt>.25?0.82:1.0;
+          const slidePen=(targetPl.sliding||(targetPl.slideAmt||0)>.45)?0.78:1.0;
+          const focusPen=targetPl.focusActive?0.90:1.0;
+          const guardAmt=THREE.MathUtils.clamp(targetPl.guardBehindAmt||0,0,1);
+          const guardPeek=Math.max(Math.abs(targetPl.guardPeekSide||0),targetPl.guardPeekUp||0);
+          const guardPen=guardAmt>.35?THREE.MathUtils.lerp(.58,.86,THREE.MathUtils.clamp(guardPeek,0,1)):1.0;
+          const revealMul=(performance.now()/1000-(targetPl.lastShot||0))<.35?1.06:1.0;
+          const srcSuppressed=!!(s.src&&s.src._suppressedUntil&&performance.now()<s.src._suppressedUntil);
+          const srcSuppressionMul=srcSuppressed?0.56:1.0;
+          const incomingNerve=1-Math.min(.38,(s.src&&s.src._incomingNearMiss||0)*.32);
+          const hitP=Math.max(.035,Math.min(.92,(ta.base-s.dist*ta.decay+diffBonus)*movePen*crouchPen*leanPen*slidePen*focusPen*guardPen*revealMul*aimMul*spreadPenalty*nerveMul*srcSuppressionMul*incomingNerve));
+          const shotRoll=Math.random();
+          const didHit=hitP>shotRoll;
+          const missSeverity=didHit?0:THREE.MathUtils.clamp((shotRoll-hitP)/Math.max(.001,1-hitP),0,1);
+          const closeMiss=!didHit&&missSeverity<.46;
+          if(s.src){
+            s.src._lastResolvedHitChance=hitP;
+            s.src._lastShotQuality=didHit?'hit':(closeMiss?'closeMiss':'miss');
+            s.src._lastShotResolvedAt=performance.now();
+          }
+          const shotRight=new THREE.Vector3(1,0,0).applyQuaternion(tgtCam.quaternion);
+          const shotUp=new THREE.Vector3(0,1,0).applyQuaternion(tgtCam.quaternion);
+          const shotFwd=new THREE.Vector3(0,0,-1).applyQuaternion(tgtCam.quaternion);
+          const shotSide=(s.src&&s.src.group)?Math.sign(tgtCam.position.clone().sub(s.src.group.position).dot(shotRight))||1:(Math.random()<.5?-1:1);
+          targetPl._enemyShotPressure=Math.max(targetPl._enemyShotPressure||0,didHit ? .55 : (closeMiss ? .78 : .24));
+          targetPl._enemyShotSide=shotSide;
+          if(s.muzzlePos){
+            const baseSp=(enemyFeel.tracer||.085)*(1+s.dist*.055)*(srcSuppressed?1.42:1.0);
+            let tgt;
+            if(didHit){
+              tgt=tgtCam.position.clone()
+                .addScaledVector(shotRight,(Math.random()-.5)*baseSp*.18)
+                .addScaledVector(shotUp,(Math.random()-.5)*baseSp*.12)
+                .addScaledVector(shotFwd,(Math.random()-.5)*baseSp*.05);
+            }else{
+              const sideMag=(closeMiss ? .18 : .42)+missSeverity*(1.05+(enemyFeel.nearMiss||1)*.25);
+              const upMag=(Math.random()-.5)*(.18+missSeverity*.52);
+              tgt=tgtCam.position.clone()
+                .addScaledVector(shotRight,shotSide*sideMag*(enemyFeel.nearMiss||1))
+                .addScaledVector(shotUp,upMag)
+                .addScaledVector(shotFwd,(Math.random()-.5)*baseSp*.55);
+            }
+            const trOpts=didHit
+              ?{kind:'enemy-hit',haloColor:0xff5038,coreColor:0xfff6df,haloRadius:.027,coreRadius:.0075,life:.125,haloOpacity:.70,coreOpacity:.98}
+              :(closeMiss
+                ?{kind:'enemy-close-miss',haloColor:0xffb050,coreColor:0xfffff0,haloRadius:.030,coreRadius:.0085,life:.145,haloOpacity:.74,coreOpacity:1.0}
+                :{kind:'enemy-wide-miss',haloColor:0xff6848,coreColor:0xffe0b0,haloRadius:.018,coreRadius:.0055,life:.105,haloOpacity:.46,coreOpacity:.72});
+            addTrail(s.muzzlePos,tgt,trOpts);
+          }
+          if(didHit){
             const baseDmg=s.src?s.src.enemyDmg:12;
-            takeDamage(baseDmg*(0.72+Math.random()*.50),dmgSlot);
-            if(s.src&&s.src.group)showDamageIndicator(s.src.group.position,baseDmg*(0.72+Math.random()*.50));
+            const dealt=baseDmg*(0.72+Math.random()*.50);
+            takeDamage(dealt,dmgSlot);
+            if(s.src&&s.src.group)showDamageIndicator(s.src.group.position,dealt);
+            if(dmgSlot===0){
+              const hitSide=(s.src&&s.src.group)?Math.sign(camera.position.clone().sub(s.src.group.position).dot(new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion)))||1:(Math.random()<.5?-1:1);
+              PP.shakeY-=.035*(enemyFeel.hitReact||1);
+              PP.shakeX+=hitSide*.030*(enemyFeel.hitReact||1);
+              _addPlayerFeelImpulse(P,{body:.045*(enemyFeel.hitReact||1),right:hitSide*.070*(enemyFeel.hitReact||1)});
+            }
           } else {
             // Miss — bullet whips past, sharp wood-crack snap (rate-limited internally)
             sfxBulletWhip();
+            if(closeMiss)spawnNearMissAirCut(tgtCam,shotSide,.78+Math.random()*.28);
             // PLAYER SUPPRESSION — accumulating fire near player makes aim wobble
+            const nearGain=closeMiss ? .15 : .075;
+            const nearPulse=closeMiss?(.74+Math.random()*.18):(.38+Math.random()*.18);
             if(dmgSlot===0){
-              P._suppressionLevel=Math.min(1.0,(P._suppressionLevel||0)+.10);
-              P._suppressedUntil=performance.now()+1500;
+              P._suppressionLevel=Math.min(1.0,(P._suppressionLevel||0)+nearGain);
+              P._suppressedUntil=performance.now()+(closeMiss?1750:1150);
+              P._nearMissPulse=Math.max(P._nearMissPulse||0,nearPulse);
+              P._nearMissSide=Math.random()<.5?-1:1;
+              _addPlayerFeelImpulse(P,{body:closeMiss ? .105 : .060,right:(P._nearMissSide||1)*(closeMiss ? .16 : .09)});
+              if(closeMiss&&s.src&&s.src.group&&performance.now()>(P._lastNearMissIndicatorAt||0)+240){
+                P._lastNearMissIndicatorAt=performance.now();
+                showDamageIndicator(s.src.group.position,6);
+              }
             }else{
-              P2._suppressionLevel=Math.min(1.0,(P2._suppressionLevel||0)+.10);
-              P2._suppressedUntil=performance.now()+1500;
+              P2._suppressionLevel=Math.min(1.0,(P2._suppressionLevel||0)+nearGain);
+              P2._suppressedUntil=performance.now()+(closeMiss?1750:1150);
+              P2._nearMissPulse=Math.max(P2._nearMissPulse||0,nearPulse);
+              P2._nearMissSide=Math.random()<.5?-1:1;
             }
             // Near-miss bullet time — small chance for a 0.15s slowmo flicker
-            if(Math.random()<.20&&!_killCamT&&!P.focusActive){
-              triggerKillCamSlowMo(.45,.18);
+            if(Math.random()<(closeMiss ? .26 : .08)&&!_killCamT&&!P.focusActive){
+              triggerKillCamSlowMo(closeMiss ? .42 : .54,closeMiss ? .20 : .12);
             }
             // Suppression visual — spawn brief tracer past camera
-            const dir=new THREE.Vector3((Math.random()-.5)*.1,(Math.random()-.5)*.05,-1).normalize().applyQuaternion(tgtCam.quaternion);
-            const start=tgtCam.position.clone().addScaledVector(dir,1.5).add(new THREE.Vector3((Math.random()-.5)*.6,(Math.random()-.5)*.4,(Math.random()-.5)*.6));
-            const end=start.clone().addScaledVector(dir,4);
-            if(typeof addTrail==='function')addTrail(start,end);
+            const dir=new THREE.Vector3((Math.random()-.5)*(closeMiss ? .06 : .14),(Math.random()-.5)*(closeMiss ? .035 : .07),-1).normalize().applyQuaternion(tgtCam.quaternion);
+            const start=tgtCam.position.clone().addScaledVector(dir,1.5).add(new THREE.Vector3((Math.random()-.5)*(closeMiss ? .34 : .72),(Math.random()-.5)*(closeMiss ? .24 : .46),(Math.random()-.5)*(closeMiss ? .34 : .72)));
+            const end=start.clone().addScaledVector(dir,closeMiss?4.8:3.2);
+            if(typeof addTrail==='function')addTrail(start,end,{
+              kind:closeMiss?'enemy-close-miss-air':'enemy-wide-miss-air',
+              haloColor:closeMiss?0xffd080:0xff6848,
+              coreColor:closeMiss?0xfffff0:0xffe0b0,
+              haloRadius:closeMiss ? .024 : .016,
+              coreRadius:closeMiss ? .0065 : .0045,
+              life:closeMiss ? .12 : .09,
+              haloOpacity:closeMiss ? .62 : .38,
+              coreOpacity:closeMiss ? .92 : .62
+            });
             // Brief screen edge red flicker
-            PP.shakeY-=Math.random()*.15;
+            if(dmgSlot===0)PP.shakeY-=Math.random()*(closeMiss ? .20 : .10);
           }
         }
     }
@@ -27638,13 +32678,22 @@ renderer.setAnimationLoop(()=>{
             // Phase 2: summon 2 elite guards
             attachToast('<div style="color:#ff5048;letter-spacing:.30em">▼ ELITE GUARD</div>',2500);
             const _walls=G.levelData?G.levelData.walls:[];
+            const peers=[];
+            for(const en of G.enemyMgr._list){if(en&&!en.dead&&en.group)peers.push({x:en.group.position.x,z:en.group.position.z});}
             for(let i=0;i<2;i++){
               const px=(i?-4:4),pz=-15;
-              const pos=_snapSpawnOutOfWalls(px,pz,WT,_walls,.46);if(!pos)continue;
+              const opts={zoneId:2,peerR:_enemySpawnPeerRadius('lieutenant'),requireNav:true,strictZone:false};
+              const pos=_snapSpawnOutOfWalls(px,pz,WT,_walls,.46,peers,opts)
+                ||_findClearEnemySpawn(new THREE.Vector3(px,WT,pz),_walls,.46,peers,opts);
+              if(!pos)continue;
               const e=new Enemy(scene,pos,5,'lieutenant');
               e.zoneId=2;e.maxHp=180;e.hp=180;e.group.scale.setScalar(1.10);
               G.enemyMgr._list.push(e);
+              peers.push({x:pos.x,z:pos.z});
+              G.enemyMgr._needsSpawnAudit=true;
             }
+            G.enemyMgr._repairSpawnOverlaps(_walls);
+            G.enemyMgr._needsSpawnAudit=false;
             _flagSsrSolidsDirty();
             // Brief invulnerability flash on boss
             G.boss.hitFlashTimer=0.6;
@@ -27745,6 +32794,25 @@ renderer.setAnimationLoop(()=>{
       const d=Math.sqrt(dx*dx+dz*dz);
       if(d<1.85&&d<nearD){nearD=d;near=pk;}
     }
+    const pickupNow=performance.now();
+    if(near){
+      const nearId=near.id||near.uid||near.grp&&near.grp.uuid||near.att&&near.att.name||'pickup';
+      if(P._lastPickupPromptId!==nearId){
+        P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,1.0);
+        P._lastPickupPromptId=nearId;
+      }
+      P._pickupSticky=near;
+      P._pickupStickyUntil=pickupNow+GAMEPLAY_QOL_FEEL.pickupStickyMs;
+    }else if(P._pickupSticky&&G.pickups.includes(P._pickupSticky)&&pickupNow<(P._pickupStickyUntil||0)){
+      const sp=P._pickupSticky;
+      const dx=sp.grp.position.x-P.pos.x,dz=sp.grp.position.z-P.pos.z;
+      if(Math.sqrt(dx*dx+dz*dz)<GAMEPLAY_QOL_FEEL.pickupStickyRange)near=sp;
+      else {P._pickupSticky=null;P._pickupStickyUntil=0;}
+    }else{
+      P._pickupSticky=null;
+      P._pickupStickyUntil=0;
+      P._lastPickupPromptId=null;
+    }
     P.nearPickup=near;
     const pp=$e('pickup-prompt');
     if(near&&!P.dead){
@@ -27759,12 +32827,18 @@ renderer.setAnimationLoop(()=>{
         const verdict=cur?(ns>os?'<span style="color:#5fcb52">↑ BETTER</span>':ns<os?'<span style="color:#ff5048">↓ WORSE</span>':'<span style="color:#bbb">= SAME</span>'):'NEW SLOT';
         $e('pickup-prompt-sub').innerHTML=`<span style="color:${tierColor(near.att.tier)}">TIER ${near.att.tier}</span> &nbsp;·&nbsp; ${verdict}`;
       }
-      pp.style.opacity='1';
+      const pulse=THREE.MathUtils.clamp(P._pickupPromptPulse||0,0,1);
+      pp.style.opacity=String(0.78+pulse*.22);
+      pp.style.transform=`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`;
     } else {
       pp.style.opacity='0';
+      pp.style.transform='translate(-50%,-50%) scale(1)';
       P.nearPickup=null;
     }
-  } else {P.nearPickup=null;$e('pickup-prompt').style.opacity='0';}
+  } else {
+    P.nearPickup=null;P._pickupSticky=null;P._pickupStickyUntil=0;P._lastPickupPromptId=null;
+    const pp=$e('pickup-prompt');if(pp){pp.style.opacity='0';pp.style.transform='translate(-50%,-50%) scale(1)';}
+  }
   // Trails / FX — category budgets keep decals, smoke, shells, and flashes
   // independently bounded so one noisy system cannot evict every other effect.
   _enforceTrailBudgets();
@@ -27776,8 +32850,9 @@ renderer.setAnimationLoop(()=>{
       if(t.faceCameraBillboard&&t.mesh)_orientVfxBillboard(t.mesh);
       const ratio=t.timer/t.maxTime;
       if(t.isTracer){
-        t.mat.opacity=ratio*.55;
-        if(t.extra)t.extra.forEach(e=>{e.mat.opacity=ratio*.95;});
+        const ft=t.focusTracer||0;
+        t.mat.opacity=ratio*(.55+ft*.20);
+        if(t.extra)t.extra.forEach(e=>{e.mat.opacity=ratio*(.95+ft*.05);});
       } else if(t.isParticle){
         t.mat.opacity=ratio*.95;
         if(t.vel){t.mesh.position.addScaledVector(t.vel,dt);t.vel.multiplyScalar(.90);t.vel.y-=10*dt;}
@@ -27815,6 +32890,9 @@ renderer.setAnimationLoop(()=>{
       } else if(t.isFlash){
         t.mat.opacity=ratio;
         t.mesh.scale.multiplyScalar(1+dt*4);
+      } else if(t.isFocusShock){
+        t.mat.opacity=ratio*.78;
+        t.mesh.scale.multiplyScalar(1+dt*(7.5+(t.maxTime||.2)*5));
       } else if(t.isDecal){
         // Decal stays solid until last 1.2s, then fades
         t.mat.opacity=Math.min(.85,ratio*4.5)*.85;
@@ -27855,7 +32933,10 @@ renderer.setAnimationLoop(()=>{
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
-      updateHands(dt);updateKnife(dt);
+      updateHands(dt);updateKnife(dt);updateDropkickFeet(dt);updateSlideLegs(dt);
+      _syncScopedViewmodelVisibility(_currentOpticProfile(),P.scopeSettle||0);
+      _syncPracticalIronSightViewmodel();
+      _forceCombatViewmodelVisible();
       _syncArmBandVisibility();
       // ── Wrist-holo loadout panel — emerges UP from the armband emitter
       const _wAnim=Math.min(dt*10,1);
@@ -27946,7 +33027,8 @@ renderer.setAnimationLoop(()=>{
       hudUpdate();
       // ── PIP scope render — attachment optics plus built-in DMR/sniper scopes
       const _opticForPip=_currentOpticProfile();
-      _scopePipStatus.enabled=!!(!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled);
+      const _scopePipAllowed=!!(_opticForPip&&!STABLE_RENDERING_MODE&&(SETTINGS.scopePipEnabled||_opticForPip.forcePip));
+      _scopePipStatus.enabled=!!_scopePipAllowed;
       _scopePipStatus.visible=false;
       _scopePipStatus.opacity=0;
       const _scopeAds=P.adsVis||P.ads||0;
@@ -27956,13 +33038,18 @@ renderer.setAnimationLoop(()=>{
         const _pipMax=Number.isFinite(_opticForPip.pipOpacityMax)?_opticForPip.pipOpacityMax:.97;
         const _pipScopeEase=THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(_scopeAds,0,1),.12,.92);
         const _pipAlpha=_pipMax*_pipScopeEase;
+        const _screenScope=!!_opticForPip.screenScope;
         const _opticMesh=_opticForPip.view;
-        const _opticVisible=!_opticMesh||(_opticMesh.visible!==false);
+        const _opticVisible=!_opticMesh||_opticForPip.forcePip||(_opticMesh.visible!==false);
         const _lowAds=_scopeAds<0.08;
         const _skipMotion=((P.running||P.reloading)&&_lowAds);
         const _skipFade=_pipAlpha<0.038;
         const _vig=$e('scope-vignette');
-        if(_vig)_vig.style.setProperty('--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
+        if(_vig){
+          _vig.style.setProperty('--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
+          _vig.classList.toggle('screen-scope',_screenScope);
+          _vig.style.setProperty('--scope-reticle-opacity',String(THREE.MathUtils.clamp(.20+_pipScopeEase*.58,0,.82)));
+        }
         // Scope PIP camera: render from the player's actual eye/aim pose, then
         // mirror the current viewmodel-local roll. That keeps tilted scopes
         // visually looking through the optic without changing where bullets go.
@@ -27973,18 +33060,20 @@ renderer.setAnimationLoop(()=>{
         const _pipBaseFov=Number.isFinite(_opticForPip.pipFov)?_opticForPip.pipFov:14;
         scopeCamera.fov=Math.max(3,_pipBaseFov+(1-_pipScopeEase)*3.6+(P.adsKick||0)*1.2);
         scopeCamera.aspect=1;scopeCamera.updateProjectionMatrix();
-        const _shouldPip=!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled&&_opticVisible&&!_skipMotion&&!_skipFade;
+        const _shouldPip=_scopePipAllowed&&_opticVisible&&!_screenScope&&!_skipMotion&&!_skipFade;
         const stride=_scopePipRenderStride();
         const _contribAlpha=_pipAlpha>0.084;
         const _vigAlpha=Math.min(1,_pipScopeEase*(.40+_pipMax*.38)+(P.adsKick||0)*.035);
+        const _vigOpacity=_screenScope?Math.min(1,.18+_pipScopeEase*.90+(P.adsKick||0)*.020):_vigAlpha;
         _scopePipStatus.throttleInterval=stride;
         _scopePipStatus.skippedThrottle=false;
         _scopePipStatus.renderedThisFrame=false;
         _scopePipStatus.visible=!!_shouldPip;
         _scopePipStatus.opacity=_shouldPip?_pipAlpha:0;
+        _scopePipStatus.screenOverlay=!!(_screenScope&&_scopePipAllowed&&!_skipMotion);
         _scopePipStatus.fov=scopeCamera.fov;
         _scopePipStatus.settle=_pipScopeEase;
-        _scopePipStatus.vignetteOpacity=_vigAlpha;
+        _scopePipStatus.vignetteOpacity=_vigOpacity;
         _scopePipStatus.eyeBoxX=P.scopeEyeX||0;
         _scopePipStatus.eyeBoxY=P.scopeEyeY||0;
         _scopePipStatus.attachment=_opticForPip.name||'scope';
@@ -28003,16 +33092,17 @@ renderer.setAnimationLoop(()=>{
         }else{
           _scopePipStatus.rendered=false;
         }
-        _setScopePipView(_opticForPip,_shouldPip?_pipAlpha:0);
-        P.scopeVignetteOpacity=_vigAlpha;
-        if(_vig)_vig.style.opacity=String(_vigAlpha);
+        _setScopePipView(_screenScope?null:_opticForPip,_shouldPip?_pipAlpha:0);
+        P.scopeVignetteOpacity=_vigOpacity;
+        if(_vig)_vig.style.opacity=String(_vigOpacity);
       } else {
         _setScopePipView(null,0);
-        const _vig=$e('scope-vignette');if(_vig)_vig.style.opacity='0';
+        const _vig=$e('scope-vignette');if(_vig){_vig.style.opacity='0';_vig.classList.remove('screen-scope');}
         P.scopeVignetteOpacity=0;
         _scopePipStatus.settle=0;
         _scopePipStatus.fov=0;
         _scopePipStatus.vignetteOpacity=0;
+        _scopePipStatus.screenOverlay=false;
         _scopePipStatus.eyeBoxX=P.scopeEyeX||0;
         _scopePipStatus.eyeBoxY=P.scopeEyeY||0;
         _scopePipStatus.rendered=false;
@@ -28437,12 +33527,30 @@ window.__game={
     visualProfile:()=>_activeVisualProfile(),
     postProfile:()=>_renderStack?_renderStack.metadata.postProfile||'normal':'direct',
     postContext:()=>_computePostContext(P.hp/(P.maxHp||100)),
-    characterArtBible:()=>CHARACTER_ART_BIBLE,
-    characterProfile:(type)=>getCharacterProfile(type||'soldier'),
-    characterLodState:()=>_visualRuntimeStats().characterLods,
-    characterAnimationStates:()=>_visualRuntimeStats().characterAnimationStates,
-    characterVisualStatus:()=>_characterVisualStatus(),
-    viewmodelProfile:()=>gunGrp.userData.viewmodelProfile||_VIEWMODEL_PROFILE,
+	    characterArtBible:()=>CHARACTER_ART_BIBLE,
+	    characterProfile:(type)=>getCharacterProfile(type||'soldier'),
+	    characterLodState:()=>_visualRuntimeStats().characterLods,
+	    characterAnimationStates:()=>_visualRuntimeStats().characterAnimationStates,
+	    characterVisualStatus:()=>_characterVisualStatus(),
+	    enemyCombatStatus:()=>{
+	      const list=(G.enemyMgr&&Array.isArray(G.enemyMgr._list))?G.enemyMgr._list.filter(e=>e&&!e.dead):[];
+	      return list.map(e=>({
+	        type:e.type,
+	        state:e.state,
+	        animationState:e.animationState||e.group?.userData?.animationState||'idle',
+	        movementMode:e._movementMode||'idle',
+	        aimReady:Number((e.aimReady||0).toFixed(3)),
+	        aimTrack:Number((e._aimTrackQuality||0).toFixed(3)),
+	        aimYawError:Number((e._aimYawError||0).toFixed(3)),
+	        speedVis:Number((e._moveSpeedVis||0).toFixed(3)),
+	        moveVel:Number(Math.hypot(e._moveVelX||0,e._moveVelZ||0).toFixed(3)),
+	        patrolPause:Number((e.patrolPauseTimer||0).toFixed(3)),
+	        peekAmt:Number((e.peekAmt||0).toFixed(3)),
+	        atCover:!!e.atCover,
+	        pos:e.group&&e.group.position?[Number(e.group.position.x.toFixed(2)),Number(e.group.position.z.toFixed(2))]:null
+	      }));
+	    },
+	    viewmodelProfile:()=>gunGrp.userData.viewmodelProfile||_VIEWMODEL_PROFILE,
     weaponVisualStatus:()=>_weaponVisualStatus(),
     visualRuntime:()=>_visualRuntimeStats(),
     materialLibrary:()=>({names:AA_MATERIALS.names(),textureQuality:SETTINGS.textureQuality||'high',generatedMapCount:AA_MATERIALS.generatedMapCount?AA_MATERIALS.generatedMapCount():0}),
@@ -28459,6 +33567,17 @@ window.__game={
         fov:camera.fov,
         targetFov:P.scopeViewFov||SETTINGS.fov,
         baseFov:SETTINGS.fov,
+        focus:{
+          active:!!P.focusActive,
+          meter:P.focus||0,
+          timeScale:P.timeScale||1,
+          targetScale:P._focusTimeScaleTarget||1,
+          visual:P._focusVisual||0,
+          phase:P._focusSeqPhase||'ready',
+          enterPulse:P._focusEnterPulse||0,
+          exitPulse:P._focusExitPulse||0,
+          warnPulse:P._focusWarnPulse||0
+        },
         ads:P.ads||0,
         adsVis:P.adsVis||0,
         adsTarget:P.adsTarget||0,
@@ -28469,10 +33588,92 @@ window.__game={
         scopeEyeX:P.scopeEyeX||0,
         scopeEyeY:P.scopeEyeY||0,
         scopeVignetteOpacity:P.scopeVignetteOpacity||0,
+        feel:{
+	          shotImpulse:P._shotImpulse||0,
+	          shotHeatPressure:P._shotHeatPressure||0,
+	          gunplaySpreadVisual:P._gunplaySpreadVisual||0,
+	          gunplayShotIndex:P._gunplayShotIndex||0,
+	          gunplayConfidence:P._gunplayConfidence||0,
+	          gunplayMissBloom:P._gunplayMissBloom||0,
+          gunplayRhythm:P._gunplayRhythm||0,
+	          combatFlow:P._combatFlow||0,
+          hitFlowPulse:P._hitFlowPulse||0,
+	          killFlowPulse:P._killFlowPulse||0,
+	          triggerBufferPulse:P._triggerBufferPulse||0,
+	          triggerReadyPulse:P._triggerReadyPulse||0,
+	          triggerBufferMsLeft:Math.max(0,(P._triggerBufferedUntil||0)-performance.now()),
+	          emptyClickPulse:P._emptyClickPulse||0,
+	          dryFirePulse:P._dryFirePulse||0,
+	          lastRoundPulse:P._lastRoundPulse||0,
+	          lowAmmoPulse:P._lowAmmoPulse||0,
+	          reloadReadyPulse:P._reloadReadyPulse||0,
+	          reloadBlockedPulse:P._reloadBlockedPulse||0,
+          counterStrafePulse:P._counterStrafePulse||0,
+          jumpInputPulse:P._jumpInputPulse||0,
+	          nearMissPulse:P._nearMissPulse||0,
+	          enemyShotPressure:P._enemyShotPressure||0,
+	          damageShock:P._damageShock||0,
+          turnDrivePulse:P._turnDrivePulse||0,
+          landingSlidePulse:P._landingSlidePulse||0
+        },
         optic:optic?{name:optic.name||'scope',tier:optic.tier||0,pipFov:optic.pipFov||0,adsFovDelta:optic.adsFovDelta||0}:null,
         gun:{x:gunGrp.position.x,y:gunGrp.position.y,z:gunGrp.position.z,rx:gunGrp.rotation.x,ry:gunGrp.rotation.y,rz:gunGrp.rotation.z},
+        ironSight:Object.assign({},P._ironSightAlign||{}),
         scopePip:Object.assign({},_scopePipStatus)
       };
+    },
+    gameplayFeelState:()=>({
+      jumpBufferMsLeft:Math.max(0,(P._jumpBufferedUntil||0)-performance.now()),
+      vaultBufferMsLeft:Math.max(0,(P._vaultIntentUntil||0)-performance.now()),
+      coyoteMsAgo:performance.now()-(P._lastGroundedT||0),
+	      shotImpulse:P._shotImpulse||0,
+	      shotImpulseKick:P._shotImpulseKick||0,
+	      shotHeatPressure:P._shotHeatPressure||0,
+	      gunplaySpreadVisual:P._gunplaySpreadVisual||0,
+	      gunplayShotIndex:P._gunplayShotIndex||0,
+	      gunplayConfidence:P._gunplayConfidence||0,
+	      gunplayMissBloom:P._gunplayMissBloom||0,
+	      gunplayRhythm:P._gunplayRhythm||0,
+	      gunplayLastOutcome:P._gunplayLastOutcome||'',
+	      combatFlow:P._combatFlow||0,
+      combatFlowMsLeft:Math.max(0,(P._combatFlowUntil||0)-performance.now()),
+      hitFlowPulse:P._hitFlowPulse||0,
+      killFlowPulse:P._killFlowPulse||0,
+      triggerBufferPulse:P._triggerBufferPulse||0,
+      triggerReadyPulse:P._triggerReadyPulse||0,
+      triggerBufferMsLeft:Math.max(0,(P._triggerBufferedUntil||0)-performance.now()),
+      triggerBufferReason:P._triggerBufferReason||'',
+      emptyClickPulse:P._emptyClickPulse||0,
+      dryFirePulse:P._dryFirePulse||0,
+      lastRoundPulse:P._lastRoundPulse||0,
+      lowAmmoPulse:P._lowAmmoPulse||0,
+      reloadReadyPulse:P._reloadReadyPulse||0,
+      reloadBlockedPulse:P._reloadBlockedPulse||0,
+      vaultCuePulse:P._vaultCuePulse||0,
+      pickupPromptPulse:P._pickupPromptPulse||0,
+      criticalHitPulse:P._criticalHitPulse||0,
+      counterStrafePulse:P._counterStrafePulse||0,
+      jumpInputPulse:P._jumpInputPulse||0,
+	      nearMissPulse:P._nearMissPulse||0,
+	      enemyShotPressure:P._enemyShotPressure||0,
+	      damageShock:P._damageShock||0,
+      turnDrivePulse:P._turnDrivePulse||0,
+      landingSlidePulse:P._landingSlidePulse||0,
+      slidePower:P._slidePower||1,
+      slideBufferMsLeft:Math.max(0,(P._slideIntentUntil||0)-performance.now()),
+      landingSlideWindowMsLeft:Math.max(0,(P._landingSlideWindowUntil||0)-performance.now()),
+      pickupStickyMsLeft:Math.max(0,(P._pickupStickyUntil||0)-performance.now()),
+      mass:{f:P._massInertiaF||0,r:P._massInertiaR||0,body:P._bodyJolt||0,foot:P._footPlantCompression||0},
+      movement:{speed:P._moveSpeedSmooth||0,accel:P._moveAccel||0,sprintBlend:P.sprintBlend||0,running:!!P.running,contactStall:P._moveContactStall||0}
+    }),
+    setGameplayFeelProbe:(opts={})=>{
+      const nowMs=performance.now();
+      if(opts.vaultBuffer!==false)P._vaultIntentUntil=nowMs+(Number(opts.vaultMs)||GAMEPLAY_QOL_FEEL.vaultBufferMs);
+      if(opts.vaultCue!==false)P._vaultCuePulse=Math.max(P._vaultCuePulse||0,Number.isFinite(opts.vaultCue)?opts.vaultCue:1);
+      if(opts.pickupPulse!==false)P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,Number.isFinite(opts.pickupPulse)?opts.pickupPulse:1);
+      if(opts.critical!==false)P._criticalHitPulse=Math.max(P._criticalHitPulse||0,Number.isFinite(opts.critical)?opts.critical:1);
+      if(opts.contact!==false)P._moveContactStall=Math.max(P._moveContactStall||0,Number.isFinite(opts.contact)?opts.contact:.6);
+      return window.__game.debug.gameplayFeelState();
     },
     lightingStats:()=>{
       const rs=_visualRuntimeStats();
@@ -28553,7 +33754,7 @@ window.__game={
     playableWeaponIndices:()=>PLAYABLE_WEAPON_INDICES.slice(),
     weaponSlots:()=>PLAYABLE_WEAPON_INDICES.map((idx,slot)=>({slot:slot+1,idx,name:WEAPONS[idx]?.name||'unknown'})),
     equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);switchWeapon(isPlayableWeaponIdx(5)?5:START_WEAPON_IDX,true);refreshAttachmentVisuals();return P.attachments.scope;},
-    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P.ads=x;P.adsVis=x;P.adsTarget=x;P.adsSettle=x;P.scopeSettle=_hasScopedAds(P)?x:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
+    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P._debugAdsHold=x>.5;P.ads=x;P.adsVis=x;P.adsTarget=x;P.adsSettle=x;P.scopeSettle=_hasScopedAds(P)?x:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
     vfxBudget:()=>_trailBudget(),
     visualDebug:()=>_visualDebugState(),
     setHitboxOverlay:(on)=>_setVisualDebugFlag('hitboxes',on),
@@ -28574,7 +33775,10 @@ window.__game={
     setAnimDebugOverlay:(on)=>{_animDebugHud=!!on;const el=document.getElementById('anim-debug-hud');if(el&&!_animDebugHud)el.remove();return _animDebugHud;},
     forcePlayerAnimEvent:(name,options)=>{playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,String(name||'pulse'),options||{});return getPlayerAnimDebug(playerAnimState0).recentNotifies;},
     wallJumpState:()=>({timer:P.wallJumpTimer||0,duration:P.wallJumpDur||0,hardenTimer:P.wallJumpHardenTimer||0,vx:P.wallJumpVx||0,vz:P.wallJumpVz||0,side:P.wallJumpSide||0,impact:P.wallJumpImpact||0,nx:P.wallJumpNx||0,nz:P.wallJumpNz||0,contact:P.wallContact||null,lastWallJumpT:P._lastWallJumpT||0}),
-    viewmodelPose:()=>({rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray()},lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray()},gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray()},fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null}),
+    dropkickTargetProbe:()=>{const t=_dropkickTargetFor(P);return t?{found:true,dist:t.dist||0,lineDist:t.lineDist||0,lock:t.lock||0,hp:t.enemy&&t.enemy.hp||0,pos:t.enemy&&t.enemy.group?t.enemy.group.position.toArray():null}:{found:false};},
+    dropkickState:()=>({active:!!P.dropkickActive,t:P.dropkickT||0,timer:P.dropkickTimer||0,cooldown:P.dropkickCooldown||0,dir:{x:P.dropkickDirX||0,z:P.dropkickDirZ||0},impact:P.dropkickImpact||0,contactTimer:P.dropkickContactTimer||0,contactStopTimer:P._dropkickImpactStopTimer||0,reboundTimer:P._dropkickReboundTimer||0,globalHitStopTimer:P._hitStopTimer||0,globalHitStopScale:P._hitStopScale||1,landTimer:P.dropkickLandTimer||0,targeted:!!P.dropkickTargeted,targetDist:P.dropkickTargetDist||0,targetLock:P.dropkickTargetLock||0,twirlSide:P.dropkickTwirlSide||1,feetVisible:!!dropkickFeetGrp.visible,feetMeshes:_DROP_FEET_PARTS.length,hitCount:P.dropkickHitEnemies instanceof Set?P.dropkickHitEnemies.size:0}),
+    coverState:()=>({guardHeld:!!P.guardBehindHeld,guardActive:!!P.guardBehindActive,guardAmt:P.guardBehindAmt||0,guardReady:P.guardCoverReady||0,guardDist:P.guardCoverDist||0,guardMode:P.guardMode||'none',peekUp:P.guardPeekUp||0,peekSide:P.guardPeekSide||0,peekForward:P.guardPeekForward||0,autoPeekSide:P.guardAutoPeekSide||0,lowFirePeek:P.guardLowFirePeek||0,lowFirePeekMsLeft:Math.max(0,(P._guardLowFirePeekT||0)*1000),edgeBlockPulse:P._guardEdgeBlockPulse||0,wallEdge:P.guardWallEdge?Object.assign({},P.guardWallEdge):null,coverLockKey:P._guardCoverLockKey||null,crouchAmt:P.crouchAmt||0,cover:P.guardCover?{mode:P.guardCover.mode,dist:P.guardCover.dist,height:P.guardCover.height,geometryId:P.guardCover.v&&P.guardCover.v.geometryId||null}:null,nearVault:!!P.nearVault,nearVaultInfo:P.nearVaultInfo||null}),
+    viewmodelPose:()=>({rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray(),s:rGrp.scale.toArray(),visible:!!rGrp.visible},lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray(),s:lGrp.scale.toArray(),visible:!!lGrp.visible},gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray(),s:gunGrp.scale.toArray(),visible:!!gunGrp.visible},dropkickFeet:{visible:!!dropkickFeetGrp.visible,p:dropkickFeetGrp.position.toArray(),r:dropkickFeetGrp.rotation.toArray(),s:dropkickFeetGrp.scale.toArray(),body:{p:dropkickBodyRoot.position.toArray(),r:dropkickBodyRoot.rotation.toArray(),s:dropkickBodyRoot.scale.toArray()},left:dropkickBootL.position.toArray(),right:dropkickBootR.position.toArray(),meshes:_DROP_FEET_PARTS.length},slideLegs:{visible:!!slideLegsGrp.visible,p:slideLegsGrp.position.toArray(),r:slideLegsGrp.rotation.toArray(),s:slideLegsGrp.scale.toArray(),opacity:_SLIDE_BODY_PARTS[0]&&_SLIDE_BODY_PARTS[0].material?_SLIDE_BODY_PARTS[0].material.opacity:null,left:{p:slideLegL.position.toArray(),r:slideLegL.rotation.toArray()},right:{p:slideLegR.position.toArray(),r:slideLegR.rotation.toArray()}},fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null}),
     setWristbandHologram:(kind,on=true)=>{
       const k=String(kind||'inventory');
       const enabled=!!on;
@@ -28612,10 +33816,18 @@ window.__game={
     wristbandHologramStatus:()=>_weaponVisualStatus().authoredWristband,
     reloadTimeline:()=>({phase:playerAnimState0.reload.phase,visualProgress:playerAnimState0.reload.visualProgress,class:playerAnimState0.reload.timelineClass}),
     movementAnimState:()=>getMovementAnimState(playerAnimState0),
-    getCampaignLevel:(bn)=>getCampaignLevel(bn),
-    campaignLength:()=>campaignLength(),
-    showLevelSelect:()=>showLevelSelect(),
-    // Phase H: rebuild a level + return a perf-relevant snapshot of its
+	    getCampaignLevel:(bn)=>getCampaignLevel(bn),
+	    campaignLength:()=>campaignLength(),
+	    showLevelSelect:()=>showLevelSelect(),
+	    customMaps:()=>({
+	      runtime:{mode:G.playMode,packId:CUSTOM_MAP_RUNTIME.pack&&CUSTOM_MAP_RUNTIME.pack.id,mapIndex:CUSTOM_MAP_RUNTIME.mapIndex,mapId:CUSTOM_MAP_RUNTIME.map&&CUSTOM_MAP_RUNTIME.map.id,returnToEditor:CUSTOM_MAP_RUNTIME.returnToEditor},
+	      kit:CUSTOM_LEVEL_KIT.status(),
+	      menuReady:!!CUSTOM_MAP_MENU,
+	      editorReady:!!CUSTOM_LEVEL_EDITOR
+	    }),
+	    loadCustomMapKit:()=>CUSTOM_LEVEL_KIT.load(),
+	    validateCustomMapPack:(pack)=>validateCustomMapPack(pack,CUSTOM_LEVEL_KIT.manifest),
+	    // Phase H: rebuild a level + return a perf-relevant snapshot of its
     // baked geometry for cheap regression tracking.
     // Phase AF: dispose prior levelData first to avoid accumulation.
     perfSnapshotForBuilding:(bn)=>{
@@ -28706,11 +33918,20 @@ window.__game={
     warpTo:(x,z)=>{if(P&&P.pos){P.pos.x=x;P.pos.z=z;return true;}return false;},
     spawnAt:(type,x,z)=>{
       if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
-      const pos=new THREE.Vector3(x,WT||.4,z);
-      const e=new Enemy(scene,pos,G.building||1,type||'soldier');
-      e.zoneId=1;
+      const _walls=G.levelData&&G.levelData.walls||[];
+      const peers=[];
+      for(const en of G.enemyMgr._list){if(en&&!en.dead&&en.group)peers.push({x:en.group.position.x,z:en.group.position.z});}
+      const t=type||'soldier';
+      const zoneId=typeof getZoneOf==='function'?getZoneOf({x,z}):1;
+      const opts={zoneId,peerR:_enemySpawnPeerRadius(t),requireNav:true,strictZone:false};
+      const pos=_snapSpawnOutOfWalls(x,z,WT||.4,_walls,.46,peers,opts)
+        ||_findClearEnemySpawn(new THREE.Vector3(x,WT||.4,z),_walls,.46,peers,opts);
+      if(!pos)return false;
+      const e=new Enemy(scene,pos,G.building||1,t);
+      e.zoneId=zoneId;
       e._probeTag=true;                                                // Phase 7 finder
       G.enemyMgr._list.push(e);
+      G.enemyMgr._repairSpawnOverlaps(_walls);
       _flagSsrSolidsDirty();
       // Phase 7 probe convenience — bind nearest unclaimed cover slot so the
       // probe-spawned agent can exercise HOLD_CORNER / PEEK_FIRE immediately.
@@ -28718,7 +33939,7 @@ window.__game={
         let best=null,bestD2=Infinity;
         for(const s of G.levelData.coverSlots){
           if(s.claimedBy)continue;
-          const dx=s.x-x,dz=s.z-z;
+          const dx=s.x-pos.x,dz=s.z-pos.z;
           const d2=dx*dx+dz*dz;
           if(d2<bestD2){bestD2=d2;best=s;}
         }
@@ -28744,6 +33965,25 @@ window.__game={
     fireCurrentWeapon:()=>{
       gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;
       if(P.ammo<=0)P.ammo=WEAPONS[P.weaponIdx]?.mag||30;
+      _pendingShootSlot=0;
+      shoot();
+      return _weaponVisualStatus();
+    },
+    dryFireCurrentWeapon:(withReserve=true)=>{
+      gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;
+      P.ammo=0;
+      if(withReserve)P.ammoRes=Math.max(P.ammoRes||0,WEAPONS[P.weaponIdx]?.mag||1);
+      else P.ammoRes=0;
+      _pendingShootSlot=0;
+      shoot();
+      return _weaponVisualStatus();
+    },
+    forceCadenceBuffer:()=>{
+      gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;
+      const W=WEAPONS[P.weaponIdx]||START_WEAPON;
+      if(P.ammo<=0)P.ammo=W.mag||1;
+      P.lastShot=performance.now()/1000;
+      _pendingShootSlot=0;
       shoot();
       return _weaponVisualStatus();
     },
@@ -28753,6 +33993,15 @@ window.__game={
       if(P.ammoRes<=0)P.ammoRes=WEAPONS[P.weaponIdx].res||30;
       startReload();
       return _weaponVisualStatus();
+    },
+    denyReloadCurrentWeapon:(mode='full')=>{
+      gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;
+      const W=WEAPONS[P.weaponIdx]||START_WEAPON;
+      if(mode==='reserve'){P.ammo=Math.max(0,(W.mag||1)-1);P.ammoRes=0;P.reloading=false;}
+      else if(mode==='busy'){P.reloading=true;P.reloadTimer=Math.max(P.reloadTimer||0,.45);P.RELOAD_TIME=Math.max(P.RELOAD_TIME||0,.9);}
+      else {P.ammo=W.mag||P.ammo;P.ammoRes=Math.max(P.ammoRes||0,1);P.reloading=false;}
+      _triggerReloadDeniedFeedback(P,0,W);
+      return window.__game.debug.gameplayFeelState();
     },
     startInspectCurrentWeapon:()=>{startInspect();return _weaponVisualStatus();},
     endInspectCurrentWeapon:()=>{endInspect();return _weaponVisualStatus();},

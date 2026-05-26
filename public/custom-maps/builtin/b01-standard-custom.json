@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin.b01-standard-custom",
+  "title": "B01 Standard Custom",
+  "author": "CLEARANCE",
+  "createdAt": "2026-05-26T00:00:00.000Z",
+  "updatedAt": "2026-05-26T00:00:00.000Z",
+  "source": "builtin",
+  "startIndex": 0,
+  "thumbnail": null,
+  "difficultyDefault": "normal",
+  "completion": {
+    "bestGrade": null,
+    "bestTimeMs": null,
+    "completions": 0,
+    "attempts": 0
+  },
+  "maps": [
+    {
+      "schemaVersion": 1,
+      "id": "map.b01-standard-custom.01",
+      "title": "B01 Standard Custom",
+      "theme": "b01-megaplex",
+      "kitId": "level-kit.b01-megaplex",
+      "environmentBuilding": 1,
+      "createdAt": "2026-05-26T00:00:00.000Z",
+      "updatedAt": "2026-05-26T00:00:00.000Z",
+      "bounds": { "x0": -18, "x1": 18, "z0": -54, "z1": 54 },
+      "floorY": 0.4,
+      "zoneBounds": { "halfWidth": 18, "halfDepth": 54, "zSplit": 18 },
+      "objects": [
+        { "id": "floor_01", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": 42, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_02", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": 42, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_03", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": 30, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_04", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": 30, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_05", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": 12, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_06", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": 12, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_07", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": 0, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_08", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": 0, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_09", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": -18, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_10", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": -18, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_11", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": -30, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_12", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": -30, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_13", "prefabId": "floor.loading_bay_12x12", "x": -6, "z": -42, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "floor_14", "prefabId": "floor.loading_bay_12x12", "x": 6, "z": -42, "yaw": 0, "scale": 1, "layer": "template", "locked": true },
+        { "id": "front_cover_a", "prefabId": "cover.half_crate", "x": -7, "z": 34, "yaw": 0.18, "scale": 1, "layer": "geometry" },
+        { "id": "front_cover_b", "prefabId": "cover.tall_machine", "x": 7, "z": 28, "yaw": -0.3, "scale": 1, "layer": "geometry" },
+        { "id": "front_window_read", "prefabId": "window.breakable_5m", "x": -12.5, "z": 25, "yaw": 1.5708, "scale": 1, "layer": "geometry" },
+        { "id": "front_route_arrow", "prefabId": "route.arrow_forward", "x": 0, "z": 32, "yaw": 3.1416, "scale": 1, "layer": "gameplay" },
+        { "id": "mid_cover_cluster", "prefabId": "module.cover_cluster", "x": 0, "z": 2, "yaw": 0.2, "scale": 1, "layer": "geometry" },
+        { "id": "mid_left_cheek", "prefabId": "wall.peek_cheek_3m", "x": -8.5, "z": 8, "yaw": 0, "scale": 1, "layer": "geometry" },
+        { "id": "mid_right_cheek", "prefabId": "wall.peek_cheek_3m", "x": 8.5, "z": -7, "yaw": 0, "scale": 1, "layer": "geometry" },
+        { "id": "mid_route_arrow", "prefabId": "route.arrow_forward", "x": 0, "z": -3, "yaw": 3.1416, "scale": 1, "layer": "gameplay" },
+        { "id": "back_cover_a", "prefabId": "cover.half_crate", "x": -6.5, "z": -30, "yaw": 0.55, "scale": 1, "layer": "geometry" },
+        { "id": "back_cover_b", "prefabId": "cover.tall_machine", "x": 7.5, "z": -36, "yaw": -0.35, "scale": 1, "layer": "geometry" },
+        { "id": "back_final_gate_read", "prefabId": "module.final_commit_gate", "x": 0, "z": -44, "yaw": 0, "scale": 1, "layer": "geometry" },
+        { "id": "back_split_sightline", "prefabId": "module.split_sightline", "x": 0, "z": -25, "yaw": 0, "scale": 1, "layer": "geometry" }
+      ],
+      "markers": {
+        "playerSpawn": { "id": "player_spawn", "x": 0, "z": 49, "yaw": 3.1416, "floorY": 0.4 },
+        "exits": [
+          { "id": "exit_main", "x0": -4.5, "x1": 4.5, "z0": -53.5, "z1": -50.5, "label": "EXTRACT" }
+        ],
+        "zoneDoors": [
+          { "id": "zone_gate_front_mid", "zoneId": 0, "x": 0, "z": 18, "width": 5.4, "depth": 0.62, "yaw": 0 },
+          { "id": "zone_gate_mid_back", "zoneId": 1, "x": 0, "z": -18, "width": 5.4, "depth": 0.62, "yaw": 0 }
+        ],
+        "enemySpawns": [
+          { "id": "front_lookout_01", "x": -6.5, "z": 37, "yaw": 2.9, "zoneId": 0, "enemyType": "scout", "role": "lookout", "behavior": "peek_from_cover", "roomId": "front_loading", "spawnWave": "initial", "peekAngleId": "front_peek_west" },
+          { "id": "front_anchor_02", "x": 7.5, "z": 31, "yaw": 3.1, "zoneId": 0, "enemyType": "soldier", "role": "anchor", "behavior": "hold_angle", "roomId": "front_loading", "spawnWave": "initial", "coverHintId": "front_cover_b" },
+          { "id": "front_flanker_03", "x": 11.5, "z": 23.5, "yaw": 3.5, "zoneId": 0, "enemyType": "pistolero", "role": "flanker", "behavior": "ambush_on_crossing", "roomId": "front_loading", "spawnWave": "initial" },
+          { "id": "front_anchor_04", "x": -10, "z": 24, "yaw": 2.7, "zoneId": 0, "enemyType": "soldier", "role": "anchor", "behavior": "hold_angle", "roomId": "front_loading", "spawnWave": "initial" },
+          { "id": "mid_anchor_01", "x": -6.5, "z": 10, "yaw": 2.95, "zoneId": 1, "enemyType": "soldier", "role": "anchor", "behavior": "hold_angle", "roomId": "mid_sort", "spawnWave": "initial" },
+          { "id": "mid_flank_02", "x": 8, "z": 7.5, "yaw": 3.35, "zoneId": 1, "enemyType": "pistolero", "role": "flanker", "behavior": "ambush_on_crossing", "roomId": "mid_sort", "spawnWave": "initial" },
+          { "id": "mid_heavy_03", "x": 3.5, "z": -3.5, "yaw": 3.1416, "zoneId": 1, "enemyType": "heavy", "role": "breacher", "behavior": "push_after_contact", "roomId": "mid_sort", "spawnWave": "initial" },
+          { "id": "mid_lookout_04", "x": -8.5, "z": -9, "yaw": 3.0, "zoneId": 1, "enemyType": "scout", "role": "lookout", "behavior": "peek_from_cover", "roomId": "mid_sort", "spawnWave": "initial" },
+          { "id": "mid_anchor_05", "x": 8.5, "z": -12, "yaw": 2.9, "zoneId": 1, "enemyType": "soldier", "role": "anchor", "behavior": "hold_angle", "roomId": "mid_sort", "spawnWave": "initial" },
+          { "id": "back_marksman_01", "x": -7.5, "z": -27, "yaw": 3.0, "zoneId": 2, "enemyType": "marksman", "role": "marksman", "behavior": "hold_angle", "roomId": "rear_office", "spawnWave": "initial" },
+          { "id": "back_anchor_02", "x": 7, "z": -31, "yaw": 3.2, "zoneId": 2, "enemyType": "soldier", "role": "anchor", "behavior": "hold_angle", "roomId": "rear_office", "spawnWave": "initial" },
+          { "id": "back_breacher_03", "x": 0, "z": -36.5, "yaw": 3.1416, "zoneId": 2, "enemyType": "heavy", "role": "breacher", "behavior": "push_after_contact", "roomId": "rear_office", "spawnWave": "initial" },
+          { "id": "back_flanker_04", "x": 10.5, "z": -43, "yaw": 2.8, "zoneId": 2, "enemyType": "pistolero", "role": "flanker", "behavior": "ambush_on_crossing", "roomId": "rear_office", "spawnWave": "initial" },
+          { "id": "back_lookout_05", "x": -10, "z": -43, "yaw": 3.3, "zoneId": 2, "enemyType": "scout", "role": "lookout", "behavior": "peek_from_cover", "roomId": "rear_office", "spawnWave": "initial" }
+        ],
+        "peekAngles": [
+          { "id": "front_peek_west", "x": -7, "z": 34, "yaw": 2.9, "arcDegrees": 70, "range": 12, "label": "FRONT PEEK" },
+          { "id": "mid_peek_east", "x": 8.5, "z": -7, "yaw": 3.1, "arcDegrees": 70, "range": 10, "label": "MID PEEK" },
+          { "id": "back_window_tell", "x": 2, "z": -23, "yaw": 3.15, "arcDegrees": 55, "range": 13, "label": "WINDOW TELL" }
+        ],
+        "holdPositions": [
+          { "id": "front_cover_b", "x": 7, "z": 28, "yaw": 3.1, "radius": 1.2, "label": "FRONT HOLD" },
+          { "id": "mid_center_hold", "x": 0, "z": 2, "yaw": 3.1416, "radius": 1.4, "label": "MID HOLD" },
+          { "id": "back_final_hold", "x": 0, "z": -39, "yaw": 3.1416, "radius": 1.6, "label": "FINAL HOLD" }
+        ],
+        "patrolRoutes": [
+          { "id": "mid_patrol", "points": [{ "x": -8, "z": 8 }, { "x": 8, "z": 6 }, { "x": 7, "z": -8 }] }
+        ],
+        "pickups": [
+          { "id": "ammo_front", "type": "ammo", "x": 0, "z": 24 },
+          { "id": "ammo_back", "type": "ammo", "x": -3, "z": -35 }
+        ],
+        "triggerVolumes": []
+      },
+      "briefing": {
+        "callsign": "CUSTOM B01",
+        "target": "HOSTILE CELL",
+        "time": "0312 HRS",
+        "introText": "Player-authored route built from the B01 kit.",
+        "endText": "Custom operation complete."
+      },
+      "validation": { "ok": false, "errors": ["not_validated"], "warnings": [], "at": null }
+    }
+  ]
+}
