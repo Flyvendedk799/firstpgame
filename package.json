@@ -39,6 +39,7 @@
     "test:player:anim": "node scripts/player-animation-movement-probe.mjs && node scripts/player-animation-acceptance.mjs",
     "test:animation:pipeline": "node scripts/animation-pipeline-probe.mjs",
     "test:animation:feel": "node scripts/player-animation-feel-smoke.mjs",
+    "test:embodiment:feel": "node scripts/embodiment-feel-smoke.mjs",
     "test:gameplay:qol": "node scripts/gameplay-qol-smoke.mjs",
     "test:weapon:feel": "node scripts/weapon-feel-acceptance.mjs",
     "test:level-editor:assets": "node scripts/level-editor-asset-compat-probe.mjs",

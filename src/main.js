@@ -14276,12 +14276,253 @@ function updateSlideLegs(dt){
   _poseSlidePart(slideTorsoParts.tailPad,side*.006,-amt*.008,back*.030,-.065+back*.035,side*.035,-side*.050);
   _poseSlidePart(slideTorsoParts.hipL,-sideAbs*.008,-amt*.012,back*.035,.080+amt*.050,side*.045,-.080-side*.060);
   _poseSlidePart(slideTorsoParts.hipR,sideAbs*.008,-amt*.012,back*.035,.080+amt*.050,side*.045,.080-side*.060);
-  for(const m of _SLIDE_BODY_PARTS){
-    if(m.material&&'opacity' in m.material){
-      m.material.transparent=true;
-      m.material.opacity=.92+amt*.08;
-    }
+	  for(const m of _SLIDE_BODY_PARTS){
+	    if(m.material&&'opacity' in m.material){
+	      m.material.transparent=true;
+	      m.material.opacity=.92+amt*.08;
+	    }
+	  }
+	}
+// ── FIRST-PERSON BODY PRESENCE ───────────────────────────────────────────────
+// Subtle lower-body visibility for ordinary locomotion. Slide/dropkick keep their
+// bespoke rigs; this one carries idle, walk, sprint, crouch, jump, fall, and land.
+const bodyPresenceGrp=new THREE.Group();
+bodyPresenceGrp.name='body-presence-first-person-legs';
+bodyPresenceGrp.visible=false;
+bodyPresenceGrp.renderOrder=7;
+camera.add(bodyPresenceGrp);
+const _BODY_PRESENCE_PARTS=[];
+const _BODY_PRESENCE_MATERIALS=[];
+function _cloneBodyPresenceMat(src){
+  const m=src&&src.clone?src.clone():new THREE.MeshPhongMaterial({color:0x151a22,transparent:true,opacity:0});
+  m.transparent=true;
+  m.opacity=0;
+  m.depthWrite=false;
+  _BODY_PRESENCE_MATERIALS.push(m);
+  return m;
+}
+const _bodyPantM=_cloneBodyPresenceMat(_slidePantM);
+const _bodyArmorM=_cloneBodyPresenceMat(_slideArmorM);
+const _bodyBootM=_cloneBodyPresenceMat(_slideBootM);
+const _bodySoleM=_cloneBodyPresenceMat(_slideSoleM);
+const _BODY_PRESENCE_FALLBACK_HEALTH={version:1,clampEvents:0,nonFiniteEvents:0,maxPoseDelta:0};
+function _bodyPresenceHealth(){
+  if(typeof P==='undefined')return _BODY_PRESENCE_FALLBACK_HEALTH;
+  if(!P._bodyPresenceHealth)P._bodyPresenceHealth={version:1,clampEvents:0,nonFiniteEvents:0,maxPoseDelta:0,mode:'hidden'};
+  return P._bodyPresenceHealth;
+}
+function _bodyPresenceFinite(v,fallback,health,key){
+  const n=Number(v);
+  if(Number.isFinite(n))return n;
+  if(health){
+    health.nonFiniteEvents=(health.nonFiniteEvents||0)+1;
+    health.lastNonFiniteKey=key||'unknown';
   }
+  return Number.isFinite(fallback)?fallback:0;
+}
+function _bodyPresenceClamp(v,min,max,health,key){
+  const n=THREE.MathUtils.clamp(v,min,max);
+  if(n!==v&&health){
+    health.clampEvents=(health.clampEvents||0)+1;
+    health.lastClampKey=key||'unknown';
+  }
+  return n;
+}
+function _bodyPresencePart(parent,geo,mat,x,y,z,rx=0,ry=0,rz=0,name='part'){
+  const m=new THREE.Mesh(geo,mat);
+  m.name=`${parent.name}_${name}`;
+  m.position.set(x,y,z);m.rotation.set(rx,ry,rz);
+  m.userData.baseBodyPose={x,y,z,rx,ry,rz};
+  m.castShadow=false;m.receiveShadow=false;m.renderOrder=7;
+  parent.add(m);_BODY_PRESENCE_PARTS.push(m);return m;
+}
+function _poseBodyPresencePart(part,dx=0,dy=0,dz=0,drx=0,dry=0,drz=0){
+  if(!part||!part.userData||!part.userData.baseBodyPose)return;
+  const h=_bodyPresenceHealth();
+  const b=part.userData.baseBodyPose;
+  const sx=_bodyPresenceClamp(_bodyPresenceFinite(dx,0,h,`${part.name}.dx`),-.34,.34,h,`${part.name}.dx`);
+  const sy=_bodyPresenceClamp(_bodyPresenceFinite(dy,0,h,`${part.name}.dy`),-.30,.30,h,`${part.name}.dy`);
+  const sz=_bodyPresenceClamp(_bodyPresenceFinite(dz,0,h,`${part.name}.dz`),-.46,.46,h,`${part.name}.dz`);
+  const srx=_bodyPresenceClamp(_bodyPresenceFinite(drx,0,h,`${part.name}.drx`),-1.34,1.34,h,`${part.name}.drx`);
+  const sry=_bodyPresenceClamp(_bodyPresenceFinite(dry,0,h,`${part.name}.dry`),-.90,.90,h,`${part.name}.dry`);
+  const srz=_bodyPresenceClamp(_bodyPresenceFinite(drz,0,h,`${part.name}.drz`),-1.05,1.05,h,`${part.name}.drz`);
+  part.position.set(b.x+sx,b.y+sy,b.z+sz);
+  part.rotation.set(b.rx+srx,b.ry+sry,b.rz+srz);
+  h.maxPoseDelta=Math.max(h.maxPoseDelta||0,Math.abs(sx),Math.abs(sy),Math.abs(sz),Math.abs(srx),Math.abs(sry),Math.abs(srz));
+}
+function _sanitizeBodyPresenceNode(node,health,key){
+  if(!node)return;
+  const values=[node.position.x,node.position.y,node.position.z,node.rotation.x,node.rotation.y,node.rotation.z,node.scale.x,node.scale.y,node.scale.z];
+  const sane=values.every(Number.isFinite)&&values.every(v=>Math.abs(v)<12);
+  if(sane)return;
+  node.position.set(0,-.92,-.56);
+  node.rotation.set(.50,0,0);
+  node.scale.setScalar(.70);
+  if(health){
+    health.snapResets=(health.snapResets||0)+1;
+    health.lastSnapKey=key||node.name||'bodyPresence';
+  }
+}
+function _setBodyPresenceOpacity(opacity){
+  const o=THREE.MathUtils.clamp(opacity,0,.96);
+  for(const m of _BODY_PRESENCE_MATERIALS){
+    if(m&&Math.abs((m.opacity||0)-o)>.004)m.opacity=o;
+  }
+}
+const bodyPresenceRoot=new THREE.Group();
+bodyPresenceRoot.name='body_presence_lower_body_root';
+bodyPresenceGrp.add(bodyPresenceRoot);
+const bodyPresenceTorso={
+  pelvis:_bodyPresencePart(bodyPresenceRoot,new THREE.BoxGeometry(.330,.092,.145),_bodyPantM,0,.168,.130,.050,0,0,'pelvis'),
+  belt:_bodyPresencePart(bodyPresenceRoot,new THREE.BoxGeometry(.350,.026,.152),_bodyArmorM,0,.222,.124,.018,0,0,'belt'),
+  abdomen:_bodyPresencePart(bodyPresenceRoot,new THREE.BoxGeometry(.218,.108,.112),_bodyPantM,0,.288,.188,.180,0,0,'abdomen'),
+  hipL:_bodyPresencePart(bodyPresenceRoot,new THREE.BoxGeometry(.100,.050,.098),_bodyArmorM,-.135,.142,.080,.040,.070,-.070,'hip_L'),
+  hipR:_bodyPresencePart(bodyPresenceRoot,new THREE.BoxGeometry(.100,.050,.098),_bodyArmorM,.135,.142,.080,.040,-.070,.070,'hip_R')
+};
+function _buildBodyPresenceLeg(side){
+  const root=new THREE.Group();
+  root.name=side<0?'body_presence_leg_L':'body_presence_leg_R';
+  root.userData.baseSide=side;
+  bodyPresenceGrp.add(root);
+  const parts={
+    thigh:_bodyPresencePart(root,_dropLimbGeo(.040,.255,.305),_bodyPantM,0,.072,-.018,Math.PI/2+.060,side*.028,0,'thigh'),
+    knee:_bodyPresencePart(root,new THREE.BoxGeometry(.112,.038,.078),_bodyArmorM,0,.008,-.190,.035,side*.034,0,'knee'),
+    shin:_bodyPresencePart(root,_dropLimbGeo(.034,.285,.345),_bodyPantM,0,-.054,-.340,Math.PI/2-.060,side*.036,0,'shin'),
+    calfGuard:_bodyPresencePart(root,new THREE.BoxGeometry(.098,.020,.158),_bodyArmorM,0,-.020,-.315,.105,side*.045,0,'calf_guard'),
+    boot:_bodyPresencePart(root,new THREE.BoxGeometry(.164,.080,.300),_bodyBootM,0,-.126,-.555,.045,side*.056,0,'boot'),
+    sole:_bodyPresencePart(root,new THREE.BoxGeometry(.178,.026,.328),_bodySoleM,0,-.172,-.558,.045,side*.056,0,'sole'),
+    heel:_bodyPresencePart(root,new THREE.BoxGeometry(.146,.055,.056),_bodySoleM,0,-.150,-.392,.000,side*.046,0,'heel'),
+    toe:_bodyPresencePart(root,new THREE.BoxGeometry(.144,.046,.088),_bodyArmorM,0,-.094,-.728,.132,side*.066,0,'toe')
+  };
+  root.userData.parts=parts;
+  return root;
+}
+const bodyPresenceLegL=_buildBodyPresenceLeg(-1);
+const bodyPresenceLegR=_buildBodyPresenceLeg(1);
+function _poseBodyPresenceLeg(root,side,ctx){
+  const p=root.userData.parts||{};
+  const phase=ctx.phase+side*Math.PI*.15;
+  const walk=ctx.walk;
+  const sprint=ctx.sprint;
+  const crouch=ctx.crouch;
+  const air=ctx.air;
+  const land=ctx.land;
+  const turn=ctx.turn;
+  const swing=Math.sin(phase)*walk;
+  const lift=Math.max(0,Math.cos(phase))*walk;
+  const plant=Math.max(0,-Math.cos(phase))*walk;
+  const knee=THREE.MathUtils.clamp(ctx.kneeBend+lift*.32+land*.45+crouch*.28+air*.16,0,1.4);
+  const stride=(.050+.040*sprint)*swing;
+  const sideSpread=ctx.spread+side*(turn*.006);
+  root.position.set(side*sideSpread, -.020+lift*.010-land*.012-crouch*.020, .018-stride*.22+plant*.012);
+  root.rotation.set(.020+air*.075+land*.055+crouch*.040, side*(turn*.115+swing*.018), side*(swing*.036+turn*.085));
+  const bootDip=plant*.026+land*.040+crouch*.010;
+  _poseBodyPresencePart(p.thigh,0,-knee*.010,stride*.34,knee*.22+air*.090+crouch*.080,side*(turn*.030+swing*.018),side*swing*.038);
+  _poseBodyPresencePart(p.knee,0,-knee*.012,stride*.42,knee*.16+land*.060,side*(turn*.035+swing*.014),side*swing*.030);
+  _poseBodyPresencePart(p.shin,0,-knee*.024,stride*.58,knee*.30-air*.060-land*.080,side*(turn*.040+swing*.018),-side*swing*.048);
+  _poseBodyPresencePart(p.calfGuard,0,-knee*.022,stride*.52,knee*.24-air*.050-land*.055,side*(turn*.044+swing*.016),-side*swing*.042);
+  _poseBodyPresencePart(p.boot,side*turn*.006,-bootDip,stride*.82-plant*.020,knee*.36-air*.135-land*.170+crouch*.060,side*(turn*.060+swing*.030),side*(.026+swing*.064));
+  _poseBodyPresencePart(p.sole,side*turn*.006,-bootDip-.010,stride*.86-plant*.024,knee*.38-air*.145-land*.185+crouch*.060,side*(turn*.060+swing*.030),side*(.026+swing*.064));
+  _poseBodyPresencePart(p.heel,0,-bootDip*.76,stride*.62-plant*.010,knee*.23-air*.070-land*.095,side*(turn*.042+swing*.020),side*swing*.032);
+  _poseBodyPresencePart(p.toe,side*turn*.010,-bootDip*.70,stride*1.02-plant*.032,knee*.46-air*.170-land*.225+crouch*.070,side*(turn*.070+swing*.036),side*(.035+swing*.080));
+}
+function _bodyPresenceSnapshot(){
+  return {
+    visible:!!bodyPresenceGrp.visible,
+    p:bodyPresenceGrp.position.toArray(),
+    r:bodyPresenceGrp.rotation.toArray(),
+    s:bodyPresenceGrp.scale.toArray(),
+    opacity:_BODY_PRESENCE_MATERIALS[0]?_BODY_PRESENCE_MATERIALS[0].opacity:0,
+    parts:_BODY_PRESENCE_PARTS.length,
+    state:typeof P!=='undefined'&&P._bodyPresenceState?Object.assign({},P._bodyPresenceState):null,
+    health:typeof P!=='undefined'&&P._bodyPresenceHealth?Object.assign({},P._bodyPresenceHealth):Object.assign({},_BODY_PRESENCE_FALLBACK_HEALTH),
+    left:{p:bodyPresenceLegL.position.toArray(),r:bodyPresenceLegL.rotation.toArray()},
+    right:{p:bodyPresenceLegR.position.toArray(),r:bodyPresenceLegR.rotation.toArray()}
+  };
+}
+function updateBodyPresenceLegs(dt){
+  const h=_bodyPresenceHealth();
+  const pr=playerAnimState0&&playerAnimState0.resolved&&playerAnimState0.resolved.proxy?playerAnimState0.resolved.proxy:{};
+  const sm=playerAnimState0&&playerAnimState0.smoothed?playerAnimState0.smoothed:{};
+  const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  const optic=typeof _currentOpticProfile==='function'?_currentOpticProfile():null;
+  const scopedClear=!!(optic&&ads>.55);
+  const slideClear=!!(P.sliding||(P.slideAmt||0)>.055);
+  const dropClear=!!(P.dropkickActive||(P.dropkickLandTimer||0)>0);
+  const deadClear=!!P.dead;
+  const speed=THREE.MathUtils.clamp(Number.isFinite(P._moveSpeedSmooth)?P._moveSpeedSmooth:Math.hypot(P.vx||0,P.vz||0),0,12);
+  const speedN=THREE.MathUtils.clamp(speed/6.5,0,1);
+  const sprint=THREE.MathUtils.clamp(P.sprintAmt||P.sprintBlend||0,0,1);
+  const crouch=THREE.MathUtils.clamp(P.crouchAmt||0,0,1);
+  const jump=THREE.MathUtils.clamp(pr.jumpPose||0,0,1);
+  const fall=THREE.MathUtils.clamp(pr.fallPose||0,0,1);
+  const land=THREE.MathUtils.clamp(Math.max(pr.landSquash||0,P.landKick||0,P._landingSpring||0),0,1);
+  const turn=THREE.MathUtils.clamp((pr.turnLean||0)+(P._turnDriveSide||0)*(P._turnDrivePulse||0)*.24,-1,1);
+  const air=Math.max(jump,fall);
+  const baseTarget=.105+speedN*.330+sprint*.140+crouch*.155+air*.245+land*.290+Math.abs(turn)*.050;
+  const blocked=deadClear||slideClear||dropClear||scopedClear;
+  const target=blocked?0:THREE.MathUtils.clamp(baseTarget*(1-ads*.54),0,.82);
+  P._bodyPresenceVis=damp(Number.isFinite(P._bodyPresenceVis)?P._bodyPresenceVis:0,target,target>P._bodyPresenceVis?12:18,dt);
+  const vis=THREE.MathUtils.clamp(P._bodyPresenceVis||0,0,1);
+  bodyPresenceGrp.visible=vis>.026;
+  if(!bodyPresenceGrp.visible){
+    bodyPresenceGrp.position.set(0,-.920,-.560);
+    bodyPresenceGrp.rotation.set(.500,0,0);
+    bodyPresenceGrp.scale.setScalar(.700);
+    _setBodyPresenceOpacity(0);
+    h.mode=blocked?(slideClear?'slide-clear':dropClear?'dropkick-clear':scopedClear?'scope-clear':deadClear?'dead':'clear'):'hidden';
+    P._bodyPresenceState={version:1,visible:false,vis:Number(vis.toFixed(3)),target:Number(target.toFixed(3)),mode:h.mode,parts:_BODY_PRESENCE_PARTS.length};
+    return;
+  }
+  const fallbackPhase=Number.isFinite(P._bodyPresencePhase)?P._bodyPresencePhase:0;
+  const gaitRate=4.8+speedN*5.4+sprint*2.5;
+  P._bodyPresencePhase=Number.isFinite(sm.footPhase)?sm.footPhase:(fallbackPhase+dt*gaitRate);
+  const phase=P._bodyPresencePhase||0;
+  const walk=THREE.MathUtils.clamp(speedN*(1-ads*.35)*(1-air*.32)+sprint*.10,0,1);
+  const rootX=THREE.MathUtils.clamp(turn*.020+Math.sin(phase*.5)*walk*.006,-.10,.10);
+  const rootY=THREE.MathUtils.clamp(-.855+crouch*.038+air*.082-land*.055+vis*.020-ads*.060,-1.12,-.62);
+  const rootZ=THREE.MathUtils.clamp(-.535-speedN*.038-crouch*.034+air*.060+land*.040+ads*.040,-.78,-.34);
+  const rootRX=THREE.MathUtils.clamp(.470+crouch*.130+air*.155-land*.080-ads*.070,.24,.86);
+  const rootRY=THREE.MathUtils.clamp(turn*.075+Math.sin(phase)*walk*.012,-.24,.24);
+  const rootRZ=THREE.MathUtils.clamp(-turn*.125+Math.sin(phase*.5)*walk*.018,-.32,.32);
+  const rootScale=THREE.MathUtils.clamp(.690+vis*.055+crouch*.020+land*.040-ads*.025,.58,.82);
+  bodyPresenceGrp.position.set(rootX,rootY,rootZ);
+  bodyPresenceGrp.rotation.set(rootRX,rootRY,rootRZ);
+  bodyPresenceGrp.scale.setScalar(rootScale);
+  const spread=.135+crouch*.030+ads*.045+walk*.018;
+  const kneeBend=THREE.MathUtils.clamp(pr.kneeBend||0,0,1);
+  _poseBodyPresenceLeg(bodyPresenceLegL,-1,{phase,walk,sprint,crouch,air,land,turn,spread,kneeBend});
+  _poseBodyPresenceLeg(bodyPresenceLegR,1,{phase:phase+Math.PI,walk,sprint,crouch,air,land,turn,spread,kneeBend});
+  bodyPresenceRoot.position.set(0, -.004-land*.018+crouch*.020, .025+air*.030+land*.012);
+  bodyPresenceRoot.rotation.set(.030+crouch*.095+air*.075-land*.050,turn*.060,-turn*.100);
+  _poseBodyPresencePart(bodyPresenceTorso.pelvis,turn*.010,-land*.015+crouch*.012,air*.034+land*.018,.040+crouch*.080+air*.070-land*.045,turn*.060,-turn*.092);
+  _poseBodyPresencePart(bodyPresenceTorso.belt,turn*.010,-land*.014+crouch*.011,air*.032+land*.016,.020+crouch*.070+air*.060-land*.040,turn*.064,-turn*.096);
+  _poseBodyPresencePart(bodyPresenceTorso.abdomen,turn*.018,-land*.022+crouch*.026,air*.055+land*.024,.190+crouch*.160+air*.115-land*.090,turn*.112,-turn*.175);
+  _poseBodyPresencePart(bodyPresenceTorso.hipL,-Math.abs(turn)*.006,-land*.010+crouch*.010,air*.024+land*.012,.055+crouch*.050+air*.040,turn*.045,-.070-turn*.050);
+  _poseBodyPresencePart(bodyPresenceTorso.hipR,Math.abs(turn)*.006,-land*.010+crouch*.010,air*.024+land*.012,.055+crouch*.050+air*.040,turn*.045,.070-turn*.050);
+  const opacity=(.30+vis*.62)*(1-ads*.24);
+  _setBodyPresenceOpacity(opacity);
+  _sanitizeBodyPresenceNode(bodyPresenceGrp,h,'bodyPresenceGrp');
+  _sanitizeBodyPresenceNode(bodyPresenceRoot,h,'bodyPresenceRoot');
+  h.mode=air>.1?(fall>.35?'fall':'air'):land>.08?'land':crouch>.15?'crouch':sprint>.35?'sprint':walk>.1?'walk':'idle';
+  h.parts=_BODY_PRESENCE_PARTS.length;
+  P._bodyPresenceState={
+    version:1,
+    visible:true,
+    vis:Number(vis.toFixed(3)),
+    target:Number(target.toFixed(3)),
+    mode:h.mode,
+    speed:Number(speed.toFixed(3)),
+    ads:Number(ads.toFixed(3)),
+    sprint:Number(sprint.toFixed(3)),
+    crouch:Number(crouch.toFixed(3)),
+    jump:Number(jump.toFixed(3)),
+    fall:Number(fall.toFixed(3)),
+    land:Number(land.toFixed(3)),
+    turn:Number(turn.toFixed(3)),
+    phase:Number((phase%(Math.PI*2)).toFixed(3)),
+    parts:_BODY_PRESENCE_PARTS.length
+  };
 }
 // ── TECH ARM-BAND on left forearm ──────────────────────────────────────────
 // Always-on procedural fallback. The authored 3D hand GLB owns the production
@@ -31824,11 +32065,108 @@ document.querySelectorAll('.decal-btn').forEach(b=>b.addEventListener('click',()
 _refreshDecalButtons();
 _refreshQualityButtons();applyQuality();
 // ── HAND ANIMATION ───────────────────────────────────────────────────────────
+const HAND_PLACEMENT_LIMITS={
+  right:{
+    abs:{x:[-.22,.36],y:[-.34,.17],z:[-.68,.25],rx:[-1.55,1.65],ry:[-.98,.98],rz:[-1.20,1.20]},
+    rel:{x:.36,y:.30,z:.40,rx:1.34,ry:.92,rz:1.12}
+  },
+  left:{
+    abs:{x:[-.50,.28],y:[-.40,.19],z:[-.82,.28],rx:[-1.45,1.98],ry:[-1.04,1.04],rz:[-1.32,1.32]},
+    rel:{x:.46,y:.34,z:.46,rx:1.46,ry:1.00,rz:1.18}
+  }
+};
+function _ensureHandPlacementHealth(){
+  if(!P._handPlacementHealth){
+    P._handPlacementHealth={version:1,clampEvents:0,nonFiniteEvents:0,snapResets:0,maxTargetDelta:0,maxCurrentDelta:0,rightVisible:false,leftVisible:false,lastWeaponIdx:P.weaponIdx|0};
+  }
+  return P._handPlacementHealth;
+}
+function _handPlacementFinite(v,fallback,health,key){
+  const n=Number(v);
+  if(Number.isFinite(n))return n;
+  if(health){
+    health.nonFiniteEvents=(health.nonFiniteEvents||0)+1;
+    health.lastNonFiniteKey=key||'unknown';
+  }
+  return Number.isFinite(fallback)?fallback:0;
+}
+function _handPlacementClamp(v,min,max,health,key){
+  const c=THREE.MathUtils.clamp(v,min,max);
+  if(c!==v&&health){
+    health.clampEvents=(health.clampEvents||0)+1;
+    health.lastClampKey=key||'unknown';
+  }
+  return c;
+}
+function _sanitizeHandTarget(side,target,base,health){
+  const lim=HAND_PLACEMENT_LIMITS[side]||HAND_PLACEMENT_LIMITS.right;
+  const out={};
+  for(const key of ['x','y','z','rx','ry','rz']){
+    const fallback=Number.isFinite(base&&base[key])?base[key]:0;
+    let value=_handPlacementFinite(target[key],fallback,health,`${side}.${key}`);
+    const relLimit=lim.rel[key]||1;
+    value=_handPlacementClamp(value,fallback-relLimit,fallback+relLimit,health,`${side}.${key}:rel`);
+    const abs=lim.abs[key]||[-1,1];
+    value=_handPlacementClamp(value,abs[0],abs[1],health,`${side}.${key}:abs`);
+    out[key]=value;
+  }
+  const delta=Math.max(
+    Math.abs(out.x-(base?.x||0)),Math.abs(out.y-(base?.y||0)),Math.abs(out.z-(base?.z||0)),
+    Math.abs(out.rx-(base?.rx||0)),Math.abs(out.ry-(base?.ry||0)),Math.abs(out.rz-(base?.rz||0))
+  );
+  if(health)health.maxTargetDelta=Math.max(health.maxTargetDelta||0,delta);
+  return out;
+}
+function _sanitizeHandGroupPose(grp,base,side,health){
+  if(!grp||!base)return;
+  const values=[grp.position.x,grp.position.y,grp.position.z,grp.rotation.x,grp.rotation.y,grp.rotation.z];
+  const sane=values.every(Number.isFinite)&&values.every(v=>Math.abs(v)<12);
+  if(!sane){
+    grp.position.set(base.x||0,base.y||0,base.z||0);
+    grp.rotation.set(base.rx||0,base.ry||0,base.rz||0);
+    if(health){
+      health.snapResets=(health.snapResets||0)+1;
+      health.lastSnapSide=side;
+    }
+    return;
+  }
+  const lim=HAND_PLACEMENT_LIMITS[side]||HAND_PLACEMENT_LIMITS.right;
+  const next={
+    x:grp.position.x,y:grp.position.y,z:grp.position.z,
+    rx:grp.rotation.x,ry:grp.rotation.y,rz:grp.rotation.z
+  };
+  let changed=false;
+  for(const key of ['x','y','z','rx','ry','rz']){
+    const fallback=Number.isFinite(base&&base[key])?base[key]:0;
+    const relLimit=lim.rel[key]||1;
+    let value=_handPlacementClamp(next[key],fallback-relLimit,fallback+relLimit,health,`${side}.current.${key}:rel`);
+    const abs=lim.abs[key]||[-1,1];
+    value=_handPlacementClamp(value,abs[0],abs[1],health,`${side}.current.${key}:abs`);
+    if(value!==next[key]){next[key]=value;changed=true;}
+  }
+  if(changed){
+    grp.position.set(next.x,next.y,next.z);
+    grp.rotation.set(next.rx,next.ry,next.rz);
+  }
+  const delta=Math.max(
+    Math.abs(grp.position.x-(base.x||0)),Math.abs(grp.position.y-(base.y||0)),Math.abs(grp.position.z-(base.z||0)),
+    Math.abs(grp.rotation.x-(base.rx||0)),Math.abs(grp.rotation.y-(base.ry||0)),Math.abs(grp.rotation.z-(base.rz||0))
+  );
+  if(health)health.maxCurrentDelta=Math.max(health.maxCurrentDelta||0,delta);
+}
+function _safeHandScale(value,fallback,health,key){
+  const n=_handPlacementFinite(value,fallback,health,`${key}.scale`);
+  return _handPlacementClamp(n,.64,1.28,health,`${key}.scale`);
+}
 function updateHands(dt){
   H.idlePhase+=dt;
   const ip=H.idlePhase;
   const _wi=P.weaponIdx|0;
   const handFit=H.handFit||_handFitForWeapon(_wi);
+  const _handHealth=_ensureHandPlacementHealth();
+  _handHealth.lastWeaponIdx=_wi;
+  _sanitizeHandGroupPose(rGrp,H.rBase,'right',_handHealth);
+  if(handFit.left)_sanitizeHandGroupPose(lGrp,H.lBase,'left',_handHealth);
   const _animVM=playerAnimState0.resolved&&playerAnimState0.resolved.viewmodel?playerAnimState0.resolved.viewmodel:null;
   const _vaultForearmCrop=!!(P.vaulting&&(P.vaultT||0)>.05&&(P.vaultT||0)<.78);
   const _adsVisForSight=P.adsVis||0;
@@ -32495,6 +32833,14 @@ function updateHands(dt){
     }
   }
   // ── Smooth toward targets — exponential damping keeps motion frame-rate stable
+  const _safeRight=_sanitizeHandTarget('right',{x:rTX,y:rTY,z:rTZ,rx:rTRX,ry:rTRY,rz:rTRZ},H.rBase,_handHealth);
+  rTX=_safeRight.x;rTY=_safeRight.y;rTZ=_safeRight.z;rTRX=_safeRight.rx;rTRY=_safeRight.ry;rTRZ=_safeRight.rz;
+  if(lGrp.visible){
+    const _safeLeft=_sanitizeHandTarget('left',{x:lTX,y:lTY,z:lTZ,rx:lTRX,ry:lTRY,rz:lTRZ},H.lBase,_handHealth);
+    lTX=_safeLeft.x;lTY=_safeLeft.y;lTZ=_safeLeft.z;lTRX=_safeLeft.rx;lTRY=_safeLeft.ry;lTRZ=_safeLeft.rz;
+  }
+  _rHandScale=_safeHandScale(_rHandScale,1,_handHealth,'right');
+  _lHandScale=_safeHandScale(_lHandScale,handFit.leftScale||1.04,_handHealth,'left');
   rGrp.scale.setScalar(_HAND_PROM_SCALE*_rHandScale*(_m4RuntimeGrip?.92:1));
   lGrp.scale.setScalar(_HAND_PROM_SCALE*_lHandScale*(_m4RuntimeGrip?.98:1));
   const ls=22,lm=14;
@@ -32510,6 +32856,14 @@ function updateHands(dt){
   lGrp.rotation.x=damp(lGrp.rotation.x,lTRX,lm,dt);
   lGrp.rotation.y=damp(lGrp.rotation.y,lTRY,lm,dt);
   lGrp.rotation.z=damp(lGrp.rotation.z,lTRZ,lm,dt);
+  _sanitizeHandGroupPose(rGrp,H.rBase,'right',_handHealth);
+  if(lGrp.visible)_sanitizeHandGroupPose(lGrp,H.lBase,'left',_handHealth);
+  _handHealth.rightVisible=!!rGrp.visible;
+  _handHealth.leftVisible=!!lGrp.visible;
+  _handHealth.supportVisible=!!lGrp.visible;
+  _handHealth.rightTarget={x:rTX,y:rTY,z:rTZ,rx:rTRX,ry:rTRY,rz:rTRZ};
+  _handHealth.leftTarget=lGrp.visible?{x:lTX,y:lTY,z:lTZ,rx:lTRX,ry:lTRY,rz:lTRZ}:null;
+  _handHealth.handGripPlacement=_HAND_GRIP_STATE&&_HAND_GRIP_STATE.placement?Object.assign({},_HAND_GRIP_STATE.placement):null;
   rIdxGrp.rotation.x=damp(rIdxGrp.rotation.x,idxTRX,ls,dt);
   const _fSp=20;
   let relDig=0, relMagBtn=0, relGrab=0, relIns=0, relRack=0;
@@ -32666,6 +33020,7 @@ _setLayer(gunGrp,1);
 _setLayer(knifGrp,1);
 _setLayer(dropkickFeetGrp,1);
 _setLayer(slideLegsGrp,1);
+_setLayer(bodyPresenceGrp,1);
 _setLayer(wristGrp,1);
 _setLayer(shopGrp,1);
 _setLayer(reloadHoloGrp,1);
@@ -33088,9 +33443,11 @@ function _weaponVisualStatus(){
       front:getWeaponSightProfile(P.weaponIdx).front?{socket:getWeaponSightProfile(P.weaponIdx).front.socket||null,node:getWeaponSightProfile(P.weaponIdx).front.node||null}:null,
       rear:getWeaponSightProfile(P.weaponIdx).rear?{socket:getWeaponSightProfile(P.weaponIdx).rear.socket||null,node:getWeaponSightProfile(P.weaponIdx).rear.node||null}:null
     }:null,
-    animation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
-    handGrip:handGripDebug(_HAND_GRIP_STATE),
-    emptyClickPulse:P._emptyClickPulse||0,
+	    animation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
+	    handGrip:handGripDebug(_HAND_GRIP_STATE),
+	    handPlacement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null,
+	    bodyPresence:typeof _bodyPresenceSnapshot==='function'?_bodyPresenceSnapshot():null,
+	    emptyClickPulse:P._emptyClickPulse||0,
     dryFirePulse:P._dryFirePulse||0,
     lastRoundPulse:P._lastRoundPulse||0,
     lowAmmoPulse:P._lowAmmoPulse||0,
@@ -33152,11 +33509,12 @@ function _weaponVisualStatus(){
       id:_fitDbg.id||'unknown',
       rightBase:H.rBase?{x:H.rBase.x,y:H.rBase.y,z:H.rBase.z,rx:H.rBase.rx||0,ry:H.rBase.ry||0,rz:H.rBase.rz||0}:null,
       leftBase:_fitDbg.left&&H.lBase?{x:H.lBase.x,y:H.lBase.y,z:H.lBase.z,rx:H.lBase.rx||0,ry:H.lBase.ry||0,rz:H.lBase.rz||0}:null,
-      rightCurrent:{x:rGrp.position.x,y:rGrp.position.y,z:rGrp.position.z,rx:rGrp.rotation.x,ry:rGrp.rotation.y,rz:rGrp.rotation.z},
-      leftCurrent:_fitDbg.left?{x:lGrp.position.x,y:lGrp.position.y,z:lGrp.position.z,rx:lGrp.rotation.x,ry:lGrp.rotation.y,rz:lGrp.rotation.z}:null,
-      leftScale:_fitDbg.leftScale||1,
-      supportVisible:!!lGrp.visible
-    }:null,
+	      rightCurrent:{x:rGrp.position.x,y:rGrp.position.y,z:rGrp.position.z,rx:rGrp.rotation.x,ry:rGrp.rotation.y,rz:rGrp.rotation.z},
+	      leftCurrent:_fitDbg.left?{x:lGrp.position.x,y:lGrp.position.y,z:lGrp.position.z,rx:lGrp.rotation.x,ry:lGrp.rotation.y,rz:lGrp.rotation.z}:null,
+	      leftScale:_fitDbg.leftScale||1,
+	      supportVisible:!!lGrp.visible,
+	      placement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null
+	    }:null,
     handContacts:_gripDbg?{left:_gripDbg.leftOffset,right:_gripDbg.rightOffset,sockets:_gripDbg.sockets}:null
   };
 }
@@ -33328,9 +33686,13 @@ function _animationFeelState(){
       locomotionFeel:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE0),
       weaponAnimation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
       adsAlignment:Object.assign({},P._ironSightAlign||{}),
-      poseMagnitudes:p0.transitionHealth&&p0.transitionHealth.poseMagnitudes
-    },
-    player2:{
+	      poseMagnitudes:p0.transitionHealth&&p0.transitionHealth.poseMagnitudes
+	    },
+	    embodiment:{
+	      handPlacement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null,
+	      bodyPresence:typeof _bodyPresenceSnapshot==='function'?_bodyPresenceSnapshot():null
+	    },
+	    player2:{
       active:!!(typeof _splitVsActive==='function'&&_splitVsActive()),
       transitionHealth:p1.transitionHealth,
       notifyStats:p1.notifyStats,
@@ -35588,7 +35950,7 @@ renderer.setAnimationLoop(()=>{
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
-      updateHands(dt);updateKnife(dt);updateDropkickFeet(dt);updateSlideLegs(dt);
+      updateHands(dt);updateKnife(dt);updateBodyPresenceLegs(dt);updateDropkickFeet(dt);updateSlideLegs(dt);
       _syncScopedViewmodelVisibility(_currentOpticProfile(),P.scopeSettle||0);
       _syncPracticalIronSightViewmodel();
       _forceCombatViewmodelVisible();
@@ -36417,12 +36779,14 @@ installDebugApi({
         vaultBufferMs:GAMEPLAY_QOL_FEEL.vaultBufferMs
       },
       hudCache:_hudCacheStats(),
-      animation:{
-        transitionHealth:getPlayerAnimDebug(playerAnimState0).transitionHealth,
-        notifyStats:getPlayerAnimDebug(playerAnimState0).notifyStats,
-        adsAlignment:Object.assign({},P._ironSightAlign||{}),
-        scopePipCache:Object.assign({},_scopePipCache)
-      },
+	      animation:{
+	        transitionHealth:getPlayerAnimDebug(playerAnimState0).transitionHealth,
+	        notifyStats:getPlayerAnimDebug(playerAnimState0).notifyStats,
+	        adsAlignment:Object.assign({},P._ironSightAlign||{}),
+	        scopePipCache:Object.assign({},_scopePipCache),
+	        handPlacement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null,
+	        bodyPresence:typeof _bodyPresenceSnapshot==='function'?_bodyPresenceSnapshot():null
+	      },
       jumpBufferMsLeft:Math.max(0,(P._jumpBufferedUntil||0)-performance.now()),
       vaultBufferMsLeft:Math.max(0,(P._vaultIntentUntil||0)-performance.now()),
       coyoteMsAgo:performance.now()-(P._lastGroundedT||0),
@@ -36466,16 +36830,84 @@ installDebugApi({
       mass:{f:P._massInertiaF||0,r:P._massInertiaR||0,body:P._bodyJolt||0,foot:P._footPlantCompression||0},
       movement:{speed:P._moveSpeedSmooth||0,accel:P._moveAccel||0,sprintBlend:P.sprintBlend||0,running:!!P.running,contactStall:P._moveContactStall||0}
     }),
-    setGameplayFeelProbe:(opts={})=>{
-      const nowMs=performance.now();
-      if(opts.vaultBuffer!==false)P._vaultIntentUntil=nowMs+(Number(opts.vaultMs)||GAMEPLAY_QOL_FEEL.vaultBufferMs);
-      if(opts.vaultCue!==false)P._vaultCuePulse=Math.max(P._vaultCuePulse||0,Number.isFinite(opts.vaultCue)?opts.vaultCue:1);
-      if(opts.pickupPulse!==false)P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,Number.isFinite(opts.pickupPulse)?opts.pickupPulse:1);
+	    setGameplayFeelProbe:(opts={})=>{
+	      const nowMs=performance.now();
+	      if(opts.vaultBuffer!==false)P._vaultIntentUntil=nowMs+(Number(opts.vaultMs)||GAMEPLAY_QOL_FEEL.vaultBufferMs);
+	      if(opts.vaultCue!==false)P._vaultCuePulse=Math.max(P._vaultCuePulse||0,Number.isFinite(opts.vaultCue)?opts.vaultCue:1);
+	      if(opts.pickupPulse!==false)P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,Number.isFinite(opts.pickupPulse)?opts.pickupPulse:1);
       if(opts.critical!==false)P._criticalHitPulse=Math.max(P._criticalHitPulse||0,Number.isFinite(opts.critical)?opts.critical:1);
-      if(opts.contact!==false)P._moveContactStall=Math.max(P._moveContactStall||0,Number.isFinite(opts.contact)?opts.contact:.6);
-      return window.__game.debug.gameplayFeelState();
-    },
-    lightingStats:()=>{
+	      if(opts.contact!==false)P._moveContactStall=Math.max(P._moveContactStall||0,Number.isFinite(opts.contact)?opts.contact:.6);
+	      return window.__game.debug.gameplayFeelState();
+	    },
+	    setEmbodimentProbe:(opts={})=>{
+	      const clamp=THREE.MathUtils.clamp;
+	      const speed=Math.max(0,Number(opts.speed)||0);
+	      const ads=clamp(Number.isFinite(opts.ads)?Number(opts.ads):(P.adsVis||0),0,1);
+	      P.dead=!!opts.dead;
+	      P._moveSpeedSmooth=speed;
+	      P.vx=speed*(Number.isFinite(opts.strafe)?Number(opts.strafe):0);
+	      P.vz=speed*(Number.isFinite(opts.forward)?Number(opts.forward):1);
+	      P.sprintAmt=clamp(Number(opts.sprint)||0,0,1);
+	      P.sprintBlend=P.sprintAmt;
+	      P.running=P.sprintAmt>.2;
+	      P.crouchAmt=clamp(Number(opts.crouch)||0,0,1);
+	      P.crouching=P.crouchAmt>.35;
+	      P.ads=ads;P.adsVis=ads;P.adsTarget=ads;P.adsSettle=ads;P.scopeSettle=_hasScopedAds(P)?ads:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;
+	      if(typeof M!=='undefined')M.rmbDown=ads>.5;
+	      P.sliding=!!opts.slide;
+	      P.slideAmt=clamp(Number.isFinite(opts.slideAmt)?Number(opts.slideAmt):(opts.slide?1:0),0,1);
+	      P.slideLocalR=clamp(Number(opts.slideSide)||0,-1,1);
+	      P.slideLocalF=clamp(Number.isFinite(opts.slideForward)?Number(opts.slideForward):1,-1,1);
+	      P.dropkickActive=!!opts.dropkick;
+	      P.dropkickLandTimer=opts.dropkickLand?Number(opts.dropkickLand)||.22:0;
+	      P.dropkickT=Number(opts.dropkickT)||0;
+	      P.dropkickDur=P.dropkickDur||DROPKICK.dur;
+	      P.dropkickImpact=clamp(Number(opts.dropkickImpact)||0,0,1);
+	      const jump=clamp(Number(opts.jump)||0,0,1);
+	      const fall=clamp(Number(opts.fall)||0,0,1);
+	      const land=clamp(Number(opts.land)||0,0,1);
+	      P.grounded=!(jump>.05||fall>.05);
+	      P.vy=jump>fall?5.5*jump:(fall>.05?-6.0*fall:0);
+	      P.jumpH=jump>.05||fall>.05?0.7:0;
+	      P.landKick=land*.22;
+	      P._landingSpring=land;
+	      P._turnDriveSide=clamp(Number(opts.turn)||0,-1,1);
+	      P._turnDrivePulse=Math.abs(P._turnDriveSide);
+	      if(playerAnimState0&&playerAnimState0.resolved){
+	        const proxy=playerAnimState0.resolved.proxy||(playerAnimState0.resolved.proxy={});
+	        proxy.jumpPose=jump;
+	        proxy.fallPose=fall;
+	        proxy.landSquash=land;
+	        proxy.turnLean=clamp(Number(opts.turn)||0,-1,1);
+	        proxy.kneeBend=clamp(Number(opts.knee)||Math.max(P.crouchAmt*.6,land*.7),0,1);
+	        proxy.footSwing=clamp(speed/6.5,0,1);
+	        proxy.footPlant=clamp(land+speed/10,0,1);
+	      }
+	      if(playerAnimState0&&playerAnimState0.smoothed&&Number.isFinite(opts.phase))playerAnimState0.smoothed.footPhase=Number(opts.phase);
+	      updateHands(1/30);
+	      updateBodyPresenceLegs(1/30);
+	      updateDropkickFeet(1/30);
+	      updateSlideLegs(1/30);
+	      return {bodyPresence:_bodyPresenceSnapshot(),viewmodel:window.__game.debug.viewmodelPose(),weapon:_weaponVisualStatus(),animation:window.__game.debug.animationFeelState()};
+	    },
+	    setHandPlacementFaultProbe:(kind='large')=>{
+	      const mode=String(kind||'large');
+	      if(mode==='nan'){
+	        rGrp.position.set(NaN,Infinity,-Infinity);
+	        rGrp.rotation.set(NaN,Infinity,-Infinity);
+	        lGrp.position.set(NaN,Infinity,-Infinity);
+	        lGrp.rotation.set(NaN,Infinity,-Infinity);
+	      }else{
+	        rGrp.position.set(8,-7,9);
+	        rGrp.rotation.set(5,-5,4);
+	        lGrp.position.set(-8,7,-9);
+	        lGrp.rotation.set(-5,5,-4);
+	      }
+	      updateHands(1/30);
+	      return {viewmodel:window.__game.debug.viewmodelPose(),weapon:_weaponVisualStatus()};
+	    },
+	    bodyPresenceStatus:()=>_bodyPresenceSnapshot(),
+	    lightingStats:()=>{
       const rs=_visualRuntimeStats();
       const L=rs.lighting||{};
       const pct=_perfFramePercentiles(PERF.samples);
@@ -36587,7 +37019,16 @@ installDebugApi({
     dropkickTargetProbe:()=>{const t=_dropkickTargetFor(P);return t?{found:true,dist:t.dist||0,lineDist:t.lineDist||0,lock:t.lock||0,hp:t.enemy&&t.enemy.hp||0,pos:t.enemy&&t.enemy.group?t.enemy.group.position.toArray():null}:{found:false};},
     dropkickState:()=>({active:!!P.dropkickActive,t:P.dropkickT||0,timer:P.dropkickTimer||0,cooldown:P.dropkickCooldown||0,dir:{x:P.dropkickDirX||0,z:P.dropkickDirZ||0},impact:P.dropkickImpact||0,contactTimer:P.dropkickContactTimer||0,contactStopTimer:P._dropkickImpactStopTimer||0,reboundTimer:P._dropkickReboundTimer||0,globalHitStopTimer:P._hitStopTimer||0,globalHitStopScale:P._hitStopScale||1,landTimer:P.dropkickLandTimer||0,targeted:!!P.dropkickTargeted,targetDist:P.dropkickTargetDist||0,targetLock:P.dropkickTargetLock||0,twirlSide:P.dropkickTwirlSide||1,feetVisible:!!dropkickFeetGrp.visible,feetMeshes:_DROP_FEET_PARTS.length,hitCount:P.dropkickHitEnemies instanceof Set?P.dropkickHitEnemies.size:0}),
     coverState:()=>({guardHeld:!!P.guardBehindHeld,guardActive:!!P.guardBehindActive,guardAmt:P.guardBehindAmt||0,guardReady:P.guardCoverReady||0,guardDist:P.guardCoverDist||0,guardMode:P.guardMode||'none',peekUp:P.guardPeekUp||0,peekSide:P.guardPeekSide||0,peekForward:P.guardPeekForward||0,autoPeekSide:P.guardAutoPeekSide||0,lowFirePeek:P.guardLowFirePeek||0,lowFirePeekMsLeft:Math.max(0,(P._guardLowFirePeekT||0)*1000),edgeBlockPulse:P._guardEdgeBlockPulse||0,wallEdge:P.guardWallEdge?Object.assign({},P.guardWallEdge):null,coverLockKey:P._guardCoverLockKey||null,crouchAmt:P.crouchAmt||0,cover:P.guardCover?{mode:P.guardCover.mode,dist:P.guardCover.dist,height:P.guardCover.height,geometryId:P.guardCover.v&&P.guardCover.v.geometryId||null}:null,nearVault:!!P.nearVault,nearVaultInfo:P.nearVaultInfo||null}),
-    viewmodelPose:()=>({rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray(),s:rGrp.scale.toArray(),visible:!!rGrp.visible},lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray(),s:lGrp.scale.toArray(),visible:!!lGrp.visible},gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray(),s:gunGrp.scale.toArray(),visible:!!gunGrp.visible},dropkickFeet:{visible:!!dropkickFeetGrp.visible,p:dropkickFeetGrp.position.toArray(),r:dropkickFeetGrp.rotation.toArray(),s:dropkickFeetGrp.scale.toArray(),body:{p:dropkickBodyRoot.position.toArray(),r:dropkickBodyRoot.rotation.toArray(),s:dropkickBodyRoot.scale.toArray()},left:dropkickBootL.position.toArray(),right:dropkickBootR.position.toArray(),meshes:_DROP_FEET_PARTS.length},slideLegs:{visible:!!slideLegsGrp.visible,p:slideLegsGrp.position.toArray(),r:slideLegsGrp.rotation.toArray(),s:slideLegsGrp.scale.toArray(),opacity:_SLIDE_BODY_PARTS[0]&&_SLIDE_BODY_PARTS[0].material?_SLIDE_BODY_PARTS[0].material.opacity:null,left:{p:slideLegL.position.toArray(),r:slideLegL.rotation.toArray()},right:{p:slideLegR.position.toArray(),r:slideLegR.rotation.toArray()}},fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null}),
+	    viewmodelPose:()=>({
+	      rGrp:{p:rGrp.position.toArray(),r:rGrp.rotation.toArray(),s:rGrp.scale.toArray(),visible:!!rGrp.visible},
+	      lGrp:{p:lGrp.position.toArray(),r:lGrp.rotation.toArray(),s:lGrp.scale.toArray(),visible:!!lGrp.visible},
+	      gunGrp:{p:gunGrp.position.toArray(),r:gunGrp.rotation.toArray(),s:gunGrp.scale.toArray(),visible:!!gunGrp.visible},
+	      handPlacement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null,
+	      bodyPresence:_bodyPresenceSnapshot(),
+	      dropkickFeet:{visible:!!dropkickFeetGrp.visible,p:dropkickFeetGrp.position.toArray(),r:dropkickFeetGrp.rotation.toArray(),s:dropkickFeetGrp.scale.toArray(),body:{p:dropkickBodyRoot.position.toArray(),r:dropkickBodyRoot.rotation.toArray(),s:dropkickBodyRoot.scale.toArray()},left:dropkickBootL.position.toArray(),right:dropkickBootR.position.toArray(),meshes:_DROP_FEET_PARTS.length},
+	      slideLegs:{visible:!!slideLegsGrp.visible,p:slideLegsGrp.position.toArray(),r:slideLegsGrp.rotation.toArray(),s:slideLegsGrp.scale.toArray(),opacity:_SLIDE_BODY_PARTS[0]&&_SLIDE_BODY_PARTS[0].material?_SLIDE_BODY_PARTS[0].material.opacity:null,left:{p:slideLegL.position.toArray(),r:slideLegL.rotation.toArray()},right:{p:slideLegR.position.toArray(),r:slideLegR.rotation.toArray()}},
+	      fingerRig:gunGrp.userData&&gunGrp.userData.fingerRig?gunGrp.userData.fingerRig:null
+	    }),
     setWristbandHologram:(kind,on=true)=>{
       const k=String(kind||'inventory');
       const enabled=!!on;

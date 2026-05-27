@@ -25,6 +25,11 @@ import {
   updateWeaponAnimationController,
   weaponAnimationDebug
 } from '../src/animation/weaponAnimationController.js';
+import {
+  createHandGripState,
+  updateHandGripState,
+  handGripDebug
+} from '../src/animation/handGripController.js';
 import { resolveEnemyAnimationStatus } from '../src/animation/enemyAnimationController.js';
 import { buildAnimationHealthReport } from '../src/animation/health.js';
 
@@ -246,6 +251,26 @@ assert.ok(weaponDebug.bodyCarry > 0, 'weapon controller should expose body carry
 assert.ok(weaponDebug.settle > 0, 'weapon controller should expose settle');
 assertFiniteObject(weaponDebug.pose, 'weapon.pose');
 
+const handGrip = createHandGripState({ weaponIdx: 0 });
+updateHandGripState(handGrip, {
+  dt: 1 / 60,
+  weaponIdx: 0,
+  ads: 0.82,
+  sprint: 0.15,
+  reloading: false,
+  reloadProgress: 0,
+  shotImpulse: 0.8,
+  partMotion: { trigger: 1, supportBrace: 0.95, slide: 0.25, chamber: 0.12 },
+  hasAuthoredWeaponParts: false
+});
+const handGripStatus = handGripDebug(handGrip);
+assert.equal(handGripStatus.placement.nonFiniteEvents, 0, 'hand grip placement should not produce non-finite offsets');
+assert.ok(handGripStatus.placement.rightAnchor > 0, 'right hand should anchor under ADS/fire tension');
+assert.ok(handGripStatus.placement.supportAnchor > 0, 'support hand should anchor under ADS/fire tension');
+assert.ok(handGripStatus.placement.maxOffset <= 0.25, 'hand additive offsets should stay inside placement envelope');
+assert.ok(handGripStatus.placement.maxRotation <= 0.78, 'hand additive rotations should stay inside placement envelope');
+assertFiniteObject(handGripStatus.offsets, 'handGrip.offsets');
+
 const enemy = {
   type: 'scout',
   animationState: 'peek',
@@ -281,6 +306,7 @@ const health = buildAnimationHealthReport({
   settings: { importedAnimationEnabled: false },
   playerAnimation: getPlayerAnimDebug(anim),
   weaponAnimation: weaponDebug,
+  handGrip: handGripStatus,
   locomotionFeel: locomotionDebug,
   enemyAnimation: [enemyStatus, deathStatus]
 });
@@ -293,6 +319,7 @@ console.log(JSON.stringify({
   notifyStats: getPlayerAnimDebug(anim).notifyStats,
   locomotionMagnitudes: locomotionDebug.magnitudes,
   weapon: { bodyCarry: weaponDebug.bodyCarry, settle: weaponDebug.settle },
+  handGrip: handGripStatus.placement,
   enemyIntent: enemyStatus.intentCue,
   health: { ok: health.ok, warnings: health.warnings.length }
 }, null, 2));
