@@ -14,6 +14,7 @@
     "test:acceptance": "npm run build:level-kit && npm run test:core-visual-finalization && npm run build && npm run test:animation:pipeline && npm run test:level-editor:assets && npm run test:asset:preflight && npm run validate:level-kit && npm run validate:custom-maps && npm run test:campaign && npm run test:custom-editor && npm run test:ai && npm run test:perf && npm run test:perf:stress && npm run test:visual:runtime && npm run test:render && npm run test:assets:budget && npm run test:visual:regression",
     "test:acceptance:full": "VISUAL_FULL=1 RENDER_FULL=1 npm run test:acceptance",
     "test:render": "node scripts/render-smoke.mjs",
+    "test:split-screen": "node scripts/split-screen-acceptance.mjs",
     "test:visual:runtime": "node scripts/visual-runtime-acceptance.mjs",
     "test:visual:regression": "node scripts/visual-regression.mjs",
     "test:assets:budget": "node scripts/asset-budget.mjs",
