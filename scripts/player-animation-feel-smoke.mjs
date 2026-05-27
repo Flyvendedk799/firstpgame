@@ -281,6 +281,20 @@ const enemy = {
   peekAmt: 0.7,
   atCover: true,
   strafeDir: -1,
+  _enemyLocomotionDebug: {
+    version: 'enemy-locomotion-realistic-v1',
+    mode: 'flank',
+    speedVis: 2.46,
+    desiredSpeed: 2.46,
+    targetSpeed: 4.2,
+    runBlend: 0.86,
+    cadence: 8.2,
+    strideMeters: 2.28,
+    strafeBlend: 0.28,
+    footPlant: 0.42,
+    footPlantSide: -1,
+    finite: true
+  },
   group: { userData: {} }
 };
 const beforeMode = enemy._movementMode;
@@ -288,7 +302,11 @@ const enemyStatus = resolveEnemyAnimationStatus(enemy, { importedAnimationEnable
 assert.equal(enemy._movementMode, beforeMode, 'enemy animation status must not mutate AI movement mode');
 assert.ok(enemyStatus.intentCue.headLead > 0, 'enemy peek should expose head lead cue');
 assert.ok(enemyStatus.intentCue.weaponRaise > 0, 'enemy aim should expose weapon raise cue');
+assert.equal(enemyStatus.locomotion.version, 'enemy-locomotion-realistic-v1', 'enemy status should expose active locomotion feel version');
+assert.ok(enemyStatus.locomotion.runBlend > 0.5, 'enemy locomotion debug should expose run blend');
+assert.ok(enemyStatus.locomotion.strideMeters > 0, 'enemy locomotion debug should expose stride length');
 assertFiniteObject(enemyStatus.intentCue, 'enemy.intentCue');
+assertFiniteObject(enemyStatus.locomotion, 'enemy.locomotion');
 
 const deathStatus = resolveEnemyAnimationStatus({
   type: 'heavy',
@@ -321,5 +339,6 @@ console.log(JSON.stringify({
   weapon: { bodyCarry: weaponDebug.bodyCarry, settle: weaponDebug.settle },
   handGrip: handGripStatus.placement,
   enemyIntent: enemyStatus.intentCue,
+  enemyLocomotion: enemyStatus.locomotion,
   health: { ok: health.ok, warnings: health.warnings.length }
 }, null, 2));

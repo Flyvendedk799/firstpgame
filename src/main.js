@@ -5959,14 +5959,80 @@ const ENEMY_TACTICS={
   marksman:{mag:8,reload:1.90,aim:.82,repositionEvery:5.8,coverSeek:.92,flank:.18,advance:.16,juke:.05,closeBreak:7.0,relocateAfterShot:true}
 };
 const ENEMY_LOCOMOTION_FEEL={
+  version:'enemy-locomotion-realistic-v1',
   patrolAccel:7.2,
   combatAccel:11.5,
   jukeAccel:18.0,
   decel:18.5,
   turnPlantAngle:.42,
   arriveSlowRadius:1.85,
-  unstickStep:.075
+  unstickStep:.075,
+  patrolTimeScale:.52,
+  visualSpeedRise:13.5,
+  visualSpeedFall:8.2,
+  runBlendRise:10.5,
+  runBlendFall:7.0,
+  cadenceMin:2.55,
+  cadenceMax:11.75
 };
+const ENEMY_REALISTIC_LOCOMOTION={
+  default:{walkStride:1.16,runStride:2.05,walkCap:3.05,runCap:3.75,sprintCap:4.20,jukeCap:4.45,stepHeight:1.00,hipSway:1.00,runEnter:.54,runFull:.92},
+  soldier:{walkStride:1.18,runStride:2.08,walkCap:3.05,runCap:3.55,sprintCap:3.95,jukeCap:4.10,stepHeight:1.00,hipSway:1.00,runEnter:.55,runFull:.92},
+  heavy:{walkStride:1.04,runStride:1.72,walkCap:2.25,runCap:2.55,sprintCap:2.80,jukeCap:2.95,stepHeight:.82,hipSway:1.25,runEnter:.50,runFull:.88},
+  sniper:{walkStride:1.06,runStride:1.86,walkCap:2.45,runCap:2.95,sprintCap:3.15,jukeCap:3.25,stepHeight:.88,hipSway:.86,runEnter:.52,runFull:.90},
+  scout:{walkStride:1.30,runStride:2.36,walkCap:3.25,runCap:4.30,sprintCap:4.85,jukeCap:5.25,stepHeight:1.18,hipSway:.80,runEnter:.46,runFull:.86},
+  pistolero:{walkStride:1.24,runStride:2.22,walkCap:3.15,runCap:4.20,sprintCap:4.70,jukeCap:5.05,stepHeight:1.12,hipSway:.88,runEnter:.46,runFull:.86},
+  shielded:{walkStride:1.00,runStride:1.62,walkCap:2.05,runCap:2.35,sprintCap:2.55,jukeCap:2.65,stepHeight:.76,hipSway:1.18,runEnter:.52,runFull:.90},
+  riot:{walkStride:1.06,runStride:1.72,walkCap:2.35,runCap:2.75,sprintCap:3.00,jukeCap:3.15,stepHeight:.84,hipSway:1.18,runEnter:.52,runFull:.90},
+  demolitions:{walkStride:1.10,runStride:1.92,walkCap:2.85,runCap:3.25,sprintCap:3.55,jukeCap:3.70,stepHeight:.92,hipSway:1.06,runEnter:.53,runFull:.90},
+  drone:{walkStride:1.34,runStride:2.40,walkCap:4.75,runCap:5.65,sprintCap:6.10,jukeCap:6.35,stepHeight:.70,hipSway:.50,runEnter:.42,runFull:.82},
+  marksman:{walkStride:1.06,runStride:1.84,walkCap:2.70,runCap:3.10,sprintCap:3.35,jukeCap:3.45,stepHeight:.86,hipSway:.82,runEnter:.52,runFull:.90},
+  lieutenant:{walkStride:1.16,runStride:2.02,walkCap:3.05,runCap:3.70,sprintCap:4.10,jukeCap:4.30,stepHeight:1.00,hipSway:.98,runEnter:.52,runFull:.90},
+  boss:{walkStride:1.18,runStride:2.00,walkCap:3.20,runCap:3.95,sprintCap:4.25,jukeCap:4.45,stepHeight:.95,hipSway:1.12,runEnter:.52,runFull:.90}
+};
+function _enemyRealisticLocomotionProfile(type){
+  const base=ENEMY_REALISTIC_LOCOMOTION.default;
+  const row=ENEMY_REALISTIC_LOCOMOTION[String(type||'soldier')]||base;
+  return Object.assign({},base,row);
+}
+function _enemyRealisticMoveMode(enemy,fallback='run'){
+  const state=enemy&&enemy.state;
+  const mode=enemy&&enemy._movementMode;
+  if(mode==='juke')return 'juke';
+  if(mode==='flank'||mode==='reposition'||state===FLANK||state===REPOSITION)return 'sprint';
+  if(state===PATROL||state===SEARCH||mode==='walk')return 'walk';
+  if(state===CHASE||state===ATTACK||state===SUPPRESS||mode==='chase'||mode==='strafe')return 'run';
+  return fallback;
+}
+function _enemyRealisticSpeedCap(enemy,mode=null){
+  const profile=_enemyRealisticLocomotionProfile(enemy&&enemy.type);
+  const key=(mode||_enemyRealisticMoveMode(enemy)).replace('sprint','sprint');
+  const cap=key==='juke'?profile.jukeCap:key==='sprint'?profile.sprintCap:key==='walk'?profile.walkCap:profile.runCap;
+  const mul=(enemy&&Number.isFinite(enemy._encSpeedMul))?Math.max(.25,enemy._encSpeedMul):1;
+  const limbMul=(enemy&&typeof _enemyMoveSpeedMul==='function')?_enemyMoveSpeedMul(enemy):1;
+  return Math.max(.1,(Number(cap)||profile.runCap||3.5)*mul*Math.max(.25,limbMul||1));
+}
+function _enemyRealisticLocomotionSnapshot(enemy,extra={}){
+  const loc=Object.assign({
+    version:ENEMY_LOCOMOTION_FEEL.version,
+    type:enemy&&enemy.type||'soldier',
+    mode:_enemyRealisticMoveMode(enemy,'idle'),
+    speedVis:enemy&&Number.isFinite(enemy._moveSpeedVis)?enemy._moveSpeedVis:0,
+    desiredSpeed:enemy?Math.hypot(enemy._moveVelX||0,enemy._moveVelZ||0):0,
+    targetSpeed:enemy&&Number.isFinite(enemy._moveTargetSpeed)?enemy._moveTargetSpeed:0,
+    runBlend:enemy&&Number.isFinite(enemy._enemyRunBlend)?enemy._enemyRunBlend:0,
+    strideMeters:0,
+    cadence:0,
+    strafeBlend:0,
+    footPlant:enemy&&Number.isFinite(enemy._enemyFootPlantVis)?enemy._enemyFootPlantVis:0,
+    footPlantSide:enemy&&Number.isFinite(enemy._enemyFootPlantSide)?enemy._enemyFootPlantSide:0
+  },extra||{});
+  for(const [k,v] of Object.entries(loc)){
+    if(typeof v==='number')loc[k]=Number.isFinite(v)?Number(v.toFixed(4)):0;
+  }
+  loc.finite=Object.values(loc).every(v=>typeof v!=='number'||Number.isFinite(v));
+  return loc;
+}
 const ENEMY_LIMB_SCHEMA={
   torso:{label:'torso',side:0,damageMul:1.00,healthMul:1.00,breakable:false,kind:'core',hitSize:[.50,1.04,.30]},
   head:{label:'head',side:0,damageMul:1.00,healthMul:.42,breakable:false,kind:'core',hitSize:[.28,.28,.28]},
@@ -6136,6 +6202,7 @@ class Enemy{
     this._combatSeed=Math.random()*Math.PI*2;
     this._animLastX=pos.x;this._animLastZ=pos.z;this._animLastYaw=0;
     this._moveSpeedVis=0;this._forwardSpeedVis=0;this._lateralSpeedVis=0;this._moveAccelVis=0;this._turnRateVis=0;
+    this._enemyRunBlend=0;this._moveTargetSpeed=0;this._enemyLocomotionDebug=_enemyRealisticLocomotionSnapshot(this);
     this._moveVelX=0;this._moveVelZ=0;this._aimTrackQuality=0;this._aimYawError=0;this._aimYawErrorSigned=0;
     this._pivotPulse=0;this._pivotSide=1;this._lastFootPlantSide=0;
     this._peekPrepPulse=0;this._peekCommitPulse=0;this._peekSideSign=Math.random()<.5?-1:1;
@@ -7587,20 +7654,28 @@ class Enemy{
       return;
     }
     if(isMoving){
-      // Forward-only alternating march: each leg lifts on its half of the cycle
-      // and rests at zero on the other half. Knee bends on the swing leg. Arms
-      // stay at bind (skin weights tear on any arm rotation).
-      const fast=this.state===CHASE||this.state===FLANK||this.state===REPOSITION||this._movementMode==='juke';
-      const speed=fast?7.5:5.0;
-      const amp =fast?.70:.45;
-      const t=(this._poseT*speed)%(Math.PI*2);
-      const lLift=t<Math.PI?Math.sin(t)*amp:0;
-      const rLift=t>=Math.PI?Math.sin(t-Math.PI)*amp:0;
+      // Forward-only, speed-driven gait keeps imported skins from tearing while
+      // matching cadence to actual travel speed so fast enemies do not skate.
+      const loc=this._enemyLocomotionDebug||null;
+      const motion=this.motionProfile||_enemyMotionProfile(this.type);
+      const pace=_enemyRealisticLocomotionProfile(this.type);
+      const runBlend=THREE.MathUtils.clamp(Number(loc&&loc.runBlend)||this._enemyRunBlend||0,0,1);
+      const speedVis=THREE.MathUtils.clamp(Number(loc&&loc.speedVis)||this._moveSpeedVis||this.speed*.45,.25,8);
+      const stride=THREE.MathUtils.lerp(pace.walkStride,pace.runStride,runBlend);
+      const cadence=Number(loc&&loc.cadence)||THREE.MathUtils.clamp(speedVis/Math.max(.72,stride)*Math.PI*2,ENEMY_LOCOMOTION_FEEL.cadenceMin,ENEMY_LOCOMOTION_FEEL.cadenceMax);
+      const t=Number.isFinite(this.walkPhase)?this.walkPhase:(this._poseT*cadence);
+      const liftAmp=(.34+runBlend*.30)*(pace.stepHeight||1)*(motion.stride||1);
+      const lLift=Math.max(0,Math.sin(t))*liftAmp;
+      const rLift=Math.max(0,-Math.sin(t))*liftAmp;
+      const plant=Math.max(0,Number(loc&&loc.footPlant)||this._enemyFootPlantVis||0);
       if(B.LeftUpLeg) B.LeftUpLeg.rotateX(lLift);
       if(B.RightUpLeg)B.RightUpLeg.rotateX(rLift);
-      if(B.LeftLeg)   B.LeftLeg.rotateX(lLift*0.6);
-      if(B.RightLeg)  B.RightLeg.rotateX(rLift*0.6);
-      if(B.Hips)      B.Hips.position.y += Math.abs(Math.sin(t))*amp*0.04;
+      if(B.LeftLeg)   B.LeftLeg.rotateX(lLift*(.52+runBlend*.18)+plant*.045);
+      if(B.RightLeg)  B.RightLeg.rotateX(rLift*(.52+runBlend*.18)+plant*.045);
+      if(B.Hips){
+        B.Hips.position.y += (Math.abs(Math.sin(t))*(.015+runBlend*.015)+plant*.012)*(pace.stepHeight||1);
+        B.Hips.rotateZ(Math.sin(t)*(.012+runBlend*.010)*(pace.hipSway||1));
+      }
     } else {
       // Idle: tiny breathing sway through the spine.
       const t=this._poseT*1.6;
@@ -7691,7 +7766,7 @@ class Enemy{
 	    const lateralNow=THREE.MathUtils.clamp((mdx*rightX+mdz*rightZ)/frameDt,-8,8);
 	    const forwardNow=THREE.MathUtils.clamp((mdx*fwdX+mdz*fwdZ)/frameDt,-8,8);
 	    const prevSpeed=this._moveSpeedVis||0;
-	    this._moveSpeedVis=damp(prevSpeed,speedDrive,speedDrive>prevSpeed?18:9,dt);
+	    this._moveSpeedVis=damp(prevSpeed,speedDrive,speedDrive>prevSpeed?ENEMY_LOCOMOTION_FEEL.visualSpeedRise:ENEMY_LOCOMOTION_FEEL.visualSpeedFall,dt);
 	    this._moveAccelVis=damp(this._moveAccelVis||0,(speedDrive-prevSpeed)/frameDt,10,dt);
 	    this._lateralSpeedVis=damp(this._lateralSpeedVis||0,lateralNow,16,dt);
 	    this._forwardSpeedVis=damp(this._forwardSpeedVis||0,forwardNow,14,dt);
@@ -7759,117 +7834,125 @@ class Enemy{
 	    let lElbRX=0.32,rElbRX=0.32; // natural relaxed elbow bend
 
     if(isMoving){
-      // Walking vs running gait — type-modulated cadence
       const typeGait={
-        heavy:    {spd:.78,armAmt:.55,legAmt:.50,bob:.022,leanRun:-.10},
-        sniper:   {spd:.94,armAmt:.65,legAmt:.55,bob:.020,leanRun:-.14},
-        scout:    {spd:1.18,armAmt:.92,legAmt:.78,bob:.030,leanRun:-.20},
-        pistolero:{spd:1.05,armAmt:.85,legAmt:.70,bob:.024,leanRun:-.16},
-        shielded: {spd:.82,armAmt:.50,legAmt:.45,bob:.018,leanRun:-.08},
-        riot:     {spd:.88,armAmt:.55,legAmt:.52,bob:.018,leanRun:-.11},
-        demolitions:{spd:.92,armAmt:.62,legAmt:.58,bob:.021,leanRun:-.12},
-        marksman: {spd:.90,armAmt:.58,legAmt:.54,bob:.019,leanRun:-.10},
-        soldier:  {spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16},
-        boss:     {spd:.96,armAmt:.65,legAmt:.62,bob:.020,leanRun:-.10}
-      }[this.type]||{spd:1.00,armAmt:.78,legAmt:.65,bob:.025,leanRun:-.16};
-		      const gaitSpeed=THREE.MathUtils.clamp((this._moveSpeedVis||this.speed*.55)/Math.max(.65,this.speed),.30,1.55);
-		      const phaseSpd=(isRunning?7.9:5.15)*typeGait.spd*(motionProfile.stride||1)*(.70+gaitSpeed*.38);
-	      this.walkPhase+=dt*phaseSpd;
-	      const sw=Math.sin(this.walkPhase);
-	      const sw2=Math.sin(this.walkPhase*2);
-	      const swA=Math.abs(sw);
-      // Phase R: foot-strike trigger — fires at the bottom of each leg phase
-      // (sw crosses zero from + to -). Used for impact emphasis.
-      const _phaseSwitch=this._lastSwSign==null?0:Math.sign(sw)-this._lastSwSign;
-      this._lastSwSign=Math.sign(sw);
-	      if(_phaseSwitch!==0){
-	        this._footStrikeT=performance.now();
-	        this._enemyFootPlantVis=Math.max(this._enemyFootPlantVis||0,isRunning?.60:.40);
-	        this._enemyFootPlantSide=Math.sign(sw)||1;
-	      }
-	      const _strikeAge=(performance.now()-(this._footStrikeT||0))/1000;
-	      const _strikePulse=Math.max(0,1-_strikeAge/0.18);
-	      const _plantPulse=Math.max(_strikePulse,this._enemyFootPlantVis||0);
+        heavy:    {spd:.84,armAmt:.52,legAmt:.46,bob:.020,leanRun:-.090},
+        sniper:   {spd:.94,armAmt:.58,legAmt:.50,bob:.018,leanRun:-.115},
+        scout:    {spd:1.08,armAmt:.86,legAmt:.72,bob:.026,leanRun:-.175},
+        pistolero:{spd:1.02,armAmt:.80,legAmt:.66,bob:.022,leanRun:-.150},
+        shielded: {spd:.82,armAmt:.46,legAmt:.42,bob:.016,leanRun:-.070},
+        riot:     {spd:.88,armAmt:.50,legAmt:.48,bob:.017,leanRun:-.090},
+        demolitions:{spd:.91,armAmt:.58,legAmt:.52,bob:.019,leanRun:-.105},
+        marksman: {spd:.90,armAmt:.55,legAmt:.50,bob:.017,leanRun:-.090},
+        soldier:  {spd:1.00,armAmt:.72,legAmt:.60,bob:.022,leanRun:-.135},
+        boss:     {spd:.94,armAmt:.60,legAmt:.56,bob:.018,leanRun:-.090}
+      }[this.type]||{spd:1.00,armAmt:.72,legAmt:.60,bob:.022,leanRun:-.135};
+      const pace=_enemyRealisticLocomotionProfile(this.type);
+      const speedVis=THREE.MathUtils.clamp(this._moveSpeedVis||desiredMoveSpeed||this.speed*.45,0,12);
+      const desiredVis=THREE.MathUtils.clamp(Math.max(desiredMoveSpeed,speedVis*.85),0,12);
+      const mode=_enemyRealisticMoveMode(this,isRunning?'run':'walk');
+      const runStart=Math.max(.55,(this.speed||2.5)*(pace.runEnter||.52));
+      const runFull=Math.max(runStart+.55,(this.speed||2.5)*(pace.runFull||.90));
+      const runTarget=(mode==='sprint'||mode==='juke')?1:(isRunning?THREE.MathUtils.smoothstep(THREE.MathUtils.clamp((desiredVis-runStart)/(runFull-runStart),0,1),0,1):0);
+      const prevRun=this._enemyRunBlend||0;
+      this._enemyRunBlend=damp(prevRun,runTarget,runTarget>prevRun?ENEMY_LOCOMOTION_FEEL.runBlendRise:ENEMY_LOCOMOTION_FEEL.runBlendFall,dt);
+      const runBlend=THREE.MathUtils.clamp(this._enemyRunBlend||0,0,1);
+      const strideMeters=THREE.MathUtils.clamp(
+        THREE.MathUtils.lerp(pace.walkStride,pace.runStride,runBlend)*THREE.MathUtils.clamp(motionProfile.stride||1,.72,1.32),
+        .78,
+        3.00
+      );
+      const cadence=THREE.MathUtils.clamp(Math.max(speedVis,.28)/Math.max(.72,strideMeters)*Math.PI*2,ENEMY_LOCOMOTION_FEEL.cadenceMin,ENEMY_LOCOMOTION_FEEL.cadenceMax)*typeGait.spd;
+      this.walkPhase+=dt*cadence;
+      const sw=Math.sin(this.walkPhase);
+      const cw=Math.cos(this.walkPhase);
+      const sw2=Math.sin(this.walkPhase*2);
+      const swA=Math.abs(sw);
+      const leftSwing=THREE.MathUtils.clamp(Math.max(0,-sw)*1.10,0,1);
+      const rightSwing=THREE.MathUtils.clamp(Math.max(0,sw)*1.10,0,1);
+      const leftStance=THREE.MathUtils.clamp(Math.max(0,sw)*1.08,0,1);
+      const rightStance=THREE.MathUtils.clamp(Math.max(0,-sw)*1.08,0,1);
+      const phaseSign=Math.sign(sw)||this._lastSwSign||1;
+      const _phaseSwitch=this._lastSwSign==null?0:phaseSign-this._lastSwSign;
+      this._lastSwSign=phaseSign;
+      if(_phaseSwitch!==0){
+        this._footStrikeT=performance.now();
+        this._enemyFootPlantVis=Math.max(this._enemyFootPlantVis||0,THREE.MathUtils.lerp(.32,.62,runBlend));
+        this._enemyFootPlantSide=phaseSign;
+      }
+      const _strikeAge=(performance.now()-(this._footStrikeT||0))/1000;
+      const _strikePulse=Math.max(0,1-_strikeAge/THREE.MathUtils.lerp(.22,.15,runBlend));
+      const _plantPulse=Math.max(_strikePulse,this._enemyFootPlantVis||0);
+      const forwardAbs=Math.abs(this._forwardSpeedVis||0);
+      const lateralAbs=Math.abs(this._lateralSpeedVis||0);
+      const strafeBlend=THREE.MathUtils.clamp(lateralAbs/Math.max(.35,forwardAbs+lateralAbs),0,.72);
+      const strideDrive=THREE.MathUtils.clamp(.78+speedVis/Math.max(1.2,this.speed||2.5)*.32,.70,1.18);
+      const armAmt=THREE.MathUtils.lerp(.58,1.02,runBlend)*typeGait.armAmt/.72*(motionProfile.stride||1)*strideDrive*(1-strafeBlend*.28);
+      const legAmt=THREE.MathUtils.lerp(.48,.82,runBlend)*typeGait.legAmt/.60*(motionProfile.stride||1)*strideDrive*(1-strafeBlend*.36);
 
-		      const strideVis=THREE.MathUtils.clamp(.62+gaitSpeed*.42,.55,1.22);
-		      const armAmt=(isRunning?1.10:.70)*typeGait.armAmt/.78*(motionProfile.stride||1)*strideVis;
-		      const legAmt=(isRunning?.92:.60)*typeGait.legAmt/.65*(motionProfile.stride||1)*strideVis;
+      lARX=sw*armAmt;
+      rARX=-sw*armAmt;
+      lLRX=-sw*legAmt-leftSwing*.045+rightStance*.025;
+      rLRX=sw*legAmt-rightSwing*.045+leftStance*.025;
+      lARX+=rightSwing*.060*runBlend;
+      rARX+=leftSwing*.060*runBlend;
 
-      lARX= sw*armAmt; rARX=-sw*armAmt;
-      lLRX=-sw*legAmt; rLRX= sw*legAmt;
-      // Phase R: asymmetric arm bias for sprint — lead arm pumps further than
-      // trail arm (carrying weight forward).
-      if(isRunning){
-        const leadBias=0.12;
-        lARX+=Math.max(0,sw)*leadBias;
-        rARX+=Math.max(0,-sw)*leadBias;
+      lElbRX=0.32+leftSwing*THREE.MathUtils.lerp(.28,.64,runBlend)+rightStance*.08*runBlend;
+      rElbRX=0.32+rightSwing*THREE.MathUtils.lerp(.28,.64,runBlend)+leftStance*.08*runBlend;
+      if(isAttacking){
+        const aimPose=this.aimReady||0;
+        const combatCarry=.32+aimPose*.44;
+        lARX=lARX*(1-combatCarry)-aimPose*.28;
+        rARX=rARX*(1-combatCarry)-aimPose*.32;
+        lElbRX+=aimPose*.34;
+        rElbRX+=aimPose*.30;
       }
 
-	      // Elbow pumping — opposite arm bends more on forward stride
-	      lElbRX=0.32+Math.max(0,-sw)*(isRunning?.72:.30);
-	      rElbRX=0.32+Math.max(0, sw)*(isRunning?.72:.30);
-	      if(isAttacking){
-	        const aimPose=this.aimReady||0;
-	        const combatCarry=.30+aimPose*.42;
-	        lARX=lARX*(1-combatCarry)-aimPose*.28;
-	        rARX=rARX*(1-combatCarry)-aimPose*.32;
-	        lElbRX+=aimPose*.34;
-	        rElbRX+=aimPose*.30;
-	      }
-      // Knee bend follows leg phase — back leg bends more on push-off.
-      // Phase R: stronger push-off curve, sharper foot-plant.
-	      this._lKneeBend=0.10+Math.max(0,sw)*(isRunning?.62:.34)+_plantPulse*0.11*Math.max(0,sw);
-	      this._rKneeBend=0.10+Math.max(0,-sw)*(isRunning?.62:.34)+_plantPulse*0.11*Math.max(0,-sw);
+      const stepHeight=pace.stepHeight||1;
+      const pushBend=THREE.MathUtils.lerp(.20,.34,runBlend);
+      const swingBend=THREE.MathUtils.lerp(.34,.58,runBlend)*stepHeight;
+      this._lKneeBend=0.10+leftSwing*swingBend+leftStance*pushBend+_plantPulse*.075*leftStance;
+      this._rKneeBend=0.10+rightSwing*swingBend+rightStance*pushBend+_plantPulse*.075*rightStance;
 
-	      // Torso forward lean at speed (heavier types lean less)
-	      bodyRX=isRunning?typeGait.leanRun:-.05;
-	      if(isAttacking)bodyRX-=(this.aimReady||0)*.060;
-      // Spine twist: counter-rotation adds naturalistic torso twist
-      bodyRY=sw*(isRunning?.14:.065);
-      // Side-to-side sway — heavy types sway more, scouts less
-	      const swayAmp=this.type==='heavy'?.13:this.type==='scout'?.045:.09;
-	      bodyRZ=sw*(isRunning?swayAmp:swayAmp*.55);
+      bodyRX=THREE.MathUtils.lerp(-.040,typeGait.leanRun,runBlend);
+      if(isAttacking)bodyRX-=(this.aimReady||0)*.060;
+      bodyRY=sw*THREE.MathUtils.lerp(.055,.125,runBlend)*(1-strafeBlend*.30);
+      const swayAmp=(this.type==='heavy'?.115:this.type==='scout'?.046:.078)*(pace.hipSway||1);
+      bodyRZ=sw*THREE.MathUtils.lerp(swayAmp*.46,swayAmp,runBlend);
 
-      // Body vertical bob: compress at foot-strike, rise at mid-stride.
-      // Phase R: add a sharp dip on actual foot-strike for impact.
-      const bobScale=typeGait.bob/.025;
-	      const _strikeDip=_plantPulse*(isRunning?0.020:0.010);
-      this.bMesh.position.y=.76-swA*(isRunning?.040:.018)*bobScale+sw2*(isRunning?.012:.006)*bobScale-_strikeDip;
-      // Hip drop on each foot-strike — Phase R: bumped 30%.
+      const bobScale=(typeGait.bob/.022)*(pace.stepHeight||1);
+      const _strikeDip=_plantPulse*THREE.MathUtils.lerp(.009,.020,runBlend)*bobScale;
+      this.bMesh.position.y=.76-swA*THREE.MathUtils.lerp(.014,.034,runBlend)*bobScale+sw2*THREE.MathUtils.lerp(.004,.011,runBlend)*bobScale-_strikeDip;
       if(this.lLegGrp){
-        this.lLegGrp.position.y=.22-Math.max(0,sw)*(isRunning?.026:.013);
-        this.rLegGrp.position.y=.22-Math.max(0,-sw)*(isRunning?.026:.013);
+        this.lLegGrp.position.y=.22-leftStance*THREE.MathUtils.lerp(.011,.026,runBlend)*stepHeight+leftSwing*.006;
+        this.rLegGrp.position.y=.22-rightStance*THREE.MathUtils.lerp(.011,.026,runBlend)*stepHeight+rightSwing*.006;
       }
-	      // Head subtle counter-bob — Phase R: stronger absorption pulse on strike.
-		      if(this.hMesh)this.hMesh.position.y=1.48-swA*.006-_strikeDip*0.56;
-	      const speedFrac=THREE.MathUtils.clamp(this._moveSpeedVis/Math.max(1,this.speed*1.35),0,1.25);
-	      const accelLean=THREE.MathUtils.clamp((this._moveAccelVis||0)/18,-1,1)*(motionProfile.inertia||1);
-	      const lateralLean=THREE.MathUtils.clamp((this._lateralSpeedVis||0)/Math.max(1,this.speed),-1,1);
-	      const turnLean=THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*(motionProfile.turnLean||1);
-	      const plantSide=sw>=0?1:-1;
-	      const lSwing=THREE.MathUtils.clamp(Math.max(0,-sw)*1.15,0,1);
-	      const rSwing=THREE.MathUtils.clamp(Math.max(0, sw)*1.15,0,1);
-	      const footRoll=Math.sin(THREE.MathUtils.clamp((this.walkPhase%(Math.PI*2))/(Math.PI*2),0,1)*Math.PI*2);
-		      lBootRX=-lSwing*.20+Math.max(0,sw)*.070-_plantPulse*.060*Math.max(0,sw);
-		      rBootRX=-rSwing*.20+Math.max(0,-sw)*.070-_plantPulse*.060*Math.max(0,-sw);
-	      lBootRZ=-lateralLean*.050+footRoll*.018*(isRunning?1:.55);
-	      rBootRZ=-lateralLean*.050-footRoll*.018*(isRunning?1:.55);
-		      lLRZ+=-lateralLean*(isRunning?.105:.070)+plantSide*_plantPulse*.034;
-		      rLRZ+=-lateralLean*(isRunning?.105:.070)-plantSide*_plantPulse*.034;
-	      lLRY+=turnLean*.045+lateralLean*.030;
-	      rLRY+=turnLean*.045+lateralLean*.030;
-	      lARZ+=-bodyRZ*.22-turnLean*.035;
-	      rARZ+=-bodyRZ*.22-turnLean*.035;
-	      lARY+=bodyRY*.18;
-	      rARY+=bodyRY*.18;
-		      bodyRX+=-accelLean*.050-speedFrac*.020+_plantPulse*(isRunning?.032:.016);
-		      bodyRZ+=-lateralLean*.105*(isRunning?1.0:.62)-turnLean*.072+plantSide*_plantPulse*(isRunning?.050:.028);
-	      bodyRY+=turnLean*.052-lateralLean*.038;
-	      if(this.weaponGrp&&isAttacking){
-	        this.weaponGrp.position.x+=(-lateralLean*.030-turnLean*.018-this.weaponGrp.position.x)*Math.min(dt*7,1);
-		        this.weaponGrp.rotation.z+=(-turnLean*.035+plantSide*_plantPulse*.024)*(isRunning?1:.55);
-	      }
-	      if(this._movementMode==='juke'){
+      if(this.hMesh)this.hMesh.position.y=1.48-swA*.005-_strikeDip*.50+Math.max(0,cw)*.002*runBlend;
+      const speedFrac=THREE.MathUtils.clamp(speedVis/Math.max(1,this.speed*1.30),0,1.25);
+      const accelLean=THREE.MathUtils.clamp((this._moveAccelVis||0)/18,-1,1)*(motionProfile.inertia||1);
+      const lateralLean=THREE.MathUtils.clamp((this._lateralSpeedVis||0)/Math.max(1,this.speed),-1,1);
+      const turnLean=THREE.MathUtils.clamp((this._turnRateVis||0)/5,-1,1)*(motionProfile.turnLean||1);
+      const plantSide=phaseSign;
+      const footRoll=Math.sin(THREE.MathUtils.clamp((this.walkPhase%(Math.PI*2))/(Math.PI*2),0,1)*Math.PI*2);
+      lBootRX=-leftSwing*THREE.MathUtils.lerp(.16,.24,runBlend)+leftStance*.075-_plantPulse*.050*leftStance+Math.max(0,cw)*.035*leftSwing;
+      rBootRX=-rightSwing*THREE.MathUtils.lerp(.16,.24,runBlend)+rightStance*.075-_plantPulse*.050*rightStance+Math.max(0,-cw)*.035*rightSwing;
+      lBootRZ=-lateralLean*.052+footRoll*.017*THREE.MathUtils.lerp(.55,1,runBlend)-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.035;
+      rBootRZ=-lateralLean*.052-footRoll*.017*THREE.MathUtils.lerp(.55,1,runBlend)-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.035;
+      lLRZ+=-lateralLean*THREE.MathUtils.lerp(.066,.108,runBlend)+plantSide*_plantPulse*.032-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.050;
+      rLRZ+=-lateralLean*THREE.MathUtils.lerp(.066,.108,runBlend)-plantSide*_plantPulse*.032-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.050;
+      lLRY+=turnLean*.040+lateralLean*.030-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.065;
+      rLRY+=turnLean*.040+lateralLean*.030-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.065;
+      lARZ+=-bodyRZ*.22-turnLean*.032;
+      rARZ+=-bodyRZ*.22-turnLean*.032;
+      lARY+=bodyRY*.18-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.030;
+      rARY+=bodyRY*.18-strafeBlend*Math.sign(this._lateralSpeedVis||0)*.030;
+      bodyRX+=-accelLean*.046-speedFrac*.018+_plantPulse*THREE.MathUtils.lerp(.014,.030,runBlend);
+      bodyRZ+=-lateralLean*.100*THREE.MathUtils.lerp(.60,1.0,runBlend)-turnLean*.068+plantSide*_plantPulse*THREE.MathUtils.lerp(.025,.048,runBlend);
+      bodyRY+=turnLean*.050-lateralLean*.036;
+      if(this.weaponGrp&&isAttacking){
+        this.weaponGrp.position.x+=(-lateralLean*.030-turnLean*.018-this.weaponGrp.position.x)*Math.min(dt*7,1);
+        this.weaponGrp.rotation.z+=(-turnLean*.035+plantSide*_plantPulse*.024)*THREE.MathUtils.lerp(.55,1,runBlend);
+      }
+      if(this._movementMode==='juke'){
         const j=Math.sin(Math.max(0,Math.min(1,(this._jukeTimer||0)/.50))*Math.PI);
         bodyRZ+=this.strafeDir*j*.22;
         bodyRY-=this.strafeDir*j*.14;
@@ -7877,11 +7960,24 @@ class Enemy{
         lLRZ-=this.strafeDir*j*.11;rLRZ-=this.strafeDir*j*.11;
         lBootRZ-=this.strafeDir*j*.10;rBootRZ-=this.strafeDir*j*.10;
       }else if(this._movementMode==='reposition'||this._movementMode==='flank'){
-        bodyRX-=.08;
-        lElbRX+=.14;rElbRX+=.14;
-        lARY-=.035;rARY-=.035;
+        bodyRX-=.07;
+        lElbRX+=.13;rElbRX+=.13;
+        lARY-=.032;rARY-=.032;
       }
-      // Phase R: trace the moving-state for the smooth stop transition below.
+      this._enemyLocomotionDebug=_enemyRealisticLocomotionSnapshot(this,{
+        mode,
+        speedVis,
+        desiredSpeed:desiredMoveSpeed,
+        targetSpeed:this._moveTargetSpeed||desiredMoveSpeed,
+        runBlend,
+        strideMeters,
+        cadence,
+        strafeBlend,
+        phase:this.walkPhase,
+        footPlant:_plantPulse,
+        footPlantSide:plantSide
+      });
+      this.group.userData.enemyLocomotion=this._enemyLocomotionDebug;
       this._wasMoving=true;
 
     }else{
@@ -7894,7 +7990,20 @@ class Enemy{
 	        this._enemyStopSettleSide=Math.sign(this._lateralSpeedVis||this._turnRateVis||this._enemyFootPlantSide||1)||1;
 	        this._wasMoving=false;
 	      }
-      this._lKneeBend=0.10;this._rKneeBend=0.10;
+	      this._enemyRunBlend=damp(this._enemyRunBlend||0,0,ENEMY_LOCOMOTION_FEEL.runBlendFall,dt);
+	      this._enemyLocomotionDebug=_enemyRealisticLocomotionSnapshot(this,{
+	        mode:'idle',
+	        speedVis:this._moveSpeedVis||0,
+	        desiredSpeed:desiredMoveSpeed,
+	        runBlend:this._enemyRunBlend||0,
+	        cadence:0,
+	        strideMeters:0,
+	        strafeBlend:0,
+	        footPlant:this._enemyFootPlantVis||0,
+	        footPlantSide:this._enemyFootPlantSide||0
+	      });
+	      this.group.userData.enemyLocomotion=this._enemyLocomotionDebug;
+	      this._lKneeBend=0.10;this._rKneeBend=0.10;
       // ── Idle: breathing + weight shift + head micro-movements ──
       const ip=Date.now()*.001;
       const breathA=Math.sin(ip*1.05+this.walkPhase);
@@ -8760,13 +8869,17 @@ class Enemy{
   }
   _moveTo(tgt,dt,walls){
     const dx=tgt.x-this.group.position.x,dz=tgt.z-this.group.position.z;
-    const d=Math.sqrt(dx*dx+dz*dz);if(d<.4)return;
+    const d=Math.sqrt(dx*dx+dz*dz);if(d<.4){this._moveTargetSpeed=0;return;}
     const limbMul=(typeof _enemyMoveSpeedMul==='function')?_enemyMoveSpeedMul(this):1.0;
     let targetSpeed=this.speed*(this._encSpeedMul||1)*limbMul;
     if(this.state===PATROL||this.state===SEARCH||this.state===REPOSITION){
       const arrive=THREE.MathUtils.clamp((d-.35)/ENEMY_LOCOMOTION_FEEL.arriveSlowRadius,0,1);
       targetSpeed*=.34+.66*THREE.MathUtils.smoothstep(arrive,0,1);
     }
+    const moveMode=_enemyRealisticMoveMode(this,this.state===PATROL||this.state===SEARCH?'walk':'run');
+    const speedCap=_enemyRealisticSpeedCap(this,moveMode);
+    if(Number.isFinite(speedCap)&&speedCap>0)targetSpeed=Math.min(targetSpeed,speedCap);
+    this._moveTargetSpeed=targetSpeed;
     this._moveWithVelocity(dx/d*targetSpeed,dz/d*targetSpeed,dt,walls);
     this._faceYaw(Math.atan2(dx,dz),dt,8.8);
     if(this._movementMode!=='vault'&&this._movementMode!=='juke')this._movementMode=this.state===REPOSITION?'reposition':this.state===FLANK?'flank':this.state===CHASE?'chase':'walk';
@@ -8921,7 +9034,7 @@ class Enemy{
         this.patrolLookTimer=1.6+Math.random()*2.4;
         this.patrolLookAngle=(Math.random()-.5)*Math.PI*.75;
       }
-      this._pathToTarget(this.patrolTarget,dt*.55*(this._encPatrolSpeed||1),walls);
+      this._pathToTarget(this.patrolTarget,dt*(ENEMY_LOCOMOTION_FEEL.patrolTimeScale||.55)*(this._encPatrolSpeed||1),walls);
       this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
       this.hMesh.rotation.y=this.headLookY;
       return true;
@@ -8945,7 +9058,7 @@ class Enemy{
       this.patrolLookTimer=1.6+Math.random()*2.4;
       this.patrolLookAngle=(Math.random()-.5)*Math.PI*.75;
     }
-    this._pathToTarget(this.patrolTarget,dt*.55,walls);
+    this._pathToTarget(this.patrolTarget,dt*(ENEMY_LOCOMOTION_FEEL.patrolTimeScale||.55),walls);
     this.headLookY+=(this.patrolLookAngle-this.headLookY)*Math.min(dt*2.2,1);
     this.hMesh.rotation.y=this.headLookY;
     return true;
@@ -9190,7 +9303,9 @@ class Enemy{
   _tickJuke(dt,walls){
     if(this._jukeTimer<=0||!this._jukeVec)return false;
     this._jukeTimer-=dt;
-    const sp=this.speed*(this.type==='scout'?1.95:this.type==='pistolero'?1.75:1.45);
+    const rawSp=this.speed*(this.type==='scout'?1.95:this.type==='pistolero'?1.75:1.45);
+    const sp=Math.min(rawSp,_enemyRealisticSpeedCap(this,'juke'));
+    this._moveTargetSpeed=sp;
     this._moveWithVelocity(this._jukeVec.x*sp,this._jukeVec.z*sp,dt,walls,{sharp:true});
     if(this._jukeTimer<=0){this._jukeVec=null;this._movementMode='strafe';}
     return true;
@@ -33677,6 +33792,7 @@ function _animationFeelState(){
   const p0=getPlayerAnimDebug(playerAnimState0);
   const p1=getPlayerAnimDebug(playerAnimState1);
   const tuning=animationTuningDebug();
+  const enemyStatus=_enemyAnimationStatus();
   return {
     tuning:{version:tuning.version,id:tuning.id,locomotion:tuning.defaults&&tuning.defaults.locomotion?tuning.defaults.locomotion:null},
     player:{
@@ -33700,11 +33816,21 @@ function _animationFeelState(){
       weaponAnimation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER_P2)
     },
     scopePip:{cache:Object.assign({},_scopePipCache),status:Object.assign({},_scopePipStatus)},
-    enemyIntent:_enemyAnimationStatus().slice(0,8).map(row=>({
+    enemyIntent:enemyStatus.slice(0,8).map(row=>({
       type:row.type,
       state:row.state,
       intent:row.intent,
       cue:row.intentCue
+    })),
+    enemyLocomotion:enemyStatus.slice(0,8).map(row=>({
+      type:row.type,
+      state:row.state,
+      mode:row.locomotion&&row.locomotion.mode,
+      speedVis:row.locomotion&&row.locomotion.speedVis,
+      runBlend:row.locomotion&&row.locomotion.runBlend,
+      cadence:row.locomotion&&row.locomotion.cadence,
+      strideMeters:row.locomotion&&row.locomotion.strideMeters,
+      finite:row.locomotion&&row.locomotion.finite
     })),
     health:_animationHealthStatus()
   };
@@ -36319,6 +36445,81 @@ function _debugSetSplitScreenActiveForTest(mode='duel'){
   return splitScreenStatus();
 }
 
+function _enemyLocomotionProbe(options={}){
+  const type=String(options&&options.type||'soldier');
+  const diff=Number.isFinite(Number(options&&options.diff))?Number(options.diff):2;
+  const stateKey=String(options&&options.state||'chase').toLowerCase();
+  const mode=String(options&&options.mode||(
+    stateKey==='patrol'?'walk':
+    stateKey==='flank'?'flank':
+    stateKey==='reposition'?'reposition':
+    stateKey==='juke'?'juke':'chase'
+  ));
+  const stateMap={patrol:PATROL,search:SEARCH,chase:CHASE,attack:ATTACK,flank:FLANK,reposition:REPOSITION,suppress:SUPPRESS,juke:FLANK};
+  const e=new Enemy(scene,new THREE.Vector3(9999,WT||.4,9999),diff,type);
+  try{
+    e.spawnTimer=0;e.spawnIntro=null;e.state=stateMap[stateKey]||CHASE;e._movementMode=mode;
+    e.aimReady=Number(options&&options.aimReady)||0;
+    if(Number.isFinite(Number(options&&options.baseSpeed)))e.speed=Number(options.baseSpeed);
+    const capMode=options&&options.capMode?String(options.capMode):_enemyRealisticMoveMode(e,mode==='walk'?'walk':'run');
+    const speed=Number.isFinite(Number(options&&options.speed))?Number(options.speed):Math.min(_enemyRealisticSpeedCap(e,capMode),Math.max(.8,e.speed||2.4));
+    const yaw=Number.isFinite(Number(options&&options.yaw))?Number(options.yaw):0;
+    const dt=Number.isFinite(Number(options&&options.dt))?Math.max(1/240,Number(options.dt)):1/60;
+    const frames=Math.max(2,Math.min(180,Number(options&&options.frames)||48));
+    e.group.rotation.y=yaw;
+    e._animLastX=e.group.position.x;e._animLastZ=e.group.position.z;e._animLastYaw=yaw;
+    const vx=Math.sin(yaw)*speed;
+    const vz=Math.cos(yaw)*speed;
+    for(let i=0;i<frames;i++){
+      e.state=stateMap[stateKey]||CHASE;
+      e._movementMode=mode;
+      e._moveTargetSpeed=speed;
+      e._moveVelX=vx;e._moveVelZ=vz;
+      e.group.position.x+=vx*dt;
+      e.group.position.z+=vz*dt;
+      e._updateAnim(dt,true);
+    }
+    const pose=(obj)=>obj?{
+      r:[Number(obj.rotation.x.toFixed(4)),Number(obj.rotation.y.toFixed(4)),Number(obj.rotation.z.toFixed(4))],
+      p:[Number(obj.position.x.toFixed(4)),Number(obj.position.y.toFixed(4)),Number(obj.position.z.toFixed(4))]
+    }:null;
+    const status=resolveEnemyAnimationStatus(e,{importedAnimationEnabled:false});
+    const locomotion=e._enemyLocomotionDebug||status.locomotion||null;
+    const numbers=[];
+    const collect=(value)=>{
+      if(typeof value==='number')numbers.push(value);
+      else if(value&&typeof value==='object')for(const child of Object.values(value))collect(child);
+    };
+    collect(locomotion);collect(status.locomotion);
+    return {
+      ok:true,
+      type:e.type,
+      state:e.state,
+      mode:e._movementMode,
+      requestedSpeed:Number(speed.toFixed(4)),
+      speedCap:Number(_enemyRealisticSpeedCap(e,capMode).toFixed(4)),
+      pace:_enemyRealisticLocomotionProfile(e.type),
+      locomotion,
+      statusLocomotion:status.locomotion,
+      pose:{
+        body:pose(e.bMesh),
+        head:pose(e.hMesh),
+        leftArm:pose(e.lArmGrp),
+        rightArm:pose(e.rArmGrp),
+        leftLeg:pose(e.lLegGrp),
+        rightLeg:pose(e.rLegGrp),
+        leftKnee:pose(e.lKneeGrp),
+        rightKnee:pose(e.rKneeGrp),
+        leftBoot:pose(e.lBootMesh),
+        rightBoot:pose(e.rBootMesh)
+      },
+      finite:numbers.every(Number.isFinite)
+    };
+  }finally{
+    try{e.remove();}catch(_){}
+  }
+}
+
 installDebugApi({
   debug:{
     snapshot:()=>{
@@ -36655,6 +36856,13 @@ installDebugApi({
     handGripStatus:(opts={})=>handGripDebug(((opts&&opts.slot)|0)===1?_HAND_GRIP_STATE_P2:_HAND_GRIP_STATE),
     locomotionFeelStatus:()=>({player:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE0),player2:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE1)}),
     enemyAnimationStatus:()=>_enemyAnimationStatus(),
+    enemyLocomotionStatus:()=>({
+      version:ENEMY_LOCOMOTION_FEEL.version,
+      feel:Object.assign({},ENEMY_LOCOMOTION_FEEL),
+      profiles:Object.fromEntries(Object.keys(ENEMY_REALISTIC_LOCOMOTION).map(k=>[k,_enemyRealisticLocomotionProfile(k)])),
+      enemies:_enemyAnimationStatus().slice(0,16).map(row=>({type:row.type,state:row.state,movementMode:row.movementMode,locomotion:row.locomotion}))
+    }),
+    enemyLocomotionProbe:(options={})=>_enemyLocomotionProbe(options||{}),
     levelEditorAssetHealth:()=>_levelEditorAssetHealth(),
     forceAnimationState:(target,state,options={})=>{
       const key=String(target||'locomotion');
@@ -36683,9 +36891,10 @@ installDebugApi({
 	        aimReady:Number((e.aimReady||0).toFixed(3)),
 	        aimTrack:Number((e._aimTrackQuality||0).toFixed(3)),
 	        aimYawError:Number((e._aimYawError||0).toFixed(3)),
-	        speedVis:Number((e._moveSpeedVis||0).toFixed(3)),
-	        moveVel:Number(Math.hypot(e._moveVelX||0,e._moveVelZ||0).toFixed(3)),
-	        patrolPause:Number((e.patrolPauseTimer||0).toFixed(3)),
+		        speedVis:Number((e._moveSpeedVis||0).toFixed(3)),
+		        moveVel:Number(Math.hypot(e._moveVelX||0,e._moveVelZ||0).toFixed(3)),
+		        locomotion:e._enemyLocomotionDebug||e.group?.userData?.enemyLocomotion||null,
+		        patrolPause:Number((e.patrolPauseTimer||0).toFixed(3)),
 	        peekAmt:Number((e.peekAmt||0).toFixed(3)),
 	        atCover:!!e.atCover,
 	        pos:e.group&&e.group.position?[Number(e.group.position.x.toFixed(2)),Number(e.group.position.z.toFixed(2))]:null
