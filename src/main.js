@@ -133,6 +133,10 @@ import {
   SEMANTIC_MIXAMO_CLIPS,
   animationTuningDebug,
   animationFeatureFlags,
+  getWeaponAdsViewFit,
+  getWeaponFeelProfile,
+  getWeaponSightProfile,
+  weaponFeelProfileDebug,
   weaponTypeFromIndex
 } from './animation/profiles.js';
 import { createAnimationGraphState, updateAnimationGraphState, animationGraphDebug } from './animation/graph.js';
@@ -15713,39 +15717,6 @@ const WEAPON_HAND_FITS={
   6:{id:'p226-two-hand',right:{x:.004,y:-.058,z:.052,rx:.018,ry:.032,rz:-.028},left:{x:-.054,y:-.044,z:-.082,rx:.216,ry:.120,rz:.042},leftScale:1.02,fine:{hipX:-.030,hipY:-.018,hipZ:.032,hipRY:.038,hipRZ:.054,adsX:.010,adsY:-.001,adsZ:.010,adsRY:-.010,adsRZ:.046},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
   7:{id:'sniper-fore-end',right:{x:.003,y:-.057,z:.060,rx:.010,ry:.016,rz:-.020},left:{x:-.028,y:-.026,z:-.314,rx:.158,ry:.044,rz:.018},leftScale:1.065,fine:{hipX:-.004,hipY:.002,hipZ:-.008,hipRY:.010,hipRZ:.008,adsX:.010,adsY:.004,adsZ:-.014,adsRY:.014,adsRZ:.022},gun:{x:.132,y:-.114,z:-.250}}
 };
-const ADS_WEAPON_VIEW_FITS={
-  1:{y:-.040,z:-.170,rx:-.022,scale:.52},
-  3:{y:-.030,z:-.220,rx:.004,scale:.58},
-  4:{y:-.034,z:-.220,rx:.002,scale:.58},
-  6:{y:-.046,z:-.215,rx:-.018,scale:.52}
-};
-const IRON_SIGHT_REFERENCES={
-  0:{
-    front:{local:new THREE.Vector3(0,.071,-.296)},
-    rear:{local:new THREE.Vector3(0,.067,.040)},
-    maxX:.16,maxY:.24,maxPitch:.075,maxYaw:.055,lineTargetY:.026,aimNdcY:0
-  },
-  1:{
-    front:{local:new THREE.Vector3(0,.069,-.074),node:'front_sight',nodeLocal:new THREE.Vector3(0,.003,0)},
-    rear:{local:new THREE.Vector3(0,.067,.058),node:'rear_sight',nodeLocal:new THREE.Vector3(0,.003,0)},
-    maxX:.18,maxY:.28,maxPitch:.085,maxYaw:.060,lineTargetY:.030,aimNdcY:0
-  },
-  3:{
-    front:{local:new THREE.Vector3(0,.071,-.498)},
-    rear:{local:new THREE.Vector3(0,.061,.070)},
-    maxX:.18,maxY:.30,maxPitch:.090,maxYaw:.060,lineTargetY:.045,aimNdcY:0
-  },
-  4:{
-    front:{local:new THREE.Vector3(0,.046,-.043)},
-    rear:{local:new THREE.Vector3(0,.046,.034)},
-    maxX:.18,maxY:.30,maxPitch:.070,maxYaw:.055,lineWeight:.70,lineTargetY:.035,aimNdcY:0
-  },
-  6:{
-    front:{local:new THREE.Vector3(0,.054,-.080)},
-    rear:{local:new THREE.Vector3(0,.050,.060)},
-    maxX:.18,maxY:.28,maxPitch:.085,maxYaw:.060,lineTargetY:.032,aimNdcY:0
-  }
-};
 const _ironSightWorldTmp=new THREE.Vector3();
 const _ironSightRearWorldTmp=new THREE.Vector3();
 const _ironSightCamTmp=new THREE.Vector3();
@@ -15757,7 +15728,7 @@ function _handFitForWeapon(idx){
   return WEAPON_HAND_FITS[idx|0]||DEFAULT_HAND_FIT;
 }
 function _adsWeaponViewFit(idx){
-  return ADS_WEAPON_VIEW_FITS[idx|0]||null;
+  return getWeaponAdsViewFit(idx|0);
 }
 function _ironSightSpec(ref,point='front'){
   if(!ref)return null;
@@ -15765,28 +15736,56 @@ function _ironSightSpec(ref,point='front'){
   if(spec)return spec;
   return point==='front'&&ref.local?ref:null;
 }
+function _copySightLocalToVector(src,out){
+  if(!src)return out.set(0,0,0);
+  if(Array.isArray(src))return out.set(Number(src[0])||0,Number(src[1])||0,Number(src[2])||0);
+  if(src.isVector3)return out.copy(src);
+  return out.set(Number(src.x)||0,Number(src.y)||0,Number(src.z)||0);
+}
+function _activeWeaponNodeByName(idx,name){
+  if(!name)return null;
+  const key=String(name);
+  if(idx===0&&m4AuthoredWeapon&&m4AuthoredWeapon.rig&&m4AuthoredWeapon.rig.visible&&m4AuthoredWeapon.nodes&&typeof m4AuthoredWeapon.nodes.get==='function'){
+    return m4AuthoredWeapon.nodes.get(key)||null;
+  }
+  if((idx===1||idx===6)&&deagleGlbRig&&deagleGlbRig.visible&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){
+    return deagleGlbRig.userData.uspNodes[key]||null;
+  }
+  return null;
+}
 function _ironSightWorldReference(idx,out=_ironSightWorldTmp,point='front'){
-  const ref=IRON_SIGHT_REFERENCES[idx|0];
+  const ref=getWeaponSightProfile(idx|0);
   const spec=_ironSightSpec(ref,point);
   if(!spec)return null;
-  if(idx===1&&spec.node&&deagleGlbRig&&deagleGlbRig.visible&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){
-    const node=deagleGlbRig.userData.uspNodes[spec.node];
-    if(node){
-      out.copy(spec.nodeLocal||out.set(0,0,0)).applyMatrix4(node.matrixWorld);
+  const node=_activeWeaponNodeByName(idx|0,spec.socket)||_activeWeaponNodeByName(idx|0,spec.node);
+  if(node){
+    if(spec.nodeLocal){
+      _copySightLocalToVector(spec.nodeLocal,out).applyMatrix4(node.matrixWorld);
+      return out;
+    }
+    if(typeof node.getWorldPosition==='function'){
+      node.getWorldPosition(out);
       return out;
     }
   }
-  out.copy(spec.local);
+  if(idx===1&&spec.node&&deagleGlbRig&&deagleGlbRig.visible&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){
+    const node=deagleGlbRig.userData.uspNodes[spec.node];
+    if(node){
+      _copySightLocalToVector(spec.nodeLocal,out).applyMatrix4(node.matrixWorld);
+      return out;
+    }
+  }
+  _copySightLocalToVector(spec.local,out);
   gunGrp.localToWorld(out);
   return out;
 }
 function _alignIronSightToAimCenter(dt){
   const idx=P.weaponIdx|0;
-  const ref=IRON_SIGHT_REFERENCES[idx];
+  const ref=getWeaponSightProfile(idx);
   const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
   const alignAmt=THREE.MathUtils.smoothstep(ads,.54,.96);
   if(!ref||alignAmt<=0.001||_currentOpticProfile()||P.reloading||P.vaulting||P.dropkickActive||P.weaponIdx===2){
-    P._ironSightAlign={active:false,weaponIdx:idx,ads:Number(ads.toFixed(3)),fov:Number((camera&&camera.fov||0).toFixed(3))};
+    P._ironSightAlign={active:false,weaponIdx:idx,profileId:getWeaponFeelProfile(idx).id,mode:ref?ref.mode:null,ads:Number(ads.toFixed(3)),fov:Number((camera&&camera.fov||0).toFixed(3))};
     return false;
   }
   camera.updateMatrixWorld(true);
@@ -15851,9 +15850,15 @@ function _alignIronSightToAimCenter(dt){
   const postWorld=_ironSightWorldReference(idx,_ironSightWorldTmp);
   if(postWorld)_ironSightPostNdcTmp.copy(postWorld).project(camera);
   else _ironSightPostNdcTmp.set(preNdcX,preNdcY,0);
+  const residualX=_ironSightPostNdcTmp.x-targetNdcX;
+  const residualY=_ironSightPostNdcTmp.y-targetNdcY;
+  const residual=Math.hypot(residualX,residualY);
+  const tolerance=Number.isFinite(ref.maxResidualNdc)?ref.maxResidualNdc:(ref.mode==='bead' ? .026 : .015);
   P._ironSightAlign={
     active:true,
     weaponIdx:idx,
+    profileId:getWeaponFeelProfile(idx).id,
+    mode:ref.mode||'iron',
     ads:Number(ads.toFixed(3)),
     fov:Number((camera.fov||0).toFixed(3)),
     ndcX:Number(_ironSightPostNdcTmp.x.toFixed(4)),
@@ -15864,6 +15869,11 @@ function _alignIronSightToAimCenter(dt){
     targetNdcY:Number(targetNdcY.toFixed(4)),
     rearNdcX:rearNdcX==null?null:Number(rearNdcX.toFixed(4)),
     rearNdcY:rearNdcY==null?null:Number(rearNdcY.toFixed(4)),
+    residualX:Number(residualX.toFixed(5)),
+    residualY:Number(residualY.toFixed(5)),
+    residual:Number(residual.toFixed(5)),
+    tolerance:Number(tolerance.toFixed(5)),
+    withinTolerance:residual<=tolerance||ads<.98,
     lineSlopeX:Number(lineSlopeX.toFixed(4)),
     lineSlopeY:Number(lineSlopeY.toFixed(4)),
     lineTargetY:Number((Number.isFinite(ref.lineTargetY)?ref.lineTargetY:0).toFixed(4)),
@@ -15975,6 +15985,10 @@ function _updateAnimationCoordinator(dt,nowSec){
       lastRound:P._lastRoundPulse||0,
       footstepKick:playerAnimState0.resolved?.viewmodel?.footstepKick||0,
       fireSide:playerAnimState0.resolved?.viewmodel?.fireSide||1,
+      lean:P.lean||0,
+      guard:P.guardBehindAmt||0,
+      slide:P.slideAmt||0,
+      hit:P._damageShock||0,
       hasAuthoredParts:_usesAuthoredWeaponParts(),
       notifies:animDebug.recentNotifies||[]
     });
@@ -16023,6 +16037,10 @@ function _updateAnimationCoordinatorP2(dt,nowSec){
       lastRound:P2._lastRoundPulse||0,
       footstepKick:playerAnimState1.resolved?.viewmodel?.footstepKick||0,
       fireSide:playerAnimState1.resolved?.viewmodel?.fireSide||1,
+      lean:P2.lean||0,
+      guard:P2.guardBehindAmt||0,
+      slide:P2.slideAmt||0,
+      hit:P2._damageShock||0,
       hasAuthoredParts:!!(P2.weaponIdx===1&&deagleGlbRigP2&&deagleGlbRigP2.visible),
       notifies:animDebug.recentNotifies||[]
     });
@@ -19918,17 +19936,22 @@ function shoot(){
   const totalRecoilMul=adsRecoilMul*crouchRecoilMul*forearmRecoilMul;
   // Heat penalty — overheated guns recoil more
   const heatPenalty=1.0+(hState.heat||0)*.35;
-  const shotFeel=THREE.MathUtils.clamp(_weaponShotFeelWeight(pl.weaponIdx)*(combatFeel.shotImpulseMul||1)*(1+Math.min(8,shotIndexBefore)*.026)*totalRecoilMul*heatPenalty,.16,2.05);
+  const weaponFeelProfile=getWeaponFeelProfile(pl.weaponIdx);
+  const recoilFeel=weaponFeelProfile&&weaponFeelProfile.recoil?weaponFeelProfile.recoil:{};
+  const viewmodelRecoilMul=recoilFeel.viewmodelKick||1;
+  const cameraRecoilMul=recoilFeel.cameraKick||1;
+  const shoulderAbsorb=recoilFeel.shoulderAbsorb||1;
+  const shotFeel=THREE.MathUtils.clamp(_weaponShotFeelWeight(pl.weaponIdx)*(combatFeel.shotImpulseMul||1)*(1+Math.min(8,shotIndexBefore)*.026)*totalRecoilMul*heatPenalty*viewmodelRecoilMul,.16,2.35);
   pl._shotImpulse=Math.max(pl._shotImpulse||0,shotFeel);
   pl._shotImpulseKick=Math.max(pl._shotImpulseKick||0,THREE.MathUtils.clamp(shotFeel*.78,.12,1.38));
   pl._shotImpulseSide=(Math.random()<.5?-1:1)*(.72+Math.random()*.28);
   pl._shotHeatPressure=THREE.MathUtils.clamp((pl._shotHeatPressure||0)+shotFeel*.11,0,1.15);
   _addPlayerFeelImpulse(pl,{body:shotFeel*.14,forward:-shotFeel*.12,right:(pl._shotImpulseSide||1)*shotFeel*.035});
   if(_slot===0){
-    PP.shakeX+=(Math.random()-.5)*W.shX*totalRecoilMul;PP.shakeY-=Math.random()*W.shY*totalRecoilMul;
+    PP.shakeX+=(Math.random()-.5)*W.shX*totalRecoilMul*cameraRecoilMul;PP.shakeY-=Math.random()*W.shY*totalRecoilMul*cameraRecoilMul;
   }else{
-    pl._cameraKickX=(pl._cameraKickX||0)+(Math.random()-.5)*W.shX*totalRecoilMul;
-    pl._cameraKickY=(pl._cameraKickY||0)-Math.random()*W.shY*totalRecoilMul;
+    pl._cameraKickX=(pl._cameraKickX||0)+(Math.random()-.5)*W.shX*totalRecoilMul*cameraRecoilMul;
+    pl._cameraKickY=(pl._cameraKickY||0)-Math.random()*W.shY*totalRecoilMul*cameraRecoilMul;
   }
   hState.firePlaying=true;hState.fireT=0;
   hState.heat=Math.min(1,hState.heat+(pl.weaponIdx===0?.18:.32));
@@ -19950,9 +19973,9 @@ function shoot(){
   rs.accumPitch=(rs.accumPitch||0)+_addedPitch;
   rs.accumYaw=(rs.accumYaw||0)+_addedYaw;
   if(pl.pitch>1.35)pl.pitch=1.35;if(-1.35>pl.pitch)pl.pitch=-1.35;
-  gun.rotation.x-=(0.055+Math.random()*.022)*totalRecoilMul;
-  gun.rotation.z+=(Math.random()-.5)*.018*totalRecoilMul;
-  gun.position.z=-.16*totalRecoilMul;
+  gun.rotation.x-=(0.055+Math.random()*.022)*totalRecoilMul*viewmodelRecoilMul/shoulderAbsorb;
+  gun.rotation.z+=(Math.random()-.5)*.018*totalRecoilMul*viewmodelRecoilMul;
+  gun.position.z=-.16*totalRecoilMul*viewmodelRecoilMul/shoulderAbsorb;
   rs.shotIndex+=1;
   if(pl.weaponIdx===0&&_slot===0)_playAuthoredM4Fire();
   if(pl.weaponIdx===1)_deagleFireAnim(_slot);
@@ -32797,7 +32820,8 @@ function _weaponVisualStatus(){
   }:null;
   authoredWeaponReport.registry=M4_AUTHORED_STATUS.registry.weapon;
   authoredHandsReport.registry=M4_AUTHORED_STATUS.registry.hands;
-  const activeManifestId=P.weaponIdx===0?M4_AUTHORED_STATUS.weaponId:(P.weaponIdx===1?LEGACY_PISTOL_GLB_STATUS.manifestId:null);
+  const activeFeelProfile=getWeaponFeelProfile(P.weaponIdx);
+  const activeManifestId=P.weaponIdx===0?M4_AUTHORED_STATUS.weaponId:(P.weaponIdx===1?LEGACY_PISTOL_GLB_STATUS.manifestId:(activeFeelProfile&&activeFeelProfile.manifestId)||null);
   LEGACY_PISTOL_GLB_STATUS.visibleMeshes=(deagleGlbRig&&deagleGlbRig.visible)?_countVisibleMeshes(deagleGlbRig):0;
   LEGACY_PISTOL_GLB_STATUS.renderableMeshes=deagleGlbRig?countRenderableMeshes(deagleGlbRig,false):0;
   LEGACY_PISTOL_GLB_STATUS.materialStats=deagleGlbRig?_collectMaterialStats(deagleGlbRig):LEGACY_PISTOL_GLB_STATUS.materialStats;
@@ -32811,6 +32835,13 @@ function _weaponVisualStatus(){
     triggerBufferReason:P._triggerBufferReason||'',
     triggerBufferBlock:P._triggerBufferBlock||'',
     triggerBufferTicks:P._triggerBufferTicks||0,
+    weaponFeelProfile:weaponFeelProfileDebug(P.weaponIdx),
+    sightProfile:getWeaponSightProfile(P.weaponIdx)?{
+      mode:getWeaponSightProfile(P.weaponIdx).mode,
+      maxResidualNdc:getWeaponSightProfile(P.weaponIdx).maxResidualNdc,
+      front:getWeaponSightProfile(P.weaponIdx).front?{socket:getWeaponSightProfile(P.weaponIdx).front.socket||null,node:getWeaponSightProfile(P.weaponIdx).front.node||null}:null,
+      rear:getWeaponSightProfile(P.weaponIdx).rear?{socket:getWeaponSightProfile(P.weaponIdx).rear.socket||null,node:getWeaponSightProfile(P.weaponIdx).rear.node||null}:null
+    }:null,
     animation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
     handGrip:handGripDebug(_HAND_GRIP_STATE),
     emptyClickPulse:P._emptyClickPulse||0,
@@ -33018,6 +33049,7 @@ function _animationProfilesDebug(){
     playerLocomotion:PLAYER_LOCOMOTION_STATES.slice(),
     semanticMixamoClips:SEMANTIC_MIXAMO_CLIPS.slice(),
     weaponProfiles:WEAPON_ANIMATION_PROFILES,
+    weaponFeelProfiles:weaponFeelProfileDebug(),
     enemyProfiles:ENEMY_ANIMATION_PROFILES,
     tuning:animationTuningDebug(),
     tooling:ANIMATION_MIDDLEWARE_RUNTIME
@@ -33771,22 +33803,25 @@ renderer.setAnimationLoop(()=>{
       P.adsKick=Math.max(P.adsKick||0,.34);
       P._adsLowerPulse=Math.max(P._adsLowerPulse||0,.72);
     }
-    const _adsLamIn=32*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
-    const _adsLamOut=22*((P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1);
+    const _weaponFeelProfile=getWeaponFeelProfile(P.weaponIdx);
+    const _adsFeel=_weaponFeelProfile&&_weaponFeelProfile.ads?_weaponFeelProfile.ads:{};
+    const _scopeAdsSpeed=(P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1;
+    const _adsLamIn=(_adsFeel.inLambda||32)*_scopeAdsSpeed*(_adsFeel.speedMul||1);
+    const _adsLamOut=(_adsFeel.outLambda||22)*_scopeAdsSpeed*(_adsFeel.speedMul||1);
     P.ads=damp(P.ads,P.adsTarget,P.adsTarget>P.ads?_adsLamIn:_adsLamOut,dt);
-    P.adsVis=damp(typeof P.adsVis==='number'?P.adsVis:P.ads,P.ads,13,dt);
+    P.adsVis=damp(typeof P.adsVis==='number'?P.adsVis:P.ads,P.ads,_adsFeel.visualLambda||13,dt);
     const _opticForFov=_currentOpticProfile();
     const _adsVis01=THREE.MathUtils.clamp(P.adsVis||0,0,1);
     const _scopeEaseForFov=_opticForFov?THREE.MathUtils.smoothstep(_adsVis01,.20,.92):0;
     const _adsEaseForFov=THREE.MathUtils.smoothstep(_adsVis01,.08,_opticForFov ? .86 : .74);
     const _adsSettleTarget=P.adsTarget>.5?1:0;
-    P.adsSettle=damp(Number.isFinite(P.adsSettle)?P.adsSettle:_adsSettleTarget,_adsSettleTarget,_opticForFov?(_adsSettleTarget?8.5:14):(_adsSettleTarget?12:16),dt);
+    P.adsSettle=damp(Number.isFinite(P.adsSettle)?P.adsSettle:_adsSettleTarget,_adsSettleTarget,_opticForFov?(_adsSettleTarget?(_adsFeel.settleInLambda||8.5):(_adsFeel.settleOutLambda||14)):(_adsSettleTarget?(_adsFeel.settleInLambda||12):(_adsFeel.settleOutLambda||16)),dt);
     P.adsKick=damp(Number.isFinite(P.adsKick)?P.adsKick:0,0,_opticForFov?10:13,dt);
     P.scopeSettle=damp(Number.isFinite(P.scopeSettle)?P.scopeSettle:_scopeEaseForFov,_scopeEaseForFov,_opticForFov?10:16,dt);
     P._adsRaisePulse=damp(Number.isFinite(P._adsRaisePulse)?P._adsRaisePulse:0,0,_opticForFov?10:13,dt);
     P._adsShoulderPulse=damp(Number.isFinite(P._adsShoulderPulse)?P._adsShoulderPulse:0,0,_opticForFov?7.5:9.5,dt);
     P._adsLowerPulse=damp(Number.isFinite(P._adsLowerPulse)?P._adsLowerPulse:0,0,12,dt);
-    const _adsFovDelta=_opticForFov?(_opticForFov.adsFovDelta||44):32;
+    const _adsFovDelta=_opticForFov?(_opticForFov.adsFovDelta||44):(_adsFeel.fovDelta||32);
     const _adsKickFov=(P.adsKick||0)*(_opticForFov?1.8:.9);
     const _scopeSettleFov=_opticForFov?(1-(P.adsSettle||0))*1.2*_scopeEaseForFov:0;
     const _flowTarget=performance.now()<(P._combatFlowUntil||0)?THREE.MathUtils.clamp(P._combatFlow||0,0,1.35):0;
@@ -36099,6 +36134,7 @@ installDebugApi({
           landingSlidePulse:P._landingSlidePulse||0
         },
         optic:optic?{name:optic.name||'scope',tier:optic.tier||0,pipFov:optic.pipFov||0,adsFovDelta:optic.adsFovDelta||0}:null,
+        weaponFeelProfile:weaponFeelProfileDebug(P.weaponIdx),
         gun:{x:gunGrp.position.x,y:gunGrp.position.y,z:gunGrp.position.z,rx:gunGrp.rotation.x,ry:gunGrp.rotation.y,rz:gunGrp.rotation.z},
         ironSight:Object.assign({},P._ironSightAlign||{}),
         scopePip:Object.assign({},_scopePipStatus)

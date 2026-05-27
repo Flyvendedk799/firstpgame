@@ -18,6 +18,8 @@ const REQUIRED_WEAPON_SOCKETS = [
 ];
 const REQUIRED_WEAPON_NODES = ['WeaponRoot', 'visual', 'sockets', 'mag', 'trigger', 'chargingHandle'];
 const REQUIRED_WEAPON_CLIPS = ['idle', 'fire', 'reload', 'ads', 'inspect'];
+const ADVANCED_WEAPON_SIGHT_SOCKETS = ['frontSight', 'rearSight', 'sightLine'];
+const OPTIONAL_WEAPON_SIGHT_SOCKETS = ['opticGlass'];
 const REQUIRED_HAND_NODES = [
   'ViewmodelRoot',
   'cameraRoot',
@@ -184,6 +186,12 @@ function validate(file, type) {
   if (type === 'weapon') {
     const root = nodes.get('WeaponRoot');
     if (root && !defaultTransform(root)) errors.push('WeaponRoot transform is not applied/default');
+    for (const name of ADVANCED_WEAPON_SIGHT_SOCKETS) {
+      if (!nodes.has(name)) warnings.push(`missing v2 sight socket:${name}`);
+    }
+    for (const name of OPTIONAL_WEAPON_SIGHT_SOCKETS) {
+      if (!nodes.has(name)) warnings.push(`optional sight socket not authored:${name}`);
+    }
   }
 
   if (type === 'hands') {

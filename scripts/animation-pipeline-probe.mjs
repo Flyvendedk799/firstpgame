@@ -15,14 +15,20 @@ import {
   ANIMATION_PIPELINE_VERSION,
   TOOLING_CAPABILITIES,
   SEMANTIC_MIXAMO_CLIPS,
+  FIREARM_WEAPON_INDICES,
+  WEAPON_FEEL_PROFILES,
   animationTuningDebug,
   animationFeatureFlags,
   getEnemyFeelTuning,
   getHandFeelTuning,
   getLocomotionFeelTuning,
+  getWeaponAdsViewFit,
   getWeaponAnimationProfile,
+  getWeaponFeelProfile,
+  getWeaponSightProfile,
   getWeaponFeelTuning
 } from '../src/animation/profiles.js';
+import { resolveViewmodelPose, VIEWMODEL_POSE_LAYER_ORDER } from '../src/animation/viewmodelPoseResolver.js';
 import { createAnimationGraphState, updateAnimationGraphState, animationGraphDebug } from '../src/animation/graph.js';
 import { createWeaponAnimationController, updateWeaponAnimationController, weaponAnimationDebug } from '../src/animation/weaponAnimationController.js';
 import { createHandGripState, updateHandGripState, handGripDebug, getHandGripProfile } from '../src/animation/handGripController.js';
@@ -44,7 +50,7 @@ import {
 } from '../src/animation/assetPipeline.js';
 import { normalizeCustomMapPack, normalizePlacedObject } from '../src/customMaps/schema.js';
 
-assert.equal(ANIMATION_PIPELINE_VERSION, 1);
+assert.equal(ANIMATION_PIPELINE_VERSION, 2);
 assert.equal(typeof NodeIO, 'function', 'glTF Transform NodeIO should be importable');
 assert.equal(typeof Document, 'function', 'glTF Transform Document should be importable');
 assert.equal(typeof prune, 'function', 'glTF Transform prune should be importable');
@@ -77,6 +83,67 @@ assert.ok(getWeaponFeelTuning('shotgun').pump > getWeaponFeelTuning('rifle').pum
 assert.ok(getHandFeelTuning('sniper').mechanicalPart > getHandFeelTuning('rifle').mechanicalPart, 'sniper should get stronger bolt hand tuning');
 assert.ok(getLocomotionFeelTuning().impactWeight > 1, 'final locomotion tuning should amplify impact readability');
 assert.ok(getEnemyFeelTuning('scout').peekLead > 1, 'enemy tuning should improve readable intent');
+
+function assertFiniteObject(obj, label) {
+  for (const [key, value] of Object.entries(obj || {})) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) assertFiniteObject(value, `${label}.${key}`);
+    else if (typeof value === 'number') assert.ok(Number.isFinite(value), `${label}.${key} must be finite`);
+  }
+}
+
+const concreteWeaponManifestIds = [
+  'weapon.uspT',
+  'weapon.tac12',
+  'weapon.mp9Suppressed',
+  'weapon.mk14',
+  'weapon.p226Supp',
+  'weapon.awm',
+  'weapon.m4Reference'
+];
+for (const id of concreteWeaponManifestIds) {
+  assert.ok(WEAPON_MANIFEST[id], `${id} manifest entry should exist`);
+  assert.equal(WEAPON_MANIFEST[id].kind, 'weapon');
+  assert.ok(WEAPON_MANIFEST[id].clips.includes('ads'), `${id} should declare ADS clip`);
+  assert.ok(WEAPON_MANIFEST[id].sightSockets.includes('frontSight'), `${id} should declare v2 sight sockets`);
+}
+assert.deepEqual(Object.keys(WEAPON_FEEL_PROFILES).map(Number).sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
+for (const weaponIdx of FIREARM_WEAPON_INDICES) {
+  const feel = getWeaponFeelProfile(weaponIdx);
+  assert.ok(feel, `feel profile missing for weapon ${weaponIdx}`);
+  assert.ok(feel.manifestId && WEAPON_MANIFEST[feel.manifestId], `feel profile ${feel.id} should point at a manifest`);
+  assertFiniteObject(feel.ads, `${feel.id}.ads`);
+  assertFiniteObject(feel.recoil, `${feel.id}.recoil`);
+  assertFiniteObject(feel.pose, `${feel.id}.pose`);
+  const viewFit = getWeaponAdsViewFit(weaponIdx);
+  assert.ok(viewFit, `weapon ${weaponIdx} should have ADS view fit data`);
+  assertFiniteObject(viewFit, `${feel.id}.ads.viewFit`);
+  const sight = getWeaponSightProfile(weaponIdx);
+  assert.ok(sight, `weapon ${weaponIdx} should have sight profile data`);
+  assert.ok(['iron', 'bead', 'optic'].includes(sight.mode), `weapon ${weaponIdx} sight mode should be known`);
+  assert.ok(sight.maxResidualNdc <= (sight.mode === 'bead' ? 0.026 : 0.015), `weapon ${weaponIdx} sight residual budget should match acceptance`);
+  const resolved = resolveViewmodelPose({
+    weaponIdx,
+    weaponType: feel.type,
+    phase: 0.4,
+    ads: 1,
+    fire: 0.85,
+    reload: 0.65,
+    sprint: 0.2,
+    footstepKick: 0.3,
+    lean: 0.25,
+    guard: 0.4,
+    slide: 0.2,
+    hit: 0.1
+  });
+  assert.equal(resolved.profileId, feel.id);
+  assert.deepEqual(resolved.order, VIEWMODEL_POSE_LAYER_ORDER);
+  assertFiniteObject(resolved.pose, `${feel.id}.resolvedPose`);
+  assert.ok(resolved.layers.length >= VIEWMODEL_POSE_LAYER_ORDER.length, `${feel.id} should expose all pose layers`);
+  for (const poseLayer of resolved.layers) {
+    assert.ok(VIEWMODEL_POSE_LAYER_ORDER.includes(poseLayer.name), `${feel.id} unknown layer ${poseLayer.name}`);
+    assertFiniteObject(poseLayer.pose, `${feel.id}.${poseLayer.name}`);
+  }
+}
 
 const graph = createAnimationGraphState({ settings: flags });
 updateAnimationGraphState(graph, {
@@ -131,6 +198,34 @@ updateWeaponAnimationController(sniper, {
   hasAuthoredParts: false
 });
 assert.ok(sniper.partMotion.bolt > 0, 'sniper fire should drive bolt motion');
+
+for (const weaponIdx of FIREARM_WEAPON_INDICES) {
+  const ctrl = createWeaponAnimationController();
+  updateWeaponAnimationController(ctrl, {
+    dt: 1 / 60,
+    weaponIdx,
+    ads: 1,
+    sprint: 0.15,
+    shotImpulse: 0.9,
+    reloading: true,
+    reloadProgress: 0.74,
+    footstepKick: 0.25,
+    fireSide: -1,
+    lean: 0.2,
+    guard: 0.35,
+    slide: 0.2,
+    hit: 0.1,
+    hasAuthoredParts: weaponIdx === 0 || weaponIdx === 1
+  });
+  const dbg = weaponAnimationDebug(ctrl);
+  assert.equal(dbg.profileId, getWeaponFeelProfile(weaponIdx).id, `weapon ${weaponIdx} debug should expose feel profile`);
+  assertFiniteObject(dbg.pose, `weapon ${weaponIdx} debug pose`);
+  assertFiniteObject(dbg.partMotion, `weapon ${weaponIdx} part motion`);
+  assert.ok(dbg.poseLayers.length >= VIEWMODEL_POSE_LAYER_ORDER.length, `weapon ${weaponIdx} should expose pose layer debug`);
+  for (const forbidden of ['ammo', 'ammoReserve', 'damage', 'fireRate', 'spread', 'hitDetection']) {
+    assert.equal(Object.hasOwn(dbg, forbidden), false, `weapon animation debug must not own ${forbidden}`);
+  }
+}
 
 const rifleReload = createWeaponAnimationController();
 updateWeaponAnimationController(rifleReload, {

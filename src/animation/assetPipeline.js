@@ -65,8 +65,9 @@ export const IMPORT_PROFILE_TEMPLATES = Object.freeze({
     kind: 'weapon',
     type: 'rifle',
     src: 'assets/weapons/example/example_viewmodel.glb',
-    sockets: ['muzzle', 'gripRight', 'gripLeft', 'magazine', 'ejectionPort', 'muzzleFlash', 'scopeCamera'],
+    sockets: ['muzzle', 'gripRight', 'gripLeft', 'magazine', 'ejectionPort', 'muzzleFlash', 'scopeCamera', 'frontSight', 'rearSight', 'sightLine'],
     requiredSockets: ['muzzle', 'gripRight', 'gripLeft', 'magazine', 'ejectionPort'],
+    sightSockets: ['frontSight', 'rearSight', 'sightLine'],
     clips: ['idle', 'fire', 'reload', 'ads', 'inspect'],
     fallback: 'weapon.procedural.rifle',
     source: 'authored-glb',
@@ -193,6 +194,8 @@ function requiredSocketsForEntry(entry) {
 function socketPreviewForEntry(entry) {
   const available = unique([
     ...arrayValue(entry?.sockets),
+    ...arrayValue(entry?.sightSockets),
+    ...arrayValue(entry?.optionalSockets),
     ...arrayValue(entry?.skeleton),
     ...arrayValue(entry?.requiredBones),
     ...arrayValue(entry?.gripValidationSockets)

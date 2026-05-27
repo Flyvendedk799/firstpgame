@@ -1,4 +1,4 @@
-import { getHandFeelTuning, getWeaponAnimationProfile, weaponTypeFromIndex } from './profiles.js';
+import { getHandFeelTuning, getWeaponAnimationProfile, getWeaponFeelProfile, weaponTypeFromIndex } from './profiles.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -289,6 +289,8 @@ export function updateHandGripState(state, input = {}) {
   const weaponIdx = Number(input.weaponIdx) | 0;
   const weaponType = input.weaponType || weaponTypeFromIndex(weaponIdx);
   const weaponProfile = getWeaponAnimationProfile(weaponType);
+  const weaponFeelProfile = getWeaponFeelProfile(weaponIdx);
+  const handIntent = weaponFeelProfile.hand || {};
   const profile = getHandGripProfile(weaponType);
   const tuning = getHandFeelTuning(weaponType);
   const parts = input.partMotion || {};
@@ -307,8 +309,8 @@ export function updateHandGripState(state, input = {}) {
   const fireTarget = clamp01(Math.max(trigger, slide * 0.6, bolt * 0.52, pump * 0.65, shotImpulse));
   const partTarget = clamp01(Math.max(pump, bolt, chamber, magazine * 0.35));
   const reloadTarget = reloading ? Math.max(magazine, Math.sin(reloadProgress * Math.PI) * 0.75) : 0;
-  const supportTarget = clamp01(Math.max(supportBrace, ads * (1 - sprint * 0.75)));
-  const gripTarget = clamp01(ads * 0.55 + fireTarget * 0.5 + supportTarget * 0.4 - sprint * 0.18);
+  const supportTarget = clamp01(Math.max(supportBrace, ads * (1 - sprint * 0.75)) * (handIntent.supportBrace || 1));
+  const gripTarget = clamp01((ads * 0.55 + fireTarget * 0.5 + supportTarget * 0.4 - sprint * 0.18) * (handIntent.contactTension || 1));
   const sprintCarry = sprint * (1 - ads * 0.65);
   const mass = Number(weaponProfile.mass) || 1;
   const recoilMass = Math.max(0.72, Math.min(1.55, mass));
@@ -325,6 +327,13 @@ export function updateHandGripState(state, input = {}) {
   c.weaponIdx = weaponIdx;
   c.weaponType = weaponType;
   c.profileId = profile.id;
+  c.weaponFeelProfileId = weaponFeelProfile.id;
+  c.handIntent = {
+    profile: handIntent.profile || weaponType,
+    contactTension: handIntent.contactTension || 1,
+    supportBrace: handIntent.supportBrace || 1,
+    triggerDiscipline: handIntent.triggerDiscipline || 1
+  };
   c.tuningId = tuning.id;
   c.ads = damp(c.ads || 0, ads, 18, dt);
   c.sprint = damp(c.sprint || 0, sprintCarry, 12, dt);
@@ -362,7 +371,7 @@ export function updateHandGripState(state, input = {}) {
   c.offsets.right = right;
   c.offsets.left = left;
   c.fingers = {
-    triggerCurl: round(clamp01(trigger * (profile.fingers.triggerTravel || 0) * (tuning.triggerCurl || 1)) * 1.6, 4),
+    triggerCurl: round(clamp01(trigger * (profile.fingers.triggerTravel || 0) * (tuning.triggerCurl || 1) * (handIntent.triggerDiscipline || 1)) * 1.6, 4),
     triggerSnap: round(clamp01(c.fire * 0.55 + trigger * 0.3), 4),
     gripCurl: round(clamp01(((profile.fingers.gripCurl || 0) + c.gripTightness * 0.22) * (tuning.gripCurl || 1)), 4),
     supportCurl: round(clamp01(((profile.fingers.supportCurl || 0) + contact * 0.22 + c.fire * 0.08) * (tuning.supportCurl || 1)), 4),
@@ -403,7 +412,9 @@ export function handGripDebug(state) {
     weaponIdx: c.weaponIdx,
     weaponType: c.weaponType,
     profileId: c.profileId,
+    weaponFeelProfileId: c.weaponFeelProfileId || null,
     tuningId: c.tuningId || `hand-feel.${c.weaponType || 'rifle'}`,
+    handIntent: c.handIntent ? { ...c.handIntent } : null,
     ads: round(c.ads || 0, 4),
     sprint: round(c.sprint || 0, 4),
     reload: round(c.reload || 0, 4),
