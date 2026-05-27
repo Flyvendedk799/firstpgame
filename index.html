@@ -55,6 +55,47 @@
     <div id="reload-bar"><div class="rl">RELOADING</div><div id="reload-track"><div id="reload-fill"></div></div></div>
     <div id="lock-hint">Click to aim · WASD · SHIFT run · SPACE vault/jump · LMB shoot · RMB ADS · R reload · Q/E lean · Gamepad: A vault/jump at cover · LT aim + D-pad ←/→ lean · D-up heal/vault</div>
 </div>
+<div id="split-hud" aria-hidden="true">
+  <div class="split-divider"></div>
+  <div class="split-pane split-pane-p1" data-slot="0">
+    <div class="split-xhair" data-role="xhair"><div class="bar t"></div><div class="bar b"></div><div class="bar l"></div><div class="bar r"></div></div>
+    <div class="split-hitmark" data-role="hitmark"><span></span><span></span><span></span><span></span></div>
+    <div class="split-scope-vignette" data-role="scope-vignette"></div>
+    <div class="split-dmg-flash" data-role="dmg-flash"></div>
+    <div class="split-low-hp" data-role="low-hp"></div>
+    <div class="split-bottom">
+      <div>
+        <div class="hud-label">P1 health</div>
+        <div class="hud-val" data-role="hp-val">100</div>
+        <div class="split-hp-bar"><div data-role="hp-fill"></div></div>
+      </div>
+      <div class="split-ammo">
+        <div class="split-weapon-line"><span data-role="weapon-name">USP-T</span><span data-role="weapon-slot">[1/7]</span></div>
+        <div><span class="hud-val" data-role="ammo-val">12</span><span class="split-reserve">/ <span data-role="ammo-res">60</span></span></div>
+      </div>
+    </div>
+    <div class="split-reload-bar" data-role="reload-bar"><div class="rl">RELOADING</div><div class="split-reload-track"><div data-role="reload-fill"></div></div></div>
+  </div>
+  <div class="split-pane split-pane-p2" data-slot="1">
+    <div class="split-xhair" data-role="xhair"><div class="bar t"></div><div class="bar b"></div><div class="bar l"></div><div class="bar r"></div></div>
+    <div class="split-hitmark" data-role="hitmark"><span></span><span></span><span></span><span></span></div>
+    <div class="split-scope-vignette" data-role="scope-vignette"></div>
+    <div class="split-dmg-flash" data-role="dmg-flash"></div>
+    <div class="split-low-hp" data-role="low-hp"></div>
+    <div class="split-bottom">
+      <div>
+        <div class="hud-label">P2 health</div>
+        <div class="hud-val" data-role="hp-val">100</div>
+        <div class="split-hp-bar"><div data-role="hp-fill"></div></div>
+      </div>
+      <div class="split-ammo">
+        <div class="split-weapon-line"><span data-role="weapon-name">USP-T</span><span data-role="weapon-slot">[1/7]</span></div>
+        <div><span class="hud-val" data-role="ammo-val">12</span><span class="split-reserve">/ <span data-role="ammo-res">60</span></span></div>
+      </div>
+    </div>
+    <div class="split-reload-bar" data-role="reload-bar"><div class="rl">RELOADING</div><div class="split-reload-track"><div data-role="reload-fill"></div></div></div>
+  </div>
+</div>
 <div id="vault-prompt" style="position:fixed;top:42%;left:50%;transform:translate(-50%,-50%);font-size:14px;letter-spacing:.35em;color:rgba(255,200,70,.95);font-weight:700;text-shadow:0 0 20px rgba(255,170,0,.8),0 0 40px rgba(255,120,0,.4);opacity:0;transition:opacity .15s;pointer-events:none;z-index:20">▲ SPACE · A to VAULT</div>
 <div id="pickup-prompt" style="position:fixed;top:55%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:13px;letter-spacing:.20em;color:rgba(255,225,170,.95);font-weight:700;opacity:0;transition:opacity .15s;pointer-events:none;z-index:21">
   <div style="display:flex;align-items:center;gap:10px;justify-content:center"><span style="background:rgba(255,200,80,.18);border:1px solid rgba(255,200,80,.55);padding:2px 9px;border-radius:2px;color:#ffd060">F</span><span id="pickup-prompt-text">PICK UP</span></div>
