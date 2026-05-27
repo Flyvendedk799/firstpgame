@@ -29,6 +29,8 @@ export function createWeaponAnimationController(options = {}) {
     reload: 0,
     sprint: 0,
     ads: 0,
+    settle: 0,
+    bodyCarry: 0,
     dryFire: 0,
     trigger: 0,
     chamber: 0,
@@ -58,6 +60,11 @@ export function updateWeaponAnimationController(controller, input = {}) {
   const lastRound = pulseFrom(input.lastRound, 1.2);
   const emptyClick = pulseFrom(input.emptyClick, 1.4);
   const movementKick = pulseFrom(input.footstepKick, 0.85);
+  const bodyCarry = pulseFrom(input.bodyCarry, 1.0);
+  const landing = pulseFrom(input.landing, 1.2);
+  const wallKick = pulseFrom(input.wallKick, 1.0);
+  const dropkick = pulseFrom(input.dropkick, 1.0);
+  const settleTarget = Math.max(movementKick * 0.46, bodyCarry * 0.62, landing, wallKick * 0.82, dropkick * 0.74);
   const adsProtect = Math.max(0, Math.min(1, ads * (profile.adsProtection || 1)));
   const hipWeight = 1 - Math.min(0.88, adsProtect * 0.88);
 
@@ -66,6 +73,8 @@ export function updateWeaponAnimationController(controller, input = {}) {
     c.fire = 0;
     c.reload = 0;
     c.sprint = 0;
+    c.settle = 0;
+    c.bodyCarry = 0;
     c.dryFire = 0;
     c.chamber = 0;
   }
@@ -79,6 +88,8 @@ export function updateWeaponAnimationController(controller, input = {}) {
   c.ads = damp(c.ads || 0, ads, 16 * (tuning.adsSettle || 1), dt);
   c.sprint = damp(c.sprint || 0, sprint, 10, dt);
   c.reload = damp(c.reload || 0, reloading ? Math.max(0.2, Math.sin(reloadProgress * Math.PI)) : 0, reloading ? 12 : 16, dt);
+  c.bodyCarry = damp(c.bodyCarry || 0, bodyCarry, bodyCarry > (c.bodyCarry || 0) ? 18 : 9, dt);
+  c.settle = damp(c.settle || 0, settleTarget, settleTarget > (c.settle || 0) ? 22 : 8, dt);
   c.fire = Math.max(damp(c.fire || 0, 0, 18 * (profile.recovery || 1) * (tuning.returnSpeed || 1) * (recoil.recover || 1), dt), shotImpulse * (recoil.snap || 1), lastRound * 0.8);
   c.dryFire = Math.max(damp(c.dryFire || 0, 0, 22 * (tuning.returnSpeed || 1), dt), dryFire, emptyClick * 0.55);
   c.trigger = Math.max(c.fire * 0.9, c.dryFire * 0.7);
@@ -104,6 +115,11 @@ export function updateWeaponAnimationController(controller, input = {}) {
     dryFire: dry,
     footstepKick: gait,
     fireSide: side,
+    bodyCarry: c.bodyCarry,
+    settle: c.settle,
+    landing,
+    wallKick,
+    dropkick,
     lean: input.lean,
     guard: input.guard,
     slide: input.slide,
@@ -171,6 +187,8 @@ export function weaponAnimationDebug(controller) {
     state: c.state,
     ads: Number((c.ads || 0).toFixed(4)),
     sprint: Number((c.sprint || 0).toFixed(4)),
+    bodyCarry: Number((c.bodyCarry || 0).toFixed(4)),
+    settle: Number((c.settle || 0).toFixed(4)),
     fire: Number((c.fire || 0).toFixed(4)),
     reload: Number((c.reload || 0).toFixed(4)),
     dryFire: Number((c.dryFire || 0).toFixed(4)),

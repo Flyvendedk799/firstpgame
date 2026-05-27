@@ -2,7 +2,8 @@
  * Player animation controller — intent/state only; main.js applies to Three.js.
  * @see PLAYER_ANIMATION_IMMERSION_PLAN.md
  */
-import { createNotifyRing, resetFrameNotifies, emitPlayerAnimNotify, getRecentNotifies } from './playerAnimNotify.js';
+import { createNotifyRing, resetFrameNotifies, emitPlayerAnimNotify, getRecentNotifies, getNotifyStats } from './playerAnimNotify.js';
+import { getLocomotionFeelTuning } from './animation/profiles.js';
 import {
   getReloadWeaponClass,
   reloadMagHidden,
@@ -21,6 +22,112 @@ function dampL(current, target, lambda, dt) {
 function smooth01(t) {
   const x = Math.max(0, Math.min(1, t || 0));
   return x * x * (3 - 2 * x);
+}
+
+function roundN(v, digits = 5) {
+  return Number((Number(v) || 0).toFixed(digits));
+}
+
+function maxRowAbs(row) {
+  let out = 0;
+  for (const value of Object.values(row || {})) {
+    if (typeof value === 'number' && Number.isFinite(value)) out = Math.max(out, Math.abs(value));
+  }
+  return out;
+}
+
+function copyPoseSnapshot(resolved) {
+  return {
+    camera: { ...(resolved?.camera || {}) },
+    viewmodel: { ...(resolved?.viewmodel || {}) },
+    proxy: { ...(resolved?.proxy || {}) }
+  };
+}
+
+function resolvedPoseDelta(prev, next) {
+  let maxDelta = 0;
+  let nonFinite = 0;
+  const markerKeys = new Set(['fireSide', 'pivotSide']);
+  for (const section of ['camera', 'viewmodel', 'proxy']) {
+    const src = next?.[section] || {};
+    const old = prev?.[section] || {};
+    for (const [key, value] of Object.entries(src)) {
+      if (typeof value !== 'number') continue;
+      if (markerKeys.has(key)) continue;
+      if (!Number.isFinite(value)) {
+        nonFinite++;
+        src[key] = 0;
+        continue;
+      }
+      const was = Number.isFinite(old[key]) ? old[key] : 0;
+      maxDelta = Math.max(maxDelta, Math.abs(value - was));
+    }
+  }
+  return { maxDelta, nonFinite };
+}
+
+function dominantLocomotionMode(loc = {}) {
+  let best = 'idle';
+  let bestWeight = -1;
+  for (const [key, value] of Object.entries(loc)) {
+    const w = Number(value) || 0;
+    if (w > bestWeight) {
+      best = key;
+      bestWeight = w;
+    }
+  }
+  return best;
+}
+
+export function updatePlayerAnimTransitionHealth(state, dt) {
+  const tuning = getLocomotionFeelTuning();
+  const health = state.transitionHealth;
+  const mode = dominantLocomotionMode(state.layerWeights?.locomotion);
+  if (health.lastMode !== mode) {
+    health.lastMode = mode;
+    health.transitionAgeMs = 0;
+    health.recoveryMsLeft = tuning.transitionRecoveryMs || 260;
+  } else {
+    health.transitionAgeMs += Math.max(0, dt || 0) * 1000;
+  }
+  health.recoveryMsLeft = Math.max(0, (health.recoveryMsLeft || 0) - Math.max(0, dt || 0) * 1000);
+  if (health.prevResolved) {
+    const delta = resolvedPoseDelta(health.prevResolved, state.resolved);
+    health.lastPoseDelta = delta.maxDelta;
+    health.maxPoseDelta = Math.max(health.maxPoseDelta || 0, delta.maxDelta);
+    health.nonFiniteCount = (health.nonFiniteCount || 0) + delta.nonFinite;
+    if (delta.maxDelta > (tuning.transitionSnapThreshold || 0.62)) {
+      health.snapCount = (health.snapCount || 0) + 1;
+      health.lastSnapFrame = state.flags.frameSeq || 0;
+    }
+  }
+  health.poseMagnitudes = {
+    camera: maxRowAbs(state.resolved?.camera),
+    viewmodel: maxRowAbs(state.resolved?.viewmodel),
+    proxy: maxRowAbs(state.resolved?.proxy)
+  };
+  health.tuningId = tuning.id;
+  health.prevResolved = copyPoseSnapshot(state.resolved);
+}
+
+function transitionHealthDebug(health = {}) {
+  return {
+    version: 1,
+    tuningId: health.tuningId || getLocomotionFeelTuning().id,
+    lastMode: health.lastMode || 'idle',
+    transitionAgeMs: roundN(health.transitionAgeMs || 0, 1),
+    recoveryMsLeft: roundN(health.recoveryMsLeft || 0, 1),
+    snapCount: health.snapCount | 0,
+    lastSnapFrame: health.lastSnapFrame | 0,
+    lastPoseDelta: roundN(health.lastPoseDelta || 0, 5),
+    maxPoseDelta: roundN(health.maxPoseDelta || 0, 5),
+    nonFiniteCount: health.nonFiniteCount | 0,
+    poseMagnitudes: {
+      camera: roundN(health.poseMagnitudes?.camera || 0, 5),
+      viewmodel: roundN(health.poseMagnitudes?.viewmodel || 0, 5),
+      proxy: roundN(health.poseMagnitudes?.proxy || 0, 5)
+    }
+  };
 }
 
 const FIRE_VISUAL = {
@@ -264,6 +371,20 @@ export function createPlayerAnimState(opts) {
     },
     lastShotVisual: null,
     notifyRing: createNotifyRing(),
+    transitionHealth: {
+      version: 1,
+      tuningId: getLocomotionFeelTuning().id,
+      lastMode: 'idle',
+      transitionAgeMs: 0,
+      recoveryMsLeft: 0,
+      snapCount: 0,
+      lastSnapFrame: 0,
+      lastPoseDelta: 0,
+      maxPoseDelta: 0,
+      nonFiniteCount: 0,
+      poseMagnitudes: { camera: 0, viewmodel: 0, proxy: 0 },
+      prevResolved: null
+    },
     flags: {
       slideWas: false,
       sprintWas: false,
@@ -273,6 +394,7 @@ export function createPlayerAnimState(opts) {
       dropkickImpactWas: false,
       dropkickLandWas: false,
       landKickWas: 0,
+      reloadNotifyStage: 0,
       prevIntentR: 0,
       prevIntentF: 0,
       frameSeq: 0
@@ -531,7 +653,9 @@ export function updatePlayerAnimInputs(state, ctx) {
     jumpInputPulse: Number.isFinite(P._jumpInputPulse) ? P._jumpInputPulse : 0,
     killFlowPulse: Number.isFinite(P._killFlowPulse) ? P._killFlowPulse : 0,
     nearMissPulse: Number.isFinite(P._nearMissPulse) ? P._nearMissPulse : 0,
+    nearMissSide: Number.isFinite(P._nearMissSide) ? P._nearMissSide : 1,
     damageShock: Number.isFinite(P._damageShock) ? P._damageShock : 0,
+    damageShockSide: Number.isFinite(P._damageShockSide) ? P._damageShockSide : 1,
     turnDrivePulse: Number.isFinite(P._turnDrivePulse) ? P._turnDrivePulse : 0,
     turnDriveSide: Number.isFinite(P._turnDriveSide) ? P._turnDriveSide : 0,
     landingSlidePulse: Number.isFinite(P._landingSlidePulse) ? P._landingSlidePulse : 0,
@@ -559,10 +683,39 @@ export function updatePlayerAnimInputs(state, ctx) {
   if (slideOn && !state.flags.slideWas) {
     emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'slideStart', { slot: state.slot });
   }
+  if (slideOn && (speed > 0.08 || slideAmt > 0.18)) {
+    emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'slideScrape', {
+      slot: state.slot,
+      strength: Math.max(0.35, Math.min(1.2, slideAmt + speed * 0.45)),
+      side: rawSlideSide
+    });
+  }
   if (!slideOn && state.flags.slideWas) {
     emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'slideExit', { slot: state.slot });
   }
   state.flags.slideWas = slideOn;
+  if (P.reloading && P.RELOAD_TIME > 0 && P.reloadTimer != null) {
+    const reloadProgress = Math.max(0, Math.min(1, 1 - P.reloadTimer / P.RELOAD_TIME));
+    const stage = state.flags.reloadNotifyStage || 0;
+    if (reloadProgress >= 0.18 && stage < 1) {
+      emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'magOut', { slot: state.slot, progress: reloadProgress });
+      state.flags.reloadNotifyStage = 1;
+    }
+    if (reloadProgress >= 0.46 && stage < 2) {
+      emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'magIn', { slot: state.slot, progress: reloadProgress });
+      state.flags.reloadNotifyStage = 2;
+    }
+    if (reloadProgress >= 0.70 && stage < 3) {
+      emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'chamber', { slot: state.slot, progress: reloadProgress });
+      state.flags.reloadNotifyStage = 3;
+    }
+    if (reloadProgress >= 0.84 && stage < 4) {
+      emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'boltForward', { slot: state.slot, progress: reloadProgress });
+      state.flags.reloadNotifyStage = 4;
+    }
+  } else {
+    state.flags.reloadNotifyStage = 0;
+  }
   if (sprintOn && !state.flags.sprintWas) {
     state.smoothed.sprintStartEnv = Math.max(state.smoothed.sprintStartEnv || 0, 1);
     emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'sprintStart', { slot: state.slot });
@@ -927,15 +1080,20 @@ export function getPlayerAnimDebug(state) {
     inputs: state.inputs,
     layerWeights: state.layerWeights,
     resolved: state.resolved,
+    transitionHealth: transitionHealthDebug(state.transitionHealth),
     reload: state.reload,
     lastShotVisual: state.lastShotVisual,
     recentNotifies: getRecentNotifies(state.notifyRing, 28),
+    notifyStats: getNotifyStats(state.notifyRing),
     interaction: state.interaction
   };
 }
 
 export function onWeaponFired(state, weaponIdx, burstIndex) {
   state.lastShotVisual = Object.assign({ t: performance.now() * 0.001, weaponIdx }, getFireVisualProfile(weaponIdx, burstIndex));
+  const frameId = (state.flags?.frameSeq || 0) + 1;
+  emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'triggerPull', { slot: state.slot, weaponIdx });
+  emitPlayerAnimNotify(state.notifyRing, frameId, performance.now(), 'muzzleFlash', { slot: state.slot, weaponIdx, burstIndex: burstIndex | 0 });
 }
 
 export function getGripDebug(state) {
@@ -976,7 +1134,9 @@ export function getMovementAnimState(state) {
       turnDrive: state.inputs.turnDrivePulse || 0,
       landingSlide: state.inputs.landingSlidePulse || 0,
       damageShock: state.inputs.damageShock || 0,
+      damageShockSide: state.inputs.damageShockSide || 1,
       nearMiss: state.inputs.nearMissPulse || 0,
+      nearMissSide: state.inputs.nearMissSide || 1,
       killFlow: state.inputs.killFlowPulse || 0
     },
     wallJumpEnv: state.smoothed.wallJumpEnv,
@@ -993,7 +1153,9 @@ export function getMovementAnimState(state) {
     weaponSettle: state.smoothed.weaponSettle,
     fireSnap: state.smoothed.fireSnap,
     fireRecover: state.smoothed.fireRecover,
-    fireTail: state.smoothed.fireTail
+    fireTail: state.smoothed.fireTail,
+    transitionHealth: transitionHealthDebug(state.transitionHealth),
+    notifyStats: getNotifyStats(state.notifyRing)
   };
 }
 

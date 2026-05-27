@@ -74,6 +74,11 @@ export function resolveViewmodelPose(input = {}) {
   const ads = clamp01(input.ads);
   const hipWeight = 1 - Math.min(0.88, ads * (animationProfile.adsProtection || 1) * 0.88);
   const movementKick = clampWeight(input.footstepKick, 1.5);
+  const bodyCarry = clampWeight(input.bodyCarry, 1.5);
+  const settle = clampWeight(input.settle, 1.5);
+  const landing = clampWeight(input.landing, 1.5);
+  const wallKick = clampWeight(input.wallKick, 1.5);
+  const dropkick = clampWeight(input.dropkick, 1.5);
   const fireWeight = clampWeight(input.fire) * hipWeight * (recoil.viewmodelKick || 1);
   const dryWeight = clampWeight(input.dryFire, 1.5) * hipWeight;
   const reloadWeight = clampWeight(input.reload, 1.5) * (1 - Math.min(0.55, ads * 0.55));
@@ -91,15 +96,15 @@ export function resolveViewmodelPose(input = {}) {
   layers.push(layer('baseHold', baseHold, 1, feel.id));
 
   const locomotion = {
-    x: wave * movementKick * 0.002 * mass,
-    y: 0,
-    z: 0,
-    rx: 0,
-    ry: 0,
-    rz: 0
+    x: wave * movementKick * 0.002 * mass + bodyCarry * 0.004 - wallKick * 0.006,
+    y: -landing * 0.003 - settle * 0.002,
+    z: -bodyCarry * 0.007 - landing * 0.006 + dropkick * 0.010,
+    rx: landing * 0.018 + settle * 0.010 - dropkick * 0.028,
+    ry: wallKick * 0.018,
+    rz: -bodyCarry * 0.016 + wallKick * 0.026
   };
   addScaled(total, locomotion, 1, side);
-  layers.push(layer('locomotionInertia', locomotion, movementKick, 'locomotion'));
+  layers.push(layer('locomotionInertia', locomotion, Math.max(movementKick, bodyCarry, settle, landing, wallKick, dropkick), 'locomotion'));
 
   const adsPose = poseFrom(feelPose.adsAdditive || ZERO_POSE);
   addScaled(total, adsPose, ads, side);

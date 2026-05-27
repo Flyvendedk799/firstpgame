@@ -544,8 +544,8 @@ const BASE_ENEMY_FEEL = Object.freeze({
 });
 
 export const ANIMATION_FEEL_TUNING = Object.freeze({
-  version: 1,
-  id: 'aaa-final-v1',
+  version: 2,
+  id: 'aaa-grounded-v2',
   policy: {
     safeToTune: [
       'weapon visual pose',
@@ -596,30 +596,37 @@ export const ANIMATION_FEEL_TUNING = Object.freeze({
     grenade: { sprintLoosen: 1.16, wristRecoil: 1.12, handOpen: 1.30 }
   },
   locomotion: {
-    id: 'locomotion-feel.aaa-final',
-    stride: 1.06,
-    cameraWeight: 1.08,
-    viewmodelWeight: 1.12,
-    proxyWeight: 1.10,
-    gaitWeight: 1.08,
-    impactWeight: 1.18,
-    counterStrafeWeight: 1.14,
-    sprintWeight: 1.12,
-    slideWeight: 1.16,
-    vaultWeight: 1.10,
-    wallKickWeight: 1.14,
-    dropkickWeight: 1.18,
-    adsDampen: 1.0
+    id: 'locomotion-feel.grounded-aaa-v2',
+    stride: 1.08,
+    cameraWeight: 1.10,
+    viewmodelWeight: 1.15,
+    proxyWeight: 1.13,
+    gaitWeight: 1.10,
+    bodyCarryWeight: 1.16,
+    impactWeight: 1.24,
+    counterStrafeWeight: 1.17,
+    sprintWeight: 1.16,
+    slideWeight: 1.20,
+    vaultWeight: 1.12,
+    wallKickWeight: 1.18,
+    dropkickWeight: 1.22,
+    nearMissWeight: 1.14,
+    adsDampen: 1.06,
+    adsAlignmentTolerance: 0.015,
+    beadAlignmentTolerance: 0.026,
+    transitionSnapThreshold: 1.35,
+    transitionRecoveryMs: 260,
+    notifyDedupeBudget: 3
   },
   enemy: {
     default: BASE_ENEMY_FEEL,
-    scout: { intentLead: 1.16, peekLead: 1.20, stepEnergy: 1.14, hitReact: 1.08 },
-    pistolero: { intentLead: 1.12, weaponRaise: 1.14, shoulderCommit: 1.12 },
-    heavy: { compression: 1.18, shoulderCommit: 1.16, hitReact: 0.92, deathCollapse: 1.16 },
+    scout: { intentLead: 1.18, peekLead: 1.22, stepEnergy: 1.16, hitReact: 1.10 },
+    pistolero: { intentLead: 1.14, weaponRaise: 1.16, shoulderCommit: 1.14 },
+    heavy: { compression: 1.20, shoulderCommit: 1.18, hitReact: 0.94, deathCollapse: 1.18 },
     riot: { compression: 1.16, weaponRaise: 1.08, shoulderCommit: 1.18 },
     shielded: { compression: 1.16, weaponRaise: 1.08, shoulderCommit: 1.18 },
-    marksman: { aimTension: 1.18, peekLead: 1.10, weaponRaise: 1.14 },
-    sniper: { aimTension: 1.24, intentLead: 0.98, weaponRaise: 1.16 },
+    marksman: { aimTension: 1.20, peekLead: 1.12, weaponRaise: 1.16 },
+    sniper: { aimTension: 1.26, intentLead: 1.00, weaponRaise: 1.18 },
     demolitions: { compression: 1.12, reloadReach: 1.18, shoulderCommit: 1.12 },
     drone: { intentLead: 1.20, stepEnergy: 0.80, hitReact: 0.95 }
   }

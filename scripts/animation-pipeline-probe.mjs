@@ -69,7 +69,7 @@ assert.equal(flags.weaponGraphEnabled, false);
 assert.equal(flags.importedAnimationEnabled, false, 'imported animation playback should be guarded by default');
 assert.equal(flags.bvhQueriesEnabled, true);
 const tuningDebug = animationTuningDebug();
-assert.equal(tuningDebug.id, 'aaa-final-v1');
+assert.equal(tuningDebug.id, 'aaa-grounded-v2');
 assert.ok(tuningDebug.policy.gameplayAuthorityLocked.includes('damage'));
 assert.ok(tuningDebug.policy.safeToTune.includes('weapon visual pose'));
 
@@ -332,7 +332,7 @@ updateLocomotionFeelState(locomotionFeel, {
 });
 const locomotionFeelReport = locomotionFeelDebug(locomotionFeel);
 assert.equal(locomotionFeelReport.mode, 'sprint');
-assert.equal(locomotionFeelReport.tuningId, 'locomotion-feel.aaa-final');
+assert.equal(locomotionFeelReport.tuningId, 'locomotion-feel.grounded-aaa-v2');
 assert.ok(Math.abs(locomotionFeelReport.additive.camera.headRoll) > 0, 'sprint/counter-strafe should add camera roll');
 assert.ok(locomotionFeelReport.additive.viewmodel.sprintStartKick > 0, 'sprint start should add viewmodel kick');
 assert.ok(locomotionFeelReport.additive.proxy.sprintPose > 0, 'sprint should add proxy pose');

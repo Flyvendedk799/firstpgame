@@ -1,7 +1,6 @@
-// Phase AD — per-building perf stress test.
-// Iterates B01..B12, spawns 12 enemies + fires 5 player shots per building,
-// samples renderer.info after a brief sim. Used to surface perf regressions
-// when adding density.
+// Phase AD — active-map perf stress test.
+// By default this covers B01..B02, the campaign maps currently being kept.
+// Set PERF_STRESS_BUILDINGS=all or a comma list such as 1,2,5 to sweep more.
 //
 // Run with the dev server already on http://127.0.0.1:5173 (or set BASE_URL).
 import { chromium } from 'playwright';
@@ -12,9 +11,22 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:5173/';
 const SCREENSHOTS_DIR = path.resolve('./screenshots');
 fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
+function parseBuildings(value) {
+  if (!value || !String(value).trim()) return [1, 2];
+  const raw = String(value).trim().toLowerCase();
+  if (raw === 'all') return Array.from({ length: 12 }, (_, i) => i + 1);
+  const buildings = raw.split(',')
+    .map(part => Number.parseInt(part.trim(), 10))
+    .filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+  return buildings.length ? Array.from(new Set(buildings)) : [1, 2];
+}
+
+const BUILDINGS = parseBuildings(process.env.PERF_STRESS_BUILDINGS);
+
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const page = await context.newPage();
+page.setDefaultTimeout(45000);
 
 const errors = [];
 page.on('pageerror', e => errors.push({ type: 'pageerror', text: e.message }));
@@ -25,14 +37,27 @@ await page.waitForTimeout(2500);
 await page.locator('#start-btn').click();
 await page.waitForFunction(() => window.__game?.debug?.perfStressForBuilding, null, { timeout: 45000 });
 
-const rows = await page.evaluate(() => {
-  const dbg = window.__game.debug;
-  const out = [];
-  for (let bn = 1; bn <= 12; bn++) {
-    out.push(dbg.perfStressForBuilding(bn, 12, 5));
-  }
-  return out;
-});
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+const rows = [];
+for (const [i, bn] of BUILDINGS.entries()) {
+  console.error(`perf stress building ${bn} (${i + 1}/${BUILDINGS.length})`);
+  const row = await withTimeout(
+    page.evaluate(({ building, enemies, shots }) => {
+      return window.__game.debug.perfStressForBuilding(building, enemies, shots);
+    }, { building: bn, enemies: 12, shots: 5 }),
+    60000,
+    `perfStressForBuilding(${bn})`
+  );
+  rows.push(row);
+  await page.waitForTimeout(16);
+}
 
 const lines = [];
 const fmt = (v, w) => String(v).padStart(w);
@@ -50,5 +75,11 @@ if (errors.length) {
 }
 console.log('\nperf stress ok');
 
-await context.close();
-await browser.close();
+await Promise.race([
+  context.close().catch(() => {}),
+  new Promise((resolve) => setTimeout(resolve, 2000))
+]);
+await Promise.race([
+  browser.close().catch(() => {}),
+  new Promise((resolve) => setTimeout(resolve, 2000))
+]);

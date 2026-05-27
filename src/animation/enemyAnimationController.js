@@ -121,6 +121,9 @@ export function resolveEnemyAnimationStatus(enemy, options = {}) {
     intentCue: enemyIntentCue(intent, profile, enemy, tuning),
     fallback: 'procedural-enemy-pose'
   };
+  if (enemy?.animationStatus?.intentCueVisual) {
+    status.intentCueVisual = { ...enemy.animationStatus.intentCueVisual };
+  }
   const clipPlan = resolveImportedClipPlan({
     status,
     enemy,

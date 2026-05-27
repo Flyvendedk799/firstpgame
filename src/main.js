@@ -117,6 +117,7 @@ import {
   createPlayerAnimState,
   updatePlayerAnimInputs,
   resolvePlayerAnimLayers,
+  updatePlayerAnimTransitionHealth,
   getPlayerAnimDebug,
   getFireVisualProfile,
   onWeaponFired,
@@ -133,6 +134,7 @@ import {
   SEMANTIC_MIXAMO_CLIPS,
   animationTuningDebug,
   animationFeatureFlags,
+  getLocomotionFeelTuning,
   getWeaponAdsViewFit,
   getWeaponFeelProfile,
   getWeaponSightProfile,
@@ -7731,10 +7733,23 @@ class Enemy{
       isAttacking?'combat':'idle'
     ]||ENEMY_POSE_STATES.idle;
     const enemyGraphActive=SETTINGS.enemyGraphEnabled!==false;
-    const enemyAnimStatus=enemyGraphActive?resolveEnemyAnimationStatus(this,{importedAnimationEnabled:animationFeatureFlags(SETTINGS).importedAnimationEnabled}):null;
-    const enemyIntentCue=enemyAnimStatus&&enemyAnimStatus.intentCue?enemyAnimStatus.intentCue:null;
-    this.animationStatus=enemyAnimStatus;
-    this.group.userData.animationIntentCue=enemyIntentCue;
+	    const enemyAnimStatus=enemyGraphActive?resolveEnemyAnimationStatus(this,{importedAnimationEnabled:animationFeatureFlags(SETTINGS).importedAnimationEnabled}):null;
+	    const enemyIntentCueRaw=enemyAnimStatus&&enemyAnimStatus.intentCue?enemyAnimStatus.intentCue:null;
+	    let enemyIntentCue=enemyIntentCueRaw;
+	    if(enemyIntentCueRaw){
+	      const vis=this._animationIntentCueVis||(this._animationIntentCueVis={});
+	      for(const key of ['headLead','weaponRaise','torsoCompression','shoulderCommit','stepEnergy','recoilAbsorb','reloadReach','hitReact','vaultReach','deathCollapse','aimTension']){
+	        const target=THREE.MathUtils.clamp(Number(enemyIntentCueRaw[key])||0,0,1);
+	        const prev=Number.isFinite(vis[key])?vis[key]:target;
+	        vis[key]=damp(prev,target,target>prev?16:9,dt);
+	      }
+	      vis.peekSide=enemyIntentCueRaw.peekSide||vis.peekSide||1;
+	      vis.fallbackSafe=true;
+	      enemyIntentCue=vis;
+	      enemyAnimStatus.intentCueVisual=Object.fromEntries(Object.entries(vis).map(([k,v])=>[k,typeof v==='number'?Number(v.toFixed(4)):v]));
+	    }
+	    this.animationStatus=enemyAnimStatus;
+	    this.group.userData.animationIntentCue=enemyIntentCue;
     if(enemyAnimStatus&&enemyAnimStatus.clipPlan)this._applyImportedClipPlan(enemyAnimStatus.clipPlan);
 
 	    // Base limb targets (computed below)
@@ -14470,6 +14485,7 @@ const scopeCamera=new THREE.PerspectiveCamera(28,1,.08,120);
 scopeCamera.layers.set(0);
 let scopeViewM_active=null;
 let _scopePipStressDown=0;
+const _scopePipCache={sizeWrites:0,sizeSkips:0,viewWrites:0,viewSkips:0,lastProfile:null,lastAlpha:-1};
 function _baseScopePipPixelSize(){
   const q=SETTINGS.quality||'high';
   const map={low:256,medium:320,high:400,ultra:1536};
@@ -14510,7 +14526,13 @@ function _effectiveScopePipPixelSize(){
 function applyScopePipRenderTargetSize(){
   if(typeof rtScope==='undefined')return;
   const w=_effectiveScopePipPixelSize();
-  if(rtScope.width!==w||rtScope.height!==w)rtScope.setSize(w,w);
+  if(rtScope.width===w&&rtScope.height===w){
+    _scopePipCache.sizeSkips++;
+    return false;
+  }
+  rtScope.setSize(w,w);
+  _scopePipCache.sizeWrites++;
+  return true;
 }
 function _makeScopePipOverlay(w,h,x,y,z){
   const mat=new THREE.MeshBasicMaterial({map:rtScope.texture,transparent:true,opacity:0,depthWrite:false,depthTest:false});
@@ -14527,10 +14549,17 @@ const _sniperScopePip=_makeScopePipOverlay(.030,.030,0,.092,.0346);
 const _scopeLensLocalM4=new THREE.Vector3(0,.078,-.057);
 const _scopeLensLocalDmr=new THREE.Vector3(0,.080,.034);
 const _scopeLensLocalSniper=new THREE.Vector3(0,.092,.034);
-function _hideScopePipViews(){
-  if(m4ScopeViewM)m4ScopeViewM.opacity=0;
-  if(_dmrScopePip){_dmrScopePip.mat.opacity=0;_dmrScopePip.mesh.visible=false;}
-  if(_sniperScopePip){_sniperScopePip.mat.opacity=0;_sniperScopePip.mesh.visible=false;}
+function _hideScopePipViews(except=null){
+  const keep=except&&except.viewM;
+  if(m4ScopeViewM&&m4ScopeViewM!==keep&&m4ScopeViewM.opacity!==0)m4ScopeViewM.opacity=0;
+  if(_dmrScopePip&&_dmrScopePip.mat!==keep){
+    if(_dmrScopePip.mat.opacity!==0)_dmrScopePip.mat.opacity=0;
+    if(_dmrScopePip.mesh.visible)_dmrScopePip.mesh.visible=false;
+  }
+  if(_sniperScopePip&&_sniperScopePip.mat!==keep){
+    if(_sniperScopePip.mat.opacity!==0)_sniperScopePip.mat.opacity=0;
+    if(_sniperScopePip.mesh.visible)_sniperScopePip.mesh.visible=false;
+  }
 }
 function _currentOpticProfile(){
   if(typeof P==='undefined')return null;
@@ -14597,11 +14626,23 @@ function _opticGunZ(profile){
   return -.22+adsAmt*(adsZ+.22);
 }
 function _setScopePipView(profile,alpha){
-  _hideScopePipViews();
-  if(!profile||!profile.viewM){scopeViewM_active=profile&&profile.viewM?profile.viewM:null;return;}
-  profile.viewM.opacity=alpha;
-  if(profile.view)profile.view.visible=alpha>0.01;
+  const a=THREE.MathUtils.clamp(Number.isFinite(alpha)?alpha:0,0,1);
+  if(_scopePipCache.lastProfile===profile&&Math.abs(_scopePipCache.lastAlpha-a)<0.0005){
+    _scopePipCache.viewSkips++;
+    return false;
+  }
+  _hideScopePipViews(profile);
+  _scopePipCache.lastProfile=profile||null;
+  _scopePipCache.lastAlpha=a;
+  _scopePipCache.viewWrites++;
+  if(!profile||!profile.viewM){scopeViewM_active=profile&&profile.viewM?profile.viewM:null;return true;}
+  if(Math.abs((profile.viewM.opacity||0)-a)>0.0005)profile.viewM.opacity=a;
+  if(profile.view){
+    const visible=a>0.01;
+    if(profile.view.visible!==visible)profile.view.visible=visible;
+  }
   scopeViewM_active=profile.viewM;
+  return true;
 }
 function _syncScopedViewmodelVisibility(profile,scopeEase=0){
   const guardSidePeek=!!(((P.guardBehindAmt||0)>.08||P.guardBehindHeld)&&P.guardMode==='wall'&&(Math.abs(P.guardPeekSide||0)>.035||P.guardBehindActive||P._guardCoverLockKey));
@@ -15853,7 +15894,10 @@ function _alignIronSightToAimCenter(dt){
   const residualX=_ironSightPostNdcTmp.x-targetNdcX;
   const residualY=_ironSightPostNdcTmp.y-targetNdcY;
   const residual=Math.hypot(residualX,residualY);
-  const tolerance=Number.isFinite(ref.maxResidualNdc)?ref.maxResidualNdc:(ref.mode==='bead' ? .026 : .015);
+  const locomotionFeelTuning=getLocomotionFeelTuning();
+  const configuredTolerance=ref.mode==='bead'?locomotionFeelTuning.beadAlignmentTolerance:locomotionFeelTuning.adsAlignmentTolerance;
+  const profileTolerance=Number.isFinite(ref.maxResidualNdc)?ref.maxResidualNdc:(ref.mode==='bead' ? .026 : .015);
+  const tolerance=Number.isFinite(configuredTolerance)?Math.min(profileTolerance,configuredTolerance):profileTolerance;
   P._ironSightAlign={
     active:true,
     weaponIdx:idx,
@@ -15873,6 +15917,8 @@ function _alignIronSightToAimCenter(dt){
     residualY:Number(residualY.toFixed(5)),
     residual:Number(residual.toFixed(5)),
     tolerance:Number(tolerance.toFixed(5)),
+    profileTolerance:Number(profileTolerance.toFixed(5)),
+    tuningTolerance:Number((Number.isFinite(configuredTolerance)?configuredTolerance:profileTolerance).toFixed(5)),
     withinTolerance:residual<=tolerance||ads<.98,
     lineSlopeX:Number(lineSlopeX.toFixed(4)),
     lineSlopeY:Number(lineSlopeY.toFixed(4)),
@@ -15984,6 +16030,10 @@ function _updateAnimationCoordinator(dt,nowSec){
       emptyClick:P._emptyClickPulse||0,
       lastRound:P._lastRoundPulse||0,
       footstepKick:playerAnimState0.resolved?.viewmodel?.footstepKick||0,
+      bodyCarry:Math.max(Math.abs(P._massInertiaF||0),Math.abs(P._massInertiaR||0),P._bodyJolt||0,P._locomotionSurge||0),
+      landing:playerAnimState0.layerWeights?.locomotion?.land||P._landingSpring||0,
+      wallKick:playerAnimState0.layerWeights?.locomotion?.wallJump||P.wallJumpImpact||0,
+      dropkick:playerAnimState0.layerWeights?.locomotion?.dropkick||P.dropkickImpact||0,
       fireSide:playerAnimState0.resolved?.viewmodel?.fireSide||1,
       lean:P.lean||0,
       guard:P.guardBehindAmt||0,
@@ -16036,6 +16086,10 @@ function _updateAnimationCoordinatorP2(dt,nowSec){
       emptyClick:P2._emptyClickPulse||0,
       lastRound:P2._lastRoundPulse||0,
       footstepKick:playerAnimState1.resolved?.viewmodel?.footstepKick||0,
+      bodyCarry:Math.max(Math.abs(P2._massInertiaF||0),Math.abs(P2._massInertiaR||0),P2._bodyJolt||0,P2._locomotionSurge||0),
+      landing:playerAnimState1.layerWeights?.locomotion?.land||P2._landingSpring||0,
+      wallKick:playerAnimState1.layerWeights?.locomotion?.wallJump||P2.wallJumpImpact||0,
+      dropkick:playerAnimState1.layerWeights?.locomotion?.dropkick||P2.dropkickImpact||0,
       fireSide:playerAnimState1.resolved?.viewmodel?.fireSide||1,
       lean:P2.lean||0,
       guard:P2.guardBehindAmt||0,
@@ -17282,13 +17336,7 @@ document.addEventListener('keydown',e=>{
   }
   if(e.code==='Space'&&!P.dead&&!P.vaulting&&!e.repeat){
     e.preventDefault();
-    if(P.grounded&&P.nearVault){
-      P._vaultIntentUntil=0;
-      doVault(P.nearVault);
-    }else{
-      P._vaultIntentUntil=performance.now()+GAMEPLAY_QOL_FEEL.vaultBufferMs;
-      doJump();
-    }
+    triggerPrimaryJumpOrVaultInput();
   }
   if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
   if(e.code==='KeyF'&&!P.dead&&P.nearPickup){e.preventDefault();tryEquipPickup(P.nearPickup);return;}
@@ -17362,6 +17410,49 @@ function _syncSplitHudShell(){
   const sh=$e('split-hud');
   if(sh)sh.setAttribute('aria-hidden',on?'false':'true');
 }
+const HUD_CACHE={values:Object.create(null),refs:Object.create(null),writes:0,skips:0,lastUpdateAt:0};
+function _cachedUiUpdate(key,value,current,apply,el=null,trustCached=false){
+  const v=String(value);
+  if(HUD_CACHE.values[key]===v&&(current===v||(trustCached&&(!el||HUD_CACHE.refs[key]===el)))){HUD_CACHE.skips++;return false;}
+  apply(v);
+  HUD_CACHE.values[key]=v;
+  if(el)HUD_CACHE.refs[key]=el;
+  HUD_CACHE.writes++;
+  HUD_CACHE.lastUpdateAt=performance.now();
+  return true;
+}
+function _uiSetText(el,key,value){
+  if(!el)return false;
+  return _cachedUiUpdate(`text:${key}`,value,el.textContent,v=>{el.textContent=v;},el);
+}
+function _uiSetHtml(el,key,value){
+  if(!el)return false;
+  return _cachedUiUpdate(`html:${key}`,value,el.innerHTML,v=>{el.innerHTML=v;},el);
+}
+function _uiSetStyle(el,key,prop,value){
+  if(!el||!el.style)return false;
+  return _cachedUiUpdate(`style:${key}:${prop}`,value,el.style[prop]||'',v=>{el.style[prop]=v;},el,true);
+}
+function _uiSetStyleProperty(el,key,prop,value){
+  if(!el||!el.style)return false;
+  return _cachedUiUpdate(`style-prop:${key}:${prop}`,value,el.style.getPropertyValue(prop)||'',v=>{el.style.setProperty(prop,v);},el,true);
+}
+function _uiSetClass(el,key,cls,on){
+  if(!el||!el.classList)return false;
+  const v=on?'1':'0';
+  const cur=el.classList.contains(cls)?'1':'0';
+  return _cachedUiUpdate(`class:${key}:${cls}`,v,cur,next=>{el.classList.toggle(cls,next==='1');},el);
+}
+function _hudSetText(id,value){return _uiSetText($e(id),id,value);}
+function _hudSetStyle(id,prop,value){return _uiSetStyle($e(id),id,prop,value);}
+function _hudCacheStats(){
+  return {
+    writes:HUD_CACHE.writes|0,
+    skips:HUD_CACHE.skips|0,
+    entries:Object.keys(HUD_CACHE.values).length,
+    lastUpdateAt:Number((HUD_CACHE.lastUpdateAt||0).toFixed(1))
+  };
+}
 function hudUpdateSlot(slot=0){
   if(!(G.splitScreenActive&&G.started))return;
   const s=slot|0;
@@ -17411,21 +17502,49 @@ function hudUpdateShared(){
     hudUpdateSlot(1);
   }
 }
-function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textContent=h;$e('hp-fill').style.width=h+'%';$e('hp-fill').style.background=h>60?'#4cff88':h>30?'#ffcc44':'#ff4444';if(P.weaponIdx===2){$e('ammo-val').textContent='∞';$e('ammo-res').textContent='∞';}else{$e('ammo-val').textContent=P.ammo;$e('ammo-res').textContent=P.ammoRes;}const demoHud=G.playMode==='demo';const level=G.campaignLevel||getCampaignLevel(G.building);const beat=G.currentBeat&&G.currentBeat.meta;const flowProgress=G.encounterDirector&&typeof G.encounterDirector.getRoomProgress==='function'?G.encounterDirector.getRoomProgress():null;const roomCount=G.zoneClears?G.zoneClears.filter(c=>c).length:0;const megaRoomTotal=G.levelData&&G.levelData.isMegaplexB01&&Array.isArray(G.levelData.roomAnchors)?G.levelData.roomAnchors.length:0;const megaRoomCount=megaRoomTotal?Math.min(megaRoomTotal,roomCount*5):roomCount;const roomLabel=demoHud?'NO ENEMIES':(flowProgress?('ROOM '+flowProgress.current+' / '+flowProgress.total):(megaRoomTotal?('ROOMS '+megaRoomCount+' / '+megaRoomTotal):('ROOMS '+roomCount+' / 3')));$e('wave-num').textContent=demoHud?'DEMO MAP · NO ENEMIES':((beat?beat.label+' · ':'')+roomLabel);$e('building-num').textContent=demoHud?'DEMO · AIM DUEL BOX':('B'+G.building+' · '+(level?level.callsign:'BUILDING'));if(G.enemyMgr)$e('enemy-count').textContent=G.enemyMgr.aliveCount;const mv=$e('money-val');if(mv)mv.textContent='$'+P.money;const pv=$e('pack-val');if(pv)pv.textContent=P.healPacks;const gv=$e('gren-val');if(gv)gv.textContent=P.grenades;const wn=$e('weapon-name');if(wn)wn.textContent=WEAPONS[P.weaponIdx].name;const wnum=$e('weapon-num');if(wnum)wnum.textContent=WEAPONS[P.weaponIdx].slot;
-  const ch=$e('coop-hud-split'),dh=$e('duel-score-hud');
-  if(ch)ch.style.display=(G.splitScreenActive&&G.playMode==='coop'&&G.started)?'block':'none';
-  if(dh)dh.style.display=(G.splitScreenActive&&G.playMode==='duel'&&G.started)?'block':'none';
+function hudUpdate(){
+  const h=Math.max(0,Math.round(P.hp));
+  _hudSetText('hp-val',h);
+  _hudSetStyle('hp-fill','width',h+'%');
+  _hudSetStyle('hp-fill','background',h>60?'#4cff88':h>30?'#ffcc44':'#ff4444');
+  if(P.weaponIdx===2){
+    _hudSetText('ammo-val','∞');
+    _hudSetText('ammo-res','∞');
+  }else{
+    _hudSetText('ammo-val',P.ammo);
+    _hudSetText('ammo-res',P.ammoRes);
+  }
+  const demoHud=G.playMode==='demo';
+  const level=G.campaignLevel||getCampaignLevel(G.building);
+  const beat=G.currentBeat&&G.currentBeat.meta;
+  const flowProgress=G.encounterDirector&&typeof G.encounterDirector.getRoomProgress==='function'?G.encounterDirector.getRoomProgress():null;
+  const roomCount=G.zoneClears?G.zoneClears.filter(c=>c).length:0;
+  const megaRoomTotal=G.levelData&&G.levelData.isMegaplexB01&&Array.isArray(G.levelData.roomAnchors)?G.levelData.roomAnchors.length:0;
+  const megaRoomCount=megaRoomTotal?Math.min(megaRoomTotal,roomCount*5):roomCount;
+  const roomLabel=demoHud?'NO ENEMIES':(flowProgress?('ROOM '+flowProgress.current+' / '+flowProgress.total):(megaRoomTotal?('ROOMS '+megaRoomCount+' / '+megaRoomTotal):('ROOMS '+roomCount+' / 3')));
+  _hudSetText('wave-num',demoHud?'DEMO MAP · NO ENEMIES':((beat?beat.label+' · ':'')+roomLabel));
+  _hudSetText('building-num',demoHud?'DEMO · AIM DUEL BOX':('B'+G.building+' · '+(level?level.callsign:'BUILDING')));
+  if(G.enemyMgr)_hudSetText('enemy-count',G.enemyMgr.aliveCount);
+  _hudSetText('money-val','$'+P.money);
+  _hudSetText('pack-val',P.healPacks);
+  _hudSetText('gren-val',P.grenades);
+  const W=WEAPONS[P.weaponIdx]||START_WEAPON;
+  _hudSetText('weapon-name',W.name);
+  _hudSetText('weapon-num',W.slot);
+  _hudSetStyle('coop-hud-split','display',(G.splitScreenActive&&G.playMode==='coop'&&G.started)?'block':'none');
+  _hudSetStyle('duel-score-hud','display',(G.splitScreenActive&&G.playMode==='duel'&&G.started)?'block':'none');
   if(G.splitScreenActive&&G.playMode==='coop'&&G.started){
     const h1=Math.max(0,Math.round(P.hp)),h2=Math.max(0,Math.round(P2.hp));
-    const v1=$e('hp-p1-val'),v2=$e('hp-p2-val'),f1=$e('hp-p1-fill'),f2=$e('hp-p2-fill');
-    if(v1)v1.textContent=h1;if(v2)v2.textContent=h2;
-    if(f1){f1.style.width=Math.min(100,(P.hp/Math.max(1,P.maxHp||100))*100)+'%';f1.style.background=h1>60?'#4cff88':h1>30?'#ffcc44':'#ff4444';}
-    if(f2){f2.style.width=Math.min(100,(P2.hp/Math.max(1,P2.maxHp||100))*100)+'%';f2.style.background=h2>60?'#4cff88':h2>30?'#ffcc44':'#ff4444';}
+    _hudSetText('hp-p1-val',h1);
+    _hudSetText('hp-p2-val',h2);
+    _hudSetStyle('hp-p1-fill','width',Math.min(100,(P.hp/Math.max(1,P.maxHp||100))*100)+'%');
+    _hudSetStyle('hp-p1-fill','background',h1>60?'#4cff88':h1>30?'#ffcc44':'#ff4444');
+    _hudSetStyle('hp-p2-fill','width',Math.min(100,(P2.hp/Math.max(1,P2.maxHp||100))*100)+'%');
+    _hudSetStyle('hp-p2-fill','background',h2>60?'#4cff88':h2>30?'#ffcc44':'#ff4444');
   }
   if(G.splitScreenActive&&G.playMode==='duel'&&G.started){
-    const s0=$e('duel-s0'),s1=$e('duel-s1');
-    if(s0)s0.textContent=String(DUEL.scores[0]||0);
-    if(s1)s1.textContent=String(DUEL.scores[1]||0);
+    _hudSetText('duel-s0',String(DUEL.scores[0]||0));
+    _hudSetText('duel-s1',String(DUEL.scores[1]||0));
   }
   const fph=$e('floorplan-debug-hud');
   if(fph&&G._floorplanDebugHud&&G.started&&typeof window.__game!=='undefined'&&window.__game.debug){
@@ -17433,8 +17552,8 @@ function hudUpdate(){const h=Math.max(0,Math.round(P.hp));$e('hp-val').textConte
       const r=window.__game.debug.roomAtPlayer();
       const ex=(r&&r.exits)?r.exits.join(', '):'—';
       const tf=(r&&r.transitionsFrom&&r.transitionsFrom.length)?r.transitionsFrom.map(t=>t.id+':'+(t.kind||'?')).join(' | '):'—';
-      fph.textContent=`SPACE ${r&&r.spaceId||'—'} · exits [${ex}] · from here [${tf}]`;
-    }catch(_){fph.textContent='floorplan debug (error)';}
+      _uiSetText(fph,'floorplan-debug-hud',`SPACE ${r&&r.spaceId||'—'} · exits [${ex}] · from here [${tf}]`);
+    }catch(_){_uiSetText(fph,'floorplan-debug-hud','floorplan debug (error)');}
   }
   hudUpdateShared();
 }
@@ -18236,7 +18355,7 @@ function _applyScreenPostProfile(ctx){
     if(grain)grain.style.opacity='0';
     const chrom=$e('chrom');if(chrom)chrom.classList.remove('show');
     const lowHp=$e('low-hp');if(lowHp)lowHp.style.opacity='0';
-    const scopeVig=$e('scope-vignette');if(scopeVig)scopeVig.style.opacity='0';
+    const scopeVig=$e('scope-vignette');if(scopeVig)_uiSetStyle(scopeVig,'scope-vignette','opacity','0');
     const leanVig=$e('lean-vignette');if(leanVig){leanVig.style.opacity='0';leanVig.className='';}
     G._screenPost={enabled:false,stable:true,coreVisualPostCameraVersion:_CORE_VISUAL_POST_CAMERA_VERSION};
     return ctx;
@@ -18374,14 +18493,24 @@ function quitToMain(){
 function announce(txt,sub,dur){$e('wa-text').textContent=txt;$e('wa-sub').textContent=sub||'';$e('wave-announce').style.opacity='1';setTimeout(()=>$e('wave-announce').style.opacity='0',dur||2600);}
 // ── FX / TRAILS ──────────────────────────────────────────────────────────────
 const _Y_AXIS=new THREE.Vector3(0,1,0);
+const _TRAIL_LEN_DIR=new THREE.Vector3();
+const _TRAIL_ALIGN_DIR=new THREE.Vector3();
+const _TRAIL_ALIGN_Q=new THREE.Quaternion();
+const _NEAR_MISS_AIR_TMP={
+  right:new THREE.Vector3(),
+  up:new THREE.Vector3(),
+  fwd:new THREE.Vector3(),
+  pos:new THREE.Vector3()
+};
 function _alignCyl(mesh,from,to){
-  const dir=to.clone().sub(from);
-  const q=new THREE.Quaternion().setFromUnitVectors(_Y_AXIS,dir.clone().normalize());
-  mesh.quaternion.copy(q);
+  const dir=_TRAIL_ALIGN_DIR.copy(to).sub(from);
+  if(dir.lengthSq()<1e-8)return;
+  _TRAIL_ALIGN_Q.setFromUnitVectors(_Y_AXIS,dir.normalize());
+  mesh.quaternion.copy(_TRAIL_ALIGN_Q);
   mesh.position.copy(from).add(to).multiplyScalar(.5);
 }
 function addTrail(from,to,opts={}){
-  const dir=to.clone().sub(from);const len=dir.length();if(len<.05)return;
+  const dir=_TRAIL_LEN_DIR.copy(to).sub(from);const len=dir.length();if(len<.05)return;
   const am=_additiveVfxTierMul();
   const focusTrail=THREE.MathUtils.clamp(opts.focusLevel!=null?opts.focusLevel:(P._focusVisual||0),0,1);
   const haloColor=opts.haloColor!=null?opts.haloColor:(focusTrail>.04?0x74eaff:0xffd070);
@@ -18405,10 +18534,10 @@ function spawnNearMissAirCut(cam,side=1,strength=.7){
   if(!cam||STABLE_RENDERING_MODE)return;
   const am=_additiveVfxTierMul();
   const s=THREE.MathUtils.clamp(strength,.25,1.25);
-  const right=new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion);
-  const up=new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
-  const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion);
-  const pos=cam.position.clone()
+  const right=_NEAR_MISS_AIR_TMP.right.set(1,0,0).applyQuaternion(cam.quaternion);
+  const up=_NEAR_MISS_AIR_TMP.up.set(0,1,0).applyQuaternion(cam.quaternion);
+  const fwd=_NEAR_MISS_AIR_TMP.fwd.set(0,0,-1).applyQuaternion(cam.quaternion);
+  const pos=_NEAR_MISS_AIR_TMP.pos.copy(cam.position)
     .addScaledVector(fwd,.72+Math.random()*.36)
     .addScaledVector(right,(side||1)*(.22+Math.random()*.22))
     .addScaledVector(up,(Math.random()-.5)*.22);
@@ -18489,8 +18618,8 @@ function _weaponImpactWeight(weaponIdx){
   if(weaponIdx===6)return 1.08;
   return 1.0;
 }
-const JUMP_FEEL={coyoteMs:120,bufferMs:165};
-const SLIDE_FEEL={bufferMs:230,landingWindowMs:190};
+const JUMP_FEEL={coyoteMs:GAMEPLAY_QOL_FEEL.jumpCoyoteMs||120,bufferMs:GAMEPLAY_QOL_FEEL.jumpBufferMs||165};
+const SLIDE_FEEL={bufferMs:GAMEPLAY_QOL_FEEL.slideBufferMs||230,landingWindowMs:GAMEPLAY_QOL_FEEL.landingSlideWindowMs||190};
 function _weaponShotFeelWeight(weaponIdx){
   if(weaponIdx===1)return 1.28;
   if(weaponIdx===3)return 1.45;
@@ -19237,11 +19366,72 @@ function tryEquipPickup(pk){
 const rc=new THREE.Raycaster();rc.far=80;
 const _rcShared=new THREE.Raycaster();
 const _aimHudDir=new THREE.Vector3();
+const ENEMY_SHOT_TMP={
+  right:new THREE.Vector3(),
+  up:new THREE.Vector3(),
+  fwd:new THREE.Vector3(),
+  toCam:new THREE.Vector3(),
+  target:new THREE.Vector3(),
+  dir:new THREE.Vector3(),
+  start:new THREE.Vector3(),
+  end:new THREE.Vector3(),
+  jitter:new THREE.Vector3(),
+  hitRight:new THREE.Vector3()
+};
+const _PLAYER_MOVE_CELL_CACHE={seen:[-1,-1,-1],cellsHit:[]};
 function _aimRayDir(out=new THREE.Vector3()){
   return out.set(0,0,-1).applyQuaternion(camera.quaternion).normalize();
 }
 function _aimRayDirWithSpread(sp,out=new THREE.Vector3()){
   return out.set((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize().applyQuaternion(camera.quaternion);
+}
+function _playerMoveCollisionStep(pl,walls,mx,mz){
+  if(!pl||(!mx&&!mz))return;
+  const R=PR,nx=pl.pos.x+mx,nz=pl.pos.z+mz;
+  let okX=true,okZ=true;
+  const _pIdx=(G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
+  if(_pIdx){
+    const cells=_pIdx.cells;
+    const seenIds=_PLAYER_MOVE_CELL_CACHE.seen;
+    const cellsHit=_PLAYER_MOVE_CELL_CACHE.cellsHit;
+    seenIds[0]=-1;seenIds[1]=-1;seenIds[2]=-1;cellsHit.length=0;
+    for(let j=0;j<3;j++){
+      const tx=j===0?nx:pl.pos.x;
+      const tz=j===1?nz:pl.pos.z;
+      const ix=((tx-_pIdx.xMin)/_pIdx.cs)|0,iz=((tz-_pIdx.zMin)/_pIdx.cs)|0;
+      if(ix<0||iz<0||ix>=_pIdx.nx||iz>=_pIdx.nz)continue;
+      const id=ix+iz*_pIdx.nx;
+      if(seenIds[0]===id||seenIds[1]===id||seenIds[2]===id)continue;
+      if(seenIds[0]===-1)seenIds[0]=id;else if(seenIds[1]===-1)seenIds[1]=id;else seenIds[2]=id;
+      const c=cells[id];if(c)cellsHit.push(c);
+    }
+    for(const c of cellsHit){
+      for(let i=0,n=c.length;i<n;i++){
+        const w=c[i];
+        if(w.broken)continue;
+        if(okX&&nx+R>w.x0&&w.x1>nx-R&&pl.pos.z+R>w.z0&&w.z1>pl.pos.z-R)okX=false;
+        if(okZ&&pl.pos.x+R>w.x0&&w.x1>pl.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+        if(!okX&&!okZ)break;
+      }
+      if(!okX&&!okZ)break;
+    }
+  } else {
+    for(const w of (walls||[])){
+      if(w.broken)continue;
+      if(nx+R>w.x0&&w.x1>nx-R&&pl.pos.z+R>w.z0&&w.z1>pl.pos.z-R)okX=false;
+      if(pl.pos.x+R>w.x0&&w.x1>pl.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
+    }
+  }
+  if(okX)pl.pos.x=nx;
+  if(okZ)pl.pos.z=nz;
+}
+function _resolvePlayerMoveWithCollisionSubsteps(pl,walls,mx,mz){
+  const startX=pl.pos.x,startZ=pl.pos.z;
+  const len=Math.hypot(mx,mz);
+  const steps=len>.32?Math.min(4,Math.ceil(len/.26)):1;
+  const sx=mx/steps,sz=mz/steps;
+  for(let i=0;i<steps;i++)_playerMoveCollisionStep(pl,walls,sx,sz);
+  return Math.hypot(pl.pos.x-startX,pl.pos.z-startZ);
 }
 function _syncAimHud(){
   // The true fire ray is the camera center. Keep DOM HUD elements fixed at
@@ -21385,6 +21575,17 @@ function doJump(){
   }
   P._coyoteJumpConsumed=false;
   _launchGroundJump(false);
+}
+function triggerPrimaryJumpOrVaultInput(){
+  if(P.dead||P.vaulting)return false;
+  if(P.grounded&&P.nearVault){
+    P._vaultIntentUntil=0;
+    doVault(P.nearVault);
+    return true;
+  }
+  P._vaultIntentUntil=performance.now()+GAMEPLAY_QOL_FEEL.vaultBufferMs;
+  doJump();
+  return true;
 }
 function doVault(v){
   if(P.vaulting||P.dead)return;
@@ -26785,6 +26986,23 @@ function sfxLandingGear(strength=1,hit=false){
   const ng=c.createGain();ng.gain.value=.12*s;
   src.connect(lp);lp.connect(ng);ng.connect(c.destination);src.start();src.stop(c.currentTime+.08);
 }
+function sfxSlideScrape(strength=1,side=0){
+  const c=getAC();
+  const s=THREE.MathUtils.clamp(strength||1,.25,1.35);
+  const dur=.075;
+  const len=Math.max(1,~~(c.sampleRate*dur));
+  const buf=c.createBuffer(1,len,c.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<len;i++){
+    const t=i/len;
+    d[i]=(Math.random()*2-1)*Math.pow(1-t,1.05)*(.18+.18*s);
+  }
+  const src=c.createBufferSource();src.buffer=buf;
+  const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=760+s*240;bp.Q.value=.85;
+  const g=c.createGain();g.gain.setValueAtTime(.045*s,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+dur);
+  src.connect(bp);bp.connect(g);_connectWithPan(c,g,side);
+  src.start();src.stop(c.currentTime+dur+.02);
+}
 function _currentPlayerAnimFrameNotifies(st){
   const ring=st&&st.notifyRing;
   if(!ring||!ring.size||ring.frameId==null)return [];
@@ -26850,15 +27068,31 @@ function _consumePlayerAnimNotifies(st,pl=P,slot=0){
         pl._bodyJolt=Math.max(pl._bodyJolt||0,.12);
         if(slot===0){PP.shakeY-=.012;PP.shakeX+=(Math.random()-.5)*.016;}
         break;
-      case 'sprintStop':
-        if(slot===0)sfxSprintGear('stop',.95);
-        pl._sprintStopSurge=Math.max(pl._sprintStopSurge||0,.56);
-        pl._landingSpring=Math.max(pl._landingSpring||0,.22);
-        pl._massInertiaF=Math.min(pl._massInertiaF||0,-.30);
-        pl._bodyJolt=Math.max(pl._bodyJolt||0,.12);
-        if(slot===0){PP.shakeY-=.008;PP.shakeX+=(Math.random()-.5)*.014;}
-        break;
-      case 'landHeavy':
+	      case 'sprintStop':
+	        if(slot===0)sfxSprintGear('stop',.95);
+	        pl._sprintStopSurge=Math.max(pl._sprintStopSurge||0,.56);
+	        pl._landingSpring=Math.max(pl._landingSpring||0,.22);
+	        pl._massInertiaF=Math.min(pl._massInertiaF||0,-.30);
+	        pl._bodyJolt=Math.max(pl._bodyJolt||0,.12);
+	        if(slot===0){PP.shakeY-=.008;PP.shakeX+=(Math.random()-.5)*.014;}
+	        break;
+	      case 'slideScrape': {
+	        const side=THREE.MathUtils.clamp(payload.side||0,-1,1);
+	        const strength=THREE.MathUtils.clamp(payload.strength||.65,.25,1.25);
+	        if(slot===0)sfxSlideScrape(strength,side);
+	        pl._landingSpring=Math.max(pl._landingSpring||0,.05*strength);
+	        pl._bodyJolt=Math.max(pl._bodyJolt||0,.045*strength);
+	        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,.10*strength);
+	        pl._footPlantSide=side||pl._footPlantSide||0;
+	        break;
+	      }
+	      case 'wallJump':
+	        pl._massInertiaR=(payload.side||pl.wallJumpSide||1)*Math.max(Math.abs(pl._massInertiaR||0),.36);
+	        pl._bodyJolt=Math.max(pl._bodyJolt||0,.30);
+	        pl._landingSpring=Math.max(pl._landingSpring||0,.22);
+	        if(slot===0){PP.shakeY-=.020;PP.shakeX+=(payload.side||1)*.022;}
+	        break;
+	      case 'landHeavy':
       case 'landLight': {
         const heavy=ev.name==='landHeavy';
         const strength=heavy?1.15:.62;
@@ -26885,14 +27119,27 @@ function _consumePlayerAnimNotifies(st,pl=P,slot=0){
           PP.shakeX+=(Math.random()-.5)*.155;
         }
         break;
-      case 'dropkickLand':
-        pl._landingSpring=Math.max(pl._landingSpring||0,1.15);
-        pl._strideImpact=Math.max(pl._strideImpact||0,1.05);
-        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,1.12);
-        pl._bodyJolt=Math.max(pl._bodyJolt||0,1.10);
-        if(slot===0)sfxLandingGear(1.28,true);
-        break;
-      default:
+	      case 'dropkickLand':
+	        pl._landingSpring=Math.max(pl._landingSpring||0,1.15);
+	        pl._strideImpact=Math.max(pl._strideImpact||0,1.05);
+	        pl._footPlantCompression=Math.max(pl._footPlantCompression||0,1.12);
+	        pl._bodyJolt=Math.max(pl._bodyJolt||0,1.10);
+	        if(slot===0)sfxLandingGear(1.28,true);
+	        break;
+	      case 'triggerPull':
+	        pl._triggerReadyPulse=Math.max(pl._triggerReadyPulse||0,.72);
+	        break;
+	      case 'muzzleFlash':
+	        pl._shotHeatPressure=Math.max(pl._shotHeatPressure||0,.28);
+	        break;
+	      case 'magOut':
+	      case 'magIn':
+	      case 'chamber':
+	      case 'boltForward':
+	        pl._reloadReadyPulse=Math.max(pl._reloadReadyPulse||0,ev.name==='magIn'?.35:.22);
+	        pl._bodyJolt=Math.max(pl._bodyJolt||0,ev.name==='boltForward'?.10:.055);
+	        break;
+	      default:
         break;
     }
   }
@@ -27442,8 +27689,7 @@ function _applyPadToSlot(pad,slot,dt){
   }
   if(pressed(0)){
     if(slot===0){
-      if(P.nearVault&&!P.dead&&!P.vaulting&&P.grounded)doVault&&doVault(P.nearVault);
-      else doJump&&doJump();
+      triggerPrimaryJumpOrVaultInput&&triggerPrimaryJumpOrVaultInput();
     }else if(P2.grounded){
       P2.vy=5.8;P2.grounded=false;sfxJump&&sfxJump();
     }
@@ -33069,6 +33315,38 @@ function _animationHealthStatus(){
     levelEditorHealth:_levelEditorAssetHealth()
   });
 }
+function _animationFeelState(){
+  const p0=getPlayerAnimDebug(playerAnimState0);
+  const p1=getPlayerAnimDebug(playerAnimState1);
+  const tuning=animationTuningDebug();
+  return {
+    tuning:{version:tuning.version,id:tuning.id,locomotion:tuning.defaults&&tuning.defaults.locomotion?tuning.defaults.locomotion:null},
+    player:{
+      transitionHealth:p0.transitionHealth,
+      notifyStats:p0.notifyStats,
+      recentNotifies:p0.recentNotifies,
+      locomotionFeel:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE0),
+      weaponAnimation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER),
+      adsAlignment:Object.assign({},P._ironSightAlign||{}),
+      poseMagnitudes:p0.transitionHealth&&p0.transitionHealth.poseMagnitudes
+    },
+    player2:{
+      active:!!(typeof _splitVsActive==='function'&&_splitVsActive()),
+      transitionHealth:p1.transitionHealth,
+      notifyStats:p1.notifyStats,
+      locomotionFeel:locomotionFeelDebug(_LOCOMOTION_FEEL_STATE1),
+      weaponAnimation:weaponAnimationDebug(_WEAPON_ANIM_CONTROLLER_P2)
+    },
+    scopePip:{cache:Object.assign({},_scopePipCache),status:Object.assign({},_scopePipStatus)},
+    enemyIntent:_enemyAnimationStatus().slice(0,8).map(row=>({
+      type:row.type,
+      state:row.state,
+      intent:row.intent,
+      cue:row.intentCue
+    })),
+    health:_animationHealthStatus()
+  };
+}
 function _coreVisualPatchRuntimeStatus(options={}){
   const lightweight=!!(options&&options.lightweight);
   const sequenceSummary=summarizeCoreVisualPatchSequences(CORE_VISUAL_PATCH_SEQUENCES);
@@ -33843,7 +34121,7 @@ renderer.setAnimationLoop(()=>{
     camera.fov=damp(camera.fov,targetFov,_coreVisualFovDamp,dt);
     _recordCoreVisualCameraState(targetFov,_coreVisualFovDamp);
     camera.updateProjectionMatrix();
-    if(P.ads>.6)$e('xhair').classList.add('ads');else $e('xhair').classList.remove('ads');
+    const _xhClass=$e('xhair');if(_xhClass)_uiSetClass(_xhClass,'xhair','ads',P.ads>.6);
     // Phase BA: throttle per-frame HUD DOM writes (crosshair scale, shotgun
     // pellet count, lean vignette) to every-other-frame. The eye won't catch
     // the 60→30 Hz drop on these but the savings add up under heavy load.
@@ -33878,9 +34156,9 @@ renderer.setAnimationLoop(()=>{
 		      const crosshairRaw=Math.max(.40,1.0+baseSpread*22+sinceShot*1.2+moveScale+gunplayBloom-adsScale-(P._counterStrafePulse||0)*.18-(P._combatFlow||0)*.055-(P._triggerReadyPulse||0)*.10);
       if(typeof P._xhScaleSmooth!=='number')P._xhScaleSmooth=crosshairRaw;
       P._xhScaleSmooth=damp(P._xhScaleSmooth,crosshairRaw,19,dt);
-      _xhEl.style.transform=`translate(-50%,-50%) scale(${P._xhScaleSmooth.toFixed(3)})`;
-      _xhEl.style.opacity=String(1-Math.max(scopedAim*scopedAim,ironAim));
-      _xhEl.classList.toggle('scoped',scopedAim>.72);
+      _uiSetStyle(_xhEl,'xhair','transform',`translate(-50%,-50%) scale(${P._xhScaleSmooth.toFixed(3)})`);
+      _uiSetStyle(_xhEl,'xhair','opacity',String(1-Math.max(scopedAim*scopedAim,ironAim)));
+      _uiSetClass(_xhEl,'xhair','scoped',scopedAim>.72);
     }
     // Direction vectors — shared by move + camera
     const fx=-Math.sin(P.yaw),fz=-Math.cos(P.yaw),rx=Math.cos(P.yaw),rz=-Math.sin(P.yaw);
@@ -33895,7 +34173,7 @@ renderer.setAnimationLoop(()=>{
         // a catwalk/mezzanine; returns negative Y when dropping into a pit.
         const _regions2=G.levelData&&G.levelData.floorRegions;
         P.jumpH=_floorYAt(P.pos.x,P.pos.z,_regions2);
-        const vp=$e('vault-prompt');if(vp)vp.style.opacity='0';
+        const vp=$e('vault-prompt');if(vp)_uiSetStyle(vp,'vault-prompt','opacity','0');
       } else {
         const t=P.vaultT;
         // easeInOutQuad for smooth horizontal travel
@@ -34013,8 +34291,8 @@ renderer.setAnimationLoop(()=>{
       if(vp){
         const showVault=(nearV||_moveNowMs<(P._nearVaultStickyUntil||0))&&!P.vaulting&&!P.dead;
         const cue=THREE.MathUtils.clamp(P._vaultCuePulse||0,0,1);
-        vp.style.opacity=showVault?String(0.72+cue*.28):'0';
-        vp.style.transform=`translate(-50%,-50%) scale(${(1+cue*.045).toFixed(3)})`;
+        _uiSetStyle(vp,'vault-prompt','opacity',showVault?String(0.72+cue*.28):'0');
+        _uiSetStyle(vp,'vault-prompt','transform',`translate(-50%,-50%) scale(${(1+cue*.045).toFixed(3)})`);
       }
       // ── Slide trigger: Ctrl while sprinting in any movement direction starts
       // a directional slide. Momentum carries even if the player releases keys.
@@ -34205,40 +34483,8 @@ renderer.setAnimationLoop(()=>{
       const _moveIntentLen=Math.hypot(mx,mz)/_moveDt;
       let _moveStepLen=_moveIntentLen;
       if(mx||mz){
-        const R=PR,px0=P.pos.x,pz0=P.pos.z,nx=P.pos.x+mx,nz=P.pos.z+mz;
-        let okX=true,okZ=true;
-        // Phase BA: spatial index — limit wall checks to nearby cells.
-        const _pIdx=(G.levelData&&G.levelData.wallIndex&&SETTINGS.raycastSpatialIndex!==false)?G.levelData.wallIndex:null;
-        if(_pIdx){
-          const cells=_pIdx.cells;
-          const seenIds=[-1,-1,-1];
-          const cellsHit=[];
-          for(const [tx,tz] of [[nx,P.pos.z],[P.pos.x,nz],[P.pos.x,P.pos.z]]){
-            const ix=((tx-_pIdx.xMin)/_pIdx.cs)|0,iz=((tz-_pIdx.zMin)/_pIdx.cs)|0;
-            if(ix<0||iz<0||ix>=_pIdx.nx||iz>=_pIdx.nz)continue;
-            const id=ix+iz*_pIdx.nx;
-            if(seenIds[0]===id||seenIds[1]===id||seenIds[2]===id)continue;
-            if(seenIds[0]===-1)seenIds[0]=id;else if(seenIds[1]===-1)seenIds[1]=id;else seenIds[2]=id;
-            const c=cells[id];if(c)cellsHit.push(c);
-          }
-          for(const c of cellsHit){
-            for(let i=0,n=c.length;i<n;i++){
-              const w=c[i];
-              if(w.broken)continue;
-              if(okX&&nx+R>w.x0&&w.x1>nx-R&&P.pos.z+R>w.z0&&w.z1>P.pos.z-R)okX=false;
-              if(okZ&&P.pos.x+R>w.x0&&w.x1>P.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
-              if(!okX&&!okZ)break;
-            }
-            if(!okX&&!okZ)break;
-          }
-        } else {
-          for(const w of walls){
-            if(w.broken)continue;
-            if(nx+R>w.x0&&w.x1>nx-R&&P.pos.z+R>w.z0&&w.z1>P.pos.z-R)okX=false;
-            if(P.pos.x+R>w.x0&&w.x1>P.pos.x-R&&nz+R>w.z0&&w.z1>nz-R)okZ=false;
-          }
-        }
-        if(okX)P.pos.x=nx;if(okZ)P.pos.z=nz;
+        const px0=P.pos.x,pz0=P.pos.z;
+        _resolvePlayerMoveWithCollisionSubsteps(P,walls,mx,mz);
         if(P.guardBehindActive&&P.guardMode==='wall'&&P.guardCover){
           _applyGuardWallEdgeClamp(P,P.guardCover,dt);
         }
@@ -34279,12 +34525,14 @@ renderer.setAnimationLoop(()=>{
   updatePlayerAnimInputs(playerAnimState0,{P,dt,now:_nowSecAnim,keys:K,mouseDx:P._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
   resolvePlayerAnimLayers(playerAnimState0,dt);
   _updateLocomotionFeel(playerAnimState0,_LOCOMOTION_FEEL_STATE0,dt,_nowSecAnim,0);
+  updatePlayerAnimTransitionHealth(playerAnimState0,dt);
   _consumePlayerAnimNotifies(playerAnimState0,P,0);
   _updateAnimationCoordinator(dt,_nowSecAnim);
   if(typeof _splitVsActive==='function'&&_splitVsActive()){
     updatePlayerAnimInputs(playerAnimState1,{P:P2,dt,now:_nowSecAnim,keys:K2,mouseDx:P2._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
     resolvePlayerAnimLayers(playerAnimState1,dt);
     _updateLocomotionFeel(playerAnimState1,_LOCOMOTION_FEEL_STATE1,dt,_nowSecAnim,1);
+    updatePlayerAnimTransitionHealth(playerAnimState1,dt);
     _consumePlayerAnimNotifies(playerAnimState1,P2,1);
     _updateAnimationCoordinatorP2(dt,_nowSecAnim);
   }
@@ -34886,25 +35134,24 @@ renderer.setAnimationLoop(()=>{
             s.src._lastShotQuality=didHit?'hit':(closeMiss?'closeMiss':'miss');
             s.src._lastShotResolvedAt=performance.now();
           }
-          const shotRight=new THREE.Vector3(1,0,0).applyQuaternion(tgtCam.quaternion);
-          const shotUp=new THREE.Vector3(0,1,0).applyQuaternion(tgtCam.quaternion);
-          const shotFwd=new THREE.Vector3(0,0,-1).applyQuaternion(tgtCam.quaternion);
-          const shotSide=(s.src&&s.src.group)?Math.sign(tgtCam.position.clone().sub(s.src.group.position).dot(shotRight))||1:(Math.random()<.5?-1:1);
+          const shotTmp=ENEMY_SHOT_TMP;
+          const shotRight=shotTmp.right.set(1,0,0).applyQuaternion(tgtCam.quaternion);
+          const shotUp=shotTmp.up.set(0,1,0).applyQuaternion(tgtCam.quaternion);
+          const shotFwd=shotTmp.fwd.set(0,0,-1).applyQuaternion(tgtCam.quaternion);
+          const shotSide=(s.src&&s.src.group)?Math.sign(shotTmp.toCam.copy(tgtCam.position).sub(s.src.group.position).dot(shotRight))||1:(Math.random()<.5?-1:1);
           targetPl._enemyShotPressure=Math.max(targetPl._enemyShotPressure||0,didHit ? .55 : (closeMiss ? .78 : .24));
           targetPl._enemyShotSide=shotSide;
           if(s.muzzlePos){
             const baseSp=(enemyFeel.tracer||.085)*(1+s.dist*.055)*(srcSuppressed?1.42:1.0);
-            let tgt;
+            const tgt=shotTmp.target.copy(tgtCam.position);
             if(didHit){
-              tgt=tgtCam.position.clone()
-                .addScaledVector(shotRight,(Math.random()-.5)*baseSp*.18)
+              tgt.addScaledVector(shotRight,(Math.random()-.5)*baseSp*.18)
                 .addScaledVector(shotUp,(Math.random()-.5)*baseSp*.12)
                 .addScaledVector(shotFwd,(Math.random()-.5)*baseSp*.05);
             }else{
               const sideMag=(closeMiss ? .18 : .42)+missSeverity*(1.05+(enemyFeel.nearMiss||1)*.25);
               const upMag=(Math.random()-.5)*(.18+missSeverity*.52);
-              tgt=tgtCam.position.clone()
-                .addScaledVector(shotRight,shotSide*sideMag*(enemyFeel.nearMiss||1))
+              tgt.addScaledVector(shotRight,shotSide*sideMag*(enemyFeel.nearMiss||1))
                 .addScaledVector(shotUp,upMag)
                 .addScaledVector(shotFwd,(Math.random()-.5)*baseSp*.55);
             }
@@ -34921,7 +35168,7 @@ renderer.setAnimationLoop(()=>{
             takeDamage(dealt,dmgSlot);
             if(s.src&&s.src.group)showDamageIndicator(s.src.group.position,dealt);
             if(dmgSlot===0){
-              const hitSide=(s.src&&s.src.group)?Math.sign(camera.position.clone().sub(s.src.group.position).dot(new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion)))||1:(Math.random()<.5?-1:1);
+              const hitSide=(s.src&&s.src.group)?Math.sign(shotTmp.toCam.copy(camera.position).sub(s.src.group.position).dot(shotTmp.hitRight.set(1,0,0).applyQuaternion(camera.quaternion)))||1:(Math.random()<.5?-1:1);
               PP.shakeY-=.035*(enemyFeel.hitReact||1);
               PP.shakeX+=hitSide*.030*(enemyFeel.hitReact||1);
               _addPlayerFeelImpulse(P,{body:.045*(enemyFeel.hitReact||1),right:hitSide*.070*(enemyFeel.hitReact||1)});
@@ -34954,9 +35201,9 @@ renderer.setAnimationLoop(()=>{
               triggerKillCamSlowMo(closeMiss ? .42 : .54,closeMiss ? .20 : .12);
             }
             // Suppression visual — spawn brief tracer past camera
-            const dir=new THREE.Vector3((Math.random()-.5)*(closeMiss ? .06 : .14),(Math.random()-.5)*(closeMiss ? .035 : .07),-1).normalize().applyQuaternion(tgtCam.quaternion);
-            const start=tgtCam.position.clone().addScaledVector(dir,1.5).add(new THREE.Vector3((Math.random()-.5)*(closeMiss ? .34 : .72),(Math.random()-.5)*(closeMiss ? .24 : .46),(Math.random()-.5)*(closeMiss ? .34 : .72)));
-            const end=start.clone().addScaledVector(dir,closeMiss?4.8:3.2);
+            const dir=shotTmp.dir.set((Math.random()-.5)*(closeMiss ? .06 : .14),(Math.random()-.5)*(closeMiss ? .035 : .07),-1).normalize().applyQuaternion(tgtCam.quaternion);
+            const start=shotTmp.start.copy(tgtCam.position).addScaledVector(dir,1.5).add(shotTmp.jitter.set((Math.random()-.5)*(closeMiss ? .34 : .72),(Math.random()-.5)*(closeMiss ? .24 : .46),(Math.random()-.5)*(closeMiss ? .34 : .72)));
+            const end=shotTmp.end.copy(start).addScaledVector(dir,closeMiss?4.8:3.2);
             if(typeof addTrail==='function')addTrail(start,end,{
               kind:closeMiss?'enemy-close-miss-air':'enemy-wide-miss-air',
               haloColor:closeMiss?0xffd080:0xff6848,
@@ -35204,27 +35451,27 @@ renderer.setAnimationLoop(()=>{
     const pp=$e('pickup-prompt');
     if(near&&!P.dead){
       if(near.isAmmoPack){
-        $e('pickup-prompt-text').textContent='COLLECT · AMMO PACK';
-        $e('pickup-prompt-sub').innerHTML='<span style="color:#40c8ff">FULL RELOAD</span> &nbsp;·&nbsp; <span style="color:#ff9d40">+1 GRENADE</span>';
+        _uiSetText($e('pickup-prompt-text'),'pickup-prompt-text','COLLECT · AMMO PACK');
+        _uiSetHtml($e('pickup-prompt-sub'),'pickup-prompt-sub','<span style="color:#40c8ff">FULL RELOAD</span> &nbsp;·&nbsp; <span style="color:#ff9d40">+1 GRENADE</span>');
       } else {
         const cur=P.attachments[near.att.type];
         const action=cur?'SWAP':'PICK UP';
-        $e('pickup-prompt-text').textContent=`${action} · ${near.att.name}`;
+        _uiSetText($e('pickup-prompt-text'),'pickup-prompt-text',`${action} · ${near.att.name}`);
         const ns=attachmentScore(near.att),os=attachmentScore(cur);
         const verdict=cur?(ns>os?'<span style="color:#5fcb52">↑ BETTER</span>':ns<os?'<span style="color:#ff5048">↓ WORSE</span>':'<span style="color:#bbb">= SAME</span>'):'NEW SLOT';
-        $e('pickup-prompt-sub').innerHTML=`<span style="color:${tierColor(near.att.tier)}">TIER ${near.att.tier}</span> &nbsp;·&nbsp; ${verdict}`;
+        _uiSetHtml($e('pickup-prompt-sub'),'pickup-prompt-sub',`<span style="color:${tierColor(near.att.tier)}">TIER ${near.att.tier}</span> &nbsp;·&nbsp; ${verdict}`);
       }
       const pulse=THREE.MathUtils.clamp(P._pickupPromptPulse||0,0,1);
-      pp.style.opacity=String(0.78+pulse*.22);
-      pp.style.transform=`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`;
+      _uiSetStyle(pp,'pickup-prompt','opacity',String(0.78+pulse*.22));
+      _uiSetStyle(pp,'pickup-prompt','transform',`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`);
     } else {
-      pp.style.opacity='0';
-      pp.style.transform='translate(-50%,-50%) scale(1)';
+      _uiSetStyle(pp,'pickup-prompt','opacity','0');
+      _uiSetStyle(pp,'pickup-prompt','transform','translate(-50%,-50%) scale(1)');
       P.nearPickup=null;
     }
   } else {
     P.nearPickup=null;P._pickupSticky=null;P._pickupStickyUntil=0;P._lastPickupPromptId=null;
-    const pp=$e('pickup-prompt');if(pp){pp.style.opacity='0';pp.style.transform='translate(-50%,-50%) scale(1)';}
+    const pp=$e('pickup-prompt');if(pp){_uiSetStyle(pp,'pickup-prompt','opacity','0');_uiSetStyle(pp,'pickup-prompt','transform','translate(-50%,-50%) scale(1)');}
   }
   const _nearOpenableDoor=(G.levelData&&typeof G.levelData.findOpenableDoorFor==='function')
     ?G.levelData.findOpenableDoorFor('player',P.pos,1.9):null;
@@ -35237,11 +35484,11 @@ renderer.setAnimationLoop(()=>{
         P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,.85);
         P._lastDoorPromptId=promptId;
       }
-      $e('pickup-prompt-text').textContent='OPEN DOOR';
-      $e('pickup-prompt-sub').innerHTML='<span style="color:#ffd060">ACCESS READY</span>';
+      _uiSetText($e('pickup-prompt-text'),'pickup-prompt-text','OPEN DOOR');
+      _uiSetHtml($e('pickup-prompt-sub'),'pickup-prompt-sub','<span style="color:#ffd060">ACCESS READY</span>');
       const pulse=THREE.MathUtils.clamp(P._pickupPromptPulse||0,0,1);
-      pp.style.opacity=String(0.76+pulse*.22);
-      pp.style.transform=`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`;
+      _uiSetStyle(pp,'pickup-prompt','opacity',String(0.76+pulse*.22));
+      _uiSetStyle(pp,'pickup-prompt','transform',`translate(-50%,-50%) scale(${(1+pulse*.035).toFixed(3)})`);
     }
   }else if(!_nearOpenableDoor){
     P._lastDoorPromptId=null;
@@ -35454,9 +35701,9 @@ renderer.setAnimationLoop(()=>{
         const _skipFade=_pipAlpha<0.038;
         const _vig=$e('scope-vignette');
         if(_vig){
-          _vig.style.setProperty('--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
-          _vig.classList.toggle('screen-scope',_screenScope);
-          _vig.style.setProperty('--scope-reticle-opacity',String(THREE.MathUtils.clamp(.20+_pipScopeEase*.58,0,.82)));
+          _uiSetStyleProperty(_vig,'scope-vignette','--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
+          _uiSetClass(_vig,'scope-vignette','screen-scope',_screenScope);
+          _uiSetStyleProperty(_vig,'scope-vignette','--scope-reticle-opacity',String(THREE.MathUtils.clamp(.20+_pipScopeEase*.58,0,.82)));
         }
         // Scope PIP camera: render from the player's actual eye/aim pose, then
         // mirror the current viewmodel-local roll. That keeps tilted scopes
@@ -35502,10 +35749,10 @@ renderer.setAnimationLoop(()=>{
         }
         _setScopePipView(_screenScope?null:_opticForPip,_shouldPip?_pipAlpha:0);
         P.scopeVignetteOpacity=_vigOpacity;
-        if(_vig)_vig.style.opacity=String(_vigOpacity);
+        if(_vig)_uiSetStyle(_vig,'scope-vignette','opacity',String(_vigOpacity));
       } else {
         _setScopePipView(null,0);
-        const _vig=$e('scope-vignette');if(_vig){_vig.style.opacity='0';_vig.classList.remove('screen-scope');}
+        const _vig=$e('scope-vignette');if(_vig){_uiSetStyle(_vig,'scope-vignette','opacity','0');_uiSetClass(_vig,'scope-vignette','screen-scope',false);}
         P.scopeVignetteOpacity=0;
         _scopePipStatus.settle=0;
         _scopePipStatus.fov=0;
@@ -35670,7 +35917,27 @@ function _debugScopePipStatus(opts={}){
       note:'P2 split scope uses pane-local overlay; PIP render target remains slot 0 only.'
     };
   }
-  return Object.assign({},_scopePipStatus,{slot:0,stableRenderingMode:!!STABLE_RENDERING_MODE,stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,visualPressure:_CORE_VISUAL_POST_CAMERA_STATE.runtimePressure||0,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null});
+  return Object.assign({},_scopePipStatus,{slot:0,stableRenderingMode:!!STABLE_RENDERING_MODE,stressDown:!!_scopePipStressDown,basePipSize:_baseScopePipPixelSize(),effectivePipSize:_effectiveScopePipPixelSize(),renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,visualPressure:_CORE_VISUAL_POST_CAMERA_STATE.runtimePressure||0,target:(typeof rtScope!=='undefined'&&rtScope)?{width:rtScope.width,height:rtScope.height}:null,materialOpacity:scopeViewM_active?scopeViewM_active.opacity:0,cache:Object.assign({},_scopePipCache),renderTarget:_renderStack&&_renderStack.metadata?_renderStack.metadata.lastRenderTarget:null});
+}
+function _clearDebugTransientCombatRuntime(){
+  if(G.enemyMgr&&typeof G.enemyMgr.clear==='function'){
+    try{G.enemyMgr.clear();}catch(_){}
+    try{G.enemyMgr.scene=scene;}catch(_){}
+  }
+  if(Array.isArray(G.trails)){
+    for(let i=G.trails.length-1;i>=0;i--){
+      const t=G.trails[i];
+      try{
+        if(typeof _disposeTrail==='function')_disposeTrail(t);
+        else{
+          if(t&&t.line)scene.remove(t.line);
+          if(t&&t.mesh)scene.remove(t.mesh);
+        }
+      }catch(_){}
+    }
+    G.trails.length=0;
+  }
+  _flagSsrSolidsDirty();
 }
 function _debugSetSplitScreenActiveForTest(mode='duel'){
   if(!G.started){
@@ -36019,6 +36286,7 @@ installDebugApi({
     animationProfiles:()=>_animationProfilesDebug(),
     animationGraph:()=>animationGraphDebug(_ANIMATION_GRAPH_STATE),
     animationHealth:()=>_animationHealthStatus(),
+    animationFeelState:()=>_animationFeelState(),
     splitScreenStatus:()=>splitScreenStatus(),
     playerSlotStatus:(slot=0)=>playerSlotStatus(slot),
     weaponAnimation:(opts={})=>weaponAnimationDebug(((opts&&opts.slot)|0)===1?_WEAPON_ANIM_CONTROLLER_P2:_WEAPON_ANIM_CONTROLLER),
@@ -36141,6 +36409,20 @@ installDebugApi({
       };
     },
     gameplayFeelState:()=>({
+      configured:{
+        jumpCoyoteMs:JUMP_FEEL.coyoteMs,
+        jumpBufferMs:JUMP_FEEL.bufferMs,
+        slideBufferMs:SLIDE_FEEL.bufferMs,
+        landingSlideWindowMs:SLIDE_FEEL.landingWindowMs,
+        vaultBufferMs:GAMEPLAY_QOL_FEEL.vaultBufferMs
+      },
+      hudCache:_hudCacheStats(),
+      animation:{
+        transitionHealth:getPlayerAnimDebug(playerAnimState0).transitionHealth,
+        notifyStats:getPlayerAnimDebug(playerAnimState0).notifyStats,
+        adsAlignment:Object.assign({},P._ironSightAlign||{}),
+        scopePipCache:Object.assign({},_scopePipCache)
+      },
       jumpBufferMsLeft:Math.max(0,(P._jumpBufferedUntil||0)-performance.now()),
       vaultBufferMsLeft:Math.max(0,(P._vaultIntentUntil||0)-performance.now()),
       coyoteMsAgo:performance.now()-(P._lastGroundedT||0),
@@ -36264,7 +36546,8 @@ installDebugApi({
           renderStride:typeof _scopePipRenderStride==='function'?_scopePipRenderStride():1,
           renderedThisFrame:!!_scopePipStatus.renderedThisFrame,
           skippedThrottle:!!_scopePipStatus.skippedThrottle,
-          visible:!!_scopePipStatus.visible
+          visible:!!_scopePipStatus.visible,
+          cache:Object.assign({},_scopePipCache)
         },
         realPointLights:realC
       };
@@ -36353,10 +36636,11 @@ installDebugApi({
 	    }),
 	    loadCustomMapKit:()=>CUSTOM_LEVEL_KIT.load(),
 	    validateCustomMapPack:(pack)=>validateCustomMapPack(pack,CUSTOM_LEVEL_KIT.manifest),
-	    // Phase H: rebuild a level + return a perf-relevant snapshot of its
+    // Phase H: rebuild a level + return a perf-relevant snapshot of its
     // baked geometry for cheap regression tracking.
     // Phase AF: dispose prior levelData first to avoid accumulation.
     perfSnapshotForBuilding:(bn)=>{
+      _clearDebugTransientCombatRuntime();
       if(G.levelData&&typeof G.levelData.cleanup==='function'){
         try{G.levelData.cleanup();}catch(_){}
       }
@@ -36401,15 +36685,19 @@ installDebugApi({
     // Phase AF: properly dispose the previous levelData before rebuild so
     // back-to-back stress probes don't accumulate dead geometry.
     perfStressForBuilding:(bn,enemies=12,shots=5)=>{
+      const tStart=performance.now();
+      _clearDebugTransientCombatRuntime();
+      const tTransientClear=performance.now();
       if(G.levelData&&typeof G.levelData.cleanup==='function'){
         try{G.levelData.cleanup();}catch(_){}
       }
+      const tLevelCleanup=performance.now();
       const ld=buildLevel(scene,bn);
+      const tBuild=performance.now();
       G.levelData=ld;G.building=bn;
       _applyShadowQuality();
       _syncEncounterDirectorFromLevel();
       if(!G.enemyMgr)G.enemyMgr=new EnemyManager(scene);
-      G.enemyMgr.clear();
       // Spawn enemies scattered around mid-zone
       const types=['soldier','heavy','scout','riot','sniper','marksman'];
       for(let i=0;i<enemies;i++){
@@ -36422,6 +36710,7 @@ installDebugApi({
         e.zoneId=1;
         G.enemyMgr._list.push(e);
       }
+      const tSpawn=performance.now();
       _flagSsrSolidsDirty();
       // Place the player and run a few simulated frames
       P.pos.set(0,.2,0);P.yaw=Math.PI;P.pitch=0;
@@ -36429,17 +36718,29 @@ installDebugApi({
       for(let s=0;s<shots;s++){
         if(typeof shoot==='function')shoot();
       }
+      const tShots=performance.now();
       // One render to bake counts
       try{_renderFrameDirect(camera);}catch(_){}
+      const tRender=performance.now();
       const ri2=renderer.info||{render:{},memory:{}};
-      return {
+      const result={
         bn, enemies, shots,
         renderCalls:ri2.render.calls|0,
         renderTris:ri2.render.triangles|0,
         memGeo:ri2.memory.geometries|0,
         memTex:ri2.memory.textures|0,
         aliveEnemies:G.enemyMgr.aliveCount,
+        phaseMs:{
+          transientClear:+(tTransientClear-tStart).toFixed(2),
+          levelCleanup:+(tLevelCleanup-tTransientClear).toFixed(2),
+          build:+(tBuild-tLevelCleanup).toFixed(2),
+          spawn:+(tSpawn-tBuild).toFixed(2),
+          shots:+(tShots-tSpawn).toFixed(2),
+          render:+(tRender-tShots).toFixed(2)
+        }
       };
+      _clearDebugTransientCombatRuntime();
+      return result;
     },
     warpTo:(x,z)=>{if(P&&P.pos){P.pos.x=x;P.pos.z=z;return true;}return false;},
     spawnAt:(type,x,z)=>{
@@ -36512,6 +36813,10 @@ installDebugApi({
       _pendingShootSlot=0;
       shoot();
       return _weaponVisualStatus();
+    },
+    pressPrimaryJumpOrVault:()=>{
+      gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;
+      return triggerPrimaryJumpOrVaultInput();
     },
     startReloadCurrentWeapon:()=>{
       gameFocused=true;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;P.dead=false;

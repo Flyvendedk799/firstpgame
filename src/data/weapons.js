@@ -64,6 +64,10 @@ export const ATTACHMENT_DEFS={
 };
 export const ATTACH_TIER_COL=['#9aa0aa','#5fcb52','#3aa6ff','#c46bff']; // tier 1..4 swatches
 export const GAMEPLAY_QOL_FEEL={
+  jumpCoyoteMs:145,
+  jumpBufferMs:190,
+  slideBufferMs:250,
+  landingSlideWindowMs:220,
   vaultBufferMs:185,
   vaultPromptGraceMs:155,
   pickupStickyMs:340,
