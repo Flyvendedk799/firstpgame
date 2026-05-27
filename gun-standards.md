@@ -22,6 +22,10 @@ WeaponRoot
     ejectionPort
     optic
     scopeCamera
+    frontSight
+    rearSight
+    sightLine
+    opticGlass (optional)
     attachmentMuzzle
     attachmentMag
     attachmentForegrip
@@ -45,6 +49,8 @@ Rules:
 - The muzzle socket is the source of truth for hitscan origin, muzzle flash, smoke, rings, debug probes, and spill lighting.
 - `magazine` plus the `mag` part define reload animation and dropped-mag spawning.
 - `optic` and `scopeCamera` define attachment mounting and scope/PIP alignment.
+- `frontSight`, `rearSight`, and `sightLine` define ADS iron-sight and bead alignment. `sightLine` should point from rear sight toward front sight in weapon-local `-Z`; it can be an empty, a short guide bone, or a non-rendered helper mesh. Current runtime profiles provide fallback local references for legacy/procedural guns, but new or re-exported production weapons must author these sockets.
+- `opticGlass` is optional and only required when the gun owns a scope/optic glass surface. It should sit at the optical plane used by the scope/PIP material and must not be used as a gameplay trace origin.
 - Do not bake a permanent optic into the base gun unless that weapon always owns it. Base rifles should expose rails and attach optics through the socket contract.
 - Scope meshes are attachments. Temporary procedural scopes and future authored scope GLBs must mount to `optic`/`scopeCamera`; they must not be baked into the rifle model.
 - One 2K weapon atlas is the default target. Optional normal, roughness, and metalness maps are allowed, but there must be no missing external texture paths.
@@ -152,6 +158,7 @@ For every future production gun:
 - `npm run test:assets:budget` passes.
 - Hipfire, ADS, scoped ADS/PIP, fire, reload mid-phase, and inspect are visually checked.
 - Muzzle flash originates at `muzzle` or `muzzleFlash`.
+- Full ADS front-sight residual is within `±0.015` NDC for pistols, SMGs, rifles, and marksman rifles. Shotguns may use bead-centered ADS with a looser `±0.026` NDC residual and must not change pellet spread.
 - Dropped magazine spawns from `magazine`.
 - Scope and attachments align to sockets.
 - Hands contact the weapon plausibly in hipfire, ADS, reload, and inspect.

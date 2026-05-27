@@ -96,9 +96,9 @@ for (const mode of modes) {
       while (performance.now() - start < timeoutMs) {
         const pip = dbg.scopePip();
         last = pip;
-        if (pip.enabled && pip.visible && pip.rendered && !pip.error && pip.materialOpacity > 0) return pip;
+        if (pip.enabled && !pip.error && ((pip.visible && pip.rendered && pip.materialOpacity > 0) || (pip.screenOverlay && pip.vignetteOpacity > 0.1))) return pip;
         // If ADS got reset for any reason, re-arm it.
-        if (!pip.enabled || pip.materialOpacity === 0) {
+        if (!pip.enabled || (!pip.screenOverlay && pip.materialOpacity === 0)) {
           try { dbg.setAds(1); } catch (_) {}
         }
         await new Promise(r => requestAnimationFrame(r));
@@ -160,7 +160,7 @@ for (const mode of modes) {
     const vfxPhase = dbg.vfxStress(180);
 
     settings.characterQuality = 'low';
-    dbg.perfStressForBuilding(8, 6, 0);
+    const stressPhase = dbg.perfStressForBuilding(8, 6, 0, { keep: true });
     G.started = true;
     G.menuOpen = false;
     G.exitUnlocked = false;
@@ -190,7 +190,8 @@ for (const mode of modes) {
       characterPhase: {
         runtime: dbg.visualRuntime(),
         materials: dbg.materialStats().characters,
-        animationStates: dbg.characterAnimationStates()
+        animationStates: dbg.characterAnimationStates(),
+        stress: stressPhase
       }
     };
   });
@@ -256,7 +257,8 @@ for (const mode of modes) {
 
   if (pip.stableRenderingMode || screenPost?.stable) {
     assert(screenPost && screenPost.enabled === false && screenPost.stable, `${mode}: stable renderer screen-post metadata missing`);
-    assert(!pip.enabled && !pip.visible, `${mode}: stable renderer should keep scope PIP disabled: ${JSON.stringify(pip)}`);
+    assert(pip.enabled && (pip.screenOverlay || pip.visible), `${mode}: stable renderer should keep forced scope presentation active: ${JSON.stringify(pip)}`);
+    if (pip.screenOverlay) assert(pip.vignetteOpacity > 0.1, `${mode}: stable scope overlay did not become visible: ${JSON.stringify(pip)}`);
   } else {
     assert(screenPost && screenPost.enabled, `${mode}: screen post overlay inactive`);
     assert(pip.enabled && pip.visible && pip.rendered && !pip.error, `${mode}: scope PIP did not render: ${JSON.stringify(pip)}`);
@@ -266,12 +268,13 @@ for (const mode of modes) {
   }
   assert(mats.scene.pbr > 0 && mats.scene.aa > 0, `${mode}: scene PBR/AA materials missing`);
   assert(mats.viewmodel.aa > 0, `${mode}: viewmodel AA materials missing`);
-  assert(result.characterPhase.materials.aa > 0, `${mode}: character AA materials missing`);
+  const highCharacterMaterials = result.archetypePhase.materials || result.characterPhase.materials;
+  assert(highCharacterMaterials.aa > 0, `${mode}: character AA materials missing`);
   assert(result.texturePhase.low.quality.low > 0, `${mode}: low texture-quality materials were not created`);
   assert(result.texturePhase.high.quality.high > 0, `${mode}: high texture-quality materials were not created`);
   assert(result.texturePhase.high.maps.normal > result.texturePhase.low.maps.normal, `${mode}: generated normal maps did not scale with texture quality`);
   assert(result.texturePhase.high.maps.roughness > result.texturePhase.low.maps.roughness, `${mode}: generated roughness maps did not scale with texture quality`);
-  assert(result.weaponPhase.length === 7, `${mode}: did not visit all playable weapon slots`);
+  assert(result.weaponPhase.length === 6, `${mode}: did not visit all playable weapon slots`);
   for (const weapon of result.weaponPhase) {
     const visiblePrimary =
       weapon.visibleProceduralMeshes +
@@ -281,9 +284,8 @@ for (const mode of modes) {
       weapon.visibleKnifeMeshes;
     assert(visiblePrimary > 0, `${mode}: ${weapon.name} has no visible primary weapon mesh`);
     assert(weapon.pbrMaterials > 0 && weapon.aaMaterials > 0, `${mode}: ${weapon.name} is missing PBR/AA material coverage`);
-    if (weapon.weaponIdx === 2) {
-      assert(weapon.throwingKnifeVisible && weapon.visibleThrowMeshes > 0, `${mode}: throwing knife viewmodel missing`);
-    } else if (!(weapon.weaponIdx === 0 && weapon.authoredM4Active) && (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible)) {
+    assert(weapon.weaponIdx !== 2, `${mode}: removed knife slot should not be playable`);
+    if (!(weapon.weaponIdx === 0 && weapon.authoredM4Active) && (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible)) {
       assert(weapon.visibleDetailParts > 0, `${mode}: ${weapon.name} AA detail parts missing at high quality`);
     }
   }

@@ -87,6 +87,9 @@ export const WEAPON_SOCKETS = [
   'attachmentMuzzle', 'attachmentMag', 'attachmentForegrip', 'attachmentLaser'
 ];
 
+export const WEAPON_SIGHT_SOCKETS = ['frontSight', 'rearSight', 'sightLine'];
+export const OPTIONAL_WEAPON_SIGHT_SOCKETS = ['opticGlass'];
+
 export const ENVIRONMENT_MODULE_CATEGORIES = [
   'wallPanel', 'floorPanel', 'ceilingPanel',
   'door', 'doorFrame', 'window', 'glassFrame',
@@ -219,22 +222,73 @@ function weaponEntry(id, type, label, options = {}) {
     weaponAnimationProfile: options.weaponAnimationProfile || `weapon.${type}`,
     socketContract: options.socketContract || 'weapon-viewmodel.v1',
     scalePolicy: options.scalePolicy || 'meters-applied-scale-1',
+    sightSockets: options.sightSockets || WEAPON_SIGHT_SOCKETS,
+    optionalSockets: options.optionalSockets || OPTIONAL_WEAPON_SIGHT_SOCKETS,
+    aliases: options.aliases || [],
+    mechanicalParts: options.mechanicalParts || ['trigger', 'mag', 'chargingHandle'],
     attachments: options.attachments || ['scope', 'muzzle', 'magazine', 'foregrip']
   };
 }
 
 export const WEAPON_MANIFEST = {
+  'weapon.uspT': weaponEntry('weapon.uspT', 'pistol', 'USP-T Suppressed', {
+    src: 'assets/weapons/usp_viewmodel.glb',
+    triangleBudget: 4200,
+    aliases: ['weapon.pistol'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'mag', 'chargingHandle', 'front_sight', 'rear_sight']
+  }),
+  'weapon.tac12': weaponEntry('weapon.tac12', 'shotgun', 'TAC-12 Shotgun', {
+    triangleBudget: 7600,
+    aliases: ['weapon.shotgun'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'pump', 'shell', 'ejectionPort']
+  }),
+  'weapon.mp9Suppressed': weaponEntry('weapon.mp9Suppressed', 'smg', 'MP9 Suppressed', {
+    triangleBudget: 6800,
+    aliases: ['weapon.smg'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'bolt', 'mag']
+  }),
+  'weapon.mk14': weaponEntry('weapon.mk14', 'marksman', 'MK14 DMR', {
+    triangleBudget: 9200,
+    aliases: ['weapon.marksman'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'bolt', 'mag', 'optic', 'opticGlass']
+  }),
+  'weapon.p226Supp': weaponEntry('weapon.p226Supp', 'pistol', 'P226 Suppressed', {
+    triangleBudget: 4200,
+    aliases: ['weapon.pistol'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'slide', 'mag']
+  }),
+  'weapon.awm': weaponEntry('weapon.awm', 'sniper', 'AWM Sniper', {
+    triangleBudget: 11000,
+    aliases: ['weapon.sniper'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'bolt', 'mag', 'optic', 'opticGlass']
+  }),
+  'weapon.m4Reference': weaponEntry('weapon.m4Reference', 'rifle', 'M4A1 Reference', {
+    src: 'assets/weapons/m4/m4_viewmodel.glb',
+    triangleBudget: 12000,
+    aliases: ['weapon.rifle'],
+    socketContract: 'weapon-viewmodel.v2',
+    mechanicalParts: ['trigger', 'mag', 'chargingHandle', 'frontSight', 'rearSight']
+  }),
   'weapon.pistol': weaponEntry('weapon.pistol', 'pistol', 'Sidearm', {
     src: 'assets/weapons/usp_viewmodel.glb',
-    triangleBudget: 4200
+    triangleBudget: 4200,
+    aliases: ['weapon.uspT']
   }),
   'weapon.rifle': weaponEntry('weapon.rifle', 'rifle', 'Service Rifle', {
     src: 'assets/weapons/m4/m4_viewmodel.glb',
-    triangleBudget: 12000
+    triangleBudget: 12000,
+    aliases: ['weapon.m4Reference']
   }),
-  'weapon.shotgun': weaponEntry('weapon.shotgun', 'shotgun', 'Combat Shotgun', { triangleBudget: 7600 }),
-  'weapon.smg': weaponEntry('weapon.smg', 'smg', 'SMG', { triangleBudget: 6800 }),
-  'weapon.marksman': weaponEntry('weapon.marksman', 'marksman', 'Marksman Rifle', { triangleBudget: 9200 }),
+  'weapon.shotgun': weaponEntry('weapon.shotgun', 'shotgun', 'Combat Shotgun', { triangleBudget: 7600, aliases: ['weapon.tac12'] }),
+  'weapon.smg': weaponEntry('weapon.smg', 'smg', 'SMG', { triangleBudget: 6800, aliases: ['weapon.mp9Suppressed'] }),
+  'weapon.marksman': weaponEntry('weapon.marksman', 'marksman', 'Marksman Rifle', { triangleBudget: 9200, aliases: ['weapon.mk14'] }),
+  'weapon.sniper': weaponEntry('weapon.sniper', 'sniper', 'Sniper Rifle', { triangleBudget: 11000, aliases: ['weapon.awm'] }),
   'weapon.heavy': weaponEntry('weapon.heavy', 'heavy', 'Heavy Weapon', { triangleBudget: 12000 }),
   'weapon.knife': weaponEntry('weapon.knife', 'knife', 'Combat Knife', { triangleBudget: 1800, requiredSockets: ['gripRight'], clips: ['idle', 'attack', 'throw', 'inspect'] }),
   'weapon.grenade': weaponEntry('weapon.grenade', 'grenade', 'Frag Grenade', { triangleBudget: 2400, requiredSockets: ['gripRight'], clips: ['idle', 'throw'] })

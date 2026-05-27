@@ -1,4 +1,5 @@
-import { getWeaponAnimationProfile, getWeaponFeelTuning, weaponTypeFromIndex } from './profiles.js';
+import { getWeaponAnimationProfile, getWeaponFeelProfile, getWeaponFeelTuning, weaponTypeFromIndex } from './profiles.js';
+import { resolveViewmodelPose } from './viewmodelPoseResolver.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -15,22 +16,27 @@ function pulseFrom(value, scale = 1) {
 
 export function createWeaponAnimationController(options = {}) {
   return {
-    version: 1,
+    version: 2,
     enabled: options.enabled !== false,
     weaponIdx: -1,
     weaponType: 'rifle',
     tuningId: 'weapon-feel.rifle',
+    profileId: 'weapon-feel-profile.m4-reference',
+    manifestId: 'weapon.m4Reference',
     state: 'idle',
     phase: 0,
     fire: 0,
     reload: 0,
     sprint: 0,
     ads: 0,
+    settle: 0,
+    bodyCarry: 0,
     dryFire: 0,
     trigger: 0,
     chamber: 0,
     partMotion: {},
     pose: { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+    poseLayers: [],
     lastNotifies: [],
     fallbackReasons: []
   };
@@ -43,6 +49,8 @@ export function updateWeaponAnimationController(controller, input = {}) {
   const weaponType = input.weaponType || weaponTypeFromIndex(weaponIdx);
   const profile = getWeaponAnimationProfile(weaponType);
   const tuning = getWeaponFeelTuning(weaponType);
+  const feel = getWeaponFeelProfile(weaponIdx);
+  const recoil = feel.recoil || {};
   const ads = clamp01(input.ads);
   const sprint = clamp01(input.sprint);
   const reloadProgress = clamp01(input.reloadProgress);
@@ -52,6 +60,11 @@ export function updateWeaponAnimationController(controller, input = {}) {
   const lastRound = pulseFrom(input.lastRound, 1.2);
   const emptyClick = pulseFrom(input.emptyClick, 1.4);
   const movementKick = pulseFrom(input.footstepKick, 0.85);
+  const bodyCarry = pulseFrom(input.bodyCarry, 1.0);
+  const landing = pulseFrom(input.landing, 1.2);
+  const wallKick = pulseFrom(input.wallKick, 1.0);
+  const dropkick = pulseFrom(input.dropkick, 1.0);
+  const settleTarget = Math.max(movementKick * 0.46, bodyCarry * 0.62, landing, wallKick * 0.82, dropkick * 0.74);
   const adsProtect = Math.max(0, Math.min(1, ads * (profile.adsProtection || 1)));
   const hipWeight = 1 - Math.min(0.88, adsProtect * 0.88);
 
@@ -60,6 +73,8 @@ export function updateWeaponAnimationController(controller, input = {}) {
     c.fire = 0;
     c.reload = 0;
     c.sprint = 0;
+    c.settle = 0;
+    c.bodyCarry = 0;
     c.dryFire = 0;
     c.chamber = 0;
   }
@@ -67,49 +82,67 @@ export function updateWeaponAnimationController(controller, input = {}) {
   c.weaponIdx = weaponIdx;
   c.weaponType = weaponType;
   c.tuningId = tuning.id;
+  c.profileId = feel.id;
+  c.manifestId = feel.manifestId;
   c.phase += dt * (1.2 + (profile.snap || 1) * 0.35) * (tuning.mechanicalSettle || 1);
   c.ads = damp(c.ads || 0, ads, 16 * (tuning.adsSettle || 1), dt);
   c.sprint = damp(c.sprint || 0, sprint, 10, dt);
   c.reload = damp(c.reload || 0, reloading ? Math.max(0.2, Math.sin(reloadProgress * Math.PI)) : 0, reloading ? 12 : 16, dt);
-  c.fire = Math.max(damp(c.fire || 0, 0, 18 * (profile.recovery || 1) * (tuning.returnSpeed || 1), dt), shotImpulse, lastRound * 0.8);
+  c.bodyCarry = damp(c.bodyCarry || 0, bodyCarry, bodyCarry > (c.bodyCarry || 0) ? 18 : 9, dt);
+  c.settle = damp(c.settle || 0, settleTarget, settleTarget > (c.settle || 0) ? 22 : 8, dt);
+  c.fire = Math.max(damp(c.fire || 0, 0, 18 * (profile.recovery || 1) * (tuning.returnSpeed || 1) * (recoil.recover || 1), dt), shotImpulse * (recoil.snap || 1), lastRound * 0.8);
   c.dryFire = Math.max(damp(c.dryFire || 0, 0, 22 * (tuning.returnSpeed || 1), dt), dryFire, emptyClick * 0.55);
   c.trigger = Math.max(c.fire * 0.9, c.dryFire * 0.7);
   c.chamber = damp(c.chamber || 0, reloading && reloadProgress > 0.68 ? 1 : 0, 18, dt);
 
-  const fire = c.fire * hipWeight * (tuning.recoilVisual || 1);
-  const dry = c.dryFire * hipWeight * (tuning.dryFireVisual || 1);
-  const reload = c.reload * (1 - Math.min(0.55, ads * 0.55)) * (tuning.reloadVisual || 1);
-  const sprintPose = c.sprint * (1 - ads) * (tuning.sprintLow || 1);
+  const fire = c.fire * (tuning.recoilVisual || 1);
+  const dry = c.dryFire * (tuning.dryFireVisual || 1);
+  const reload = c.reload * (tuning.reloadVisual || 1);
+  const reloadParts = c.reload * (1 - Math.min(0.55, ads * 0.55)) * (tuning.reloadVisual || 1);
+  const sprintPose = c.sprint * (tuning.sprintLow || 1);
   const gait = movementKick * hipWeight;
   const mass = profile.mass || 1;
-  const f = profile.firePose;
-  const r = profile.reloadPose;
-  const s = profile.sprintPose;
   const side = input.fireSide == null ? 1 : Math.sign(Number(input.fireSide) || 1);
-  const wave = Math.sin(c.phase * 8.0);
+  const resolvedPose = resolveViewmodelPose({
+    weaponIdx,
+    weaponType,
+    animationProfile: profile,
+    phase: c.phase,
+    ads,
+    sprint: sprintPose,
+    reload,
+    fire,
+    dryFire: dry,
+    footstepKick: gait,
+    fireSide: side,
+    bodyCarry: c.bodyCarry,
+    settle: c.settle,
+    landing,
+    wallKick,
+    dropkick,
+    lean: input.lean,
+    guard: input.guard,
+    slide: input.slide,
+    hit: input.hit,
+    damage: input.damage
+  });
 
-  c.pose = {
-    x: (f.x * fire * side) + (r.x * reload) + (s.x * sprintPose) + wave * gait * 0.002 * mass,
-    y: (f.y * fire) + (r.y * reload) + (s.y * sprintPose) - dry * 0.002,
-    z: (f.z * fire) + (r.z * reload) + (s.z * sprintPose) - dry * 0.006,
-    rx: (f.rx * fire) + (r.rx * reload) + (s.rx * sprintPose) + dry * 0.018,
-    ry: (f.ry * fire * side) + (r.ry * reload) + (s.ry * sprintPose),
-    rz: (f.rz * fire * side) + (r.rz * reload) + (s.rz * sprintPose) + dry * 0.015 * side
-  };
+  c.pose = resolvedPose.pose;
+  c.poseLayers = resolvedPose.layers;
 
   c.partMotion = {
     trigger: Number((c.trigger * (tuning.trigger || 1)).toFixed(4)),
     slide: Number(((weaponType === 'pistol' ? c.fire : 0) * hipWeight * (tuning.slide || 1)).toFixed(4)),
     bolt: Number(((weaponType !== 'pistol' ? c.fire : c.chamber * 0.55) * hipWeight * (tuning.bolt || 1)).toFixed(4)),
     pump: Number(((weaponType === 'shotgun' ? Math.max(c.fire * 0.75, c.chamber) : 0) * hipWeight * (tuning.pump || 1)).toFixed(4)),
-    magazine: Number((reload * (tuning.magazine || 1)).toFixed(4)),
+    magazine: Number((reloadParts * (tuning.magazine || 1)).toFixed(4)),
     chamber: Number((c.chamber * (tuning.chamber || 1)).toFixed(4)),
     supportBrace: Number((ads * (1 - sprint) * (1 + mass * 0.08) * (tuning.supportBrace || 1)).toFixed(4))
   };
 
   c.state = reloading ? 'reload'
     : sprint > 0.35 && ads < 0.2 ? 'sprintLow'
-      : fire > 0.04 ? 'fire'
+    : c.fire > 0.04 ? 'fire'
         : ads > 0.5 ? 'ads'
           : 'hip';
   c.lastNotifies = Array.isArray(input.notifies) ? input.notifies.slice(-8) : [];
@@ -149,13 +182,23 @@ export function weaponAnimationDebug(controller) {
     weaponIdx: c.weaponIdx,
     weaponType: c.weaponType,
     tuningId: c.tuningId || `weapon-feel.${c.weaponType || 'rifle'}`,
+    profileId: c.profileId || null,
+    manifestId: c.manifestId || null,
     state: c.state,
     ads: Number((c.ads || 0).toFixed(4)),
     sprint: Number((c.sprint || 0).toFixed(4)),
+    bodyCarry: Number((c.bodyCarry || 0).toFixed(4)),
+    settle: Number((c.settle || 0).toFixed(4)),
     fire: Number((c.fire || 0).toFixed(4)),
     reload: Number((c.reload || 0).toFixed(4)),
     dryFire: Number((c.dryFire || 0).toFixed(4)),
     pose: Object.fromEntries(Object.entries(c.pose || {}).map(([k, v]) => [k, Number((v || 0).toFixed(5))])),
+    poseLayers: Array.isArray(c.poseLayers) ? c.poseLayers.map((l) => ({
+      name: l.name,
+      weight: Number((l.weight || 0).toFixed(4)),
+      source: l.source || null,
+      pose: Object.fromEntries(Object.entries(l.pose || {}).map(([k, v]) => [k, Number((v || 0).toFixed(5))]))
+    })) : [],
     partMotion: { ...(c.partMotion || {}) },
     fallbackReasons: (c.fallbackReasons || []).slice(),
     recentNotifies: (c.lastNotifies || []).map((n) => n.name || n).slice(-8)

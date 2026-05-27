@@ -13,7 +13,13 @@ export function createNotifyRing() {
     size: 0,
     frameId: -1,
     frameSeen: new Set(),
-    lastEmitMs: Object.create(null)
+    lastEmitMs: Object.create(null),
+    stats: {
+      emitted: 0,
+      deduped: 0,
+      rateLimited: 0,
+      byName: Object.create(null)
+    }
   };
 }
 
@@ -26,11 +32,18 @@ export function resetFrameNotifies(ring, frameId) {
 
 export function emitPlayerAnimNotify(ring, frameId, nowMs, name, payload) {
   resetFrameNotifies(ring, frameId);
-  if (ring.frameSeen.has(name)) return false;
+  if (ring.frameSeen.has(name)) {
+    if (ring.stats) ring.stats.deduped++;
+    return false;
+  }
   const minGap = RATE_MS[name];
   if (minGap != null) {
-    const t0 = ring.lastEmitMs[name] || 0;
-    if (nowMs - t0 < minGap) return false;
+    const hasPrevious = ring.lastEmitMs[name] != null;
+    const t0 = hasPrevious ? ring.lastEmitMs[name] : -Infinity;
+    if (hasPrevious && nowMs - t0 < minGap) {
+      if (ring.stats) ring.stats.rateLimited++;
+      return false;
+    }
     ring.lastEmitMs[name] = nowMs;
   }
   ring.frameSeen.add(name);
@@ -43,6 +56,10 @@ export function emitPlayerAnimNotify(ring, frameId, nowMs, name, payload) {
     ring.ring[ring.head] = e;
     ring.head = (ring.head + 1) % RING_CAP;
   }
+  if (ring.stats) {
+    ring.stats.emitted++;
+    ring.stats.byName[name] = (ring.stats.byName[name] || 0) + 1;
+  }
   return true;
 }
 
@@ -53,4 +70,14 @@ export function getRecentNotifies(ring, max = 24) {
     if (ring.ring[idx]) out.push(ring.ring[idx]);
   }
   return out;
+}
+
+export function getNotifyStats(ring) {
+  const stats = ring?.stats || {};
+  return {
+    emitted: stats.emitted | 0,
+    deduped: stats.deduped | 0,
+    rateLimited: stats.rateLimited | 0,
+    byName: { ...(stats.byName || {}) }
+  };
 }

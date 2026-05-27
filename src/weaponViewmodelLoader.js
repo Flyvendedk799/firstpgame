@@ -14,6 +14,8 @@ export const REQUIRED_WEAPON_SOCKETS = [
 ];
 
 export const REQUIRED_WEAPON_CLIPS = ['idle', 'fire', 'reload', 'ads', 'inspect'];
+export const ADVANCED_WEAPON_SIGHT_SOCKETS = ['frontSight', 'rearSight', 'sightLine'];
+export const OPTIONAL_WEAPON_SIGHT_SOCKETS = ['opticGlass'];
 
 export const REQUIRED_HAND_NODES = [
   'ViewmodelRoot',
@@ -146,6 +148,9 @@ export function validateWeaponViewmodel(gltf, entry = {}, options = {}) {
   for (const name of requiredNodes) if (!nodes.has(name)) errors.push(`missing node:${name}`);
   for (const name of requiredSockets) if (!nodes.has(name)) errors.push(`missing socket:${name}`);
   for (const name of requiredClips) if (!clips.has(name)) errors.push(`missing clip:${name}`);
+  for (const name of ADVANCED_WEAPON_SIGHT_SOCKETS) {
+    if (!nodes.has(name)) warnings.push(`missing v2 sight socket:${name}`);
+  }
   const stats = collectViewmodelStats(gltf && gltf.scene);
   const triangleBudget = options.triangleBudget || entry.triangleBudget || 12000;
   const materialBudget = options.materialBudget || 8;

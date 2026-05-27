@@ -55,6 +55,29 @@ function deathVariantFromEnemy(enemy) {
   return 'deathForward';
 }
 
+function enemyLocomotionDebug(enemy, speed, movementMode) {
+  const raw = enemy?._enemyLocomotionDebug || enemy?.group?.userData?.enemyLocomotion || null;
+  const out = {
+    version: raw?.version || 'runtime-unreported',
+    mode: raw?.mode || movementMode || 'idle',
+    speedVis: Number(raw?.speedVis ?? speed ?? 0),
+    desiredSpeed: Number(raw?.desiredSpeed ?? speed ?? 0),
+    targetSpeed: Number(raw?.targetSpeed ?? speed ?? 0),
+    runBlend: clamp01(raw?.runBlend ?? 0),
+    cadence: Number(raw?.cadence ?? 0),
+    strideMeters: Number(raw?.strideMeters ?? 0),
+    strafeBlend: clamp01(raw?.strafeBlend ?? 0),
+    footPlant: clamp01(raw?.footPlant ?? 0),
+    footPlantSide: Number(raw?.footPlantSide ?? 0),
+    finite: true
+  };
+  for (const key of ['speedVis', 'desiredSpeed', 'targetSpeed', 'cadence', 'strideMeters', 'footPlantSide']) {
+    out[key] = Number.isFinite(out[key]) ? Number(out[key].toFixed(4)) : 0;
+  }
+  out.finite = Object.values(out).every((value) => typeof value !== 'number' || Number.isFinite(value));
+  return out;
+}
+
 function animationManifestForEnemy(enemy, options = {}) {
   if (options.manifestEntry) return options.manifestEntry;
   const id = enemy?.animationProfileId || (enemy?.meshyRig || enemy?.actions ? 'animation.mixamo.humanoid' : 'animation.enemy');
@@ -104,6 +127,7 @@ export function resolveEnemyAnimationStatus(enemy, options = {}) {
       intentLead: profile.intentLead,
       tuningId: tuning.id
     },
+    locomotion: enemyLocomotionDebug(enemy, speed, movementMode),
     channels: {
       locomotion: speed > 0.1 ? movementMode : 'idle',
       upperBody: intent === 'reload' ? 'reload' : intent === 'fire' || aimReady > 0.4 ? 'aim' : 'relaxed',
@@ -121,6 +145,9 @@ export function resolveEnemyAnimationStatus(enemy, options = {}) {
     intentCue: enemyIntentCue(intent, profile, enemy, tuning),
     fallback: 'procedural-enemy-pose'
   };
+  if (enemy?.animationStatus?.intentCueVisual) {
+    status.intentCueVisual = { ...enemy.animationStatus.intentCueVisual };
+  }
   const clipPlan = resolveImportedClipPlan({
     status,
     enemy,

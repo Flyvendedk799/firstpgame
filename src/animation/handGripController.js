@@ -1,4 +1,4 @@
-import { getHandFeelTuning, getWeaponAnimationProfile, weaponTypeFromIndex } from './profiles.js';
+import { getHandFeelTuning, getWeaponAnimationProfile, getWeaponFeelProfile, weaponTypeFromIndex } from './profiles.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -39,6 +39,35 @@ function roundedPose(src) {
     ry: round(p.ry),
     rz: round(p.rz)
   };
+}
+
+const HAND_OFFSET_LIMITS = Object.freeze({
+  right: Object.freeze({ x: 0.085, y: 0.11, z: 0.14, rx: 0.42, ry: 0.34, rz: 0.42 }),
+  left: Object.freeze({ x: 0.16, y: 0.18, z: 0.22, rx: 0.70, ry: 0.52, rz: 0.66 })
+});
+
+function sanitizeOffsetPose(out, side, health) {
+  const limits = HAND_OFFSET_LIMITS[side] || HAND_OFFSET_LIMITS.right;
+  for (const key of ['x', 'y', 'z', 'rx', 'ry', 'rz']) {
+    const limit = limits[key] || 0;
+    let value = Number(out[key]);
+    if (!Number.isFinite(value)) {
+      value = 0;
+      if (health) health.nonFiniteEvents = (health.nonFiniteEvents || 0) + 1;
+    }
+    const clipped = Math.max(-limit, Math.min(limit, value));
+    if (clipped !== value && health) health.clampEvents = (health.clampEvents || 0) + 1;
+    out[key] = clipped;
+  }
+  return out;
+}
+
+function poseMaxTranslation(pose) {
+  return Math.max(Math.abs(pose.x || 0), Math.abs(pose.y || 0), Math.abs(pose.z || 0));
+}
+
+function poseMaxRotation(pose) {
+  return Math.max(Math.abs(pose.rx || 0), Math.abs(pose.ry || 0), Math.abs(pose.rz || 0));
 }
 
 function addScaledPose(out, pose, weight) {
@@ -266,6 +295,15 @@ export function createHandGripState(options = {}) {
     gripTightness: 0,
     offsets: { right: zeroPose(), left: zeroPose() },
     fingers: { triggerCurl: 0, triggerSnap: 0, gripCurl: 0, supportCurl: 0, handOpen: 0 },
+    placement: {
+      version: 1,
+      rightAnchor: 0,
+      supportAnchor: 0,
+      clampEvents: 0,
+      nonFiniteEvents: 0,
+      maxOffset: 0,
+      maxRotation: 0
+    },
     sockets: { mode: 'procedural', required: profile.requiredSockets.slice(), available: [], missing: [] },
     ik: { enabled: false, active: false, reason: 'disabled' },
     fallbackReasons: [],
@@ -281,6 +319,15 @@ export function updateHandGripState(state, input = {}) {
     c.offsets.right = zeroPose();
     c.offsets.left = zeroPose();
     c.fingers = { triggerCurl: 0, triggerSnap: 0, gripCurl: 0, supportCurl: 0, handOpen: 0 };
+    c.placement = {
+      version: 1,
+      rightAnchor: 0,
+      supportAnchor: 0,
+      clampEvents: c.placement?.clampEvents || 0,
+      nonFiniteEvents: c.placement?.nonFiniteEvents || 0,
+      maxOffset: c.placement?.maxOffset || 0,
+      maxRotation: c.placement?.maxRotation || 0
+    };
     c.fallbackReasons = [];
     c.ik = { enabled: false, active: false, reason: 'feature-flag-disabled' };
     return c;
@@ -289,6 +336,8 @@ export function updateHandGripState(state, input = {}) {
   const weaponIdx = Number(input.weaponIdx) | 0;
   const weaponType = input.weaponType || weaponTypeFromIndex(weaponIdx);
   const weaponProfile = getWeaponAnimationProfile(weaponType);
+  const weaponFeelProfile = getWeaponFeelProfile(weaponIdx);
+  const handIntent = weaponFeelProfile.hand || {};
   const profile = getHandGripProfile(weaponType);
   const tuning = getHandFeelTuning(weaponType);
   const parts = input.partMotion || {};
@@ -307,8 +356,8 @@ export function updateHandGripState(state, input = {}) {
   const fireTarget = clamp01(Math.max(trigger, slide * 0.6, bolt * 0.52, pump * 0.65, shotImpulse));
   const partTarget = clamp01(Math.max(pump, bolt, chamber, magazine * 0.35));
   const reloadTarget = reloading ? Math.max(magazine, Math.sin(reloadProgress * Math.PI) * 0.75) : 0;
-  const supportTarget = clamp01(Math.max(supportBrace, ads * (1 - sprint * 0.75)));
-  const gripTarget = clamp01(ads * 0.55 + fireTarget * 0.5 + supportTarget * 0.4 - sprint * 0.18);
+  const supportTarget = clamp01(Math.max(supportBrace, ads * (1 - sprint * 0.75)) * (handIntent.supportBrace || 1));
+  const gripTarget = clamp01((ads * 0.55 + fireTarget * 0.5 + supportTarget * 0.4 - sprint * 0.18) * (handIntent.contactTension || 1));
   const sprintCarry = sprint * (1 - ads * 0.65);
   const mass = Number(weaponProfile.mass) || 1;
   const recoilMass = Math.max(0.72, Math.min(1.55, mass));
@@ -325,6 +374,13 @@ export function updateHandGripState(state, input = {}) {
   c.weaponIdx = weaponIdx;
   c.weaponType = weaponType;
   c.profileId = profile.id;
+  c.weaponFeelProfileId = weaponFeelProfile.id;
+  c.handIntent = {
+    profile: handIntent.profile || weaponType,
+    contactTension: handIntent.contactTension || 1,
+    supportBrace: handIntent.supportBrace || 1,
+    triggerDiscipline: handIntent.triggerDiscipline || 1
+  };
   c.tuningId = tuning.id;
   c.ads = damp(c.ads || 0, ads, 18, dt);
   c.sprint = damp(c.sprint || 0, sprintCarry, 12, dt);
@@ -359,10 +415,38 @@ export function updateHandGripState(state, input = {}) {
     left.y += c.sprint * 0.003;
   }
 
+  const rightAnchor = clamp01(c.gripTightness * 0.48 + c.ads * 0.22 + c.fire * 0.18 + c.reload * 0.10);
+  const supportAnchor = profile.twoHanded
+    ? clamp01(c.supportContact * 0.62 + c.gripTightness * 0.28 + c.ads * 0.18 + c.reload * 0.08)
+    : 0;
+  right.z -= rightAnchor * 0.0024;
+  right.y -= rightAnchor * 0.0012;
+  if (profile.twoHanded) {
+    left.z -= supportAnchor * 0.0042;
+    left.y -= supportAnchor * 0.0018;
+    left.rx += supportAnchor * 0.010;
+  }
+
+  const placement = c.placement || {
+    version: 1,
+    clampEvents: 0,
+    nonFiniteEvents: 0,
+    maxOffset: 0,
+    maxRotation: 0
+  };
+  placement.rightAnchor = round(rightAnchor, 4);
+  placement.supportAnchor = round(supportAnchor, 4);
+  sanitizeOffsetPose(right, 'right', placement);
+  sanitizeOffsetPose(left, 'left', placement);
+  placement.maxOffset = round(Math.max(placement.maxOffset || 0, poseMaxTranslation(right), poseMaxTranslation(left)), 5);
+  placement.maxRotation = round(Math.max(placement.maxRotation || 0, poseMaxRotation(right), poseMaxRotation(left)), 5);
+  placement.lastWeaponIdx = weaponIdx;
+  placement.profileId = profile.id;
+  c.placement = placement;
   c.offsets.right = right;
   c.offsets.left = left;
   c.fingers = {
-    triggerCurl: round(clamp01(trigger * (profile.fingers.triggerTravel || 0) * (tuning.triggerCurl || 1)) * 1.6, 4),
+    triggerCurl: round(clamp01(trigger * (profile.fingers.triggerTravel || 0) * (tuning.triggerCurl || 1) * (handIntent.triggerDiscipline || 1)) * 1.6, 4),
     triggerSnap: round(clamp01(c.fire * 0.55 + trigger * 0.3), 4),
     gripCurl: round(clamp01(((profile.fingers.gripCurl || 0) + c.gripTightness * 0.22) * (tuning.gripCurl || 1)), 4),
     supportCurl: round(clamp01(((profile.fingers.supportCurl || 0) + contact * 0.22 + c.fire * 0.08) * (tuning.supportCurl || 1)), 4),
@@ -403,7 +487,9 @@ export function handGripDebug(state) {
     weaponIdx: c.weaponIdx,
     weaponType: c.weaponType,
     profileId: c.profileId,
+    weaponFeelProfileId: c.weaponFeelProfileId || null,
     tuningId: c.tuningId || `hand-feel.${c.weaponType || 'rifle'}`,
+    handIntent: c.handIntent ? { ...c.handIntent } : null,
     ads: round(c.ads || 0, 4),
     sprint: round(c.sprint || 0, 4),
     reload: round(c.reload || 0, 4),
@@ -414,6 +500,16 @@ export function handGripDebug(state) {
     offsets: {
       right: roundedPose(c.offsets?.right),
       left: roundedPose(c.offsets?.left)
+    },
+    placement: {
+      version: c.placement?.version || 1,
+      rightAnchor: round(c.placement?.rightAnchor || 0, 4),
+      supportAnchor: round(c.placement?.supportAnchor || 0, 4),
+      clampEvents: c.placement?.clampEvents | 0,
+      nonFiniteEvents: c.placement?.nonFiniteEvents | 0,
+      maxOffset: round(c.placement?.maxOffset || 0, 5),
+      maxRotation: round(c.placement?.maxRotation || 0, 5),
+      profileId: c.placement?.profileId || c.profileId || null
     },
     fingers: {
       triggerCurl: round(c.fingers?.triggerCurl || 0, 4),
