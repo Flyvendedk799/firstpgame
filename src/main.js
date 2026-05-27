@@ -8,6 +8,7 @@
 // Original asset folder is symlinked to /assets/ via public/assets.
 
 import * as THREE_NS         from 'three';
+import QRCode from 'qrcode';
 import { GLTFLoader }        from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader }        from 'three/addons/loaders/KTX2Loader.js';
 import { DRACOLoader }       from 'three/addons/loaders/DRACOLoader.js';
@@ -74,6 +75,13 @@ import {
   GAME_SENS_PRESETS,
   matchingClearanceSens
 } from './mouseSensGames.js';
+import {
+  COMPANION_MESSAGES,
+  COMPANION_PROTOCOL_VERSION,
+  clamp as companionClamp,
+  makeSessionId as makeCompanionSessionId,
+  sanitizeText as sanitizeCompanionText,
+} from './companion/protocol.js';
 import {
   CORE_VISUAL_MATERIAL_POLISH_VERSION,
   createPbrMaterialLibrary,
@@ -16310,9 +16318,706 @@ function tryLock(){
 }
 // Fullscreen DOM overlays: never steal pointer-lock or blanket preventDefault — otherwise
 // sliders, selects and pause SETTINGS don’t respond; Esc fights the browser lock exit.
-const POINTER_DOM_UI_SELECTOR='#pause-menu,#overlay,#loadout-viewer,#level-select,#custom-maps-panel,#custom-editor,#full-map,#skill-tree,#achievements-panel,#dossier-card,#story-card,#ending-overlay,#radial';
+const POINTER_DOM_UI_SELECTOR='#pause-menu,#overlay,#loadout-viewer,#level-select,#custom-maps-panel,#custom-editor,#full-map,#skill-tree,#achievements-panel,#dossier-card,#story-card,#ending-overlay,#radial,#companion-panel';
 function _evtTargetIsPointerDomUi(el){
   return !!(el&&typeof el.closest==='function'&&el.closest(POINTER_DOM_UI_SELECTOR));
+}
+
+// ── COMPANION OPERATOR + FPV DRONE ──────────────────────────────────────────
+const COMPANION_DRONE_ACTIVE_MS=30_000;
+const COMPANION_DRONE_COOLDOWN_MS=120_000;
+const COMPANION_SNAPSHOT_INTERVAL_MS=100;
+const COMPANION_ROOM={
+  ws:null,
+  sessionId:makeCompanionSessionId('host'),
+  roomCode:'',
+  url:'',
+  urls:[],
+  status:'offline',
+  connected:false,
+  ready:false,
+  disabled:false,
+  identity:{name:'Companion',role:'Companion Operator',accent:'#38f5d0'},
+  pingMs:0,
+  signal:0.62,
+  traceHeat:0,
+  lastSnapshotAt:0,
+  lastPingAt:0,
+  lastPeerAt:0,
+  pings:[],
+  routes:[],
+  rate:new Map(),
+  lightRestore:null,
+  sceneObjects:new Set(),
+};
+const COMPANION_DRONE={
+  camera:new THREE.PerspectiveCamera(78,16/9,.06,80),
+  group:null,
+  rotors:[],
+  active:false,
+  activeUntil:0,
+  cooldownUntil:0,
+  hp:60,
+  yaw:0,
+  pitch:0,
+  vel:new THREE.Vector3(),
+  input:{moveX:0,moveY:0,lookX:0,lookY:0,ascend:0,fireHeld:false},
+  fireCdUntil:0,
+  heat:0,
+  feedCanvas:null,
+  feedRenderer:null,
+  feedBusy:false,
+  lastFrameAt:0,
+  lastFrameMode:'640x360',
+};
+COMPANION_DRONE.camera.rotation.order='YXZ';
+scene.add(COMPANION_DRONE.camera);
+
+function _companionSend(type,payload={}){
+  const ws=COMPANION_ROOM.ws;
+  if(!ws||ws.readyState!==WebSocket.OPEN)return false;
+  ws.send(JSON.stringify({v:COMPANION_PROTOCOL_VERSION,type,t:Date.now(),sessionId:COMPANION_ROOM.sessionId,...payload}));
+  return true;
+}
+function _companionSendBinary(data){
+  const ws=COMPANION_ROOM.ws;
+  if(!ws||ws.readyState!==WebSocket.OPEN||ws.bufferedAmount>2_000_000)return false;
+  ws.send(data);
+  return true;
+}
+function _companionWsUrl(){
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  return `${proto}//${location.host}/__companion/ws`;
+}
+function _companionPreferredUrl(urls,url){
+  const list=Array.isArray(urls)?urls.filter(Boolean):[];
+  const localHost=/\/\/(localhost|127\.0\.0\.1|\[::1\])/i;
+  return list.find(u=>!localHost.test(u))||url||list[0]||'';
+}
+function _companionPanelOpen(){
+  const panel=$e('companion-panel');
+  if(panel)panel.classList.add('show');
+  if(locked)try{document.exitPointerLock();}catch(_){}
+  if(!COMPANION_ROOM.ws||COMPANION_ROOM.ws.readyState===WebSocket.CLOSED)_companionCreateRoom();
+  _companionUpdateHostUi();
+}
+function _companionPanelClose(){
+  const panel=$e('companion-panel');
+  if(panel)panel.classList.remove('show');
+}
+function _companionCreateRoom(){
+  if(typeof WebSocket==='undefined'){_companionSetStatus('unsupported','WebSocket unavailable');return;}
+  if(COMPANION_ROOM.ws&&COMPANION_ROOM.ws.readyState===WebSocket.OPEN){
+    _companionSend(COMPANION_MESSAGES.HOST_CLOSE_ROOM,{reason:'host-recreated'});
+    try{COMPANION_ROOM.ws.close();}catch(_){}
+  }
+  COMPANION_ROOM.status='connecting';
+  COMPANION_ROOM.connected=false;
+  COMPANION_ROOM.roomCode='';
+  COMPANION_ROOM.url='';
+  _companionUpdateHostUi();
+  const ws=new WebSocket(_companionWsUrl());
+  ws.binaryType='arraybuffer';
+  COMPANION_ROOM.ws=ws;
+  ws.addEventListener('open',()=>{
+    _companionSetStatus('waiting','Creating invite code');
+    _companionSend(COMPANION_MESSAGES.HOST_CREATE_ROOM,{
+      sessionId:COMPANION_ROOM.sessionId,
+      title:'Campaign Lobby',
+    });
+  });
+  ws.addEventListener('message',(event)=>_companionOnMessage(event));
+  ws.addEventListener('close',()=>{
+    COMPANION_ROOM.connected=false;
+    _companionSetStatus('offline','Relay disconnected');
+    companionDroneDespawn('relay-disconnected',true);
+  });
+  ws.addEventListener('error',()=>_companionSetStatus('offline','Relay error'));
+}
+function _companionCloseRoom(){
+  _companionSend(COMPANION_MESSAGES.HOST_CLOSE_ROOM,{reason:'host-closed'});
+  if(COMPANION_ROOM.ws)try{COMPANION_ROOM.ws.close();}catch(_){}
+  COMPANION_ROOM.ws=null;
+  COMPANION_ROOM.roomCode='';
+  COMPANION_ROOM.url='';
+  COMPANION_ROOM.connected=false;
+  COMPANION_ROOM.ready=false;
+  companionDroneDespawn('host-disabled',true);
+  _companionSetStatus('offline','Companion disabled');
+}
+function _companionKick(){
+  _companionSend(COMPANION_MESSAGES.HOST_REJECT,{reason:'kicked'});
+  COMPANION_ROOM.connected=false;
+  COMPANION_ROOM.ready=false;
+  companionDroneDespawn('kicked',true);
+  _companionSetStatus('waiting','Phone kicked');
+}
+function _companionSetStatus(status,detail=''){
+  COMPANION_ROOM.status=status;
+  const st=$e('companion-status');
+  if(st)st.textContent=detail||status;
+  _companionUpdateHud();
+}
+function _companionUpdateHostUi(){
+  const code=$e('companion-code');
+  const url=$e('companion-url');
+  const lan=$e('companion-lan');
+  const status=$e('companion-status');
+  if(code)code.textContent=COMPANION_ROOM.roomCode||'------';
+  if(url)url.textContent=COMPANION_ROOM.url||'Not created yet';
+  if(lan){
+    const extra=COMPANION_ROOM.urls.filter(u=>u!==COMPANION_ROOM.url).slice(0,3);
+    lan.textContent=extra.length?extra.join('  |  '):'Same Wi-Fi recommended';
+  }
+  if(status){
+    if(COMPANION_ROOM.connected)status.textContent=`Connected: ${COMPANION_ROOM.identity.name}${COMPANION_ROOM.ready?' (ready)':''}`;
+    else if(COMPANION_ROOM.roomCode)status.textContent='Waiting for phone to join.';
+    else status.textContent=COMPANION_ROOM.status==='connecting'?'Connecting to relay...':'Create a lobby to invite a phone.';
+  }
+}
+function _companionUpdateHud(){
+  const hud=$e('companion-hud');
+  if(!hud)return;
+  const name=$e('companion-hud-name');
+  const state=$e('companion-hud-state');
+  hud.classList.toggle('show',!!(G.started||COMPANION_ROOM.connected||COMPANION_ROOM.roomCode));
+  if(name)name.textContent=COMPANION_ROOM.connected?`Companion Connected: ${COMPANION_ROOM.identity.name}`:(COMPANION_ROOM.roomCode?'Companion Waiting':'Companion Offline');
+  let suffix=COMPANION_ROOM.ready?'ready':'not ready';
+  if(COMPANION_DRONE.active)suffix=`drone ${Math.ceil(Math.max(0,COMPANION_DRONE.activeUntil-performance.now())/1000)}s`;
+  else if(COMPANION_DRONE.cooldownUntil>performance.now())suffix=`drone cooldown ${Math.ceil((COMPANION_DRONE.cooldownUntil-performance.now())/1000)}s`;
+  if(state)state.textContent=COMPANION_ROOM.connected?`${suffix} | ${Math.round(COMPANION_ROOM.pingMs||0)}ms`:COMPANION_ROOM.status;
+}
+async function _companionDrawQr(url){
+  const canvas=$e('companion-qr');
+  if(!canvas)return;
+  try{
+    if(url)await QRCode.toCanvas(canvas,url,{width:188,margin:1,color:{dark:'#07100f',light:'#ffffff'}});
+    else{
+      const ctx=canvas.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle='#111';ctx.font='700 14px sans-serif';ctx.fillText('NO ROOM',58,98);
+    }
+  }catch(err){console.warn('[companion] QR failed',err);}
+}
+function _companionOnMessage(event){
+  if(typeof event.data!=='string')return;
+  let msg=null;
+  try{msg=JSON.parse(event.data);}catch(_){return;}
+  if(!msg||!msg.type)return;
+  COMPANION_ROOM.lastPeerAt=performance.now();
+  if(msg.type===COMPANION_MESSAGES.RELAY_ROOM_CREATED){
+    COMPANION_ROOM.roomCode=String(msg.roomCode||'').toUpperCase();
+    COMPANION_ROOM.urls=Array.isArray(msg.urls)?msg.urls:[msg.url].filter(Boolean);
+    COMPANION_ROOM.url=_companionPreferredUrl(COMPANION_ROOM.urls,msg.url);
+    COMPANION_ROOM.status='waiting';
+    _companionDrawQr(COMPANION_ROOM.url);
+    _companionUpdateHostUi();
+    _companionUpdateHud();
+    return;
+  }
+  if(msg.type===COMPANION_MESSAGES.RELAY_COMPANION_JOINED||msg.type===COMPANION_MESSAGES.COMPANION_JOIN){
+    COMPANION_ROOM.connected=true;
+    COMPANION_ROOM.disabled=false;
+    _companionApplyIdentity(msg.identity);
+    _companionSetStatus('connected',`Connected: ${COMPANION_ROOM.identity.name}`);
+    _companionHostToast('COMPANION LINKED',`${COMPANION_ROOM.identity.name} joined support control.`);
+    _companionSend(COMPANION_MESSAGES.HOST_EVENT,{event:'haptic',ms:30});
+    return;
+  }
+  if(msg.type===COMPANION_MESSAGES.RELAY_COMPANION_LEFT){
+    COMPANION_ROOM.connected=false;
+    COMPANION_ROOM.ready=false;
+    companionDroneDespawn('phone-disconnected',true);
+    _companionSetStatus('waiting','Phone disconnected. Rejoin window open.');
+    return;
+  }
+  if(msg.type===COMPANION_MESSAGES.RELAY_PONG){
+    COMPANION_ROOM.pingMs=msg.sentAt?Date.now()-msg.sentAt:COMPANION_ROOM.pingMs;
+    return;
+  }
+  _companionHandleCommand(msg);
+}
+function _companionApplyIdentity(identity){
+  if(!identity)return;
+  COMPANION_ROOM.identity.name=sanitizeCompanionText(identity.name,COMPANION_ROOM.identity.name,24)||'Companion';
+  COMPANION_ROOM.identity.role=sanitizeCompanionText(identity.role,'Companion Operator',28)||'Companion Operator';
+  const accent=String(identity.accent||COMPANION_ROOM.identity.accent);
+  if(/^#[0-9a-f]{6}$/i.test(accent))COMPANION_ROOM.identity.accent=accent;
+  _companionUpdateHostUi();
+  _companionUpdateHud();
+}
+function _companionRate(type,ms){
+  const now=performance.now();
+  const last=COMPANION_ROOM.rate.get(type)||0;
+  if(now-last<ms)return false;
+  COMPANION_ROOM.rate.set(type,now);
+  return true;
+}
+function _companionReject(reason,command=''){
+  _companionSend(COMPANION_MESSAGES.HOST_REJECT,{reason,command});
+}
+function _companionGameplayActive(){
+  return !!(G.started&&!G.loading&&!P.dead&&!G.menuOpen&&!G.invOpen&&!G.shopOpen&&G.playMode!=='duel');
+}
+function _companionHandleCommand(msg){
+  if(COMPANION_ROOM.disabled)return _companionReject('disabled',msg.type);
+  switch(msg.type){
+    case COMPANION_MESSAGES.COMPANION_READY:
+      COMPANION_ROOM.ready=!!msg.ready;_companionUpdateHostUi();_companionUpdateHud();break;
+    case COMPANION_MESSAGES.COMPANION_IDENTITY:
+      _companionApplyIdentity(msg.identity);break;
+    case COMPANION_MESSAGES.SIGNAL_TUNE:
+      COMPANION_ROOM.signal=companionClamp(msg.value,0,1);COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+(COMPANION_ROOM.signal>.78?.010:.004));break;
+    case COMPANION_MESSAGES.ROUTE_DRAW:
+      _companionDrawRoute(msg);break;
+    case COMPANION_MESSAGES.PING_ADD:
+      _companionAddPing(msg);break;
+    case COMPANION_MESSAGES.QUICK_COMMS_SEND:
+      if(_companionRate('quick',550))_companionQuickComm(msg);break;
+    case COMPANION_MESSAGES.DOOR_ACTION:
+      if(_companionRate('door',4500))_companionDoorAction();else _companionReject('cooldown',msg.type);break;
+    case COMPANION_MESSAGES.LIGHT_ACTION:
+      if(_companionRate('light',8500))_companionLightAction();else _companionReject('cooldown',msg.type);break;
+    case COMPANION_MESSAGES.COMMS_FAKE_ORDER:
+      if(_companionRate('fake-order',10_000))_companionFakeOrder();else _companionReject('cooldown',msg.type);break;
+    case COMPANION_MESSAGES.PANIC_TRIGGER:
+      if(_companionRate('panic',22_000))_companionPanicBoard();else _companionReject('cooldown',msg.type);break;
+    case COMPANION_MESSAGES.DRONE_LAUNCH:
+      companionDroneLaunch();break;
+    case COMPANION_MESSAGES.DRONE_INPUT:
+      companionDroneInput(msg);break;
+    case COMPANION_MESSAGES.DRONE_FIRE:
+      companionDroneFire();break;
+    case COMPANION_MESSAGES.DRONE_RECALL:
+      companionDroneDespawn('recalled',true);break;
+    default:
+      break;
+  }
+}
+function _companionHostToast(title,detail='',ms=2200){
+  if(typeof attachToast==='function')attachToast(`<div style="color:#67ffd8;letter-spacing:.22em">${title}</div>${detail?`<div style="font-size:11px;margin-top:4px">${detail}</div>`:''}`,ms);
+}
+function _companionDisposeObject(obj){
+  if(!obj)return;
+  scene.remove(obj);
+  obj.traverse(o=>{
+    if(o.geometry)o.geometry.dispose();
+    if(o.material){
+      if(Array.isArray(o.material))o.material.forEach(m=>m&&m.dispose&&m.dispose());
+      else o.material.dispose&&o.material.dispose();
+    }
+  });
+  COMPANION_ROOM.sceneObjects.delete(obj);
+}
+function companionCleanupVisuals(){
+  for(const obj of Array.from(COMPANION_ROOM.sceneObjects))_companionDisposeObject(obj);
+  COMPANION_ROOM.sceneObjects.clear();
+  COMPANION_ROOM.pings=[];
+  COMPANION_ROOM.routes=[];
+}
+function _companionClearRoutes(){
+  for(const r of COMPANION_ROOM.routes)_companionDisposeObject(r.line);
+  COMPANION_ROOM.routes=[];
+}
+function _companionDrawRoute(msg){
+  if(!Array.isArray(msg.points)||msg.clear){_companionClearRoutes();return;}
+  if(!_companionRate('route',350))return;
+  const points=msg.points.slice(0,64).map(p=>({nx:companionClamp(p.nx,0,1),nz:companionClamp(p.nz,0,1)}));
+  if(points.length<2)return;
+  const b=_companionMapBounds();
+  const verts=[];
+  for(const p of points){
+    const w=_companionWorldFromNorm(p.nx,p.nz,b);
+    verts.push(w.x,(P.pos.y||0)+.055,w.z);
+  }
+  const geom=new THREE.BufferGeometry();
+  geom.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+  const mat=new THREE.LineBasicMaterial({color:COMPANION_ROOM.identity.accent,transparent:true,opacity:.88});
+  const line=new THREE.Line(geom,mat);
+  line.name='Companion Route Overlay';
+  scene.add(line);
+  COMPANION_ROOM.sceneObjects.add(line);
+  _companionClearRoutes();
+  COMPANION_ROOM.routes=[{
+    id:makeCompanionSessionId('route'),
+    points,
+    color:COMPANION_ROOM.identity.accent,
+    line,
+    expiresAt:performance.now()+companionClamp(msg.ttlMs||9000,1500,15000),
+  }];
+  _companionHostToast('ROUTE RECEIVED','Temporary path drawn on tactical map.',1400);
+}
+function _companionAddPing(msg){
+  if(!_companionRate('ping',320))return;
+  const type=sanitizeCompanionText(msg.type,'ping',18)||'ping';
+  const nx=companionClamp(msg.nx,.02,.98),nz=companionClamp(msg.nz,.02,.98);
+  const b=_companionMapBounds();
+  const wp=_companionWorldFromNorm(nx,nz,b);
+  const colors={danger:0xff5d4a,move:0x67ffd8,hold:0xffd36a,breach:0xffa340,objective:0xf8ff7a,loot:0x7aff9a,help:0xff78d8};
+  const mat=new THREE.MeshBasicMaterial({color:colors[type]||0x67ffd8,transparent:true,opacity:.95,side:THREE.DoubleSide,depthWrite:false});
+  const mesh=new THREE.Mesh(new THREE.RingGeometry(.32,.43,30),mat);
+  mesh.name='Companion Ping Marker';
+  mesh.rotation.x=-Math.PI/2;
+  mesh.position.set(wp.x,(P.pos.y||0)+.07,wp.z);
+  scene.add(mesh);
+  COMPANION_ROOM.sceneObjects.add(mesh);
+  const ping={id:makeCompanionSessionId('ping'),type,nx,nz,color:COMPANION_ROOM.identity.accent,mesh,expiresAt:performance.now()+6500};
+  COMPANION_ROOM.pings.push(ping);
+  if(COMPANION_ROOM.pings.length>16)COMPANION_ROOM.pings.shift();
+  _companionHostToast(`PING: ${type.toUpperCase()}`,'Companion marker added.',1350);
+  _companionSend(COMPANION_MESSAGES.HOST_EVENT,{event:'haptic',ms:14});
+}
+function _companionQuickComm(msg){
+  const text=sanitizeCompanionText(msg.text,'wait',24)||'wait';
+  _companionHostToast(`COMPANION: ${text.toUpperCase()}`,'Quick comm received.',1500);
+  if(text.includes('behind'))PP.shakeY-=.035;
+}
+function _companionDoorAction(){
+  if(!_companionGameplayActive())return _companionReject('gameplay-inactive','door');
+  let did=false;
+  if(P.nearOpenableDoor&&G.levelData&&typeof G.levelData.openCustomDoor==='function'){
+    did=!!G.levelData.openCustomDoor(P.nearOpenableDoor,'companion');
+  }
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.05);
+  _companionHostToast(did?'DOOR PULSED':'DOOR SCAN','Nearest eligible door pinged.',1700);
+}
+function _companionLightAction(){
+  if(!_companionGameplayActive())return _companionReject('gameplay-inactive','light');
+  const lights=(G.levelData&&Array.isArray(G.levelData.ceilingLights))?G.levelData.ceilingLights.filter(L=>L&&L.isLight).slice(0,28):[];
+  if(COMPANION_ROOM.lightRestore)clearTimeout(COMPANION_ROOM.lightRestore);
+  const saved=lights.map(L=>({L,intensity:L.intensity}));
+  for(const L of saved)L.L.intensity=(L.intensity||1)*.18;
+  COMPANION_ROOM.lightRestore=setTimeout(()=>{for(const s of saved){if(s.L)s.L.intensity=s.intensity;}},1600);
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.08);
+  PP.shakeY-=.04;
+  _companionHostToast('LIGHTS CUT','1.6 second flicker window.',1700);
+}
+function _companionNearestEnemy(maxDist=18){
+  if(!G.enemyMgr||!Array.isArray(G.enemyMgr._list))return null;
+  let best=null,bestD=maxDist*maxDist;
+  for(const e of G.enemyMgr._list){
+    if(!e||e.dead||!e.group)continue;
+    const dx=e.group.position.x-P.pos.x,dz=e.group.position.z-P.pos.z;
+    const d=dx*dx+dz*dz;
+    if(d<bestD){bestD=d;best=e;}
+  }
+  return best;
+}
+function _companionFakeOrder(){
+  if(!_companionGameplayActive())return _companionReject('gameplay-inactive','fake-order');
+  const e=_companionNearestEnemy(22);
+  if(e){
+    e.stunUntil=Math.max(e.stunUntil||0,performance.now()+900);
+    e._suppressedUntil=Math.max(e._suppressedUntil||0,performance.now()+1500);
+    e.alertTimer=0;
+    e.alertFlashTimer=Math.max(e.alertFlashTimer||0,.25);
+  }
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.10);
+  _companionHostToast('FAKE ORDER SENT',e?'Nearest guard hesitated.':'No guard on channel.',1800);
+}
+function _companionPanicBoard(){
+  if(!_companionGameplayActive())return _companionReject('gameplay-inactive','panic');
+  const danger=(P.hp/(P.maxHp||100))<.34||P.reloading||(G.enemyMgr&&G.enemyMgr.aliveCount>0&&P._enemyShotPressure>.25);
+  if(!danger){_companionHostToast('PANIC BOARD IDLE','No emergency window detected.',1500);return;}
+  P.focus=Math.min(1,(P.focus||0)+.12);
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.13);
+  const e=_companionNearestEnemy(12);
+  if(e)e._suppressedUntil=Math.max(e._suppressedUntil||0,performance.now()+1100);
+  PP.shakeY-=.06;
+  _companionHostToast('PANIC BOARD FIRED','Focus boost and suppression pulse.',1900);
+}
+function _companionMapBounds(){
+  const walls=G.levelData&&Array.isArray(G.levelData.walls)?G.levelData.walls:[];
+  let minX=P.pos.x-20,maxX=P.pos.x+20,minZ=P.pos.z-20,maxZ=P.pos.z+20;
+  for(const w of walls){
+    if(!Number.isFinite(w.x0)||!Number.isFinite(w.x1)||!Number.isFinite(w.z0)||!Number.isFinite(w.z1))continue;
+    minX=Math.min(minX,w.x0);maxX=Math.max(maxX,w.x1);minZ=Math.min(minZ,w.z0);maxZ=Math.max(maxZ,w.z1);
+  }
+  const pad=4;
+  return{minX:minX-pad,maxX:maxX+pad,minZ:minZ-pad,maxZ:maxZ+pad};
+}
+function _companionNormFromWorld(x,z,b){
+  return{nx:(x-b.minX)/Math.max(1,b.maxX-b.minX),nz:(z-b.minZ)/Math.max(1,b.maxZ-b.minZ)};
+}
+function _companionWorldFromNorm(nx,nz,b){
+  return{x:b.minX+companionClamp(nx,0,1)*(b.maxX-b.minX),z:b.minZ+companionClamp(nz,0,1)*(b.maxZ-b.minZ)};
+}
+function _companionSnapshot(){
+  const b=_companionMapBounds();
+  const now=performance.now();
+  const walls=(G.levelData&&Array.isArray(G.levelData.walls)?G.levelData.walls:[]).slice(0,90).map(w=>{
+    const a=_companionNormFromWorld(w.x0,w.z0,b),c=_companionNormFromWorld(w.x1,w.z1,b);
+    return{nx0:companionClamp(Math.min(a.nx,c.nx),0,1),nz0:companionClamp(Math.min(a.nz,c.nz),0,1),nx1:companionClamp(Math.max(a.nx,c.nx),0,1),nz1:companionClamp(Math.max(a.nz,c.nz),0,1)};
+  });
+  const enemyNoise=(1-COMPANION_ROOM.signal)*.045;
+  const enemies=(G.enemyMgr&&Array.isArray(G.enemyMgr._list)?G.enemyMgr._list:[]).filter(e=>e&&!e.dead&&e.group).slice(0,24).map(e=>{
+    const p=_companionNormFromWorld(e.group.position.x+(Math.random()-.5)*enemyNoise*(b.maxX-b.minX),e.group.position.z+(Math.random()-.5)*enemyNoise*(b.maxZ-b.minZ),b);
+    return{nx:companionClamp(p.nx,0,1),nz:companionClamp(p.nz,0,1),r:.025+enemyNoise};
+  });
+  const player=_companionNormFromWorld(P.pos.x,P.pos.z,b);
+  const objective=G._objective&&G._objective.def?(G._objective.def.labelFn?G._objective.def.labelFn(G._objective):G._objective.def.label):((G.campaignLevel&&G.campaignLevel.missionVerb)||'Clear and advance');
+  return{
+    session:{id:COMPANION_ROOM.sessionId,roomCode:COMPANION_ROOM.roomCode,connected:COMPANION_ROOM.connected,ready:COMPANION_ROOM.ready,pingMs:COMPANION_ROOM.pingMs,gameplayActive:_companionGameplayActive()},
+    player:{hp:P.hp||0,maxHp:P.maxHp||100,ammo:P.ammo, reserve:P.ammoRes, reloading:!!P.reloading,focus:P.focus||0,money:P.money||0,dead:!!P.dead},
+    campaign:{building:G.building||1,zone:G.currentRoomId||`Zone ${typeof getZoneOf==='function'?getZoneOf(P.pos):0}`,room:G.currentRoomId||'',objective,enemiesAlive:G.enemyMgr?G.enemyMgr.aliveCount|0:0,alarm:!!(G.levelState&&G.levelState.alarm),timer:G._objective&&G._objective.remainingS},
+    map:{bounds:b,walls,enemies,player:{...player,yaw:P.yaw||0},pings:COMPANION_ROOM.pings.map(p=>({type:p.type,nx:p.nx,nz:p.nz,color:p.color})),routes:COMPANION_ROOM.routes.map(r=>({points:r.points,color:r.color}))},
+    pings:COMPANION_ROOM.pings,
+    trace:{heat:COMPANION_ROOM.traceHeat,signal:COMPANION_ROOM.signal},
+    panic:{available:(P.hp/(P.maxHp||100))<.34||P.reloading},
+    drone:{active:COMPANION_DRONE.active,hp:COMPANION_DRONE.hp,activeMs:Math.max(0,COMPANION_DRONE.activeUntil-now),cooldownMs:Math.max(0,COMPANION_DRONE.cooldownUntil-now),heat:COMPANION_DRONE.heat,mode:COMPANION_DRONE.lastFrameMode},
+    settings:{durationMs:COMPANION_DRONE_ACTIVE_MS,cooldownMs:COMPANION_DRONE_COOLDOWN_MS},
+  };
+}
+function tickCompanion(dt){
+  const now=performance.now();
+  COMPANION_ROOM.traceHeat=Math.max(0,COMPANION_ROOM.traceHeat-dt*.045);
+  COMPANION_ROOM.pings=COMPANION_ROOM.pings.filter(p=>{
+    const live=p.expiresAt>now;
+    if(!live)_companionDisposeObject(p.mesh);
+    return live;
+  });
+  COMPANION_ROOM.routes=COMPANION_ROOM.routes.filter(r=>{
+    const live=r.expiresAt>now;
+    if(!live)_companionDisposeObject(r.line);
+    return live;
+  });
+  if(COMPANION_ROOM.connected&&now-COMPANION_ROOM.lastSnapshotAt>COMPANION_SNAPSHOT_INTERVAL_MS){
+    COMPANION_ROOM.lastSnapshotAt=now;
+    _companionSend(COMPANION_MESSAGES.HOST_SNAPSHOT,{snapshot:_companionSnapshot()});
+  }
+  if(COMPANION_ROOM.ws&&COMPANION_ROOM.ws.readyState===WebSocket.OPEN&&now-COMPANION_ROOM.lastPingAt>1000){
+    COMPANION_ROOM.lastPingAt=now;
+    _companionSend(COMPANION_MESSAGES.RELAY_PING,{sentAt:Date.now()});
+  }
+  if(P.dead&&COMPANION_DRONE.active)companionDroneDespawn('player-dead',true);
+  tickCompanionDrone(dt);
+  _companionUpdateHud();
+}
+function _companionPointBlocked(x,z,r=.32){
+  const walls=G.levelData&&Array.isArray(G.levelData.walls)?G.levelData.walls:[];
+  for(const w of walls){
+    if(x+r>w.x0&&w.x1>x-r&&z+r>w.z0&&w.z1>z-r)return true;
+  }
+  return false;
+}
+function _companionSafeDroneSpawn(){
+  const base=P.pos.clone();
+  const offsets=[
+    new THREE.Vector3(Math.cos(P.yaw)*1.2,1.45,-Math.sin(P.yaw)*1.2),
+    new THREE.Vector3(-Math.sin(P.yaw)*1.4,1.55,-Math.cos(P.yaw)*1.4),
+    new THREE.Vector3(Math.sin(P.yaw)*1.4,1.55,Math.cos(P.yaw)*1.4),
+    new THREE.Vector3(0,1.8,0),
+  ];
+  for(const off of offsets){
+    const p=base.clone().add(off);
+    if(!_companionPointBlocked(p.x,p.z,.42))return p;
+  }
+  return base.add(new THREE.Vector3(0,1.8,0));
+}
+function _companionCreateDroneMesh(){
+  const group=new THREE.Group();
+  group.name='Companion FPV Drone';
+  const bodyMat=new THREE.MeshStandardMaterial({color:0x101820,metalness:.35,roughness:.36,emissive:0x06241e,emissiveIntensity:.2});
+  const accentMat=new THREE.MeshStandardMaterial({color:0x38f5d0,emissive:0x16ffd0,emissiveIntensity:1.2,roughness:.28});
+  const darkMat=new THREE.MeshStandardMaterial({color:0x050708,metalness:.18,roughness:.62});
+  const body=new THREE.Mesh(new THREE.BoxGeometry(.52,.16,.34),bodyMat);
+  body.castShadow=true;body.receiveShadow=true;group.add(body);
+  const nose=new THREE.Mesh(new THREE.BoxGeometry(.22,.10,.08),accentMat);
+  nose.position.set(0,.01,-.22);group.add(nose);
+  const armGeo=new THREE.BoxGeometry(.78,.035,.045);
+  for(const rz of [-.26,.26]){
+    const arm=new THREE.Mesh(armGeo,darkMat);
+    arm.position.z=rz;
+    group.add(arm);
+  }
+  const rotors=[];
+  for(const sx of [-.42,.42]){
+    for(const sz of [-.30,.30]){
+      const hub=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,.035,12),accentMat);
+      hub.rotation.x=Math.PI/2;hub.position.set(sx,.015,sz);group.add(hub);
+      const blade=new THREE.Mesh(new THREE.BoxGeometry(.34,.012,.035),darkMat);
+      blade.position.set(sx,.055,sz);group.add(blade);rotors.push(blade);
+    }
+  }
+  const light=new THREE.PointLight(0x38f5d0,.9,3.2,2);
+  light.position.set(0,.08,-.18);group.add(light);
+  group.userData.dispose=()=>group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose&&m.dispose());else o.material.dispose&&o.material.dispose();}});
+  COMPANION_DRONE.rotors=rotors;
+  return group;
+}
+function _companionDroneSfx(kind){
+  try{
+    const c=getAC();const o=c.createOscillator();const g=c.createGain();
+    o.type=kind==='fire'?'square':'sawtooth';
+    o.frequency.setValueAtTime(kind==='fire'?860:kind==='recall'?520:240,c.currentTime);
+    o.frequency.exponentialRampToValueAtTime(kind==='fire'?420:kind==='recall'?120:760,c.currentTime+(kind==='fire'?.08:.22));
+    g.gain.setValueAtTime(kind==='fire'?.06:.10,c.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(kind==='fire'?.10:.25));
+    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+(kind==='fire'?.11:.27));
+  }catch(_){}
+}
+function companionDroneLaunch(){
+  if(!COMPANION_ROOM.connected)return _companionReject('no-companion','drone');
+  if(!_companionGameplayActive())return _companionReject('gameplay-inactive','drone');
+  const now=performance.now();
+  if(COMPANION_DRONE.active)return;
+  if(now<COMPANION_DRONE.cooldownUntil)return _companionReject('cooldown','drone');
+  const group=_companionCreateDroneMesh();
+  group.position.copy(_companionSafeDroneSpawn());
+  group.rotation.y=P.yaw;
+  scene.add(group);
+  COMPANION_DRONE.group=group;
+  COMPANION_DRONE.active=true;
+  COMPANION_DRONE.hp=60;
+  COMPANION_DRONE.activeUntil=now+COMPANION_DRONE_ACTIVE_MS;
+  COMPANION_DRONE.cooldownUntil=0;
+  COMPANION_DRONE.yaw=P.yaw;
+  COMPANION_DRONE.pitch=0;
+  COMPANION_DRONE.vel.set(0,0,0);
+  COMPANION_DRONE.heat=0;
+  COMPANION_DRONE.fireCdUntil=0;
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.08);
+  _companionDroneSfx('launch');
+  _companionHostToast('FPV DRONE ONLINE','Phone pilot has 30 seconds.',2100);
+}
+function companionDroneDespawn(reason='expired',startCooldown=true){
+  if(!COMPANION_DRONE.active&&!COMPANION_DRONE.group)return;
+  const wasActive=COMPANION_DRONE.active;
+  if(COMPANION_DRONE.group){
+    scene.remove(COMPANION_DRONE.group);
+    if(COMPANION_DRONE.group.userData.dispose)COMPANION_DRONE.group.userData.dispose();
+  }
+  COMPANION_DRONE.group=null;
+  COMPANION_DRONE.rotors=[];
+  COMPANION_DRONE.active=false;
+  COMPANION_DRONE.input={moveX:0,moveY:0,lookX:0,lookY:0,ascend:0,fireHeld:false};
+  if(startCooldown&&wasActive)COMPANION_DRONE.cooldownUntil=performance.now()+COMPANION_DRONE_COOLDOWN_MS;
+  if(wasActive){
+    _companionDroneSfx('recall');
+    _companionHostToast('DRONE OFFLINE',reason.replace(/-/g,' ').toUpperCase(),1600);
+  }
+}
+function companionDroneInput(msg){
+  if(!COMPANION_DRONE.active)return;
+  if(!_companionGameplayActive())return;
+  COMPANION_DRONE.input.moveX=companionClamp(msg.moveX,-1,1);
+  COMPANION_DRONE.input.moveY=companionClamp(msg.moveY,-1,1);
+  COMPANION_DRONE.input.lookX=companionClamp(msg.lookX,-1,1);
+  COMPANION_DRONE.input.lookY=companionClamp(msg.lookY,-1,1);
+  COMPANION_DRONE.input.ascend=companionClamp(msg.ascend,-1,1);
+  COMPANION_DRONE.input.fireHeld=!!msg.fireHeld;
+}
+function tickCompanionDrone(dt){
+  const d=COMPANION_DRONE;
+  if(!d.active)return;
+  const now=performance.now();
+  if(now>=d.activeUntil){companionDroneDespawn('expired',true);return;}
+  if(!_companionGameplayActive()){
+    d.input={moveX:0,moveY:0,lookX:0,lookY:0,ascend:0,fireHeld:false};
+  }
+  d.yaw-=d.input.lookX*dt*2.55;
+  d.pitch=companionClamp(d.pitch-d.input.lookY*dt*1.85,-.82,.58);
+  const yawEuler=new THREE.Euler(0,d.yaw,0,'YXZ');
+  const fwd=new THREE.Vector3(0,0,-1).applyEuler(yawEuler);
+  const right=new THREE.Vector3(1,0,0).applyEuler(yawEuler);
+  const desired=new THREE.Vector3()
+    .addScaledVector(fwd,d.input.moveY)
+    .addScaledVector(right,d.input.moveX)
+    .addScaledVector(new THREE.Vector3(0,1,0),d.input.ascend*.72);
+  if(desired.lengthSq()>1)desired.normalize();
+  desired.multiplyScalar(5.2);
+  d.vel.lerp(desired,1-Math.exp(-dt*5.8));
+  d.vel.y+=(Math.sin(now*.006)*.05-d.vel.y)*Math.min(1,dt*2.5);
+  const pos=d.group.position;
+  const next=pos.clone().addScaledVector(d.vel,dt);
+  next.y=companionClamp(next.y,.85,4.3);
+  if(!_companionPointBlocked(next.x,pos.z,.38))pos.x=next.x;else d.vel.x*= -.18;
+  if(!_companionPointBlocked(pos.x,next.z,.38))pos.z=next.z;else d.vel.z*= -.18;
+  pos.y=next.y;
+  d.group.rotation.y=d.yaw;
+  d.group.rotation.z=companionClamp(-d.input.moveX*.20,-.24,.24);
+  d.group.rotation.x=companionClamp(d.input.moveY*.14,-.18,.18);
+  for(let i=0;i<d.rotors.length;i++)d.rotors[i].rotation.y+=dt*(38+i*5);
+  d.camera.position.copy(pos).add(new THREE.Vector3(0,.06,-.18).applyEuler(yawEuler));
+  d.camera.rotation.set(d.pitch,d.yaw,0,'YXZ');
+  d.heat=Math.max(0,d.heat-dt*.35);
+  if(d.input.fireHeld)companionDroneFire();
+  tickCompanionDroneFeed(now);
+}
+function companionDroneFire(){
+  const d=COMPANION_DRONE;
+  if(!d.active||!_companionGameplayActive())return;
+  const now=performance.now();
+  if(now<d.fireCdUntil||d.heat>.96)return;
+  d.fireCdUntil=now+145;
+  d.heat=Math.min(1,d.heat+.13);
+  COMPANION_ROOM.traceHeat=Math.min(1,COMPANION_ROOM.traceHeat+.012);
+  const origin=d.camera.position.clone();
+  const dir=new THREE.Vector3(0,0,-1).applyQuaternion(d.camera.quaternion).normalize();
+  const maxRange=18;
+  const meshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
+  const hits=typeof _rayHits==='function'?_rayHits(origin,dir,0,maxRange,meshes):[];
+  const wall=typeof wallRaycast==='function'?wallRaycast(origin,dir):null;
+  const wallDist=wall&&Number.isFinite(wall.distance)?wall.distance:maxRange+1;
+  let to=origin.clone().addScaledVector(dir,Math.min(maxRange,wallDist));
+  if(hits.length&&hits[0].distance<wallDist){
+    const h=hits[0];
+    to.copy(h.point);
+    const enemy=h.object&&h.object.userData&&h.object.userData.enemy;
+    if(enemy&&!enemy.dead){
+      const isHead=h.object.userData.isHead===true;
+      if(typeof _primeEnemyHitFromObject==='function')_primeEnemyHitFromObject(h.object,isHead?'head':'torso');
+      const killed=enemy.takeDamage(isHead?20:12,isHead);
+      if(typeof addBlood==='function')addBlood(h.point,isHead);
+      if(typeof showHM==='function')showHM(isHead?'head':'body');
+      if(typeof sfxHit==='function')sfxHit(isHead);
+      if(killed){
+        if(typeof killFeed==='function')killFeed(isHead);
+        if(typeof awardKillMoney==='function')awardKillMoney(enemy,isHead);
+        setTimeout(()=>{if(typeof checkZoneClears==='function')checkZoneClears();},60);
+      }
+    }
+  }
+  if(typeof addTrail==='function')addTrail(origin,to,{color:0x38f5d0,life:.10,radius:.012});
+  _companionDroneSfx('fire');
+}
+function _companionEnsureFeedRenderer(width,height){
+  const d=COMPANION_DRONE;
+  if(!d.feedCanvas)d.feedCanvas=document.createElement('canvas');
+  if(!d.feedRenderer){
+    d.feedRenderer=new THREE.WebGLRenderer({canvas:d.feedCanvas,antialias:false,alpha:false,preserveDrawingBuffer:true,powerPreference:'low-power'});
+    d.feedRenderer.outputColorSpace=THREE.SRGBColorSpace;
+    d.feedRenderer.toneMapping=THREE.ACESFilmicToneMapping;
+    d.feedRenderer.toneMappingExposure=.94;
+  }
+  if(d.feedCanvas.width!==width||d.feedCanvas.height!==height){
+    d.feedRenderer.setPixelRatio(1);
+    d.feedRenderer.setSize(width,height,false);
+  }
+}
+function tickCompanionDroneFeed(now){
+  const d=COMPANION_DRONE;
+  if(!d.active||!COMPANION_ROOM.connected||d.feedBusy)return;
+  const stressed=PERF&&PERF.emaFps>0&&PERF.emaFps<45;
+  const width=stressed?480:640;
+  const height=stressed?270:360;
+  const fps=stressed?12:18;
+  const interval=1000/fps;
+  if(now-d.lastFrameAt<interval)return;
+  d.lastFrameAt=now;
+  d.lastFrameMode=`${width}x${height}@${fps}`;
+  _companionEnsureFeedRenderer(width,height);
+  d.feedBusy=true;
+  try{
+    d.feedRenderer.render(scene,d.camera);
+    d.feedCanvas.toBlob((blob)=>{
+      if(!blob){d.feedBusy=false;return;}
+      blob.arrayBuffer().then(buf=>_companionSendBinary(buf)).finally(()=>{d.feedBusy=false;});
+    },'image/webp',stressed?.58:.68);
+  }catch(err){
+    d.feedBusy=false;
+    console.warn('[companion] drone feed failed',err);
+  }
 }
 function _gameShouldCapturePointerLock(){
   return !!(G.started&&!P.dead&&!G.menuOpen&&!G.invOpen&&!G.shopOpen);
@@ -17393,6 +18098,8 @@ function closeMenu(relockPointer=true){
 }
 function quitToMain(){
   closeMenu(false);
+  companionDroneDespawn('quit-to-main',true);
+  companionCleanupVisuals();
   if(G.levelData){G.levelData.cleanup();G.levelData=null;}
   _disposeLightProbeWalker();
   if(G.enemyMgr){G.enemyMgr.clear();}
@@ -27063,6 +27770,8 @@ async function startBuilding(){
     }
   },2200);
   await _deploySpan('cleanup previous scene',16,async()=>{
+    companionDroneDespawn('building-transition',true);
+    companionCleanupVisuals();
     if(G.levelData)G.levelData.cleanup();
     _disposeLightProbeWalker();
     if(G.enemyMgr)G.enemyMgr.clear();
@@ -30199,6 +30908,8 @@ function returnToCustomEditorAfterPlaytest(){
   const pm=$e('pause-menu');if(pm)pm.classList.add('pause-hidden');
   const pb=$e('pause-buttons');if(pb)pb.style.display='flex';
   const ps=$e('pause-settings');if(ps)ps.style.display='none';
+  companionDroneDespawn('editor-return',true);
+  companionCleanupVisuals();
   if(G.levelData){try{G.levelData.cleanup();}catch(_){}G.levelData=null;}
   _disposeLightProbeWalker();
   if(G.enemyMgr)G.enemyMgr.clear();
@@ -30215,6 +30926,7 @@ $e('stats-back').addEventListener('click',hideStatsPanel);
 $e('menu-tutorial-btn').addEventListener('click',()=>{startRange&&startRange();});
 $e('menu-demo-map-btn').addEventListener('click',()=>{startDemoMap&&startDemoMap();});
 $e('menu-endless-btn').addEventListener('click',()=>{startEndlessMode&&startEndlessMode();});
+$e('menu-companion-btn').addEventListener('click',()=>_companionPanelOpen());
 $e('menu-custom-maps-btn').addEventListener('click',()=>showCustomMapsPanel());
 $e('menu-editor-btn').addEventListener('click',()=>showCustomEditor());
 $e('menu-levelsel-btn').addEventListener('click',()=>showLevelSelect());
@@ -30224,6 +30936,19 @@ $e('menu-ach-btn').addEventListener('click',showAchievements);
 $e('menu-continue-btn').addEventListener('click',()=>{
   if(resumeRunState()){/* in-game */}
 });
+{
+  const cClose=$e('companion-close-btn'),cCreate=$e('companion-create-btn'),cCopy=$e('companion-copy-btn'),cKick=$e('companion-kick-btn'),cDisable=$e('companion-disable-btn');
+  if(cClose)cClose.addEventListener('click',()=>_companionPanelClose());
+  if(cCreate)cCreate.addEventListener('click',()=>_companionCreateRoom());
+  if(cCopy)cCopy.addEventListener('click',async()=>{
+    const txt=COMPANION_ROOM.url||'';
+    if(!txt)return;
+    try{await navigator.clipboard.writeText(txt);_companionSetStatus(COMPANION_ROOM.status,'Companion link copied.');}
+    catch(_){_companionSetStatus(COMPANION_ROOM.status,'Copy failed; select the URL manually.');}
+  });
+  if(cKick)cKick.addEventListener('click',()=>_companionKick());
+  if(cDisable)cDisable.addEventListener('click',()=>_companionCloseRoom());
+}
 function refreshMenuContinue(){
   const b=$e('menu-continue-btn');if(!b)return;
 	  if(PROGRESS.runSave){
@@ -32390,6 +33115,7 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickIntro==='function')tickIntro(dt);
   if(typeof tickTutorial==='function'&&G._tutState)tickTutorial(dt);
   if(typeof tickObjective==='function'&&G._objective&&G.started&&G.playMode!=='duel')tickObjective(dt);
+  if(COMPANION_ROOM.ws||COMPANION_ROOM.roomCode||COMPANION_DRONE.active)tickCompanion(dt);
   if(G.started&&G.encounterDirector&&G.playMode!=='duel'){
     const authCE=!!SETTINGS.authoredCampaignEncounters;
     const hasEnc=!!(G.levelData&&G.levelData.encounterDef);

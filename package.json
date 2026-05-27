@@ -47,8 +47,10 @@
   },
   "dependencies": {
     "maath": "^0.10.8",
+    "qrcode": "^1.5.4",
     "three": "0.170.0",
-    "three-mesh-bvh": "^0.9.10"
+    "three-mesh-bvh": "^0.9.10",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@gltf-transform/cli": "^4.3.0",

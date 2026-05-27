@@ -559,3 +559,26 @@ body.focus-on #color-grade{opacity:.70;background:linear-gradient(180deg,rgba(80
 #ending-credits{margin-top:30px;font-size:13px;line-height:1.8;color:rgba(255,255,255,.55);animation:endIn 1.2s 2.0s both}
 #ending-back{margin-top:30px;animation:endIn 1.2s 2.4s both}
 @keyframes endIn{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:translateY(0)}}
+
+/* ── COMPANION OPERATOR ───────────────────────────────────────── */
+#companion-hud{position:fixed;right:22px;top:84px;z-index:24;min-width:218px;max-width:280px;padding:10px 12px;border:1px solid rgba(90,255,220,.22);background:rgba(4,10,12,.70);backdrop-filter:blur(5px);font-family:'Rajdhani',sans-serif;opacity:.85;pointer-events:none;display:none}
+#companion-hud.show{display:block}
+#companion-hud-name{font-size:13px;letter-spacing:.18em;color:#67ffd8;font-weight:900;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#companion-hud-state{margin-top:3px;font-size:11px;letter-spacing:.12em;color:rgba(255,255,255,.64);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#companion-panel{position:fixed;inset:0;z-index:86;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px);font-family:'Rajdhani',sans-serif}
+#companion-panel.show{display:flex}
+.companion-card{width:min(820px,94vw);max-height:92vh;overflow:auto;border:1px solid rgba(90,255,220,.36);background:linear-gradient(180deg,rgba(10,18,22,.97),rgba(6,8,12,.98));box-shadow:0 0 80px rgba(60,255,220,.16),inset 0 0 36px rgba(0,0,0,.45);padding:22px}
+.companion-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;border-bottom:1px solid rgba(90,255,220,.18);padding-bottom:14px;margin-bottom:18px}
+.companion-kicker{font-size:11px;letter-spacing:.34em;color:#67ffd8;font-weight:900;text-transform:uppercase}
+.companion-card h2{margin:5px 0 0;font-size:30px;letter-spacing:.12em;color:#fff;text-transform:uppercase}
+.companion-icon-btn{width:42px;height:42px;border:1px solid rgba(90,255,220,.28);background:rgba(0,0,0,.22);color:#dffff8;font-weight:900;cursor:pointer}
+.companion-grid{display:grid;grid-template-columns:240px minmax(0,1fr);gap:18px;align-items:start}
+.companion-code-box{border:1px solid rgba(90,255,220,.18);background:rgba(0,0,0,.24);padding:14px;display:grid;gap:10px;justify-items:center}
+#companion-qr{width:188px;height:188px;background:#fff}
+.companion-code{font-size:34px;letter-spacing:.18em;color:#67ffd8;font-weight:900;line-height:1}
+.companion-status{min-height:36px;font-size:12px;line-height:1.45;letter-spacing:.08em;color:rgba(255,255,255,.64);text-align:center}
+.companion-info{display:grid;gap:10px}
+.companion-info label{font-size:11px;letter-spacing:.26em;color:rgba(255,255,255,.46);font-weight:800;text-transform:uppercase}
+.companion-url{min-height:38px;border:1px solid rgba(90,255,220,.14);background:rgba(0,0,0,.24);padding:10px;font-size:13px;color:rgba(255,255,255,.82);word-break:break-all}
+.companion-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:4px}
+@media(max-width:720px){.companion-grid{grid-template-columns:1fr}.companion-actions{grid-template-columns:1fr}.companion-card h2{font-size:22px}#companion-hud{top:auto;bottom:78px;right:12px;left:12px;max-width:none}}

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
+import { companionRelayPlugin } from './src/companion/relay.js';
 
 function customMapDevSavePlugin() {
   return {
@@ -46,7 +47,7 @@ function customMapDevSavePlugin() {
 }
 
 export default defineConfig({
-  plugins: [customMapDevSavePlugin()],
+  plugins: [customMapDevSavePlugin(), companionRelayPlugin()],
   server: {
     port: 5173,
     open: true,
