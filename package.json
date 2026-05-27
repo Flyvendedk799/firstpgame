@@ -41,6 +41,7 @@
     "test:animation:feel": "node scripts/player-animation-feel-smoke.mjs",
     "test:enemy:locomotion": "node scripts/enemy-locomotion-feel-smoke.mjs",
     "test:embodiment:feel": "node scripts/embodiment-feel-smoke.mjs",
+    "test:focus:scope": "node scripts/focus-scope-attachment-smoke.mjs",
     "test:gameplay:qol": "node scripts/gameplay-qol-smoke.mjs",
     "test:weapon:feel": "node scripts/weapon-feel-acceptance.mjs",
     "test:level-editor:assets": "node scripts/level-editor-asset-compat-probe.mjs",

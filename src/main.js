@@ -11503,6 +11503,7 @@ function checkMeleeHit(){
 }
 function updateKnife(dt){
   if(MELEE.cooldown>0)MELEE.cooldown-=dt;
+  if(typeof _whipActive!=='undefined'&&_whipActive&&!MELEE.swinging)return;
   if(!MELEE.out)return;
   const ip=Date.now()*.001;
 
@@ -12784,10 +12785,10 @@ function buildScopeMesh(att){
 }
 function refreshAttachmentVisuals(){
   const att=P.attachments&&P.attachments.scope;
-  // Scope attachment stat multipliers apply globally. The attachment's 3D
-  // optic is M4-only, while built-in DMR/sniper optics use their own PIP
-  // overlays through _currentOpticProfile().
+  // Scope attachment stat multipliers apply globally. Runtime optic meshes are
+  // weapon-specific so pistol RDS visuals can share the same PIP/profile path.
   buildScopeMesh(P.weaponIdx===0?att:null);
+  buildPistolOpticMesh(P.weaponIdx===1?att:null);
 }
 // Ejection port cover (small rectangle on right side of upper)
 const gEject    = _m4(.005,.018,.038,m4MetalM, .021,.024,-.04);
@@ -14902,12 +14903,68 @@ function _makeScopePipOverlay(w,h,x,y,z){
 }
 const _dmrScopePip=_makeScopePipOverlay(.026,.026,0,.080,.0346);
 const _sniperScopePip=_makeScopePipOverlay(.030,.030,0,.092,.0346);
+const pistolOpticGrp=new THREE.Group();
+pistolOpticGrp.visible=false;
+gunGrp.add(pistolOpticGrp);
+let pistolOpticView=null,pistolOpticViewM=null,pistolOpticReticleM=null,pistolOpticHaloM=null,pistolOpticLensM=null;
 const _scopeLensLocalM4=new THREE.Vector3(0,.078,-.057);
+const _scopeLensLocalPistol=new THREE.Vector3(0,.074,-.016);
 const _scopeLensLocalDmr=new THREE.Vector3(0,.080,.034);
 const _scopeLensLocalSniper=new THREE.Vector3(0,.092,.034);
+function buildPistolOpticMesh(att){
+  while(pistolOpticGrp.children.length){
+    const c=pistolOpticGrp.children.pop();
+    if(c.geometry)c.geometry.dispose();
+    if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}
+  }
+  pistolOpticView=null;pistolOpticViewM=null;pistolOpticReticleM=null;pistolOpticHaloM=null;pistolOpticLensM=null;
+  pistolOpticGrp.position.set(0,0,0);
+  pistolOpticGrp.rotation.set(0,0,0);
+  pistolOpticGrp.scale.setScalar(1);
+  if(!att){pistolOpticGrp.visible=false;return;}
+  const tier=Math.max(1,att.tier|0);
+  const bodyM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:att.bodyColor||0x16191f,shininess:150,specular:0x4a5260}),'optic');
+  const darkM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:0x07090d,shininess:90,specular:0x303844}),'receiver');
+  const lensM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:att.lensColor||0x163a36,emissive:att.glowEm||0x061214,shininess:220,specular:0x70e0c8,transparent:true,opacity:.48,side:THREE.DoubleSide}),'optic');
+  pistolOpticLensM=lensM;
+  const _add=(w,h,d,mat,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.layers.set(1);pistolOpticGrp.add(m);return m;};
+  const railW=.036+tier*.002,hoodW=.044+tier*.002,hoodH=.034+tier*.003;
+  _add(railW,.006,.040,bodyM,0,.061,-.003);
+  _add(railW*.70,.006,.024,darkM,0,.066,-.003);
+  _add(.005,hoodH,.014,bodyM, hoodW*.50,.081,-.017);
+  _add(.005,hoodH,.014,bodyM,-hoodW*.50,.081,-.017);
+  _add(hoodW+.009,.005,.016,bodyM,0,.081+hoodH*.50,-.017);
+  _add(hoodW+.002,.005,.013,bodyM,0,.081-hoodH*.50,-.017);
+  if(tier>=3){
+    _add(hoodW+.006,.004,.016,bodyM,0,.081+hoodH*.50+.006,-.030);
+    _add(.004,.014,.012,bodyM, hoodW*.52,.081+hoodH*.18,-.030);
+    _add(.004,.014,.012,bodyM,-hoodW*.52,.081+hoodH*.18,-.030);
+  }
+  const glassW=hoodW-.006,glassH=hoodH-.010,tilt=.13;
+  const glass=new THREE.Mesh(new THREE.PlaneGeometry(glassW,glassH),lensM);
+  glass.position.set(0,.081,-.018);glass.rotation.x=tilt;glass.layers.set(1);glass.renderOrder=1080;pistolOpticGrp.add(glass);
+  pistolOpticViewM=_applyCoreViewmodelMaterialPolish(new THREE.MeshBasicMaterial({map:rtScope.texture,transparent:true,opacity:0,depthWrite:false,depthTest:false}),'opticPip');
+  pistolOpticView=new THREE.Mesh(new THREE.PlaneGeometry(glassW-.003,glassH-.003),pistolOpticViewM);
+  pistolOpticView.position.set(0,.081,-.0178);pistolOpticView.rotation.x=tilt;pistolOpticView.layers.set(1);pistolOpticView.renderOrder=1100;pistolOpticView.visible=false;pistolOpticGrp.add(pistolOpticView);
+  pistolOpticReticleM=_applyCoreViewmodelMaterialPolish(new THREE.MeshBasicMaterial({color:att.dotColor||0xff4040,transparent:true,opacity:.96,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}),'sight');
+  const dotSize=(.0065+tier*.0007)*(att.dotRadiusMul||1);
+  const dot=new THREE.Mesh(new THREE.PlaneGeometry(dotSize,dotSize),pistolOpticReticleM);
+  dot.position.set(0,.081,-.0168);dot.rotation.x=tilt;dot.rotation.y=Math.PI;dot.layers.set(1);dot.renderOrder=1112;pistolOpticGrp.add(dot);
+  pistolOpticHaloM=_applyCoreViewmodelMaterialPolish(new THREE.MeshBasicMaterial({color:att.haloColor||0xff8080,transparent:true,opacity:.42,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}),'sight');
+  const haloOuter=(.0105+tier*.0010)*(att.haloRadiusMul||1);
+  const halo=new THREE.Mesh(new THREE.RingGeometry(Math.max(.003,haloOuter*.35),haloOuter,24),pistolOpticHaloM);
+  halo.position.set(0,.081,-.0170);halo.rotation.x=tilt;halo.rotation.y=Math.PI;halo.layers.set(1);halo.renderOrder=1111;pistolOpticGrp.add(halo);
+  const led=new THREE.Mesh(new THREE.BoxGeometry(.0038,.0038,.0038),new THREE.MeshBasicMaterial({color:0x60ff90,transparent:true,opacity:.92,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));
+  led.position.set(hoodW*.62,.083,-.007);led.layers.set(1);led.renderOrder=1115;pistolOpticGrp.add(led);
+  pistolOpticGrp.visible=(P.weaponIdx===1);
+}
 function _hideScopePipViews(except=null){
   const keep=except&&except.viewM;
   if(m4ScopeViewM&&m4ScopeViewM!==keep&&m4ScopeViewM.opacity!==0)m4ScopeViewM.opacity=0;
+  if(pistolOpticViewM&&pistolOpticViewM!==keep){
+    if(pistolOpticViewM.opacity!==0)pistolOpticViewM.opacity=0;
+    if(pistolOpticView&&pistolOpticView.visible)pistolOpticView.visible=false;
+  }
   if(_dmrScopePip&&_dmrScopePip.mat!==keep){
     if(_dmrScopePip.mat.opacity!==0)_dmrScopePip.mat.opacity=0;
     if(_dmrScopePip.mesh.visible)_dmrScopePip.mesh.visible=false;
@@ -14920,8 +14977,8 @@ function _hideScopePipViews(except=null){
 function _currentOpticProfile(){
   if(typeof P==='undefined')return null;
   const att=P.attachments&&P.attachments.scope;
-  if(P.weaponIdx===0&&att&&m4ScopeViewM&&m4ScopeView){
-    const authoredM4=_isAuthoredM4RuntimeActive();
+	  if(P.weaponIdx===0&&att&&m4ScopeViewM&&m4ScopeView){
+	    const authoredM4=_isAuthoredM4RuntimeActive();
     return {
       name:att.name||'scope',
       tier:att.tier||1,
@@ -14934,40 +14991,59 @@ function _currentOpticProfile(){
       adsFovDelta:authoredM4?20+(att.tier||1)*2:36+(att.tier||1)*3,
       forcePip:true,
       view:m4ScopeView,
-      viewM:m4ScopeViewM
-    };
-  }
-  if(P.weaponIdx===5&&_dmrScopePip){
-    return {
-      name:'MK14 SCOPE',
-      tier:3,
-      pipFov:9,
-      pipOpacityMax:.94,
-      vignetteColor:'rgba(92,190,255,.12)',
+	      viewM:m4ScopeViewM
+	    };
+	  }
+	  if(P.weaponIdx===1&&att&&pistolOpticViewM&&pistolOpticView){
+	    const tier=Math.max(1,att.tier|0);
+	    return {
+	      name:att.name||'PISTOL RDS',
+	      tier,
+	      pipFov:Number.isFinite(att.pipFov)?Math.max(11,att.pipFov+1.5):15,
+	      pipOpacityMax:Number.isFinite(att.pipOpacityMax)?Math.min(.84,att.pipOpacityMax):.76,
+	      vignetteColor:att.vignetteColor||'rgba(120,230,255,.10)',
+	      lensLocal:_scopeLensLocalPistol,
+	      lensY:.074,
+	      adsGunZ:-.152,
+	      adsFovDelta:18+tier*2.2,
+	      forcePip:true,
+	      pistolOptic:true,
+	      view:pistolOpticView,
+	      viewM:pistolOpticViewM
+	    };
+	  }
+	  if(P.weaponIdx===5&&_dmrScopePip){
+	    return {
+	      name:'MK14 SCOPE',
+	      tier:3,
+	      pipFov:8.2,
+	      pipOpacityMax:.96,
+	      vignetteColor:'rgba(92,190,255,.14)',
       lensLocal:_scopeLensLocalDmr,
       lensY:.080,
       adsGunZ:-.205,
-      adsFovDelta:44,
+	      adsFovDelta:48,
       forcePip:true,
       screenScope:true,
       view:_dmrScopePip.mesh,
       viewM:_dmrScopePip.mat
     };
   }
-  if(P.weaponIdx===7&&_sniperScopePip){
-    return {
-      name:'AWM SCOPE',
-      tier:4,
-      pipFov:6,
-      pipOpacityMax:.97,
-      vignetteColor:'rgba(96,210,255,.16)',
+	  if(P.weaponIdx===7&&_sniperScopePip){
+	    return {
+	      name:'AWM SCOPE',
+	      tier:4,
+	      pipFov:4.6,
+	      pipOpacityMax:1.0,
+	      vignetteColor:'rgba(86,188,255,.20)',
       lensLocal:_scopeLensLocalSniper,
       lensY:.092,
-      adsGunZ:-.225,
-      adsFovDelta:52,
-      forcePip:true,
-      screenScope:true,
-      view:_sniperScopePip.mesh,
+	      adsGunZ:-.235,
+	      adsFovDelta:58,
+	      forcePip:true,
+	      screenScope:true,
+	      sniperScope:true,
+	      view:_sniperScopePip.mesh,
       viewM:_sniperScopePip.mat
     };
   }
@@ -15913,7 +15989,8 @@ function _loadAuthoredM4Viewmodels(){
   }
 }
 _loadAuthoredM4Viewmodels();
-// ── THROWING KNIFE viewmodel + projectile ────────────────────────────────────
+// ── THROWING KNIFE projectile legacy (slot removed) ───────────────────────────
+const KNIFE_SLOT_REMOVED=true;
 const tkBladeM =new THREE.MeshPhongMaterial({color:0xc8ccd4,shininess:240,specular:0xfffaf2});
 const tkEdgeM  =new THREE.MeshPhongMaterial({color:0xeef0f6,shininess:280,specular:0xffffff,emissive:0x080a10});
 const tkHandleM=new THREE.MeshPhongMaterial({color:0x14181c,shininess:30,specular:0x303838});
@@ -15933,13 +16010,14 @@ function _buildKnifeMesh(grp){
   return [blade,edge,tip,guard,handle,pommel];
 }
 const throwGrp=new THREE.Group();
-const TK_VIEW_MESHES=_buildKnifeMesh(throwGrp);
+const TK_VIEW_MESHES=KNIFE_SLOT_REMOVED?[]:_buildKnifeMesh(throwGrp);
 throwGrp.position.set(.10,-.10,-.20);
 throwGrp.visible=false;
 camera.add(throwGrp);
 // Throwing animation state — heavy hard throw, snappy windup
 const TK={active:false,t:0,released:false,DUR:.50};
 function tryThrowKnife(){
+  if(KNIFE_SLOT_REMOVED)return false;
   if(G.playMode==='duel')return;
   if(TK.active||P.dead||G.invOpen||G.shopOpen||G.menuOpen||!gameFocused)return;
   const now=performance.now()/1000;
@@ -15952,6 +16030,11 @@ function tryThrowKnife(){
 function sfxThrow(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sawtooth';o.frequency.setValueAtTime(420,c.currentTime);o.frequency.exponentialRampToValueAtTime(120,c.currentTime+.18);g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);}
 function sfxKnifeStick(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(180,c.currentTime);o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.10);g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);}
 function updateThrowAnim(dt){
+  if(KNIFE_SLOT_REMOVED){
+    TK.active=false;TK.released=false;
+    if(throwGrp.visible)throwGrp.visible=false;
+    return;
+  }
   if(!TK.active)return;
   TK.t+=dt;const t=TK.t;
   if(t<.10){
@@ -16710,14 +16793,15 @@ function forEachActivePlayerSlot(fn){
 }
 let _quickThrowCD=0;
 // ── PISTOL-WHIP + EXECUTION ──────────────────────────────────────────────────
-let _whipCD=0,_whipT=0,_whipActive=false,_whipAnchorX=0,_whipAnchorY=0,_whipAnchorZ=0;
+const PISTOL_WHIP_FEEL={dur:.56,impactAt:.225,recoverAt:.340,cooldown:.46,range:1.72};
+let _whipCD=0,_whipT=0,_whipActive=false,_whipImpactDone=false,_whipSide=1,_whipAnchorX=0,_whipAnchorY=0,_whipAnchorZ=0;
 let _execActive=false,_execT=0,_execTarget=null,_execIFrameUntil=0;
 function tryMeleeOrExecution(){
   if(P.dead||G.invOpen||G.shopOpen||G.menuOpen||!gameFocused)return;
   // Reload-cancel-on-melee
   if(P.reloading){P.reloading=false;reloadHoloTarget=0;$e('reload-bar').style.display='none';}
   // 1. Look for an executable target — low-HP enemy within 2m, in front of player
-  if(P.weaponIdx===2 && G.enemyMgr){
+  if(!KNIFE_SLOT_REMOVED&&P.weaponIdx===2 && G.enemyMgr){
     const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
     let best=null,bestDot=0;
     for(const e of G.enemyMgr._list){
@@ -16732,7 +16816,7 @@ function tryMeleeOrExecution(){
     if(best){startExecution(best);return;}
   }
   // 2. Knife equipped → existing combo melee
-  if(P.weaponIdx===2){doMelee();return;}
+  if(!KNIFE_SLOT_REMOVED&&P.weaponIdx===2){doMelee();return;}
   // 3. Holding gun → pistol-whip
   tryPistolWhip();
 }
@@ -16740,67 +16824,100 @@ function tryPistolWhip(){
   const now=performance.now()/1000;
   if(now<_whipCD)return;
   if(_whipActive)return;
-  _whipCD=now+0.40;
-  _whipActive=true;_whipT=0;
+  _whipCD=now+PISTOL_WHIP_FEEL.cooldown;
+  _whipActive=true;_whipT=0;_whipImpactDone=false;_whipSide=(Math.random()<.5?-1:1);
+  MELEE.out=true;
+  if(knifGrp)knifGrp.visible=false;
+  if(throwGrp)throwGrp.visible=false;
   playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeStart',{});
   _whipAnchorX=gunGrp.position.x;
   _whipAnchorY=gunGrp.position.y;
   _whipAnchorZ=gunGrp.position.z;
+  P._meleeWhipPulse=Math.max(P._meleeWhipPulse||0,.78);
+  P._meleeWhipSide=_whipSide;
+  // Audio cue — close-quarters cloth/leather windup.
+  const c=getAC();const o=c.createOscillator(),g=c.createGain();
+  o.type='triangle';o.frequency.setValueAtTime(220,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(90,c.currentTime+.11);
+  g.gain.setValueAtTime(.12,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.13);
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);
+  PP.shakeY-=0.035;P.dmgPitch+=0.006;
+}
+function _resolvePistolWhipImpact(){
+  if(_whipImpactDone)return false;
+  _whipImpactDone=true;
+  playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeImpactFrame',{gun:true});
   // Hit detection — short forward raycast
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const meshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
-  const hits=_rayHits(camera.position,fwd,0,1.6,meshes);
+  const hits=_rayHits(camera.position,fwd,0,PISTOL_WHIP_FEEL.range,meshes);
+  let hit=false;
   if(hits.length){
     const h=hits[0];const enemy=h.object.userData.enemy;
-    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeImpactFrame',{});
     enemy.lastPlayerDir.set(fwd.x,0,fwd.z).normalize();
     _primeEnemyHitFromObject(h.object,'torso');
     const killed=enemy.takeDamage(30,false,true);
     addBlood(h.point,false);showHM('body');sfxHit(false);
     if(killed){killFeed(false);awardKillMoney(enemy,false);cinematicKill(h.point);setTimeout(()=>checkZoneClears(),60);}
+    hit=true;
   }
   // Audio cue — meaty thump
   const c=getAC();const o=c.createOscillator(),g=c.createGain();
   o.type='triangle';o.frequency.setValueAtTime(160,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.10);
-  g.gain.setValueAtTime(.22,c.currentTime);
+  g.gain.setValueAtTime(hit ? .25 : .15,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);
   o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);
-  // Camera punch
-  PP.shakeY-=0.18;P.dmgPitch+=0.025;
+  PP.shakeY-=hit?0.20:0.10;
+  PP.shakeX+=_whipSide*(hit ? .08 : .035);
+  P.dmgPitch+=hit?0.028:0.014;
+  const hf=document.getElementById('melee-hit-flash');
+  if(hf&&hit){hf.style.opacity='.65';hf.style.transition='none';requestAnimationFrame(()=>{hf.style.transition='opacity .22s ease-out';hf.style.opacity='0';});}
+  P._meleeWhipImpact=Math.max(P._meleeWhipImpact||0,hit?1:.55);
+  return hit;
 }
 function updatePistolWhip(dt){
   if(!_whipActive)return;
   _whipT+=dt;
-  const t=_whipT;
-  if(t<.12){
-    const ph=t/.12;
+  const t=_whipT,dur=PISTOL_WHIP_FEEL.dur,impactAt=PISTOL_WHIP_FEEL.impactAt,recoverAt=PISTOL_WHIP_FEEL.recoverAt;
+  P._meleeWhipPulse=Math.max(P._meleeWhipPulse||0,1-Math.min(1,t/dur));
+  P._meleeWhipImpact=damp(Number.isFinite(P._meleeWhipImpact)?P._meleeWhipImpact:0,0,12,dt);
+  if(t>=impactAt&&!_whipImpactDone)_resolvePistolWhipImpact();
+  if(t<impactAt){
+    const ph=t/impactAt;
     const wind=ph*ph*(3-2*ph);
-    gunGrp.position.x=_whipAnchorX+wind*.070;
-    gunGrp.position.y=_whipAnchorY-wind*.030;
-    gunGrp.position.z=_whipAnchorZ+wind*.060;
-    gunGrp.rotation.x=wind*.34;
-    gunGrp.rotation.z=-wind*.24;
-  } else if(t<.20){
-    const ph=(t-.12)/.08;
-    const hit=1-Math.pow(1-ph,3);
-    gunGrp.position.x=_whipAnchorX+.070-hit*.150;
-    gunGrp.position.y=_whipAnchorY-.030+hit*.060;
-    gunGrp.position.z=_whipAnchorZ+.060-hit*.245;
-    gunGrp.rotation.x=.34-hit*.86;
-    gunGrp.rotation.y=-hit*.16;
-    gunGrp.rotation.z=-.24+hit*.58;
-  } else if(t<.48){
-    const ph=(t-.20)/.28;
-    const eo=1-Math.pow(1-ph,3);
-    gunGrp.position.x=_whipAnchorX-.080*(1-eo);
-    gunGrp.position.y=_whipAnchorY+.030*(1-eo);
-    gunGrp.position.z=_whipAnchorZ-.185*(1-eo);
-    gunGrp.rotation.x=-.52*(1-eo);
-    gunGrp.rotation.y=-.16*(1-eo);
-    gunGrp.rotation.z=.34*(1-eo);
+    gunGrp.position.x=_whipAnchorX+_whipSide*wind*.088;
+    gunGrp.position.y=_whipAnchorY-wind*.046;
+    gunGrp.position.z=_whipAnchorZ+wind*.078;
+    gunGrp.rotation.x+=wind*.30;
+    gunGrp.rotation.y+=_whipSide*wind*.20;
+    gunGrp.rotation.z-=_whipSide*wind*.34;
+  } else if(t<recoverAt){
+    const ph=(t-impactAt)/(recoverAt-impactAt);
+    const hit=1-Math.pow(1-ph,3.1);
+    gunGrp.position.x=_whipAnchorX+_whipSide*(.088-hit*.190);
+    gunGrp.position.y=_whipAnchorY-.046+hit*.082;
+    gunGrp.position.z=_whipAnchorZ+.078-hit*.278;
+    gunGrp.rotation.x+=.30-hit*.96;
+    gunGrp.rotation.y+=_whipSide*(.20-hit*.36);
+    gunGrp.rotation.z+=_whipSide*(-.34+hit*.76);
+  } else if(t<dur){
+    const ph=(t-recoverAt)/(dur-recoverAt);
+    const eo=1-Math.pow(1-ph,2.55);
+    const recoil=1-eo;
+    gunGrp.position.x+=_whipSide*recoil*-.102;
+    gunGrp.position.y+=recoil*.040;
+    gunGrp.position.z+=recoil*-.190;
+    gunGrp.rotation.x+=recoil*-.62;
+    gunGrp.rotation.y+=_whipSide*recoil*-.18;
+    gunGrp.rotation.z+=_whipSide*recoil*.42;
   } else {
     _whipActive=false;
+    _whipImpactDone=false;
+    MELEE.out=false;
+    P._meleeWhipPulse=0;
+    playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeEnd',{gun:true});
   }
 }
 function startExecution(enemy){
@@ -19461,6 +19578,31 @@ function spawnPickup(att,pos){
   G.pickups.push(pickup);
   return pickup;
 }
+function _spawnB1PistolOpticPickups(){
+  if((G.building|0)!==1||!ATTACHMENT_DEFS||!Array.isArray(ATTACHMENT_DEFS.scope))return [];
+  const defs=ATTACHMENT_DEFS.scope;
+  const spawn=G.levelData&&G.levelData.playerSpawn?G.levelData.playerSpawn:{x:0,z:18,floorY:WT};
+  const floorY=Number.isFinite(spawn.floorY)?spawn.floorY:WT;
+  const yaw=Number.isFinite(spawn.yaw)?spawn.yaw:0;
+  const fwdX=-Math.sin(yaw),fwdZ=-Math.cos(yaw),rightX=Math.cos(yaw),rightZ=-Math.sin(yaw);
+  const drops=[
+    {tier:1,f:2.2,r:-1.25,tag:'b1-pistol-rds-starter'},
+    {tier:2,f:4.2,r:1.35,tag:'b1-pistol-holo-starter'}
+  ];
+  const out=[];
+  for(const d of drops){
+    const def=defs[Math.max(0,Math.min(defs.length-1,d.tier-1))]||defs[0];
+    if(!def)continue;
+    let x=(spawn.x||0)+fwdX*d.f+rightX*d.r;
+    let z=(spawn.z||18)+fwdZ*d.f+rightZ*d.r;
+    const snap=(typeof _snapSpawnOutOfWalls==='function')?_snapSpawnOutOfWalls(x,z,floorY,G.levelData&&G.levelData.walls,.46,null):null;
+    if(snap){x=snap.x;z=snap.z;}
+    const att=Object.assign({},def,{spawnTag:d.tag,pistolSuggested:true,compatibleWeaponIdx:1});
+    out.push(spawnPickup(att,new THREE.Vector3(x,floorY+.20,z)));
+  }
+  G._b1PistolOpticPickups=out.map(pk=>({name:pk.att.name,tier:pk.att.tier,tag:pk.att.spawnTag,pos:pk.grp.position.toArray()}));
+  return out;
+}
 // Corpse ammo pack — small drop chance per kill. Refills ammo + grenade.
 function spawnAmmoPickup(pos){
   const pkS=_pickupFxMul();
@@ -20202,6 +20344,7 @@ let _lastHitStopAt=0;
 function _hasScopedAds(pl=P){
   if(!pl)return false;
   if(pl.weaponIdx===5||pl.weaponIdx===7)return true;
+  if(pl.weaponIdx===1&&pl.attachments&&pl.attachments.scope)return true;
   return !!(pl.weaponIdx===0&&pl.attachments&&pl.attachments.scope);
 }
 function _scopedAdsAmt(pl=P){
@@ -20954,8 +21097,37 @@ const FOCUS_FEEL={
   holdScale:.245,
   lowScale:.345
 };
+const FOCUS_ANIMATION_FEEL={
+  profile:'focus-immersive-animation-v1',
+  base:.50,
+  locomotion:.48,
+  slide:.40,
+  viewmodel:.50,
+  reload:.56,
+  melee:.44,
+  aim:1.0
+};
 function _focusNow(){return performance.now()*.001;}
 function _focusEase01(v){return THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(v,0,1),0,1);}
+function _focusAnimationScale(pl=P,channel='base'){
+  const vis=THREE.MathUtils.clamp(pl&&Number.isFinite(pl._focusVisual)?pl._focusVisual:(pl&&pl.focusActive?1:0),0,1);
+  const key=Object.prototype.hasOwnProperty.call(FOCUS_ANIMATION_FEEL,channel)?channel:'base';
+  const minScale=Number.isFinite(FOCUS_ANIMATION_FEEL[key])?FOCUS_ANIMATION_FEEL[key]:FOCUS_ANIMATION_FEEL.base;
+  return THREE.MathUtils.lerp(1,minScale,vis);
+}
+function _focusAnimationDt(dt,channel='base',pl=P){
+  return Math.max(0,dt||0)*_focusAnimationScale(pl,channel);
+}
+function _syncFocusAnimationScales(){
+  P._focusAnimationProfile=FOCUS_ANIMATION_FEEL.profile;
+  P._focusAnimationScale=_focusAnimationScale(P,'base');
+  P._focusLocomotionAnimationScale=_focusAnimationScale(P,'locomotion');
+  P._focusSlideAnimationScale=_focusAnimationScale(P,'slide');
+  P._focusViewmodelAnimationScale=_focusAnimationScale(P,'viewmodel');
+  P._focusReloadAnimationScale=_focusAnimationScale(P,'reload');
+  P._focusMeleeAnimationScale=_focusAnimationScale(P,'melee');
+  P._focusAimAnimationScale=1;
+}
 function _focusTone(c,type,from,to,gain,dur,delay=0){
   const o=c.createOscillator(),g=c.createGain();
   const t0=c.currentTime+delay,t1=t0+Math.max(.03,dur||.1);
@@ -21160,6 +21332,7 @@ function tickFocus(dt){
     _killCamT=Math.max(0,_killCamT-dt);
     P.timeScale+=(_killCamScale-P.timeScale)*Math.min(dt*9,1);
     if(_killCamT<=0)P.timeScale=1.0;
+    _syncFocusAnimationScales();
     _syncFocusHud(dt);
     return;
   }
@@ -21203,6 +21376,7 @@ function tickFocus(dt){
   const timeLam=active?((P._focusSeqPhase==='enter')?18:8.5):((P._focusSeqPhase==='exit')?10.8:8.2);
   P.timeScale+=(targetScale-P.timeScale)*Math.min(dt*timeLam,1);
   if(!active&&Math.abs(P.timeScale-1)<.003)P.timeScale=1.0;
+  _syncFocusAnimationScales();
   _syncFocusHud(dt);
 }
 function startReload(){
@@ -21294,10 +21468,9 @@ function switchWeapon(idx,force=false){
   SPP_MESHES.forEach(m=>m.visible=idx===6);
   SNI_MESHES.forEach(m=>m.visible=idx===7);
   if(typeof _applyWeaponQuality==='function')_applyWeaponQuality();
-  // Throwing knife visibility
-  throwGrp.visible=(idx===2);
-  // Cancel any in-flight throw animation when leaving knife slot
-  if(idx!==2){TK.active=false;throwGrp.position.set(.10,-.10,-.20);throwGrp.rotation.set(0,0,0);}
+	  // Throwing knife slot is retired; keep the legacy group inert for saves/debug.
+	  throwGrp.visible=(!KNIFE_SLOT_REMOVED&&idx===2);
+	  if(idx!==2||KNIFE_SLOT_REMOVED){TK.active=false;throwGrp.position.set(.10,-.10,-.20);throwGrp.rotation.set(0,0,0);}
   refreshAttachmentVisuals();
   const handFit=_applyWeaponHandFit(idx,true);
   // Move muzzle flash to current weapon's muzzle (gunGrp-local space)
@@ -26435,7 +26608,7 @@ const ONBOARD={steps:[
   {id:'focus', hint:'<kbd>F</kbd> activates Focus mode (slow time)',cond:()=>P.focus<.85||P.focusActive},
   {id:'melee', hint:'<kbd>V</kbd> melee · <kbd>E</kbd> takedown low-HP enemies',cond:()=>P.execs>=1||P.kills>=8},
   {id:'tact',  hint:'<kbd>G</kbd> grenade · <kbd>T</kbd> smoke · <kbd>Y</kbd> flashbang',cond:()=>P.kills>=12},
-  {id:'weap',  hint:'<kbd>1</kbd>-<kbd>7</kbd> swap weapons · firing while reloading cancels',cond:()=>isPlayableWeaponIdx(P.weaponIdx)},
+  {id:'weap',  hint:'<kbd>1</kbd>-<kbd>6</kbd> swap weapons · firing while reloading cancels',cond:()=>isPlayableWeaponIdx(P.weaponIdx)},
   {id:'shop',  hint:'<kbd>B</kbd> opens the shop between firefights',cond:()=>G.shopOpen||P.kills>=20}
 ],idx:0,active:false,timer:0};
 function tickOnboard(dt){
@@ -28791,9 +28964,9 @@ async function startBuilding(){
   hudUpdate();
   // Per-building reverb tail
   reverbSetBuilding(G.building);
-  // Spawn one scope pickup per building. Higher buildings = better tier-roll.
-  if(G.levelData.spawns&&G.levelData.spawns.length){
-    const spIdx=Math.floor(Math.random()*G.levelData.spawns.length);
+	  // Spawn one scope pickup per building. Higher buildings = better tier-roll.
+	  if(G.levelData.spawns&&G.levelData.spawns.length){
+	    const spIdx=Math.floor(Math.random()*G.levelData.spawns.length);
     const sp=G.levelData.spawns[spIdx];
     const r=Math.random();
     let tier;
@@ -28803,9 +28976,10 @@ async function startBuilding(){
     else if(b<=2) tier=r<.30?1:r<.65?2:r<.90?3:4;
     else if(b<=3) tier=r<.15?1:r<.45?2:r<.78?3:4;
     else tier=r<.08?1:r<.30?2:r<.65?3:4;
-    spawnPickup(randomAttachment('scope',tier,tier),new THREE.Vector3(sp.x,sp.y+.20,sp.z));
-  }
-  await _deploySpan('enemy roster',82,async()=>{populateBuilding();});
+	    spawnPickup(randomAttachment('scope',tier,tier),new THREE.Vector3(sp.x,sp.y+.20,sp.z));
+	  }
+	  if(G.building===1)_spawnB1PistolOpticPickups();
+	  await _deploySpan('enemy roster',82,async()=>{populateBuilding();});
 	  await _deploySpan('shader prewarm',90,async()=>{await _prewarmVisibleSceneForDeploy();});
 	  await _deploySpan('settle first frames',97,async()=>{await _deployLoadingPaint();await _deployLoadingPaint();});
   _deployEnd();
@@ -33088,12 +33262,16 @@ function updateHands(dt){
       deSlide.position.z   = -.008 + off;
       deSer1.position.z    =  .054 + off;
       deSer2.position.z    =  .061 + off;
-      deRsight.position.z  =  .058 + off;
-      // Hammer: falls forward at start of cycle, re-cocks on return
-      deHammer.position.z  =  .082 - slideOff*.012;
-      deHammer.rotation.x  = -slideOff*.55;
-    }
-  }
+	      deRsight.position.z  =  .058 + off;
+	      // Hammer: falls forward at start of cycle, re-cocks on return
+	      deHammer.position.z  =  .082 - slideOff*.012;
+	      deHammer.rotation.x  = -slideOff*.55;
+	    }
+	    if(pistolOpticGrp&&pistolOpticGrp.visible){
+	      pistolOpticGrp.position.z=slideOff*.014;
+	      pistolOpticGrp.rotation.x=-slideOff*.010;
+	    }
+	  }
   if(P.weaponIdx===6){
     const s=_weaponSlideMotion;
     _poseViewmodelParts([sppSlide,sppSlide2,sppSer1,sppSer2,sppSer3,sppRsight],{z:s*.016,y:s*.001,rx:-s*.012});
@@ -33615,9 +33793,11 @@ function _weaponVisualStatus(){
     pbrMaterials:combined.pbr,
     aaMaterials:combined.aa,
     materialFamilies:combined.byFamily,
-    materialQuality:combined.quality,
-    scopeVisible:!!(typeof m4ScopeGrp!=='undefined'&&m4ScopeGrp.visible),
-    scopePipMaterial:!!scopeViewM_active,
+	    materialQuality:combined.quality,
+	    scopeVisible:!!(typeof m4ScopeGrp!=='undefined'&&m4ScopeGrp.visible),
+	    pistolOpticVisible:!!(typeof pistolOpticGrp!=='undefined'&&pistolOpticGrp.visible),
+	    pistolOpticMeshes:typeof pistolOpticGrp!=='undefined'?_countVisibleMeshes(pistolOpticGrp):0,
+	    scopePipMaterial:!!scopeViewM_active,
     glbDeagleVisible:!!(deagleGlbRig&&deagleGlbRig.visible),
     gripPose:_gripDbg?_gripDbg.gripPoseId:null,
     handFit:_fitDbg?{
@@ -33694,10 +33874,11 @@ function _characterVisualStatus(){
     sharedSkeleton:CHARACTER_ART_BIBLE.sharedSkeleton,
     hitboxPolicy:CHARACTER_ART_BIBLE.proportions.competitiveRule,
     archetypes,
-    enemies:rows,
-    playerProxy:{enabled:PLAYER_PROXY.enabled,visible:PLAYER_PROXY.group.visible,parts:PLAYER_PROXY.parts.length,state:PLAYER_PROXY.group.userData.proxyState||null},
-    viewmodel:gunGrp.userData.viewmodelProfile||_VIEWMODEL_PROFILE
-  };
+	    enemies:rows,
+	    materials:_characterMaterialStats(),
+	    playerProxy:{enabled:PLAYER_PROXY.enabled,visible:PLAYER_PROXY.group.visible,parts:PLAYER_PROXY.parts.length,state:PLAYER_PROXY.group.userData.proxyState||null},
+	    viewmodel:gunGrp.userData.viewmodelProfile||_VIEWMODEL_PROFILE
+	  };
 }
 function _enemyAnimationStatus(){
   const list=(G.enemyMgr&&Array.isArray(G.enemyMgr._list))?G.enemyMgr._list.filter(e=>e&&!e.dead):[];
@@ -34216,8 +34397,14 @@ renderer.setAnimationLoop(()=>{
   }else if(P._hitStopUntil&&performance.now()<P._hitStopUntil){
     P.timeScale=Math.min(P.timeScale,P._hitStopScale||.05);
   }
+  const dtFocusAnim=_focusAnimationDt(dt,'base');
+  const dtFocusLocomotion=_focusAnimationDt(dt,'locomotion');
+  const dtFocusSlide=_focusAnimationDt(dt,'slide');
+  const dtFocusViewmodel=_focusAnimationDt(dt,'viewmodel');
+  const dtFocusReload=_focusAnimationDt(dt,'reload');
+  const dtFocusMelee=_focusAnimationDt(dt,'melee');
   if(typeof comboTick==='function')comboTick(dt);
-  if(typeof updateTakedown==='function')updateTakedown(dt);
+  if(typeof updateTakedown==='function')updateTakedown(dtFocusMelee);
   if(typeof updateKillcam==='function')updateKillcam(dt);
   if(typeof updateDodge==='function')updateDodge(dt);
   if(typeof setpieceTick==='function')setpieceTick(dt);
@@ -34805,7 +34992,7 @@ renderer.setAnimationLoop(()=>{
             P.slideLocalF+=(steer.localF-P.slideLocalF)*Math.min(1,dt*7.5);
           }
         }
-        P._slideSkidT=(P._slideSkidT||0)-dt;
+        P._slideSkidT=(P._slideSkidT||0)-dtFocusSlide;
         if(P._slideSkidT<=0){
           P._slideSkidT=.045+Math.random()*.025;
           _spawnSlideSkidFx(P);
@@ -34828,13 +35015,13 @@ renderer.setAnimationLoop(()=>{
 	        P.slideCarryTimer=Math.max(0,P.slideCarryTimer-dt);
 	      }
 	      if(P.slideExitGrace>0)P.slideExitGrace=Math.max(0,P.slideExitGrace-dt);
-	      P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dt);
-	      if(!P.sliding&&(P.slideAmt||0)<.035&&(P._slideLegVis||0)<.050){
-	        P.slideLocalR=0;
-	        P.slideLocalF=1;
-	      }
-      P._landingSlidePulse=damp(Number.isFinite(P._landingSlidePulse)?P._landingSlidePulse:0,0,8.5,dt);
-      P._slidePower=damp(Number.isFinite(P._slidePower)?P._slidePower:1,1,4.0,dt);
+		      P.slideAmt=damp(P.slideAmt,P.slideTarget,16,dtFocusSlide);
+		      if(!P.sliding&&(P.slideAmt||0)<.035&&(P._slideLegVis||0)<.050){
+		        P.slideLocalR=0;
+		        P.slideLocalF=1;
+		      }
+	      P._landingSlidePulse=damp(Number.isFinite(P._landingSlidePulse)?P._landingSlidePulse:0,0,8.5,dtFocusSlide);
+	      P._slidePower=damp(Number.isFinite(P._slidePower)?P._slidePower:1,1,4.0,dtFocusSlide);
       if(P.dropkickCooldown>0)P.dropkickCooldown=Math.max(0,P.dropkickCooldown-dt);
       if(P.dropkickLandTimer>0){
         P.dropkickLandTimer=Math.max(0,P.dropkickLandTimer-dt);
@@ -35010,19 +35197,19 @@ renderer.setAnimationLoop(()=>{
   _tickPlayerBodyMass(P,dt,fx,fz,rx,rz);
   _playerAnimFrameSeq++;
   const _nowSecAnim=performance.now()/1000;
-  updatePlayerAnimInputs(playerAnimState0,{P,dt,now:_nowSecAnim,keys:K,mouseDx:P._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
-  resolvePlayerAnimLayers(playerAnimState0,dt);
-  _updateLocomotionFeel(playerAnimState0,_LOCOMOTION_FEEL_STATE0,dt,_nowSecAnim,0);
-  updatePlayerAnimTransitionHealth(playerAnimState0,dt);
+  updatePlayerAnimInputs(playerAnimState0,{P,dt:dtFocusLocomotion,now:_nowSecAnim,keys:K,mouseDx:P._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
+  resolvePlayerAnimLayers(playerAnimState0,dtFocusLocomotion);
+  _updateLocomotionFeel(playerAnimState0,_LOCOMOTION_FEEL_STATE0,dtFocusLocomotion,_nowSecAnim,0);
+  updatePlayerAnimTransitionHealth(playerAnimState0,dtFocusLocomotion);
   _consumePlayerAnimNotifies(playerAnimState0,P,0);
-  _updateAnimationCoordinator(dt,_nowSecAnim);
+  _updateAnimationCoordinator(dtFocusViewmodel,_nowSecAnim);
   if(typeof _splitVsActive==='function'&&_splitVsActive()){
-    updatePlayerAnimInputs(playerAnimState1,{P:P2,dt,now:_nowSecAnim,keys:K2,mouseDx:P2._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
-    resolvePlayerAnimLayers(playerAnimState1,dt);
-    _updateLocomotionFeel(playerAnimState1,_LOCOMOTION_FEEL_STATE1,dt,_nowSecAnim,1);
-    updatePlayerAnimTransitionHealth(playerAnimState1,dt);
+    updatePlayerAnimInputs(playerAnimState1,{P:P2,dt:dtFocusLocomotion,now:_nowSecAnim,keys:K2,mouseDx:P2._animMouseDx||0,frameId:_playerAnimFrameSeq,dampFn:damp});
+    resolvePlayerAnimLayers(playerAnimState1,dtFocusLocomotion);
+    _updateLocomotionFeel(playerAnimState1,_LOCOMOTION_FEEL_STATE1,dtFocusLocomotion,_nowSecAnim,1);
+    updatePlayerAnimTransitionHealth(playerAnimState1,dtFocusLocomotion);
     _consumePlayerAnimNotifies(playerAnimState1,P2,1);
-    _updateAnimationCoordinatorP2(dt,_nowSecAnim);
+    _updateAnimationCoordinatorP2(dtFocusViewmodel,_nowSecAnim);
   }
   if(_animDebugHud){
     let el=document.getElementById('anim-debug-hud');
@@ -35488,12 +35675,12 @@ renderer.setAnimationLoop(()=>{
   }else{
     M1._wasFired=false;
   }
-  updateThrowAnim(dt);
+  updateThrowAnim(dtFocusViewmodel);
   updateKnives(dts);
-  updateGrenadeAnim(dt);
+  updateGrenadeAnim(dtFocusViewmodel);
   updateGrenades(dts);
-  updatePistolWhip(dt);
-  updateExecution(dt);
+  updatePistolWhip(dtFocusMelee);
+  updateExecution(dtFocusMelee);
   musicTick(dt);
   // Reload
   if(P.reloading){
@@ -36076,7 +36263,7 @@ renderer.setAnimationLoop(()=>{
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
-      updateHands(dt);updateKnife(dt);updateBodyPresenceLegs(dt);updateDropkickFeet(dt);updateSlideLegs(dt);
+      updateHands(dtFocusViewmodel);updateKnife(dtFocusMelee);updateBodyPresenceLegs(dtFocusLocomotion);updateDropkickFeet(dtFocusLocomotion);updateSlideLegs(dtFocusSlide);
       _syncScopedViewmodelVisibility(_currentOpticProfile(),P.scopeSettle||0);
       _syncPracticalIronSightViewmodel();
       _forceCombatViewmodelVisible();
@@ -36105,7 +36292,7 @@ renderer.setAnimationLoop(()=>{
       shopPanelM.opacity=Math.min(1,shopDeployed*.97);
       shopGlowM.opacity=(.30+.10*Math.sin(now*4.0))*shopDeployed;
       // ── Reload holo: wrist anchor + billboard; snap + fast follow on emergence
-      reloadHoloDeployed=damp(reloadHoloDeployed,reloadHoloTarget,12,dt);
+	      reloadHoloDeployed=damp(reloadHoloDeployed,reloadHoloTarget,12,dtFocusReload);
       let _scl3=Math.max(.001,reloadHoloDeployed);
       if(reloadHoloTarget===1&&reloadHoloDeployed<.95)_scl3*=(1+(.96-reloadHoloDeployed)*.22);
       reloadHoloGrp.scale.setScalar(_scl3);
@@ -36130,9 +36317,9 @@ renderer.setAnimationLoop(()=>{
       const _rDpl=reloadHoloDeployed;
       let _rSpd=_rDpl<0.14?74:_rDpl<0.5?44:22+14*_rDpl;
       if(reloadHoloTarget<1&&_rDpl<0.035)_rSpd=Math.max(_rSpd,56);
-      _reloadHoloSmW.x=damp(_reloadHoloSmW.x,_reloadHoloTgtW.x,_rSpd,dt);
-      _reloadHoloSmW.y=damp(_reloadHoloSmW.y,_reloadHoloTgtW.y,_rSpd,dt);
-      _reloadHoloSmW.z=damp(_reloadHoloSmW.z,_reloadHoloTgtW.z,_rSpd,dt);
+	      _reloadHoloSmW.x=damp(_reloadHoloSmW.x,_reloadHoloTgtW.x,_rSpd,dtFocusReload);
+	      _reloadHoloSmW.y=damp(_reloadHoloSmW.y,_reloadHoloTgtW.y,_rSpd,dtFocusReload);
+	      _reloadHoloSmW.z=damp(_reloadHoloSmW.z,_reloadHoloTgtW.z,_rSpd,dtFocusReload);
       reloadHoloGrp.position.copy(_reloadHoloSmW);
       reloadHoloGrp.up.copy(camera.up);reloadHoloGrp.lookAt(camera.position);
       reloadHoloGrp.rotateX(0.10);reloadHoloGrp.rotateY(-0.06);reloadHoloGrp.rotateZ(0.012);
@@ -36170,7 +36357,7 @@ renderer.setAnimationLoop(()=>{
       hudUpdate();
       // ── PIP scope render — attachment optics plus built-in DMR/sniper scopes
       const _opticForPip=_currentOpticProfile();
-      const _scopePipAllowed=!!(_opticForPip&&!STABLE_RENDERING_MODE&&(SETTINGS.scopePipEnabled||_opticForPip.forcePip));
+	      const _scopePipAllowed=!!(_opticForPip&&((!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled)||_opticForPip.forcePip));
       _scopePipStatus.enabled=!!_scopePipAllowed;
       _scopePipStatus.visible=false;
       _scopePipStatus.opacity=0;
@@ -36189,9 +36376,10 @@ renderer.setAnimationLoop(()=>{
         const _skipFade=_pipAlpha<0.038;
         const _vig=$e('scope-vignette');
         if(_vig){
-          _uiSetStyleProperty(_vig,'scope-vignette','--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
-          _uiSetClass(_vig,'scope-vignette','screen-scope',_screenScope);
-          _uiSetStyleProperty(_vig,'scope-vignette','--scope-reticle-opacity',String(THREE.MathUtils.clamp(.20+_pipScopeEase*.58,0,.82)));
+	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-tint',_opticForPip.vignetteColor||'rgba(80,180,255,.12)');
+	          _uiSetClass(_vig,'scope-vignette','screen-scope',_screenScope);
+	          _uiSetClass(_vig,'scope-vignette','sniper-scope',!!_opticForPip.sniperScope);
+	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-reticle-opacity',String(THREE.MathUtils.clamp(.20+_pipScopeEase*(_opticForPip.sniperScope ? .72 : .58),0,_opticForPip.sniperScope ? .94 : .82)));
         }
         // Scope PIP camera: render from the player's actual eye/aim pose, then
         // mirror the current viewmodel-local roll. That keeps tilted scopes
@@ -36240,7 +36428,7 @@ renderer.setAnimationLoop(()=>{
         if(_vig)_uiSetStyle(_vig,'scope-vignette','opacity',String(_vigOpacity));
       } else {
         _setScopePipView(null,0);
-        const _vig=$e('scope-vignette');if(_vig){_uiSetStyle(_vig,'scope-vignette','opacity','0');_uiSetClass(_vig,'scope-vignette','screen-scope',false);}
+	        const _vig=$e('scope-vignette');if(_vig){_uiSetStyle(_vig,'scope-vignette','opacity','0');_uiSetClass(_vig,'scope-vignette','screen-scope',false);_uiSetClass(_vig,'scope-vignette','sniper-scope',false);}
         P.scopeVignetteOpacity=0;
         _scopePipStatus.settle=0;
         _scopePipStatus.fov=0;
@@ -37036,19 +37224,51 @@ installDebugApi({
       slideBufferMsLeft:Math.max(0,(P._slideIntentUntil||0)-performance.now()),
       landingSlideWindowMsLeft:Math.max(0,(P._landingSlideWindowUntil||0)-performance.now()),
       pickupStickyMsLeft:Math.max(0,(P._pickupStickyUntil||0)-performance.now()),
-      mass:{f:P._massInertiaF||0,r:P._massInertiaR||0,body:P._bodyJolt||0,foot:P._footPlantCompression||0},
-      movement:{speed:P._moveSpeedSmooth||0,accel:P._moveAccel||0,sprintBlend:P.sprintBlend||0,running:!!P.running,contactStall:P._moveContactStall||0}
-    }),
-	    setGameplayFeelProbe:(opts={})=>{
-	      const nowMs=performance.now();
-	      if(opts.vaultBuffer!==false)P._vaultIntentUntil=nowMs+(Number(opts.vaultMs)||GAMEPLAY_QOL_FEEL.vaultBufferMs);
+	      mass:{f:P._massInertiaF||0,r:P._massInertiaR||0,body:P._bodyJolt||0,foot:P._footPlantCompression||0},
+	      movement:{speed:P._moveSpeedSmooth||0,accel:P._moveAccel||0,sprintBlend:P.sprintBlend||0,running:!!P.running,contactStall:P._moveContactStall||0},
+	      focus:{
+	        profile:P._focusAnimationProfile||FOCUS_ANIMATION_FEEL.profile,
+	        active:!!P.focusActive,
+	        visual:P._focusVisual||0,
+	        worldScale:P.timeScale||1,
+	        animationScale:P._focusAnimationScale||1,
+	        locomotionScale:P._focusLocomotionAnimationScale||1,
+	        slideScale:P._focusSlideAnimationScale||1,
+	        viewmodelScale:P._focusViewmodelAnimationScale||1,
+	        reloadScale:P._focusReloadAnimationScale||1,
+	        meleeScale:P._focusMeleeAnimationScale||1,
+	        aimScale:P._focusAimAnimationScale||1
+	      }
+	    }),
+		    setGameplayFeelProbe:(opts={})=>{
+		      const nowMs=performance.now();
+		      if(opts.vaultBuffer!==false)P._vaultIntentUntil=nowMs+(Number(opts.vaultMs)||GAMEPLAY_QOL_FEEL.vaultBufferMs);
 	      if(opts.vaultCue!==false)P._vaultCuePulse=Math.max(P._vaultCuePulse||0,Number.isFinite(opts.vaultCue)?opts.vaultCue:1);
 	      if(opts.pickupPulse!==false)P._pickupPromptPulse=Math.max(P._pickupPromptPulse||0,Number.isFinite(opts.pickupPulse)?opts.pickupPulse:1);
       if(opts.critical!==false)P._criticalHitPulse=Math.max(P._criticalHitPulse||0,Number.isFinite(opts.critical)?opts.critical:1);
-	      if(opts.contact!==false)P._moveContactStall=Math.max(P._moveContactStall||0,Number.isFinite(opts.contact)?opts.contact:.6);
-	      return window.__game.debug.gameplayFeelState();
-	    },
-	    setEmbodimentProbe:(opts={})=>{
+		      if(opts.contact!==false)P._moveContactStall=Math.max(P._moveContactStall||0,Number.isFinite(opts.contact)?opts.contact:.6);
+		      return window.__game.debug.gameplayFeelState();
+		    },
+		    setFocusActive:(on=true)=>{
+		      if(on)P.focus=Math.max(P.focus||0,1);
+		      _setFocusActive(!!on,'debug');
+		      return window.__game.debug.gameplayFeelState().focus;
+		    },
+		    meleeFeelProbe:(steps=40,dt=1/60)=>{
+		      P.dead=false;P.reloading=false;P.weaponIdx=1;P.ads=0;P.adsVis=0;G.menuOpen=false;G.invOpen=false;G.shopOpen=false;gameFocused=true;
+		      _whipCD=0;_whipActive=false;_whipImpactDone=false;MELEE.out=false;
+		      tryPistolWhip();
+		      let impactFrame=-1;
+		      const poses=[];
+		      for(let i=0;i<Math.max(1,steps|0);i++){
+		        updatePistolWhip(Math.max(.001,Number(dt)||1/60));
+		        if(_whipImpactDone&&impactFrame<0)impactFrame=i;
+		        poses.push({x:gunGrp.position.x,y:gunGrp.position.y,z:gunGrp.position.z,rx:gunGrp.rotation.x,ry:gunGrp.rotation.y,rz:gunGrp.rotation.z});
+		      }
+		      const finite=poses.every(p=>Object.values(p).every(Number.isFinite));
+		      return {active:_whipActive,t:_whipT,impactDone:_whipImpactDone,impactFrame,blocksFire:!!MELEE.out,finite,pulse:P._meleeWhipPulse||0,impactPulse:P._meleeWhipImpact||0};
+		    },
+		    setEmbodimentProbe:(opts={})=>{
 	      const clamp=THREE.MathUtils.clamp;
 	      const speed=Math.max(0,Number(opts.speed)||0);
 	      const ads=clamp(Number.isFinite(opts.ads)?Number(opts.ads):(P.adsVis||0),0,1);
@@ -37194,10 +37414,12 @@ installDebugApi({
       };
     },
     vfxStress:(count)=>_debugSpawnVfxStress(count),
-    playableWeaponIndices:()=>PLAYABLE_WEAPON_INDICES.slice(),
-    weaponSlots:()=>PLAYABLE_WEAPON_INDICES.map((idx,slot)=>({slot:slot+1,idx,name:WEAPONS[idx]?.name||'unknown'})),
-    equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);switchWeapon(isPlayableWeaponIdx(5)?5:START_WEAPON_IDX,true);refreshAttachmentVisuals();return P.attachments.scope;},
-    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P._debugAdsHold=x>.5;P.ads=x;P.adsVis=x;P.adsTarget=x;P.adsSettle=x;P.scopeSettle=_hasScopedAds(P)?x:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
+	    playableWeaponIndices:()=>PLAYABLE_WEAPON_INDICES.slice(),
+	    weaponSlots:()=>PLAYABLE_WEAPON_INDICES.map((idx,slot)=>({slot:slot+1,idx,name:WEAPONS[idx]?.name||'unknown'})),
+	    equipScope:(tier=1)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);switchWeapon(isPlayableWeaponIdx(5)?5:START_WEAPON_IDX,true);refreshAttachmentVisuals();return P.attachments.scope;},
+	    equipPistolScope:(tier=2)=>{const defs=(typeof ATTACHMENT_DEFS!=='undefined'&&ATTACHMENT_DEFS.scope)||[];P.attachments.scope=Object.assign({},defs[Math.max(0,Math.min(defs.length-1,(tier|0)-1))]||defs[0]);switchWeapon(1,true);refreshAttachmentVisuals();return P.attachments.scope;},
+	    attachmentPickupStatus:()=>({count:G.pickups.length,scopePickups:G.pickups.filter(pk=>pk&&pk.att&&pk.att.type==='scope').map(pk=>({name:pk.att.name,tier:pk.att.tier,tag:pk.att.spawnTag||null,pos:pk.grp&&pk.grp.position?pk.grp.position.toArray():null,pistolSuggested:!!pk.att.pistolSuggested}))}),
+	    setAds:(v=1)=>{const x=THREE.MathUtils.clamp(Number(v)||0,0,1);P._debugAdsHold=x>.5;P.ads=x;P.adsVis=x;P.adsTarget=x;P.adsSettle=x;P.scopeSettle=_hasScopedAds(P)?x:0;P.adsKick=0;P.scopeEyeX=0;P.scopeEyeY=0;if(typeof M!=='undefined')M.rmbDown=x>.5;return P.ads;},
     setSlotWeapon:(slot,idx)=>{const s=slot|0;switchWeaponForSlot(s,idx,true);return playerSlotStatus(s);},
     setSlotAds:(slot,value=1)=>{const s=slot|0,pl=s===1?P2:P,input=s===1?M1:M;const x=THREE.MathUtils.clamp(Number(value)||0,0,1);pl._debugAdsHold=x>.5;pl.ads=x;pl.adsVis=x;pl.adsTarget=x;pl.adsSettle=x;pl.scopeSettle=_hasScopedAds(pl)?x:0;pl.adsKick=0;pl.scopeEyeX=0;pl.scopeEyeY=0;if(input)input.rmbDown=x>.5;hudUpdateShared();return playerSlotStatus(s);},
     fireSlotWeapon:(slot=0)=>{_pendingShootSlot=(slot|0)===1?1:0;return shoot();},
@@ -37334,7 +37556,8 @@ installDebugApi({
     // surface regressions when adding density.
     // Phase AF: properly dispose the previous levelData before rebuild so
     // back-to-back stress probes don't accumulate dead geometry.
-    perfStressForBuilding:(bn,enemies=12,shots=5)=>{
+    perfStressForBuilding:(bn,enemies=12,shots=5,opts=null)=>{
+      const keep=!!(opts&&opts.keep);
       const tStart=performance.now();
       _clearDebugTransientCombatRuntime();
       const tTransientClear=performance.now();
@@ -37389,7 +37612,8 @@ installDebugApi({
           render:+(tRender-tShots).toFixed(2)
         }
       };
-      _clearDebugTransientCombatRuntime();
+      if(!keep)_clearDebugTransientCombatRuntime();
+      result.kept=keep;
       return result;
     },
     warpTo:(x,z)=>{if(P&&P.pos){P.pos.x=x;P.pos.z=z;return true;}return false;},
