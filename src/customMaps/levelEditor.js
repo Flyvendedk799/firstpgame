@@ -4,6 +4,7 @@ import {
   createBreachPoint,
   createCombatZone,
   createCoverHint,
+  createDefaultCustomMap,
   createDefaultCustomMapPack,
   createEnemySpawn,
   createFlankRoute,
@@ -19,7 +20,15 @@ import {
   ENEMY_TYPES,
   normalizeDoorAccess,
   normalizeCustomMapPack,
+  normalizeBehaviorTuning,
 } from './schema.js';
+import {
+  EDITOR_TOOL_HINTS,
+  ENEMY_BEHAVIOR_SEQUENCES,
+  applyBehaviorSequenceToSpawn,
+  behaviorMeta,
+  workflowProgress,
+} from './editorGuide.js';
 import { collectCustomMapGeometry, partRuntimeTransform, partWorldAabb } from './customMapCompiler.js';
 import {
   buildEditorAssetPreview,
@@ -219,6 +228,23 @@ function isWindowPrefab(pf) {
   return Array.isArray(pf.tags) && pf.tags.includes('window');
 }
 
+function isEditorMapEmpty(m) {
+  if (!m) return true;
+  const markers = m.markers || {};
+  const tactical = (markers.enemySpawns?.length || 0)
+    + (markers.peekAngles?.length || 0)
+    + (markers.holdPositions?.length || 0)
+    + (markers.patrolRoutes?.length || 0)
+    + (markers.flankRoutes?.length || 0)
+    + (markers.combatZones?.length || 0)
+    + (markers.triggerVolumes?.length || 0)
+    + (markers.coverHints?.length || 0)
+    + (markers.breachPoints?.length || 0)
+    + (markers.sniperPerches?.length || 0)
+    + (markers.pickups?.length || 0);
+  return (m.objects?.length || 0) === 0 && tactical === 0;
+}
+
 export function createLevelEditorController(options = {}) {
   const store = options.store;
   const kitRegistry = options.kitRegistry;
@@ -234,6 +260,10 @@ export function createLevelEditorController(options = {}) {
   const title = document.getElementById('ce-title-input');
   const importInput = document.getElementById('ce-import-file');
   const hud = document.getElementById('ce-hud');
+  const emptyBanner = document.getElementById('ce-empty-banner');
+  const guidePanel = document.getElementById('ce-guide-panel');
+  const behaviorPanel = document.getElementById('ce-behavior-panel');
+  const toolHint = document.getElementById('ce-tool-hint');
   const searchInput = document.getElementById('ce-search');
   const analysisPanel = document.getElementById('ce-analysis-panel');
   const gridSelect = document.getElementById('ce-grid-size');
@@ -263,6 +293,9 @@ export function createLevelEditorController(options = {}) {
   let history = [];
   let redo = [];
   let autosaveTimer = 0;
+  let activeWorkflowStepId = 'layout';
+  let pendingBehaviorSequenceId = 'hold_defend';
+  let lastValidationOk = false;
 
   let renderer = null;
   let scene = null;
@@ -1757,6 +1790,7 @@ export function createLevelEditorController(options = {}) {
         <label>BEHAVIOR<select id="ce-enemy-behavior">${optionsHtml(ENEMY_BEHAVIORS, ent.behavior)}</select></label>
         <label>WAVE<input id="ce-enemy-wave" value="${escapeHtml(ent.spawnWave || 'initial')}"></label>
         <label>ACTIVATION<select id="ce-enemy-activation">${optionsHtml(['zone_start', 'on_trigger', 'reinforcement', 'manual'], ent.activation || 'zone_start')}</select></label>
+        ${behaviorTuningPanelHtml(ent)}
       ` : ''}
       ${tacticalPointControls}
       ${routeControls}
@@ -1785,6 +1819,12 @@ export function createLevelEditorController(options = {}) {
         ent.behavior = inspector.querySelector('#ce-enemy-behavior').value;
         ent.spawnWave = inspector.querySelector('#ce-enemy-wave')?.value || 'initial';
         ent.activation = inspector.querySelector('#ce-enemy-activation')?.value || 'zone_start';
+        ent.behaviorTuning = normalizeBehaviorTuning({
+          aggressiveness: (Number(inspector.querySelector('#ce-tune-agg')?.value) || 50) / 100,
+          peekBias: (Number(inspector.querySelector('#ce-tune-peek')?.value) || 50) / 100,
+          holdBias: (Number(inspector.querySelector('#ce-tune-hold')?.value) || 50) / 100,
+          reactDelay: (Number(inspector.querySelector('#ce-tune-delay')?.value) || 0) / 10,
+        });
         setEnemyLink(ent, 'peekAngleId', inspector.querySelector('#ce-link-peek')?.value);
         setEnemyLink(ent, 'holdPositionId', inspector.querySelector('#ce-link-hold')?.value);
         setEnemyLink(ent, 'coverHintId', inspector.querySelector('#ce-link-cover')?.value);
@@ -1857,8 +1897,154 @@ export function createLevelEditorController(options = {}) {
       if (changedEl && /profile|asset/i.test(changedEl.id || '')) renderInspector();
     };
     inspector.querySelectorAll('input,select').forEach((el) => el.addEventListener('change', () => commit(el)));
+    if (isEnemy) {
+      wireBehaviorTuningInputs(ent, () => commit());
+      inspector.querySelector('#ce-enemy-behavior')?.addEventListener('change', () => {
+        const meta = behaviorMeta(inspector.querySelector('#ce-enemy-behavior').value);
+        ent.role = meta.role || ent.role;
+        ent.behaviorTuning = normalizeBehaviorTuning(meta.tuning);
+        renderInspector();
+        commit();
+      });
+    }
     inspector.querySelector('#ce-delete')?.addEventListener('click', deleteSelected);
     inspector.querySelector('#ce-duplicate')?.addEventListener('click', duplicateSelected);
+  }
+
+  function focusWorkflowStep(stepId) {
+    const step = workflowProgress(map, { validationOk: lastValidationOk }).find((s) => s.id === stepId);
+    if (!step) return;
+    activeWorkflowStepId = stepId;
+    const tool = step.tools && step.tools[0];
+    if (tool) {
+      activeTool = tool;
+      if (tool !== 'place') activePrefabId = null;
+    }
+    renderAll();
+    setStatus(step.short, 'ok');
+  }
+
+  function renderGuidePanel() {
+    if (!guidePanel) return;
+    const steps = workflowProgress(map, { validationOk: lastValidationOk });
+    guidePanel.innerHTML = `
+      <div class="ce-guide-head">WORKFLOW</div>
+      <div class="ce-guide-steps">
+        ${steps.map((step) => `
+          <button type="button" class="ce-guide-step ${step.id === activeWorkflowStepId ? 'active' : ''} ${step.complete ? 'done' : ''}" data-step="${step.id}">
+            <span class="ce-guide-step-num">${step.complete ? '✓' : step.title.split('·')[0].trim()}</span>
+            <span class="ce-guide-step-body">
+              <span class="ce-guide-step-title">${escapeHtml(step.title)}</span>
+              <span class="ce-guide-step-short">${escapeHtml(step.short)}</span>
+            </span>
+            <span class="ce-guide-step-state">${step.complete ? 'DONE' : 'NEXT'}</span>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    guidePanel.querySelectorAll('.ce-guide-step').forEach((button) => {
+      button.addEventListener('click', () => focusWorkflowStep(button.dataset.step || 'layout'));
+    });
+  }
+
+  function renderBehaviorPanel() {
+    if (!behaviorPanel) return;
+    behaviorPanel.innerHTML = `
+      <div class="ce-behavior-head">ENEMY BEHAVIOR SEQUENCES</div>
+      <div class="ce-behavior-grid">
+        ${ENEMY_BEHAVIOR_SEQUENCES.map((seq) => `
+          <button type="button" class="ce-behavior-seq ${pendingBehaviorSequenceId === seq.id ? 'active' : ''}" data-seq="${seq.id}" title="${escapeHtml(seq.summary)}">
+            <b>${escapeHtml(seq.label)}</b>
+            <small>${escapeHtml(seq.summary)}</small>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    behaviorPanel.querySelectorAll('.ce-behavior-seq').forEach((button) => {
+      button.addEventListener('click', () => {
+        const seqId = button.dataset.seq;
+        pendingBehaviorSequenceId = seqId;
+        activeTool = 'enemy';
+        activePrefabId = null;
+        activeWorkflowStepId = 'enemies';
+        const ent = selected && selected.type === 'enemy' ? selectedEntity() : null;
+        if (ent) {
+          saveHistory();
+          applyBehaviorSequenceToSpawn(ent, map, seqId);
+          scheduleAutosave();
+          renderInspector();
+          renderViewport();
+          setStatus(`Applied “${ENEMY_BEHAVIOR_SEQUENCES.find((s) => s.id === seqId)?.label || seqId}” to selected enemy.`, 'ok');
+        } else {
+          setStatus(`Armed “${ENEMY_BEHAVIOR_SEQUENCES.find((s) => s.id === seqId)?.label || seqId}” — click the canvas to place enemies.`, 'ok');
+        }
+        renderBehaviorPanel();
+        renderToolbar();
+        renderToolHint();
+      });
+    });
+  }
+
+  function renderToolHint() {
+    if (!toolHint) return;
+    const hint = EDITOR_TOOL_HINTS[activeTool] || 'Select a tool to see what it does.';
+    const seq = ENEMY_BEHAVIOR_SEQUENCES.find((s) => s.id === pendingBehaviorSequenceId);
+    const armed = activeTool === 'enemy' && seq
+      ? `<br><span style="color:rgba(255,208,96,.9)">ARMED: ${escapeHtml(seq.label)}</span>`
+      : '';
+    toolHint.innerHTML = `<b>${escapeHtml((TOOL_LABELS[activeTool] || activeTool).toUpperCase())}</b> — ${escapeHtml(hint)}${armed}`;
+  }
+
+  function behaviorTuningPanelHtml(ent) {
+    const tuning = normalizeBehaviorTuning(ent.behaviorTuning);
+    const meta = behaviorMeta(ent.behavior);
+    return `
+      <div class="ce-ins-title">BEHAVIOR TUNING</div>
+      <div class="ce-behavior-desc">${escapeHtml(meta.summary)}</div>
+      <div class="ce-tuning-grid">
+        <label>AGGRESSIVENESS <span class="ce-tuning-val" id="ce-tune-agg-val">${Math.round(tuning.aggressiveness * 100)}%</span>
+          <input id="ce-tune-agg" type="range" min="0" max="100" step="5" value="${Math.round(tuning.aggressiveness * 100)}">
+        </label>
+        <label>PEEK BIAS <span class="ce-tuning-val" id="ce-tune-peek-val">${Math.round(tuning.peekBias * 100)}%</span>
+          <input id="ce-tune-peek" type="range" min="0" max="100" step="5" value="${Math.round(tuning.peekBias * 100)}">
+        </label>
+        <label>HOLD BIAS <span class="ce-tuning-val" id="ce-tune-hold-val">${Math.round(tuning.holdBias * 100)}%</span>
+          <input id="ce-tune-hold" type="range" min="0" max="100" step="5" value="${Math.round(tuning.holdBias * 100)}">
+        </label>
+        <label>REACT DELAY <span class="ce-tuning-val" id="ce-tune-delay-val">${tuning.reactDelay.toFixed(1)}s</span>
+          <input id="ce-tune-delay" type="range" min="0" max="80" step="5" value="${Math.round(tuning.reactDelay * 10)}">
+        </label>
+      </div>
+      <div class="ce-wave-presets">
+        ${['initial', 'zone_2', 'reinforcement', 'boss'].map((wave) => `
+          <button type="button" class="ce-wave-chip ${(ent.spawnWave || 'initial') === wave ? 'active' : ''}" data-wave="${wave}">${wave.replace('_', ' ')}</button>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function wireBehaviorTuningInputs(ent, commit) {
+    const sync = () => {
+      const agg = document.getElementById('ce-tune-agg-val');
+      const peek = document.getElementById('ce-tune-peek-val');
+      const hold = document.getElementById('ce-tune-hold-val');
+      const delay = document.getElementById('ce-tune-delay-val');
+      if (agg) agg.textContent = `${document.getElementById('ce-tune-agg')?.value || 50}%`;
+      if (peek) peek.textContent = `${document.getElementById('ce-tune-peek')?.value || 50}%`;
+      if (hold) hold.textContent = `${document.getElementById('ce-tune-hold')?.value || 50}%`;
+      if (delay) delay.textContent = `${((Number(document.getElementById('ce-tune-delay')?.value) || 0) / 10).toFixed(1)}s`;
+    };
+    ['ce-tune-agg', 'ce-tune-peek', 'ce-tune-hold', 'ce-tune-delay'].forEach((id) => {
+      inspector.querySelector(`#${id}`)?.addEventListener('input', sync);
+    });
+    inspector.querySelectorAll('.ce-wave-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        ent.spawnWave = chip.dataset.wave || 'initial';
+        inspector.querySelector('#ce-enemy-wave').value = ent.spawnWave;
+        inspector.querySelectorAll('.ce-wave-chip').forEach((c) => c.classList.toggle('active', c.dataset.wave === ent.spawnWave));
+        commit();
+      });
+    });
   }
 
   function renderToolbar() {
@@ -1870,6 +2056,45 @@ export function createLevelEditorController(options = {}) {
     });
     document.getElementById('ce-analyze')?.classList.toggle('active', analysis.enabled);
     if (canvas) canvas.dataset.tool = activeTool;
+  }
+
+  function updateEmptyBanner() {
+    if (!emptyBanner) return;
+    const show = !!(root && root.classList.contains('show') && isEditorMapEmpty(map));
+    emptyBanner.hidden = !show;
+  }
+
+  function frameMapOverview() {
+    if (!map) return;
+    const spawn = map.markers?.playerSpawn;
+    if (spawn) {
+      view.targetX = Number(spawn.x) || 0;
+      view.targetZ = Number(spawn.z) || 0;
+      view.zoom = 1.15;
+      return;
+    }
+    view.targetX = ((Number(map.bounds.x0) || 0) + (Number(map.bounds.x1) || 0)) / 2;
+    view.targetZ = ((Number(map.bounds.z0) || 0) + (Number(map.bounds.z1) || 0)) / 2;
+    view.zoom = 1;
+  }
+
+  function clearMap() {
+    if (!pack || !map) return;
+    if (!window.confirm('Clear all placed geometry and gameplay markers? Spawn and exits reset to defaults.')) return;
+    saveHistory();
+    const nextTitle = (title && title.value.trim()) || map.title || pack.title || 'New Custom Map';
+    map = createDefaultCustomMap({ title: nextTitle });
+    pack.maps[mapIndex] = map;
+    pack.title = nextTitle;
+    selected = null;
+    activeDraw = null;
+    clipboard = null;
+    placementYaw = 0;
+    analysis = { enabled: false, result: map.validation || null, at: 0 };
+    frameMapOverview();
+    scheduleAutosave();
+    setStatus('Map cleared.', 'ok');
+    renderAll();
   }
 
   function updateHud() {
@@ -1893,10 +2118,14 @@ export function createLevelEditorController(options = {}) {
     renderToolbar();
     renderTabs();
     renderPalette();
+    renderGuidePanel();
+    renderBehaviorPanel();
+    renderToolHint();
     renderInspector();
     renderAnalysisPanel();
     renderViewport();
     updateHud();
+    updateEmptyBanner();
   }
 
   function hitTest(world) {
@@ -1985,9 +2214,13 @@ export function createLevelEditorController(options = {}) {
     let placed = null;
     if (activeTool === 'enemy') {
       const marker = createEnemySpawn(pos.x, pos.z, { yaw, zoneId: zoneForZ(pos.z) });
+      if (pendingBehaviorSequenceId) {
+        applyBehaviorSequenceToSpawn(marker, map, pendingBehaviorSequenceId);
+      }
       map.markers.enemySpawns.push(marker);
       selected = { type: 'enemy', id: marker.id };
       placed = selected;
+      activeWorkflowStepId = 'enemies';
     } else if (activeTool === 'peek') {
       const marker = createPeekAngle(pos.x, pos.z, { yaw });
       map.markers.peekAngles.push(marker);
@@ -2673,6 +2906,8 @@ export function createLevelEditorController(options = {}) {
     analysis.result = result;
     analysis.at = Date.now();
     map.validation = { ok: result.ok, errors: result.errors, warnings: result.warnings, at: new Date().toISOString() };
+    lastValidationOk = !!result.ok;
+    if (result.ok) activeWorkflowStepId = 'validate';
     setStatus(result.ok ? 'Validation passed.' : `Validation blocked: ${result.errors[0]}`, result.ok ? 'ok' : 'bad');
     renderAnalysisPanel();
     renderViewport();
@@ -2735,14 +2970,20 @@ export function createLevelEditorController(options = {}) {
     if (searchInput) searchInput.value = '';
     if (gridSelect) gridSelect.value = String(gridSize);
     if (socketSnapInput) socketSnapInput.checked = socketSnapEnabled;
-    view = { targetX: 0, targetZ: 0, zoom: 1 };
+    activeTool = 'select';
+    activePrefabId = null;
+    activeWorkflowStepId = 'layout';
+    pendingBehaviorSequenceId = 'hold_defend';
+    lastValidationOk = false;
     viewMode = 'tactical';
+    frameMapOverview();
     if (title) title.value = map.title;
     root.classList.add('show');
     initViewport();
     renderAll();
     startLoop();
-    setStatus('3D editor ready.', 'ok');
+    const blank = isEditorMapEmpty(map);
+    setStatus(blank ? 'Blank map ready — place assets from the palette or use GENERATE MAP.' : '3D editor ready.', 'ok');
   }
 
   function hide() {
@@ -2885,8 +3126,15 @@ export function createLevelEditorController(options = {}) {
     if (activeDraw) activeDraw = null;
     activeTool = button.dataset.tool || 'select';
     if (activeTool !== 'place') activePrefabId = null;
+    if (['place', 'pan', 'select'].includes(activeTool)) activeWorkflowStepId = 'layout';
+    else if (['spawn', 'exit', 'door'].includes(activeTool)) activeWorkflowStepId = 'flow';
+    else if (['enemy', 'peek', 'hold', 'cover', 'patrol', 'flank', 'zone', 'trigger', 'breach', 'sniper'].includes(activeTool)) {
+      activeWorkflowStepId = 'enemies';
+    }
     renderToolbar();
     renderPalette();
+    renderGuidePanel();
+    renderToolHint();
     renderViewport();
   }));
 
@@ -2903,6 +3151,7 @@ export function createLevelEditorController(options = {}) {
   document.getElementById('ce-paste')?.addEventListener('click', pasteClipboard);
   document.getElementById('ce-rotate')?.addEventListener('click', () => rotateSelected(90));
   document.getElementById('ce-delete-btn')?.addEventListener('click', deleteSelected);
+  document.getElementById('ce-clear')?.addEventListener('click', clearMap);
   document.getElementById('ce-save')?.addEventListener('click', () => saveCurrent(false));
   document.getElementById('ce-save-copy')?.addEventListener('click', () => saveCurrent(true));
   document.getElementById('ce-export')?.addEventListener('click', exportCurrent);

@@ -22,7 +22,23 @@ export const ENEMY_BEHAVIORS = [
   'suppress_lane',
   'guard_objective',
   'reposition',
+  'rush_when_player_reloads',
 ];
+
+export function normalizeBehaviorTuning(raw = {}) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const num = (v, fallback) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  };
+  const delay = Number(src.reactDelay);
+  return {
+    aggressiveness: num(src.aggressiveness, 0.5),
+    peekBias: num(src.peekBias, 0.5),
+    holdBias: num(src.holdBias, 0.5),
+    reactDelay: Number.isFinite(delay) ? Math.max(0, Math.min(8, delay)) : 0,
+  };
+}
 export const DOOR_ACCESS_MODES = ['player', 'enemies', 'both', 'locked'];
 export const ENEMY_LINK_FIELDS = [
   'peekAngleId',
@@ -276,6 +292,7 @@ export function normalizeEnemySpawn(spawn = {}) {
     triggerVolumeId: links.triggerVolumeId,
     combatZoneId: links.combatZoneId,
     activation: spawn.activation || 'zone_start',
+    behaviorTuning: normalizeBehaviorTuning(spawn.behaviorTuning),
   };
   for (const key of [
     'enemyAnimationProfileId',

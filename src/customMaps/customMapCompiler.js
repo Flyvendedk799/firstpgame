@@ -621,6 +621,7 @@ export function collectCustomMapGeometry(inputMap, kitManifest) {
       encounterType: spawn.activation || 'zone_start',
       role: spawn.role || 'anchor',
       behavior: spawn.behavior || 'hold_angle',
+      behaviorTuning: spawn.behaviorTuning || null,
       wave: spawn.spawnWave || 'initial',
       yaw: Number(spawn.yaw) || 0,
       links,

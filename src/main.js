@@ -57,7 +57,7 @@ import {
   transitionCorridorSamples,
   AUTHORING_PLAYER_R,
 } from './levelAuthoringValidate.js';
-import { resolveEncounterEnemySpec, applyEncounterEnemySpec, applyEncounterRole, rescoreCoverSlotForEncounterHint, tickEncounterEnemyIntent } from './encounterBehavior.js';
+import { resolveEncounterEnemySpec, applyEncounterEnemySpec, applyEncounterRole, applyAuthoredEncounterBehavior, rescoreCoverSlotForEncounterHint, tickEncounterEnemyIntent } from './encounterBehavior.js';
 import {
   createBaseRenderer,
   createRenderSubsystem,
@@ -10510,6 +10510,14 @@ class EnemyManager{
           if(authoredMeta.encounterId)enemy.encounterId=authoredMeta.encounterId;
           if(authoredMeta.role)enemy.encounterRole=authoredMeta.role;
           if(authoredMeta.behavior)enemy.encounterBehavior=authoredMeta.behavior;
+          applyAuthoredEncounterBehavior(enemy,{
+            behavior:authoredMeta.behavior,
+            role:authoredMeta.role,
+            encounterId:authoredMeta.encounterId,
+            coverHintId:authoredMeta.coverHintId,
+            patrolRouteId:authoredMeta.patrolRouteId,
+            behaviorTuning:authoredMeta.behaviorTuning
+          });
 	          if(authoredMeta.coverHintId)enemy.encounterCoverHint=authoredMeta.coverHintId;
 	          if(authoredMeta.coverHintPoint)enemy.encounterCoverHintPoint=authoredMeta.coverHintPoint;
 	          if(authoredMeta.patrolRouteId)enemy.encounterPatrolTag=authoredMeta.patrolRouteId;
@@ -32015,9 +32023,7 @@ function showCustomEditor(){
   G.menuOpen=true;
   (async()=>{
     await ensureCustomMapSystems();
-    const builtins=await CUSTOM_MAP_STORE.listBuiltInPacks();
-    const base=builtins&&builtins[0]?await CUSTOM_MAP_STORE.copyPack(builtins[0],'New Custom Map'):null;
-    await CUSTOM_LEVEL_EDITOR.openPack(base&&base.id,0);
+    await CUSTOM_LEVEL_EDITOR.openPack(null,0);
   })().catch(err=>{console.error('[custom-editor] open failed',err);attachToast('<div style="color:#ff8060;letter-spacing:.22em">EDITOR FAILED</div>',3000);});
 }
 function returnToCustomEditorAfterPlaytest(){

@@ -304,6 +304,7 @@
 	      <button class="menu-cta" id="ce-paste">PASTE</button>
 	      <button class="menu-cta" id="ce-rotate">ROTATE</button>
 	      <button class="menu-cta ce-danger" id="ce-delete-btn">DELETE</button>
+	      <button class="menu-cta ce-danger" id="ce-clear">CLEAR</button>
 	      <button class="menu-cta" id="ce-validate">VALIDATE</button>
 	      <button class="menu-cta" id="ce-analyze">ANALYZE</button>
 	      <button class="menu-cta" id="ce-save">SAVE</button>
@@ -348,9 +349,16 @@
 	        <button class="ce-view" data-view="preview">PREVIEW</button>
 	      </div>
 	      <div id="ce-hud"></div>
+	      <div id="ce-empty-banner" class="ce-empty-banner" hidden>
+	        <div class="ce-empty-title">BLANK MAP</div>
+	        <div class="ce-empty-body">Start with workflow step 1 · Layout — place floors from the palette, or use GENERATE MAP.</div>
+	      </div>
 	      <div class="ce-viewhint">RIGHT/ALT DRAG PAN · WHEEL ZOOM · Q/E ROTATE · ENTER FINISH ROUTE</div>
 	    </div>
 	    <div class="ce-right">
+	      <div id="ce-guide-panel" class="ce-guide-panel"></div>
+	      <div id="ce-behavior-panel" class="ce-behavior-panel"></div>
+	      <div id="ce-tool-hint" class="ce-tool-hint"></div>
 	      <div class="ce-layer-list">
 	        <label><input class="ce-layer" data-layer="geometry" type="checkbox" checked/>Geometry</label>
 	        <label><input class="ce-layer" data-layer="gameplay" type="checkbox" checked/>Gameplay</label>

@@ -78,6 +78,67 @@ export function applyEncounterEnemySpec(enemy, hit) {
   if (b === 'rush_when_player_reloads') {
     enemy._encRushReload = true;
   }
+  if (b === 'ambush_on_crossing') {
+    enemy._encAmbushCrossing = true;
+    enemy.peekRate = (enemy.peekRate || 1) * 0.42;
+    enemy.holdRiskCap = Math.min(enemy.holdRiskCap || 0.55, 0.4);
+  }
+  if (b === 'push_after_contact') {
+    enemy._encPushAfterContact = true;
+    if (enemy.tactic) enemy.tactic.advance = Math.max(enemy.tactic.advance || 0.5, 0.76);
+    if (enemy.personality) enemy.personality.speedMul = (enemy.personality.speedMul || 1) * 1.06;
+  }
+  if (b === 'reposition') {
+    if (enemy.tactic) enemy.tactic.repositionEvery = Math.max(2.1, (enemy.tactic.repositionEvery || 4.5) * 0.68);
+    if (enemy.personality) enemy.personality.repositionMul = (enemy.personality.repositionMul || 1) * 1.12;
+  }
+  if (b === 'patrol_route') {
+    enemy._encPatrolRoute = true;
+  }
+}
+
+/**
+ * Apply custom-map / authored spawn meta (behavior + tuning sliders).
+ * @param {object} enemy
+ * @param {object} meta
+ */
+export function applyAuthoredEncounterBehavior(enemy, meta = {}) {
+  if (!enemy || !meta) return;
+  const behavior = meta.behavior || null;
+  const role = meta.role || null;
+  if (behavior || role) {
+    applyEncounterEnemySpec(enemy, {
+      encounterId: meta.encounterId || 'custom',
+      spec: {
+        behavior,
+        role,
+        cover: meta.coverHintId,
+        coverHint: meta.coverHintId,
+        patrol: meta.patrolRouteId,
+      },
+    });
+  }
+  const tuning = meta.behaviorTuning;
+  if (tuning && typeof tuning === 'object') {
+    const agg = Number(tuning.aggressiveness);
+    if (Number.isFinite(agg)) {
+      enemy.personality = enemy.personality || {};
+      enemy.personality.speedMul = (enemy.personality.speedMul || 1) * (0.84 + agg * 0.32);
+      if (enemy.tactic) enemy.tactic.advance = (enemy.tactic.advance || 0.5) * (0.78 + agg * 0.44);
+    }
+    const peek = Number(tuning.peekBias);
+    if (Number.isFinite(peek)) enemy.peekRate = (enemy.peekRate || 1) * (0.62 + peek * 0.76);
+    const hold = Number(tuning.holdBias);
+    if (Number.isFinite(hold)) {
+      enemy.holdRiskCap = Math.min(0.96, Math.max(0.22, 0.28 + hold * 0.62));
+    }
+    const delay = Number(tuning.reactDelay);
+    if (Number.isFinite(delay) && delay > 0) {
+      enemy._encReactDelayUntil = performance.now() + delay * 1000;
+    }
+  }
+  if (behavior === 'ambush_on_crossing') enemy._encAmbushCrossing = true;
+  if (behavior === 'push_after_contact') enemy._encPushAfterContact = true;
 }
 
 /** Optional world anchors to bias cover-slot choice toward encounter `cover` / `coverHint` tags. */
@@ -169,6 +230,13 @@ export function tickEncounterEnemyIntent(enemy, dt, playerPos, player, floorplan
   if (!enemy || enemy.dead) {
     return;
   }
+  if (enemy._encReactDelayUntil && performance.now() < enemy._encReactDelayUntil) {
+    if (enemy.state === 2 || enemy.state === 3) {
+      enemy.state = 0;
+      enemy._movementMode = 'walk';
+    }
+    return;
+  }
   let boost = 0;
   if (floorplan && floorplan.spaces && enemy.group) {
     const sid = pickFloorplanSpaceId(enemy.group.position.x, enemy.group.position.z, floorplan);
@@ -217,6 +285,30 @@ export function tickEncounterEnemyIntent(enemy, dt, playerPos, player, floorplan
   }
   if (enemy._encFlankNudge && (enemy.state === 2 || enemy.state === 3)) {
     enemy.flankTimer = Math.max(enemy.flankTimer || 0, 0.15);
+  }
+  if (b === 'ambush_on_crossing' && enemy._encAmbushCrossing && !enemy._encAmbushTriggered && playerPos) {
+    const ex = enemy.group.position.x;
+    const ez = enemy.group.position.z;
+    const px = playerPos.x;
+    const pz = playerPos.z;
+    const dist2 = (px - ex) * (px - ex) + (pz - ez) * (pz - ez);
+    const crossed = Math.abs(pz - ez) > 2.2 && dist2 < 20 * 20;
+    if (crossed || (enemy.lastKnownPos && dist2 < 14 * 14)) {
+      enemy._encAmbushTriggered = true;
+      enemy.peekRate = (enemy.peekRate || 1) * 1.65;
+      enemy.holdRiskCap = Math.min(0.9, (enemy.holdRiskCap || 0.4) + 0.22);
+      if (enemy.state === 0) {
+        enemy.state = 4;
+        enemy.searchTimer = Math.max(enemy.searchTimer || 0, 1.8);
+      }
+    }
+  }
+  if (b === 'push_after_contact' && enemy._encPushAfterContact && enemy.lastKnownPos) {
+    if (enemy.state === 0 || enemy.state === 4) {
+      enemy.state = 2;
+      enemy._movementMode = 'chase';
+      enemy.flankTimer = Math.max(enemy.flankTimer || 0, 0.2);
+    }
   }
   if (b === 'suppress_lane' && enemy.useSuppress && enemy.state === 3) {
     const dx = playerPos.x - enemy.group.position.x;

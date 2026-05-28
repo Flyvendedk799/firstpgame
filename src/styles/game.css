@@ -417,9 +417,40 @@ body.focus-on #color-grade{opacity:.70;background:linear-gradient(180deg,rgba(80
 .ce-view{background:rgba(20,24,32,.78);border:1px solid rgba(255,255,255,.14);color:rgba(255,255,255,.72);font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:900;letter-spacing:.16em;padding:7px 9px;cursor:pointer;text-transform:uppercase}
 .ce-view.active,.ce-view:hover{border-color:#ffd060;color:#ffd060;background:rgba(42,31,12,.88)}
 .ce-viewhint{position:absolute;right:14px;bottom:12px;z-index:2;font-size:10px;letter-spacing:.16em;color:rgba(255,255,255,.38);font-weight:800;background:rgba(5,7,10,.55);border:1px solid rgba(255,255,255,.08);padding:7px 9px;pointer-events:none}
+.ce-empty-banner{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;pointer-events:none;background:radial-gradient(circle at 50% 44%,rgba(8,12,18,.18) 0%,rgba(5,7,10,.52) 72%)}
+.ce-empty-title{font-size:28px;font-weight:900;letter-spacing:.28em;color:rgba(255,208,96,.92);text-transform:uppercase;text-shadow:0 0 24px rgba(255,180,40,.22)}
+.ce-empty-body{max-width:420px;font-size:12px;line-height:1.55;letter-spacing:.10em;color:rgba(255,255,255,.52);font-weight:700;text-transform:uppercase}
 #ce-hud{position:absolute;left:14px;bottom:12px;z-index:2;display:flex;gap:7px;flex-wrap:wrap;max-width:min(680px,65%);pointer-events:none}
 #ce-hud span{background:rgba(5,7,10,.68);border:1px solid rgba(255,255,255,.08);padding:7px 9px;font-size:10px;letter-spacing:.14em;color:rgba(255,255,255,.44);font-weight:800}
 #ce-hud b{color:#ffd060;font-weight:900}
+.ce-guide-panel{border-bottom:1px solid rgba(255,255,255,.08);padding:12px;display:flex;flex-direction:column;gap:8px}
+.ce-guide-head,.ce-behavior-head{font-size:11px;font-weight:900;letter-spacing:.18em;color:#ffd060;text-transform:uppercase}
+.ce-guide-steps{display:flex;flex-direction:column;gap:6px}
+.ce-guide-step{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 9px;background:rgba(20,24,32,.65);border:1px solid rgba(255,255,255,.10);cursor:pointer;text-align:left;font-family:'Rajdhani',sans-serif;color:inherit}
+.ce-guide-step:hover,.ce-guide-step.active{border-color:rgba(255,208,96,.45);background:rgba(42,31,12,.55)}
+.ce-guide-step.done{border-color:rgba(95,203,82,.35)}
+.ce-guide-step-num{font-size:10px;font-weight:900;letter-spacing:.12em;color:rgba(255,208,96,.85);padding-top:1px}
+.ce-guide-step-body{min-width:0}
+.ce-guide-step-title{font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#fff}
+.ce-guide-step-short{font-size:10px;line-height:1.4;color:rgba(255,255,255,.48);margin-top:3px;letter-spacing:.06em}
+.ce-guide-step-state{font-size:9px;font-weight:900;letter-spacing:.14em;color:rgba(255,255,255,.35);text-transform:uppercase;padding-top:2px}
+.ce-guide-step.done .ce-guide-step-state{color:rgba(95,203,82,.82)}
+.ce-behavior-panel{border-bottom:1px solid rgba(255,255,255,.08);padding:12px;display:flex;flex-direction:column;gap:8px}
+.ce-behavior-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.ce-behavior-seq{background:rgba(20,24,32,.72);border:1px solid rgba(255,200,80,.18);color:#fff;font-family:'Rajdhani',sans-serif;text-align:left;padding:8px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
+.ce-behavior-seq:hover,.ce-behavior-seq.active{border-color:#ffd060;background:rgba(44,34,14,.78)}
+.ce-behavior-seq b{font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+.ce-behavior-seq small{font-size:9px;line-height:1.35;color:rgba(255,255,255,.46);letter-spacing:.06em}
+.ce-tool-hint{margin:0 12px 0;padding:8px 10px;border:1px solid rgba(255,208,96,.22);background:rgba(42,31,12,.45);font-size:10px;line-height:1.45;letter-spacing:.08em;color:rgba(255,255,255,.58);font-weight:700}
+.ce-tool-hint b{color:#ffd060;font-weight:900;letter-spacing:.14em}
+.ce-behavior-desc{font-size:10px;line-height:1.45;color:rgba(255,255,255,.52);letter-spacing:.06em;padding:6px 0 2px;border-top:1px dashed rgba(255,255,255,.10)}
+.ce-tuning-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+.ce-tuning-grid label{display:flex;flex-direction:column;gap:4px;font-size:9px;letter-spacing:.12em;color:rgba(255,200,80,.62);font-weight:800;text-transform:uppercase}
+.ce-tuning-grid input[type=range]{width:100%;accent-color:#ffd060}
+.ce-tuning-val{color:#ffd060;font-weight:900;letter-spacing:.08em}
+.ce-wave-presets{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.ce-wave-chip{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:rgba(255,255,255,.62);font-family:'Rajdhani',sans-serif;font-size:9px;font-weight:800;letter-spacing:.10em;padding:4px 7px;cursor:pointer;text-transform:uppercase}
+.ce-wave-chip:hover,.ce-wave-chip.active{border-color:#ffd060;color:#ffd060}
 .ce-layer-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08)}
 .ce-layer-list label{display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.14em;color:rgba(255,255,255,.62);font-weight:800;text-transform:uppercase}
 .ce-snap-panel{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08)}
