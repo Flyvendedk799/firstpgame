@@ -1,0 +1,103 @@
+{
+  "scope": "src/main.js lines 9200-11875 — Enemy animation rig, hit reactions, locomotion lerp, stagger, death variants (plus supporting context 7853-8133, 8261-8525, 27600-27659, 13403-13439)",
+  "findings": [
+    {
+      "id": "pushimpulse-wrong-sign-toward-player",
+      "file": "src/main.js",
+      "lineRange": "8090-8096",
+      "kind": "contradiction",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Bullet/melee _pushImpulse nudges enemy TOWARD the shooter, opposing the stagger knockback",
+      "description": "this.staggerDir is set to lastPlayerDir.negate() (line 7906), i.e. it points AWAY from the player — the direction the body should fly after a hit. The stagger knockback consumer correctly pushes along +staggerDir (line 10120: group.position.addScaledVector(this.staggerDir,...)). But the bullet-hit _pushImpulse is built with the OPPOSITE sign: x:-this.staggerDir.x, z:-this.staggerDir.z (lines 8091-8092), and the consumer adds it directly (lines 8090/9829-9830 + 9824-9831). The melee version has the same negation (lines 8000-8001). Net result: every bullet/melee hit applies a small impulse pulling the enemy toward the shooter, directly fighting the stagger knockback and contradicting the inline comment 'nudge the body in the bullet direction' (bullet direction == away from player == +staggerDir). The dropkick path is built correctly with +fx/+fz (away from player, line 27649), proving the intended convention and the asymmetry.",
+      "evidence": "this._pushImpulse={\n  x: -this.staggerDir.x*push,\n  z: -this.staggerDir.z*push,\n ...}\n// consumer: this.group.position.x+=this._pushImpulse.x*pe*dt*speed;  (staggerDir points AWAY from player, so -staggerDir = toward player)",
+      "fix": "Flip the sign so the impulse runs along +staggerDir (away from the shooter, matching the stagger knockback and the dropkick convention): set x: this.staggerDir.x*push, z: this.staggerDir.z*push at lines 8091-8092, and likewise x:this.staggerDir.x*pushScale*impactWeight, z:this.staggerDir.z*pushScale*impactWeight at lines 8000-8001. Magnitudes are small so save/balance impact is minimal, but impacts will read noticeably punchier.",
+      "risk": "Low. Changes only the direction of a small (~0.06-0.4u over ~130ms), brief positional nudge. No save-compat impact. Could very slightly increase enemies being shoved into walls — mitigated because _tryMove still collision-checks the resulting position (the impulse moves group.position directly without collision in 9829, but stagger already does the same, so net risk is unchanged and bounded by the small magnitude).",
+      "confidence": "medium"
+    },
+    {
+      "id": "stun-visor-strobe-overwritten",
+      "file": "src/main.js",
+      "lineRange": "9350-9353",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Stun visor strobe is computed then immediately overwritten by the per-frame visor pulse",
+      "description": "The _stunnedNow block sets this.visorM.emissive via setRGB(pulse*1.35,...) to give stunned enemies a distinct flickering visor (lines 9350-9353). But a few lines later the unconditional per-frame visor block (lines 10099-10114) recomputes visorM.emissive from this._visorBaseCol every frame regardless of stun state (line 10111). Because that block always runs after the stun block within the same _updateAnim call, the stun visor color is discarded and never appears on screen. The same applies to the sniper-overkill visorGlowM.opacity write at line 9392, which is overwritten by line 10112.",
+      "evidence": "if(this.visorM&&this.visorM.emissive){\n  const pulse=.55+.45*Math.sin(performance.now()*.018);\n  this.visorM.emissive.setRGB(pulse*1.35,pulse*1.35,pulse*1.20);\n}\n// ...later, unconditional:\nthis.visorM.emissive.setRGB(ts.r*pulse,ts.g*pulse,ts.b*pulse);",
+      "fix": "Either delete the dead stun visor write (9350-9353), or make the per-frame visor block (10099) honor a stun override — e.g. add `else if(_stunnedNow){ ...white-hot stutter... }` ahead of the base pulse, or set a this._visorStunPulse value that the per-frame block reads and blends in. Simplest visible win: in the per-frame block add a stun term to `amp`/color when _stunnedNow is true so a stunned enemy actually flickers.",
+      "risk": "Very low. Touches only emissive color of a cosmetic visor; no gameplay/save impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "alive-headshot-hitstop-unreachable",
+      "file": "src/main.js",
+      "lineRange": "11187-11194",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Alive-path headshot hit-stop (dt slowdown) is unreachable because every headshot is fatal",
+      "description": "takeDamage sets this.hp=isHead?0:... unconditionally (line 7904), and when hp<=0 it calls this.die() synchronously (line 8101) which sets this.dead=true. _headshotHitStopTimer is only ever set inside the if(isHead) block (line 8060). Therefore on the next frame update() always takes the if(this.dead){...return} branch at line 11186, and the alive headshot hit-stop block at 11187-11194 (which scales dt to slow the living enemy) can never execute. The death-side hit-stop in _updateDeath (line 10128) is the one that actually runs. The alive block is dead.",
+      "evidence": "this.hp=isHead?0:this.hp-dmg;            // 7904 — headshot always hp=0\n...\nif(this.hp<=0){this.die();return true;}   // 8101 — die() sets dead=true\n...\nif(this.dead){this.deathTimer+=dt;this._updateDeath(dt);return null;}  // 11186 — taken first\nif(this._headshotHitStopTimer>0){ ... dt*=... }  // 11187 — never reached for headshots",
+      "fix": "Remove the unreachable block at 11187-11194 to reduce confusion, OR (if a non-fatal headshot hit-stop is desired, e.g. for bosses/armored heads) introduce a real non-fatal headshot path so the block can run. As-is it is pure dead code.",
+      "risk": "None if removed (unreachable). If instead enabling non-fatal headshots, that is a balance/gameplay change and out of scope for a surgical fix.",
+      "confidence": "high"
+    },
+    {
+      "id": "shotrecovertimer-write-only",
+      "file": "src/main.js",
+      "lineRange": "8357",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_shotRecoverTimer is written/decremented every frame but never read",
+      "description": "this._shotRecoverTimer is initialized (line 6389), decremented each frame (line 8357), and set on fire (line 10916 in _markShotVisual), but it is never read anywhere. The actual shoot-recoil animation is driven entirely by this.shootRecoilTimer (lines 9447-9472). _shotRecoverTimer is a leftover/competing timer that does nothing — a state-desync where one timer (shootRecoilTimer) is the live one and a parallel one (_shotRecoverTimer) is dead.",
+      "evidence": "this._shotRecoverTimer=Math.max(0,(this._shotRecoverTimer||0)-dt);  // 8357 (no reader)\n// _shotRecoverDur IS read (9448), but _shotRecoverTimer is not",
+      "fix": "Delete the three references to _shotRecoverTimer (6389 init, 8357 decrement, 10916 set) to remove the dead per-frame work, OR wire shootRecoilTimer's reads to it if a unification was intended. Keep _shotRecoverDur and _shotRecoverSide (those are read).",
+      "risk": "None. Removing a write-only field has no behavioral effect.",
+      "confidence": "high"
+    },
+    {
+      "id": "generic-melee-branch-fights-lerp",
+      "file": "src/main.js",
+      "lineRange": "9707-9712",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Generic melee fallback sets hMesh/bMesh rotation directly, then the trailing lerp re-pulls bMesh toward bodyRX",
+      "description": "The generic (no-kind) melee branch assigns this.bMesh.rotation.x=-lurch*.30 directly (line 9711). But this.bMesh.rotation.x is then lerped toward the accumulated bodyRX at line 10064 (this.bMesh.rotation.x+=(bodyRX-this.bMesh.rotation.x)*ls) in the same frame, partially undoing the just-set value (ls is ~0.5-1 at 20Hz urgentPose). The kind-specific branches above (knife_*, gun_bash) instead route torso motion through bodyRX or set bMesh via the dedicated this.bMesh path consistently. This fallback is reachable by plain melee (kind defaults to 'melee', line 7975) and by dropkicks (which set meleeHitTimer but leave _meleeImpactKind as 'melee'), producing muddier-than-intended torso snap on those hits. Also note hMesh/bMesh/lArmGrp are dereferenced without the if(this.hMesh) guards the other branches use (they exist on all rigs incl. drones, so not a crash).",
+      "evidence": "} else {\n  lARX= lurch*1.28; rARX=-lurch*1.28;\n  lElbRX=0.32+lurch*.85; rElbRX=0.32+lurch*.85;\n  this.hMesh.rotation.x=-lurch*.72;\n  this.bMesh.rotation.x=-lurch*.30;   // overwritten by lerp at 10064\n}",
+      "fix": "Drive the torso through bodyRX in the generic branch (e.g. bodyRX-=lurch*.30) instead of writing this.bMesh.rotation.x directly, so it composes with the lerp at 10064 like the other branches. Leave the head write (it is lerped back in the 9832 else only when no hit timer is active, which is correct).",
+      "risk": "Low. Only changes the visual quality of plain-melee/dropkick torso reaction; no gameplay or save impact.",
+      "confidence": "medium"
+    },
+    {
+      "id": "dropkick-pushimpulse-dead-write",
+      "file": "src/main.js",
+      "lineRange": "27649",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Dropkick sets _pushImpulse but it is never consumed (melee branch wins, bullet branch is gated out)",
+      "description": "The dropkick handler sets e._pushImpulse (line 27649) in addition to e._dropkickPushImpulse (27626) and e._dropkickFlyImpulse (27627). But _pushImpulse is only consumed inside the else-if(this.bulletHitTimer>0) branch (lines 9824-9831). A dropkick sets meleeHitTimer=.10 (line 27645), so the FIRST if(this.meleeHitTimer>0) branch (line 9602) wins and the bullet branch never runs during the dropkick; bulletHitTimer is typically 0 for a dropkick anyway, so _pushImpulse (until=+250ms) expires unconsumed. The actual dropkick displacement is done by _dropkickPushImpulse + _dropkickFlyImpulse, making this third impulse redundant dead state.",
+      "evidence": "e._pushImpulse={x:fx*(onLanding ? .50 : .64),z:fz*(onLanding ? .50 : .64),start:impactNow,until:impactNow+250};  // 27649 — never read for a dropkick",
+      "fix": "Remove the _pushImpulse assignment at 27649 (the dropkick already has its two dedicated impulses), to avoid leaving stale impulse state that could mis-fire if a bullet hit lands within 250ms of a dropkick.",
+      "risk": "Low. Removing an unconsumed write. Slim chance some other code reads _pushImpulse for a dropkicked enemy; grep shows it is only read in the bullet-hit branch, so risk is minimal.",
+      "confidence": "medium"
+    },
+    {
+      "id": "trymove-broken-window-linear-scan",
+      "file": "src/main.js",
+      "lineRange": "10444-10458",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_tryMove scans the full walls array linearly for broken-window vault detection even when a spatial index exists",
+      "description": "Collision in _tryMove uses the spatial wall index (lines 10392-10420) for O(cell) checks, but the immediately following broken-window detection (lines 10447-10449) does a full linear pass over `walls` for every non-drone enemy on every move call (called from _moveWithVelocity each tick, plus unstick/separation passes). On large levels (B01 ~178-280 walls) this is a per-enemy-per-frame O(N) scan whose result is almost always null (few/zero broken windows).",
+      "evidence": "for(const w of walls){\n  if(!w.broken)continue;\n  if(px>=w.x0-0.05&&px<=w.x1+0.05&&pz>=w.z0-0.05&&pz<=w.z1+0.05){onBrokenWin=w;break;}\n}",
+      "fix": "Maintain a small G.levelData.brokenWindows array (push on window-break, remove on level reset) and iterate only that, or query the same wall index cell as the collision check above and test only its walls for .broken. Either reduces the scan from ~N walls to ~0-a-few.",
+      "risk": "Low. Must keep the broken-window list in sync with window shatter/reset events; if a level rebuilds windows the list must be cleared. Behavior identical if the list is correct.",
+      "confidence": "medium"
+    }
+  ]
+}

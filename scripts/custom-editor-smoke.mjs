@@ -83,14 +83,21 @@ await page.locator('#ce-back').click();
 await page.locator('#menu-custom-maps-btn').click();
 await page.waitForSelector('#custom-maps-panel.show', { timeout: 60000 });
 await page.locator('.cm-pack').first().click();
-const startDisabled = await page.locator('#cm-start').count();
-if (!startDisabled) throw new Error('Custom maps panel did not render a start action.');
+const start = page.locator('#cm-start');
+if (!(await start.count())) throw new Error('Custom maps panel did not render a start action.');
+if (!(await start.isEnabled())) throw new Error('Custom maps start action remained disabled after pack selection.');
 const dbg = await page.evaluate(() => window.__game?.debug?.customMaps?.());
 if (!dbg || !dbg.kit || dbg.kit.prefabCount < 100) throw new Error(`Custom map debug state missing: ${JSON.stringify(dbg)}`);
+await start.click();
+await page.waitForFunction(() => {
+  const runtime = window.__game?.debug?.customMaps?.().runtime;
+  return !!(runtime && runtime.packId && runtime.mapId);
+}, null, { timeout: 30000 });
+const runtime = await page.evaluate(() => window.__game?.debug?.customMaps?.().runtime);
 
 await browser.close();
 if (errors.length) {
   console.error(JSON.stringify(errors, null, 2));
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, debug: dbg }, null, 2));
+console.log(JSON.stringify({ ok: true, debug: dbg, runtime }, null, 2));

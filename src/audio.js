@@ -9,7 +9,17 @@
 let AC = null;
 
 export function getAC() {
-  return AC || (AC = new AudioContext());
+  if (!AC) AC = new AudioContext();
+  if (!AC._masterBus) {
+    const comp = AC.createDynamicsCompressor();
+    comp.threshold.value = -8;
+    comp.ratio.value = 12;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.18;
+    comp.connect(AC.destination);
+    AC._masterBus = comp;
+  }
+  return AC;
 }
 
 export function sfxHit(hs) {

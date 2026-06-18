@@ -11,8 +11,22 @@ modules with named exports.
   frame loop.
 - `src/data/` contains static tables and pure lookup helpers. These modules
   should not touch the DOM, `window`, renderer state, or mutable gameplay state.
-- `src/game/` contains state factories, persistence helpers, shared math, and
-  runtime context assembly.
+- `src/game/` contains focused gameplay modules with named exports. Keep these
+  modules side-effect-light and let `src/main.js` wire them into scene/runtime
+  objects.
+  - `state.js`: player/game state factories.
+  - `aimFeel.js`, `gunplayPolish.js`, `reloadFeel.js`, `combatFeedback.js`,
+    `incomingFirePolish.js`, `playerDamageResponse.js`: weapon and combat feel.
+  - `highClassFeel.js`: a final gameplay-feel director that smooths aim,
+    gunplay, combat feedback, incoming fire, and reload signals into cohesive
+    camera, crosshair, recoil-return, and viewmodel outputs.
+  - `gameplayAnimationPolish.js`, `bodyPresenceLocomotion.js`,
+    `traversalFeel.js`, `knifeFeel.js`: animation and embodiment logic.
+  - `storyGameplayPacing.js`, `storyObjectiveFeel.js`: story-mode pacing and
+    objective pressure.
+  - `hologramSignals.js`: gameplay-driven signal state for hologram UIs.
+  - `hologramVisuals.js`: canvas drawing, textures, depth frames, motes,
+    ripples, and ghost projection helpers for hologram UIs.
 - `src/systems/` is for runtime systems such as weapons, enemies, VFX, campaign
   flow, player movement, level building, and perf HUD.
 - `src/ui/` is for DOM lookup, menu/HUD/settings rendering, and input binding.
@@ -25,6 +39,10 @@ modules with named exports.
 
 - Weapon balance, slots, and attachment data: start in `src/data/weapons.js`.
 - Player/global state shape: start in `src/game/state.js`.
+- Wrist/reload/shop holograms: put signal logic in
+  `src/game/hologramSignals.js`, visual helper code in
+  `src/game/hologramVisuals.js`, and leave only scene attachment/runtime wiring
+  in `src/main.js`.
 - Debug or Playwright-facing APIs: start in `src/debug/installDebugApi.js`.
 - Visual profile data, material manifests, and authored assets: keep using the
   existing dedicated modules in `src/`.

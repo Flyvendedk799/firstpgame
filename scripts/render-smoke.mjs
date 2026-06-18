@@ -274,7 +274,7 @@ for (const mode of modes) {
   assert(result.texturePhase.high.quality.high > 0, `${mode}: high texture-quality materials were not created`);
   assert(result.texturePhase.high.maps.normal > result.texturePhase.low.maps.normal, `${mode}: generated normal maps did not scale with texture quality`);
   assert(result.texturePhase.high.maps.roughness > result.texturePhase.low.maps.roughness, `${mode}: generated roughness maps did not scale with texture quality`);
-  assert(result.weaponPhase.length === 6, `${mode}: did not visit all playable weapon slots`);
+  assert(result.weaponPhase.length === 7, `${mode}: did not visit all playable weapon slots`);
   for (const weapon of result.weaponPhase) {
     const visiblePrimary =
       weapon.visibleProceduralMeshes +
@@ -284,8 +284,7 @@ for (const mode of modes) {
       weapon.visibleKnifeMeshes;
     assert(visiblePrimary > 0, `${mode}: ${weapon.name} has no visible primary weapon mesh`);
     assert(weapon.pbrMaterials > 0 && weapon.aaMaterials > 0, `${mode}: ${weapon.name} is missing PBR/AA material coverage`);
-    assert(weapon.weaponIdx !== 2, `${mode}: removed knife slot should not be playable`);
-    if (!(weapon.weaponIdx === 0 && weapon.authoredM4Active) && (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible)) {
+    if (weapon.weaponIdx !== 2 && !(weapon.weaponIdx === 0 && weapon.authoredM4Active) && (weapon.weaponIdx !== 1 || !weapon.glbDeagleVisible)) {
       assert(weapon.visibleDetailParts > 0, `${mode}: ${weapon.name} AA detail parts missing at high quality`);
     }
   }

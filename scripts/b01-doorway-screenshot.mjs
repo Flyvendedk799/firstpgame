@@ -82,9 +82,11 @@ delete report.png;
 
 console.log(JSON.stringify(report, null, 2));
 if (report.overlapCount > 0) {
-  console.warn(
+  console.error(
     `Found ${report.overlapCount} wall AABB(s) intersecting the east-door approach corridor (see overlaps in JSON).`
   );
+  await browser.close();
+  process.exit(1);
 } else {
   console.log('No wall AABBs intersect the east-door approach corridor (good).');
 }

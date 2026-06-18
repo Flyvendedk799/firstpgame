@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { WEAPON_MANIFEST } from '../src/assetManifest.js';
 
 const REQUIRED_WEAPON_SOCKETS = [
   'muzzle',
@@ -56,7 +57,7 @@ const REQUIRED_HAND_CLIPS = [
 ];
 
 function usage() {
-  console.error('Usage: node scripts/validate-weapon-glb.mjs <file.glb> [--type weapon|hands]');
+  console.error('Usage: node scripts/validate-weapon-glb.mjs <file.glb> [--type weapon|hands] [--manifest-id weapon.id]');
   process.exit(2);
 }
 
@@ -64,11 +65,14 @@ function parseArgs(argv) {
   const file = argv[2];
   if (!file) usage();
   let type = 'weapon';
+  let manifestId = null;
   for (let i = 3; i < argv.length; i++) {
     if (argv[i] === '--type') type = argv[++i] || type;
+    else if (argv[i] === '--manifest-id') manifestId = argv[++i] || null;
+    else usage();
   }
   if (!['weapon', 'hands'].includes(type)) usage();
-  return { file, type };
+  return { file, type, manifestId };
 }
 
 function readGlb(file) {
@@ -171,11 +175,25 @@ function vecLength(v) {
   return Math.hypot(v[0] || 0, v[1] || 0, v[2] || 0);
 }
 
-function validate(file, type) {
+function manifestEntryFor(file, manifestId) {
+  if (manifestId && WEAPON_MANIFEST[manifestId]) return WEAPON_MANIFEST[manifestId];
+  const clean = String(file || '').replace(/\\/g, '/').toLowerCase();
+  if (clean.includes('/usp_viewmodel.glb') || clean.endsWith('usp_viewmodel.glb')) return WEAPON_MANIFEST['weapon.uspT'];
+  if (clean.includes('/m4_viewmodel.glb') || clean.endsWith('m4_viewmodel.glb')) return WEAPON_MANIFEST['weapon.m4Reference'];
+  return null;
+}
+
+function hasNodeOrAlias(nodes, aliases, name) {
+  const aliasList = Array.isArray(aliases?.[name]) ? aliases[name] : [aliases?.[name]];
+  return nodes.has(name) || aliasList.filter(Boolean).some(alias => nodes.has(alias));
+}
+
+function validate(file, type, manifestId = null) {
   const { json, bin } = readGlb(file);
   const nodes = nodeMap(json);
   const parents = parentMap(json);
   const clips = new Set((json.animations || []).map(a => a.name));
+  const manifestEntry = type === 'weapon' ? manifestEntryFor(file, manifestId) : null;
   const errors = [];
   const warnings = [];
   const requiredNodes = type === 'weapon' ? REQUIRED_WEAPON_NODES.concat(REQUIRED_WEAPON_SOCKETS) : REQUIRED_HAND_NODES;
@@ -186,11 +204,14 @@ function validate(file, type) {
   if (type === 'weapon') {
     const root = nodes.get('WeaponRoot');
     if (root && !defaultTransform(root)) errors.push('WeaponRoot transform is not applied/default');
-    for (const name of ADVANCED_WEAPON_SIGHT_SOCKETS) {
-      if (!nodes.has(name)) warnings.push(`missing v2 sight socket:${name}`);
+    const aliases = manifestEntry?.socketAliases || {};
+    const sightSockets = manifestEntry?.sightSockets || ADVANCED_WEAPON_SIGHT_SOCKETS;
+    const optionalSockets = manifestEntry?.optionalSockets || OPTIONAL_WEAPON_SIGHT_SOCKETS;
+    for (const name of sightSockets) {
+      if (!hasNodeOrAlias(nodes, aliases, name)) warnings.push(`missing v2 sight socket:${name}`);
     }
-    for (const name of OPTIONAL_WEAPON_SIGHT_SOCKETS) {
-      if (!nodes.has(name)) warnings.push(`optional sight socket not authored:${name}`);
+    for (const name of optionalSockets) {
+      if (!hasNodeOrAlias(nodes, aliases, name)) warnings.push(`optional sight socket not authored:${name}`);
     }
   }
 
@@ -244,9 +265,9 @@ function validate(file, type) {
   return report;
 }
 
-const { file, type } = parseArgs(process.argv);
+const { file, type, manifestId } = parseArgs(process.argv);
 try {
-  const report = validate(file, type);
+  const report = validate(file, type, manifestId);
   console.log(JSON.stringify(report, null, 2));
   if (!report.ok) process.exit(1);
 } catch (err) {

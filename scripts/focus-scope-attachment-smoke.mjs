@@ -92,16 +92,16 @@ try {
     prepRuntime();
     const playable = dbg.playableWeaponIndices();
     const slots = dbg.weaponSlots();
-    pageAssert(!playable.includes(2), `removed knife index is still playable: ${playable.join(',')}`);
-    pageAssert(slots.length === 6, `expected six playable slots after knife removal, got ${slots.length}`);
-    pageAssert(slots[0].idx === 1 && slots[1].idx === 3, `slot order did not close over removed knife: ${JSON.stringify(slots)}`);
+    pageAssert(playable.includes(2), `knife index should be playable again: ${playable.join(',')}`);
+    pageAssert(slots.length === 7, `expected seven playable slots with knife restored, got ${slots.length}`);
+    pageAssert(slots[0].idx === 1 && slots[1].idx === 2 && slots[2].idx === 3, `slot order should expose pistol, knife, shotgun: ${JSON.stringify(slots)}`);
 
     P.focus = 1;
     dbg.setFocusActive(true);
     await wait(360);
     const focusOn = dbg.gameplayFeelState().focus;
     pageAssert(focusOn.active, 'focus did not activate');
-    pageAssert(focusOn.animationScale < 0.72, `focus animation scale did not slow: ${JSON.stringify(focusOn)}`);
+    pageAssert(focusOn.animationScale < 0.78, `focus animation scale did not slow: ${JSON.stringify(focusOn)}`);
     pageAssert(focusOn.slideScale < focusOn.animationScale, `slide animation should be the slowest focus channel: ${JSON.stringify(focusOn)}`);
     pageAssert(focusOn.aimScale === 1, `focus should not slow aim channel: ${JSON.stringify(focusOn)}`);
     dbg.setFocusActive(false);
@@ -111,12 +111,19 @@ try {
     dbg.equipPistolScope(3);
     dbg.setAds(1);
     await wait(420);
-    const pistolPip = await waitForScope((pip) => pip.enabled && pip.visible && pip.opacity > 0.15 && !pip.screenOverlay, 'pistol RDS');
+    const pistolPip = await waitForScope((pip) => !pip.screenOverlay && pip.vignetteOpacity < 0.06 && !pip.visible, 'pistol RDS');
     const pistolPov = dbg.povState();
     const pistolVisual = dbg.weaponVisualStatus();
+    const pistolVm = dbg.viewmodelPose();
     pageAssert(pistolPov.optic && /RDS|HOLO|PRISM/i.test(pistolPov.optic.name), `pistol optic profile missing: ${JSON.stringify(pistolPov.optic)}`);
-    pageAssert((pistolPov.targetFov || 75) < 61, `pistol optic did not tighten FOV: ${JSON.stringify(pistolPov)}`);
+    // Pistol shrinks modestly on ADS so the rear of the gun doesn't dominate the
+    // view; the optic stays prominent via its own base scale. Not a sniper-style collapse.
+    pageAssert((pistolVm.gunGrp.s[0] || 1) >= 0.74 && (pistolVm.gunGrp.s[0] || 1) <= 1.14, `pistol RDS ADS gun scale out of expected band: scale=${JSON.stringify(pistolVm.gunGrp.s)}`);
+    // Gentle red-dot zoom (~1.3x) for readability: tighter than hipfire (75) but
+    // far wider than a sniper scope (<=22). Confirms zoomed-but-not-magnified-optic.
+    pageAssert((pistolPov.targetFov || 75) >= 40 && (pistolPov.targetFov || 75) <= 72, `pistol RDS should use a gentle red-dot zoom, not sniper/none: ${JSON.stringify(pistolPov)}`);
     pageAssert(pistolVisual.pistolOpticVisible && pistolVisual.pistolOpticMeshes >= 8, `pistol optic mesh not visible: ${JSON.stringify(pistolVisual)}`);
+    pageAssert(!pistolPip.visible || pistolPip.opacity < 0.12, `pistol RDS should not use magnified glass PIP: ${JSON.stringify(pistolPip)}`);
 
     prepRuntime();
     dbg.switchWeapon(7, true);

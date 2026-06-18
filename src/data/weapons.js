@@ -1,13 +1,13 @@
 // ── WEAPONS ───────────────────────────────────────────────────────────────────
 export const WEAPONS=[
   {name:'M4A1',slot:'',playable:false,removed:true,mag:30,res:90, fireRate:.10,dmg:35,hsDmg:200,reloadTime:2.2,spread:.025,adsSpread:.008,shX:.30,shY:.16,recoilX:.055,recoilZ:.022,muzzleZ:-.49,ejectX:.038,ejectY:.032,ejectZ:-.04,auto:true},
-  {name:'USP-T',slot:'[1/6]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
-  {name:'THROWING KNIFE',slot:'',playable:false,removed:true,mag:1,res:0,fireRate:.55,dmg:200,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1},
-  {name:'TAC-12 SHOTGUN',slot:'[2/6]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
-  {name:'MP9 SUPPRESSED',slot:'[3/6]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
-  {name:'MK14 DMR',  slot:'[4/6]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
-  {name:'P226 SUPP', slot:'[5/6]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
-  {name:'AWM SNIPER',slot:'[6/6]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
+  {name:'USP-T',slot:'[1/7]',mag:12,res:36,fireRate:.30,dmg:55,hsDmg:80,reloadTime:1.5,spread:.012,adsSpread:.003,shX:.30,shY:.16,recoilX:.060,recoilZ:.022,muzzleZ:-.15,ejectX:.028,ejectY:.042,ejectZ:.00,auto:false,suppressed:true},
+  {name:'COMBAT KNIFE',slot:'[2/7]',mag:1,res:99,fireRate:.44,dmg:115,hsDmg:999,reloadTime:0,spread:0,adsSpread:0,shX:.10,shY:.05,recoilX:.020,recoilZ:.005,auto:false,recoverChance:1,melee:true,suppressed:true},
+  {name:'TAC-12 SHOTGUN',slot:'[3/7]',mag:6,res:18,fireRate:.85,dmg:30,hsDmg:120,reloadTime:2.6,spread:.105,adsSpread:.060,shX:.55,shY:.28,recoilX:.140,recoilZ:.050,muzzleZ:-.52,ejectX:.030,ejectY:.040,ejectZ:.04,auto:false,pellets:7,falloffNear:6,falloffFar:12,falloffMul:.25},
+  {name:'MP9 SUPPRESSED',slot:'[4/7]',mag:32,res:64,fireRate:.075,dmg:22,hsDmg:140,reloadTime:1.8,spread:.038,adsSpread:.014,shX:.18,shY:.10,recoilX:.030,recoilZ:.012,muzzleZ:-.40,ejectX:.030,ejectY:.030,ejectZ:-.04,auto:true,suppressed:true,falloffNear:15,falloffFar:25,falloffMul:.5},
+  {name:'MK14 DMR',  slot:'[5/7]',mag:10,res:40, fireRate:.32,dmg:75,hsDmg:300,reloadTime:2.4,spread:.012,adsSpread:.002,shX:.45,shY:.24,recoilX:.090,recoilZ:.030,muzzleZ:-.55,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true},
+  {name:'P226 SUPP', slot:'[6/7]',mag:12,res:36, fireRate:.22,dmg:55,hsDmg:75,reloadTime:1.4,adsTimeMul:.85,spread:.011,adsSpread:.003,shX:.18,shY:.08,recoilX:.045,recoilZ:.018,muzzleZ:-.30,ejectX:.030,ejectY:.040,ejectZ:.00,auto:false,suppressed:true},
+  {name:'AWM SNIPER',slot:'[7/7]',mag:5, res:15, fireRate:1.10,dmg:185,hsDmg:999,reloadTime:3.0,spread:.005,adsSpread:.0008,shX:.85,shY:.45,recoilX:.180,recoilZ:.060,muzzleZ:-.62,ejectX:.038,ejectY:.034,ejectZ:-.04,auto:false,wallbang:true,bigZoom:true,breathHold:.4}
 ];
 export const PLAYABLE_WEAPON_INDICES=WEAPONS.map((w,i)=>w&&w.playable!==false&&!w.removed?i:-1).filter(i=>i>=0);
 export const START_WEAPON_IDX=PLAYABLE_WEAPON_INDICES[0]??0;

@@ -69,6 +69,12 @@ function enemyLocomotionDebug(enemy, speed, movementMode) {
     strafeBlend: clamp01(raw?.strafeBlend ?? 0),
     footPlant: clamp01(raw?.footPlant ?? 0),
     footPlantSide: Number(raw?.footPlantSide ?? 0),
+    footAnchor: clamp01(raw?.footAnchor ?? 0),
+    stanceCompression: clamp01(raw?.stanceCompression ?? 0),
+    swingClearance: clamp01(raw?.swingClearance ?? 0),
+    toeRoll: clamp01(raw?.toeRoll ?? 0),
+    lateralBrace: clamp01(raw?.lateralBrace ?? 0),
+    plantWindow: clamp01(raw?.plantWindow ?? 0),
     finite: true
   };
   for (const key of ['speedVis', 'desiredSpeed', 'targetSpeed', 'cadence', 'strideMeters', 'footPlantSide']) {

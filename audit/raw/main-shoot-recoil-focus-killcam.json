@@ -1,0 +1,103 @@
+{
+  "scope": "src/main.js lines 25900-27050 — shoot() core fire path, recoil delta, dropped mag, focus mode sfx/hud, killcam orbit (with cross-references to recoil recovery ~41770, trail disposal ~40536, weapon data src/data/weapons.js, callers of killcam/dropped-mag)",
+  "findings": [
+    {
+      "id": "killcam-orbit-dead-feature",
+      "file": "src/main.js",
+      "lineRange": "26927-26965",
+      "kind": "deadcode",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "KILLCAM third-person orbit is fully dead — never triggered, would also never restore the camera",
+      "description": "The whole 'KILLCAM ORBIT' subsystem (KILLCAM object, triggerKillcamOrbit(), updateKillcam()) is wired into the frame loop (line 41603 calls updateKillcam) but triggerKillcamOrbit() is never called from anywhere in the codebase. grep confirms the only references are the definition and the loop call. So KILLCAM.active is never set true and the cinematic orbit never plays. This is a half-wired AAA feature that does nothing. Separately, even if it were triggered it is broken: on completion updateKillcam only sets active=false with a comment '// Snap camera back to player' but never restores camera.position/quaternion (KILLCAM.startCamPos/startCamQuat are stored at 26934-26935 but never read), and G._killcamLockedInput is set/cleared but never consumed by any input handler. So the feature is both dead AND incorrect.",
+      "evidence": "Definition only, no callers: `function triggerKillcamOrbit(enemy){ if(KILLCAM.active||!enemy||DEATHCAM.active)return; ... }` and on finish `if(ph>=1||!KILLCAM.target){ KILLCAM.active=false;G._killcamLockedInput=false; // Snap camera back to player\\n return; }`. grep for triggerKillcamOrbit across src/ returns only this definition. KILLCAM.startCamPos/startCamQuat are assigned but never read anywhere (grep).",
+      "fix": "Decide intent. To ship the feature: call triggerKillcamOrbit(enemy) from the kill path (e.g. inside the killed-branch around line 26445-26486, gated to special kills like last-of-zone or boss to avoid spam), AND in updateKillcam's completion branch actually restore the saved transform: `camera.position.copy(KILLCAM.startCamPos);camera.quaternion.copy(KILLCAM.startCamQuat);` before clearing active, and make a real input handler honour G._killcamLockedInput. To drop it: delete the KILLCAM object, triggerKillcamOrbit, updateKillcam and the loop call at 41603. Do NOT leave it half-wired.",
+      "risk": "If enabling: orbit positions the camera every frame in updateKillcam which runs in the loop; must confirm ordering vs the normal camera update so it isn't immediately overwritten, and gate triggers tightly or it will spam/feel jarring. If deleting: trivial, just remove dead symbols. Either way build/probes stay green since nothing depends on it.",
+      "confidence": "high"
+    },
+    {
+      "id": "shotgun-fx-cap-one-pellet",
+      "file": "src/main.js",
+      "lineRange": "26341-26343",
+      "kind": "contradiction",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "FX_CAP clamps multi-pellet FX to 1, contradicting the comment ('first 3 pellets') — shotgun shows a single tracer/impact",
+      "description": "The comment says 'only spawn full FX on the first 3 pellets' but the code is `const FX_CAP=Math.min(numShots,1);` — i.e. only the FIRST pellet gets a tracer, surface impact, blood, ricochet, breakable/cover damage and surface SFX. For the TAC-12 shotgun (pellets:7, per src/data/weapons.js line 6) all 7 pellets still apply damage (the enemy-hit branch at 26392 is not gated by allowFx), but the trail (26566), the surface-impact branch (26489 `else if(allowFx)`), spawnSurfaceImpact, ricochet, breakable/explosive/cover-HP handling all only run for pellet 0. Result: a shotgun blast visually reads as a single bullet — only one tracer and one wall impact instead of a satisfying pellet spread. This badly undersells the shotgun's punch.",
+      "evidence": "`// For multi-pellet weapons, only spawn full FX on the first 3 pellets ...` immediately followed by `const FX_CAP=Math.min(numShots,1);`. Then `const allowFx=pellet<FX_CAP;` and `} else if(allowFx){ ...surface impact, decals, ricochet, breakable... }` and `if(allowFx){ ...addTrail... }`.",
+      "fix": "Change line 26343 to match the stated intent and restore visible spread: `const FX_CAP=Math.min(numShots,3);` (gives 3 tracers/impacts for shotgun while keeping a GC cap). For an even punchier shotgun consider allowing all pellet tracers but capping the heavier surface decals: e.g. trails for all pellets, addImpact/spawnSurfaceImpact only for pellet<3.",
+      "risk": "Slightly more meshes per shotgun shot (up to 3 tracers + 3 impacts vs 1). The comment already deemed 3 acceptable; full-auto guns are single-pellet so unaffected. Keep at 3 to respect the GC budget the comment cites.",
+      "confidence": "high"
+    },
+    {
+      "id": "dropped-mag-geometry-leak",
+      "file": "src/main.js",
+      "lineRange": "26643-26664",
+      "kind": "leak",
+      "severity": "medium",
+      "visibleImpact": "none",
+      "title": "spawnDroppedMag leaks two BoxGeometries every reload (Group pushed as t.mesh, child geometries never disposed)",
+      "description": "spawnDroppedMag builds a THREE.Group containing two child meshes (body, lip) and pushes `{mesh:grp,mat:magM,...,extraMats:[lipM]}` into G.trails. When the trail expires, _disposeTrail (line 40536) disposes t.mesh.geometry — but t.mesh is a Group, which has NO geometry, so neither the body BoxGeometry nor the lip BoxGeometry is ever disposed. Materials are handled (magM via t.mat at 40543, lipM via t.extraMats at 40541), so only geometries leak. Contrast addShell (line 24307) which pushes a single Mesh as t.mesh, so its geometry IS disposed. Every partial-mag reload leaks 2 BoxGeometries; over a long session this accumulates GPU buffers.",
+      "evidence": "spawnDroppedMag: `const grp=new THREE.Group(); ... const body=new THREE.Mesh(new THREE.BoxGeometry(...),magM);grp.add(body); const lip=new THREE.Mesh(new THREE.BoxGeometry(...),lipM); ... G.trails.push({mesh:grp,mat:magM,vel,spin:...,timer:3.0,maxTime:3.0,isDroppedMag:true,extraMats:[lipM]});`. _disposeTrail: `if(t.mesh){scene.remove(t.mesh);if(t.mesh.geometry)t.mesh.geometry.dispose();...}` — grp.geometry is undefined.",
+      "fix": "Either dispose child geometries in _disposeTrail for grouped trails (`if(t.mesh){scene.remove(t.mesh);t.mesh.traverse&&t.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();});...}`), or in spawnDroppedMag attach a disposer/flag so the trail loop traverses the group. Cleanest surgical fix: in _disposeTrail, replace the single geometry dispose with a traverse when t.mesh has children, e.g. `if(t.mesh){scene.remove(t.mesh);if(t.mesh.geometry)t.mesh.geometry.dispose();else if(t.mesh.traverse)t.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();});...}`.",
+      "risk": "Very low; traverse-dispose is a no-op for non-group meshes. Verify no other code re-uses the disposed geometries (these are freshly created per mag, so safe).",
+      "confidence": "high"
+    },
+    {
+      "id": "suppress-hitfx-uses-global-P",
+      "file": "src/main.js",
+      "lineRange": "26440-26443",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Hit-FX throttle uses global P instead of the firing player pl (cross-player desync in P2/duel)",
+      "description": "The blood/particle de-dupe throttle reads and writes P._suppressHitFxUntil, hardcoding player 1. But shoot() supports _slot===1 where the firing player is pl=P2. When P2 fires a body hit, it reads and stamps P1's _suppressHitFxUntil, so P2's hit-particle throttling is governed by P1's recent shots (and vice-versa). Everywhere else in the function the per-player object `pl` is used; this is the lone place that leaks to the global P.",
+      "evidence": "`if(allowFx&&!(P._suppressHitFxUntil&&performance.now()<P._suppressHitFxUntil)){ addParticle(hitPt,isHead); if(isHead||killed||Math.random()<.35)addBlood(hitPt,isHead); if(!isHead&&!killed)P._suppressHitFxUntil=performance.now()+70; }` — uses P, not pl.",
+      "fix": "Replace both `P._suppressHitFxUntil` references on lines 26440 and 26443 with `pl._suppressHitFxUntil`.",
+      "risk": "Minimal. In single-player pl===P so behaviour is identical; only fixes split-screen/duel. No save-compat or perf concern.",
+      "confidence": "high"
+    },
+    {
+      "id": "muzzle-flash-settimeout-realtime",
+      "file": "src/main.js",
+      "lineRange": "16851-16854",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Muzzle flash decay uses wall-clock setTimeout (32-52ms), ignoring focus-mode timeScale and risking flicker overlap",
+      "description": "_pulseMuzzleFlashForSlot (called from shoot() at line 26111) sets the muzzle light intensity then schedules `setTimeout(()=>{light.intensity=0;mat.opacity=0;},suppressedMul<.5?32:52)`. Two issues: (1) the flash decays in real wall-clock time, so during focus-mode bullet-time (P.timeScale down to ~0.125) the muzzle flash vanishes far too quickly relative to perceived game time, breaking the slow-mo gunfire fantasy. (2) Each shot schedules its own off-timer; if a future faster-firing/unsuppressed auto weapon fires below the 52ms interval, an earlier timer would zero the light mid-flash causing flicker. Current playable fire rates (M4 .10s, MP9 .075s suppressed→32ms) don't overlap today, so #2 is latent; #1 is the live, visible one in focus mode.",
+      "evidence": "`light.intensity=(3.0+(Math.random()*1.0))*suppressedMul; mat.opacity=0.55*suppressedMul; ... setTimeout(()=>{light.intensity=0;mat.opacity=0;},suppressedMul<.5?32:52);`",
+      "fix": "Drive the flash decay from the frame loop in game-time rather than setTimeout: store a per-slot flash timer (e.g. muzzleFlashT) set in _pulseMuzzleFlashForSlot and decay it in the render loop using the focus-scaled dt, mapping intensity/opacity off that timer. This keeps the flash readable during bullet-time and removes the overlap-flicker risk. Low-risk incremental change.",
+      "risk": "Touches a hot path (every shot). Must ensure the decay still fully zeroes intensity so the light doesn't linger. Keep the same peak values to avoid retuning lighting.",
+      "confidence": "medium"
+    },
+    {
+      "id": "muzzle-flash-intensity-aaa",
+      "file": "src/main.js",
+      "lineRange": "16851-16852",
+      "kind": "aaa-visual",
+      "severity": "low",
+      "visibleImpact": "medium",
+      "title": "Muzzle flash light is modest (intensity ~3-4) — a brighter, slightly longer flash reads far more AAA",
+      "description": "The per-shot muzzle dynamic light peaks at only 3.0-4.0 intensity with 0.55 plane opacity for 52ms. There is already a dynamic point light + flash plane + AAA world spill (spawnAaaMuzzleWorldSpill) + ring + smoke, so the plumbing is solid — but the punch is conservative. A modest bump to peak intensity and a touch more opacity, combined with the game-time decay fix above, makes every shot pop and light up nearby walls/enemies the instant you fire, which is one of the cheapest, most immediately visible AAA upgrades.",
+      "evidence": "`light.intensity=(3.0+(Math.random()*1.0))*suppressedMul; mat.opacity=0.55*suppressedMul;`",
+      "fix": "Raise the peak (and let randomness vary it more), e.g. `light.intensity=(5.5+Math.random()*2.0)*suppressedMul;` and `mat.opacity=0.72*suppressedMul;`, ideally paired with the frame-loop decay so it sustains a hair longer in real frames. Tune against renderer exposure/tone-mapping so it flashes without clipping the whole frame.",
+      "risk": "Low; purely visual tuning. If the renderer uses strong bloom/tone-mapping, validate it doesn't over-bloom indoors. Easy to revert.",
+      "confidence": "medium"
+    },
+    {
+      "id": "killcam-slowmo-name-collision",
+      "file": "src/main.js",
+      "lineRange": "26919-26965",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Two near-identically-named killcam systems coexist: triggerKillCamSlowMo (live) vs triggerKillcamOrbit/KILLCAM (dead)",
+      "description": "triggerKillCamSlowMo + _killCamT/_killCamScale/_killCamDur is the real, heavily-used bullet-time-on-kill system (called from ~10 sites incl. shoot() lines 26484-26485). Immediately below it lives the dead KILLCAM/triggerKillcamOrbit orbit system (see killcam-orbit-dead-feature). The almost-identical names ('KillCamSlowMo' vs 'KillcamOrbit', '_killCamT' vs 'KILLCAM.t') are a maintenance trap: a future edit can easily wire or break the wrong one. Flagged as a contradiction/clarity hazard adjacent to the dead-code finding.",
+      "evidence": "`function triggerKillCamSlowMo(scale,dur){ _killCamT=dur||0.85; ... }` (used) directly above `const KILLCAM={active:false,...}; function triggerKillcamOrbit(enemy){...}` (unused).",
+      "fix": "When resolving killcam-orbit-dead-feature, either delete the orbit system or rename it unambiguously (e.g. KILLCAM_ORBIT / triggerKillcamOrbit clearly documented) so the two systems can't be confused. No behaviour change required beyond the orbit decision.",
+      "risk": "None if only renaming/removing dead symbols; build/probes unaffected.",
+      "confidence": "high"
+    }
+  ]
+}

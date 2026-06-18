@@ -1,0 +1,103 @@
+{
+  "scope": "src/main.js lines 14260-16030 — doMelee, spawnSlashFx, checkMeleeHit, updateKnife, _viewportCssPixels, renderer/scene/camera boot, peripheral lighting, perf-adaptive governor, _configureRenderStack/createRenderSubsystem, frame profiling, renderer health monitor, _renderFrameDirect/renderSplitScreen/_renderGameFrame/_renderFramePost, _sampleRuntimeFrame, _renderScopeTarget, _onWindowViewportResize, viewmodel material polish, M4/scope mesh build, pistol mesh build start.",
+  "findings": [
+    {
+      "id": "melee-overhead-slam-dead-code",
+      "file": "src/main.js",
+      "lineRange": "14276-14276",
+      "kind": "deadcode",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Overhead-slam combo (s===2) animation + slash FX are unreachable — MELEE.slash is never 2",
+      "description": "MELEE.slash is assigned ONLY at line 14276: `style==='heavy_stab'?3:(MELEE.comboCount%2)`. For light slices comboCount cycles 0->1->0 via line 14271 `(comboCount+1)%2`, so comboCount%2 is 0 or 1; for heavy it is forced to 3. Therefore MELEE.slash is always one of {0,1,3} and NEVER 2. Every `s===2` branch keyed off `MELEE.slash%4` is dead: the full hand-authored 'COMBO 2: Overhead power slam' viewmodel animation in updateKnife (windup/crash/impact-hold/recovery), the spawnSlashFx 'overhead slam — downward arc + impact starburst' branch, and the rests[2] idle pose. A polished overhead attack was authored but can never trigger. The 'cd2' combo pip (line 14304) also only lights when comboCount===3 (heavy), never via a real combo-2.",
+      "evidence": "14276: MELEE.slash=style==='heavy_stab'?3:(MELEE.comboCount%2);  // {0,1,3} only\n14271: MELEE.comboCount=(elapsed<MELEE.COMBO_WINDOW)?((MELEE.comboCount+1)%2):0; // 0 or 1\n14347 spawnSlashFx: else if(s===2){ ...overhead slam... }  // s never 2\n15630 updateKnife: }else if(s===2){ ...COMBO 2: Overhead power slam... }  // never runs",
+      "fix": "Decide intent and wire it, low-risk + high-visible: change the light-attack combo to a 3-step chain so the authored slam plays. At line 14271 use `(MELEE.comboCount+1)%3` (cycle 0,1,2) and keep slash=comboCount%4 at 14276 (or set MELEE.slash=MELEE.comboCount). Verify comboMult at 14408 `1+(MELEE.comboCount%2)*.10` still gives sane scaling for comboCount===2 (it would give 1.0; consider `(MELEE.comboCount)*.06`). Alternatively, if a 2-hit chain is intended, delete the dead s===2 blocks and the rests[2] entry and fix the misleading '4-hit combo chain' comment at line 13326.",
+      "risk": "Enabling combo-2 changes melee feel/timing and damage cadence; must keep the 32 static probes green. The slam animation has longer dur (s===2 windup to t<0.16 etc.) but MELEE.dur for light is set at 14291 to a short value (.31/.34) so the slam keyframes would be time-compressed — re-tune MELEE.dur for the slam case if enabled. If only deleting dead code, no gameplay risk.",
+      "confidence": "high"
+    },
+    {
+      "id": "combo-comment-contradiction",
+      "file": "src/main.js",
+      "lineRange": "13326-13327",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "MELEE comment claims a 4-hit combo chain but code implements a 2-hit chain",
+      "description": "The MELEE state object comment at line 13326 says '// 4-hit combo chain', and four combo pips (cd0..cd3) plus four authored slash animations exist, but doMelee only ever produces a 0->1 light chain (plus heavy=3). The data structure, UI, and four animation cases are sized for 4 hits while the driver logic was cut to 2. This is the root cause of the overhead-slam dead code above.",
+      "evidence": "13326: // 4-hit combo chain\n14271: MELEE.comboCount=(elapsed<MELEE.COMBO_WINDOW)?((MELEE.comboCount+1)%2):0;",
+      "fix": "Either restore the intended N-hit chain at 14271 (see melee-overhead-slam-dead-code) or update the comment to '// 2-hit light chain + heavy stab' so future readers don't assume cd2/cd3 and the s===2/s===3 animations are reachable from light attacks.",
+      "risk": "Comment-only change has zero runtime risk.",
+      "confidence": "high"
+    },
+    {
+      "id": "post-stack-disabled-stable-mode",
+      "file": "src/main.js",
+      "lineRange": "470-497",
+      "kind": "deadcode",
+      "severity": "high",
+      "visibleImpact": "high",
+      "title": "STABLE_RENDERING_MODE=true hard-disables the entire post stack (bloom/AO/grade/SSR/DOF/god-rays/SMAA) — the game ships flatter than the code implies",
+      "description": "STABLE_RENDERING_MODE is a compile-time const true (line 470). _forceStableVisualSettings (471-497) zeroes postEnabled, aoQuality, bloomQuality, colorGrade, smaa, vignette, all phase2 effects and scopePip, and is applied to every settings read (503,505,23408,23443). Consequently in _renderFramePost line 15502 `useComposer` includes `&&!STABLE_RENDERING_MODE`, so the composer is NEVER used and every frame falls to _renderFrameDirect -> renderer.render (rendering.js 1113-1115). The full createRenderSubsystem post chain (bloom, GTAO, grade/LUT, SSR, BokehPass DOF, god-rays, SMAA) is built and configured (15262-15287) but its output never reaches the screen. ACES tone mapping + exposure 1.06 (14732) still apply because they are renderer properties, but there is no bloom on emissives/muzzle flash, no ambient occlusion contact shadows, no anti-aliasing (jaggy edges), no color grade, and the scope PIP look-through is gated off. This is the single biggest 'does not look AAA on load' factor in this scope. It appears to be a deliberate WebGL-stability lock, hence medium confidence on whether it should change, but the visible impact is high.",
+      "evidence": "470: const STABLE_RENDERING_MODE=true;\n474-481: postEnabled:false, aoQuality:'off', bloomQuality:'off', colorGrade:false, ... smaa:false, vignette:false\n15502: const useComposer=!!(_renderStack&&_renderStack.composer&&G._useComposer!==false&&!STABLE_RENDERING_MODE);\nrendering.js 1113: function renderDirect(renderCamera = camera){ renderer.render(scene, renderCamera); }",
+      "fix": "If the WebGL backend is stable on target hardware, the highest-leverage AAA win is to re-enable a SAFE subset for WebGL: at minimum allow SMAA (anti-aliasing) and a gentle UnrealBloom on emissives, since these are already built into _renderStack. Lowest-risk surgical approach: keep STABLE_RENDERING_MODE but relax _forceStableVisualSettings to leave `smaa:true` and `bloomQuality:'low'` (and `postEnabled:true`) for the webgl backend, and drop the `&&!STABLE_RENDERING_MODE` gate in line 15502's `useComposer` so the composer renders the stable subset. Validate the black-frame self-test path (_resolveRendererHealth) still passes and the 32 probes stay green. Do NOT enable SSR/DOF/god-rays first — bloom+SMAA give ~80% of the perceived uplift at low risk.",
+      "risk": "Re-enabling the composer is the documented stability concern this flag exists to avoid; could regress to black frames on some GPUs. Must be tested against blackFrameSelfTest and on WebGL specifically. If left as-is, no risk but the game stays visibly flat.",
+      "confidence": "medium"
+    },
+    {
+      "id": "perf-adaptive-reconfigures-unused-composer",
+      "file": "src/main.js",
+      "lineRange": "15065-15102",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Adaptive AO/bloom/phase2 stepping calls _configureRenderStack() whose output is discarded under STABLE_RENDERING_MODE",
+      "description": "_tickPerfAdaptive (called every frame at 41567) steps bloomHeldOff, aoAdaptiveSteps, and phase2*Held flags and calls _configureRenderStack() (15072,15075,15077,15084,15101) to reconfigure composer passes. Because STABLE_RENDERING_MODE forces the composer off (see post-stack-disabled-stable-mode) AND _forceStableVisualSettings already pins aoQuality/bloomQuality to off, this reconfiguration produces no visible change — the effect is computed then discarded. The pixel-scale branch (pendingPixelScale -> applyQuality at 15113) DOES still take effect (pixel ratio), so only the AO/bloom/phase2 stack-reconfig work is wasted, costing CPU traversal in createRenderSubsystem.configure for no output.",
+      "evidence": "15072: if(stepped){_PERF_ADAPT.lastAdaptStackMs=now;_configureRenderStack();}\n15249: eff.aoQuality=_effectiveAdaptiveAoTier(...) // but _forceStableVisualSettings later pins aoQuality:'off'\n15255: _renderStack.configure(eff,ctx); // composer reconfigured but composer never rendered in stable mode",
+      "fix": "Guard the stack-reconfig branches with `if(!STABLE_RENDERING_MODE)` (or early-return the AO/bloom/phase2 stepping under stable mode) while keeping the pixel-scale path live, so the governor only does the work that affects output. If the post stack is re-enabled per the previous finding, this becomes live work and the guard should be removed.",
+      "risk": "Skipping reconfig in stable mode is safe today since output is discarded; only revisit if STABLE mode is relaxed. Keep the pixel-scale/applyQuality path untouched.",
+      "confidence": "high"
+    },
+    {
+      "id": "melee-hit-flash-divisor-mismatch",
+      "file": "src/main.js",
+      "lineRange": "14476-14519",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Heavy-stab hit flash uses lifetime 0.30 but fade divisor is hardcoded 0.22 — opacity starts pinned >1",
+      "description": "doMelee/checkMeleeHit sets MELEE.hitFlashTimer to 0.30 for heavy stabs and 0.22 for light (line 14476). In updateKnife the fade computes `f=Math.max(0,MELEE.hitFlashTimer/.22)` (line 14519) with a hardcoded .22 denominator. For a heavy stab f begins at 0.30/0.22 ≈ 1.36, so hf.style.opacity is set to the string '1.36...'. CSS clamps opacity to 1, so the flash visually holds at full opacity for the first ~0.08s of the heavy flash instead of starting its fade, making the heavy hit flash linger flat rather than easing out.",
+      "evidence": "14476: MELEE.hitFlashTimer=heavy?0.30:0.22;\n14519: if(hf){const f=Math.max(0,MELEE.hitFlashTimer/.22);hf.style.opacity=String(f);}",
+      "fix": "Store the flash duration when arming it (e.g. `MELEE.hitFlashDur=heavy?0.30:0.22;` at 14476) and divide by it in updateKnife: `const f=Math.max(0,MELEE.hitFlashTimer/(MELEE.hitFlashDur||.22));`. Or simply clamp/normalize with the heavy value. This restores a smooth ease-out for the heavy hit flash.",
+      "risk": "Trivial; only changes the heavy hit-flash fade curve. Does not affect save data or probes.",
+      "confidence": "high"
+    },
+    {
+      "id": "melee-canvas-css-pixel-size",
+      "file": "src/main.js",
+      "lineRange": "14314-14316",
+      "kind": "aaa-visual",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Slash FX canvas sized in CSS px (no devicePixelRatio), so slash arcs render soft/blurry on HiDPI displays",
+      "description": "spawnSlashFx sets the melee canvas backing-store to CSS pixels: `W=cv.width=V.w,H=cv.height=V.h` where V comes from _viewportCssPixels() (CSS px). On a 2x Retina display the WebGL canvas runs at up to 2x (renderer.setPixelRatio(min(dpr,2)) line 14729) but the slash overlay is drawn at 1x and stretched by CSS, so the otherwise crisp blood-splatter lines and slash arcs look soft compared to the sharp 3D scene behind them. A cheap sharpness/AAA uplift for melee feedback.",
+      "evidence": "14314: const V=_viewportCssPixels(),W=cv.width=V.w,H=cv.height=V.h;\n14316: const cxp=W*.5,cyp=H*.52;",
+      "fix": "Scale the backing store by DPR: `const dpr=Math.min(devicePixelRatio||1,2); const W=cv.width=Math.round(V.w*dpr),H=cv.height=Math.round(V.h*dpr);` then `ctx.scale(dpr,dpr)` (or multiply all coordinate constants by dpr) and keep cv CSS size at V.w/V.h. Center math should use CSS-space (V.w*.5) after ctx.scale(dpr,dpr).",
+      "risk": "Low; slightly more fill cost for the brief slash draw. Ensure ctx transforms are reset (ctx.save/restore already wraps the draw). No save/probe impact.",
+      "confidence": "medium"
+    },
+    {
+      "id": "vestigial-deagle-aliases-deadcode",
+      "file": "src/main.js",
+      "lineRange": "16018-16025",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Vestigial deagle mesh aliases declared but unused (deBarrelTip/deBarrelV1-3/deRearCap/deGasCyl/deTopRib1-2 etc.)",
+      "description": "Lines 16021-16025 declare a block of const aliases pointing existing pistol meshes at old-Deagle part names (deTopBlk=deBreech, deBarrel=deSuppr, deBarrelV1=deSuppr, deRearCap=deBreech, deGasCyl=deSuppr, deSafety=deDecocker, deRailG4=deRailFwd, deHammerCr=deHammer). A grep shows several of these (deBarrelTip, deBarrelV1-3, deRearCap, deGasCyl, deTopRib1/2) are only ever defined here and never read elsewhere, so they are dead aliases kept for a now-removed animation contract. They are harmless (no double gunGrp.add) but add confusion; note that deBarrel=deSuppr means any code that DID move 'deBarrel' would actually move the suppressor mesh.",
+      "evidence": "16021: const deTopBlk=deBreech,deTopRib1=deBreech,deTopRib2=deBreech;\n16022: const deBarrel=deSuppr,deBarrelTip=deSupprEndF;\n16023: const deBarrelV1=deSuppr,deBarrelV2=deSuppr,deBarrelV3=deSuppr;",
+      "fix": "Remove the aliases that grep confirms are unreferenced (deBarrelTip, deBarrelV1-3, deRearCap, deGasCyl, deTopRib1, deTopRib2) after confirming no references exist file-wide; keep only those actually read by the pistol animation tick (verify deBarrel/deSafety/deRailG4/deHammerCr usage before deleting). Comment-clarify any retained alias.",
+      "risk": "Must grep-confirm zero references before deleting each alias or the build breaks (ReferenceError). Several may still be referenced by the deagle animation routine outside this scope — verify first. Low risk if grep is exhaustive.",
+      "confidence": "medium"
+    }
+  ]
+}

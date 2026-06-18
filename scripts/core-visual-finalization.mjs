@@ -13,6 +13,9 @@ function assert(cond, message) {
 const root = process.cwd();
 const mainSrc = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const acceptanceRunner = fs.existsSync(path.join(root, 'scripts/run-acceptance.mjs'))
+  ? fs.readFileSync(path.join(root, 'scripts/run-acceptance.mjs'), 'utf8')
+  : '';
 const sequenceSummary = summarizeCoreVisualPatchSequences(CORE_VISUAL_PATCH_SEQUENCES);
 
 assert(CORE_VISUAL_PATCH_VERSION === 'core-visual-polish-v1', `unexpected patch version: ${CORE_VISUAL_PATCH_VERSION}`);
@@ -22,7 +25,12 @@ assert(sequenceSummary.total === 9, `expected 9 core visual sequences including 
 const scripts = packageJson.scripts || {};
 assert(scripts['capture:core-visual-baseline'], 'missing capture:core-visual-baseline script');
 assert(scripts['test:core-visual-finalization'], 'missing test:core-visual-finalization script');
-assert((scripts['test:acceptance'] || '').includes('test:core-visual-finalization'), 'test:acceptance does not include core visual finalization');
+assert(
+  (scripts['test:acceptance'] || '').includes('test:core-visual-finalization') ||
+  acceptanceRunner.includes("'test:core-visual-finalization'") ||
+  acceptanceRunner.includes('"test:core-visual-finalization"'),
+  'test:acceptance does not include core visual finalization'
+);
 
 const requiredMainHooks = [
   'CORE_VISUAL_MATERIAL_POLISH_VERSION',

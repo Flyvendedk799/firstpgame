@@ -871,7 +871,25 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
   key.name = 'custom-map-key';
   key.position.set(-22, 26, 34);
   key.target.position.set(0, geo.map.floorY, 0);
-  key.castShadow = false;
+  key.castShadow = true;
+  {
+    const sb = Object.assign({}, DEFAULT_CUSTOM_MAP_BOUNDS, geo.map.bounds || {});
+    const sx0 = Number(sb.x0) || 0;
+    const sx1 = Number(sb.x1) || 0;
+    const sz0 = Number(sb.z0) || 0;
+    const sz1 = Number(sb.z1) || 0;
+    const shadowMargin = 6;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.bias = -0.00018;
+    key.shadow.normalBias = 0.018;
+    key.shadow.camera.near = 0.5;
+    key.shadow.camera.far = 120;
+    key.shadow.camera.left = Math.min(sx0, sx1) - shadowMargin;
+    key.shadow.camera.right = Math.max(sx0, sx1) + shadowMargin;
+    key.shadow.camera.top = Math.max(sz0, sz1) + shadowMargin;
+    key.shadow.camera.bottom = Math.min(sz0, sz1) - shadowMargin;
+    key.shadow.camera.updateProjectionMatrix();
+  }
   scene.add(key, key.target);
   localObjects.push(key, key.target);
   shadowCasters.push(key);
@@ -982,7 +1000,6 @@ export function compileCustomMapToLevelData(inputMap, kitManifest, env = {}) {
     }
   }
   function tickDynProps(dt) {
-    tickZoneDoors(dt);
     tickOpenableDoors(dt);
     const targetOpacity = env.isExitUnlocked && env.isExitUnlocked() ? 0.42 : 0;
     exitMat.opacity += (targetOpacity - exitMat.opacity) * Math.min(1, dt * 5);

@@ -1,0 +1,47 @@
+{
+  "scope": "src/main.js lines 41550-46224 — renderer.setAnimationLoop frame orchestration, camera/viewmodel pulse aggregation, fire/reload/enemy ticks, scope-PIP render dispatch, PP.shake decay, and the window.__game.debug dev/hook API. Cross-checked G._frame, G._frameAlt, P.timeScale, _pendingShootSlot, PP.shake, and camera-pulse decay against the whole repo (src/main.js, src/game/*, src/rendering.js, src/game/state.js).",
+  "findings": [
+    {
+      "id": "g-frame-never-incremented",
+      "file": "src/main.js",
+      "lineRange": "41578-44619",
+      "kind": "state-desync",
+      "severity": "high",
+      "visibleImpact": "medium",
+      "title": "G._frame is read by 4 frame-throttle gates but is NEVER incremented anywhere — every throttle fires every frame",
+      "description": "G._frame is used as a modulo divisor in four throttle conditions inside the animation loop: (G._frame|0)%20===0 -> applyScopePipRenderTargetSize() at 41578; (G._frame|0)%3===0 -> low-hp DOM opacity writes at 41689/41694 and 43743/43744/43747; and (G._frame|0)%stride===0 -> the scope PIP _renderScopeTarget() throttle at 44619. G._frame is never declared in createGameState (src/game/state.js has no _frame field) and is never written anywhere in the repo (grep for '._frame=' / '._frame++' / '._frame +=' across all src/*.js returns nothing; only G._frameAlt and G._frameSampleAt are incremented). Therefore (G._frame|0) is permanently 0, and 0%n===0 is always true. Consequences: (1) the scope-PIP render-to-texture runs EVERY frame regardless of _scopePipRenderStride()/_scopePipStatus.throttleInterval and the FPS stress-down logic at 41576-41577 — defeating an entire perf throttle while ADS'ing a scope; (2) applyScopePipRenderTargetSize() runs every frame instead of every 20; (3) the per-3-frame DOM-write throttles on the low-hp vignette run every frame. The intent (a real per-frame counter) is plainly there but the counter was never wired.",
+      "evidence": "Reads: 41578 `if((G._frame|0)%20===0)applyScopePipRenderTargetSize();` · 41689/41694 `if((G._frame|0)%3===0){` · 43743 `if((G._frame|0)%3===0)_lhEl.style.opacity='0';` · 44619 `if(_shouldPip&&_contribAlpha&&((G._frame|0)%stride)===0){_renderScopeTarget(rtScope,scopeCamera);...}`. No write anywhere: grep across all src found only `G._frameAlt=(G._frameAlt|0)+1` (41659) and `G._frameSampleAt` (44661). createGameState in src/game/state.js defines no _frame.",
+      "fix": "Add a single increment near the top of the animation loop, e.g. immediately after `_frameProfileBegin();` (line 41553) insert `G._frame=(G._frame|0)+1;`. This restores all four throttles at once (scope PIP stride, scope-RT resize cadence, low-hp DOM throttling). Verify _scopePipRenderStride() still returns >=1. Low risk; purely re-enables intended throttling.",
+      "risk": "Re-enabling the scope-PIP stride means the PIP texture updates every Nth frame again (N=stride) — visually the scope content will update at the throttled cadence as originally designed; under high FPS this is imperceptible but worth a quick ADS-scope smoke check. No save-compat impact. Net perf win.",
+      "confidence": "high"
+    },
+    {
+      "id": "duplicate-low-hp-vignette-writers",
+      "file": "src/main.js",
+      "lineRange": "41684-41699",
+      "kind": "contradiction",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Two competing writers drive the same #low-hp vignette element with different thresholds in the same frame",
+      "description": "The low-HP red vignette element ($e('low-hp')) is written by TWO independent blocks in the same frame. Block A (41684-41699) sets opacity from hpRatio (P.hp/P.maxHp) with threshold 0.30 and folds in P._criticalHitPulse. Block B (43740-43747) sets opacity from an absolute P.hp<35 check with a sin() pulse. Because Block B runs later in the loop it wins on most frames, so the critical-hit-pulse contribution and the maxHp-relative ratio logic in Block A are effectively dead for the final visible value. They also disagree on threshold semantics (30% of maxHp vs a hardcoded HP<35), so on a non-100-maxHp build the two systems light up at different HP values. Both blocks are additionally gated on the dead G._frame%3 (see g-frame-never-incremented), so neither is actually throttled.",
+      "evidence": "Block A: 41695 `const lowHpOpacity=hpRatio<.30?.85*(1-hpRatio/.30):0;` 41696 `$e('low-hp').style.opacity=!spawnVisualGrace?String(Math.max(lowHpOpacity,criticalVisual*.26)):'0';` — Block B: 43741 `const _lhEl=$e('low-hp');` 43744 `}else if(!spawnVisualGrace&&!P.dead&&P.hp<35&&((G._frame|0)%3)===0){ const _lhP=.55+.45*Math.sin(now*4.5); _lhEl.style.opacity=String(_lhP*(1-P.hp/35)*.92);` Both target id 'low-hp'.",
+      "fix": "Pick one owner. Simplest: delete/neutralize Block A's low-hp opacity write at 41695-41696 (keep its criticalVisual computation only if Block B consumes it), and let Block B own the element — but make Block B use hpRatio (P.hp/(P.maxHp||100)) instead of the hardcoded 35 so it matches the rest of the HUD, and fold criticalVisual into it. Alternatively delete Block B and keep Block A (which already includes critical-hit pulse). Either way remove the dead G._frame%3 gate or replace with G._frameAlt&1.",
+      "risk": "Visual-only. Risk is a brief change in when/how strongly the red vignette appears; verify at HP just below 30% and at a critical hit. No save/perf concern.",
+      "confidence": "high"
+    },
+    {
+      "id": "screenshake-mapped-too-weak-to-camera",
+      "file": "src/main.js",
+      "lineRange": "42826-42827",
+      "kind": "aaa-feel",
+      "severity": "low",
+      "visibleImpact": "medium",
+      "title": "Global screen-shake (PP.shakeX/Y) is applied to camera only as a tiny POSITIONAL offset (x0.012 / x0.008) and never as rotation — explosions/hits barely move the view",
+      "description": "PP.shakeX/PP.shakeY accumulate sizable impulses across the game (explosions push 1.6/1.2 at 23176-23177, near-miss/recoil push 0.06-0.3 at 13356-13378, melee 0.13-0.20 at 14301-14302). But the ONLY place they feed the view is the camera POSITION at 42826 (`PP.shakeX*.012`) and 42827 (`PP.shakeY*.008`). A 0.3 impulse therefore yields ~0.0024-0.0036m of camera translation — visually negligible — and there is no angular (camera.rotation) shake from PP at all. The big, screen-selling 'kick' AAA shooters use is angular. This is a cheap, high-visibility upgrade: route a small fraction of PP.shake into camera.rotation. (Verified PP.shake is read nowhere else; decay at 44524-44525 with shakeDecay=11 is well-behaved, so increasing the camera mapping is safe.)",
+      "evidence": "42826 `...+PP.shakeX*.012+adsBX+...` 42827 `EYE+P._camBobY+P.jumpH+PP.shakeY*.008-P.landKick+...`. Inputs e.g. 23176 `PP.shakeX+=(Math.random()-.5)*1.6;` 13357 `PP.shakeY-=(hit?.315:.135)*s;`. No `PP.shake*` appears in any camera.rotation expression (camera.rotation lines 42952-42955 reference _pa0/recoil/feel pulses only).",
+      "fix": "After the camera.rotation.z assignment block (around 42955), add a small angular term, e.g. `camera.rotation.x+=PP.shakeY*0.020; camera.rotation.z+=PP.shakeX*0.014;` (tune to taste; multipliers chosen so a 0.3 impulse gives ~0.4deg pitch). Keep the existing positional terms. This is purely additive and decays with the existing shakeDecay. Optionally clamp with an SETTINGS.screenShake scale if one exists.",
+      "risk": "Adding rotation shake can cause motion sickness if overdone and could fight the recoil angular kick — start conservative (0.01-0.02). Gate behind any existing SETTINGS.screenShake/reducedMotion flag if present. No save/perf concern; one extra add per frame.",
+      "confidence": "low"
+    }
+  ]
+}

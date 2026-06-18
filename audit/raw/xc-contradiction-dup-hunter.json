@@ -1,0 +1,74 @@
+{
+  "scope": "Cross-cutting contradiction/duplication hunt across the whole codebase (Grep + targeted Read). Verified: function-name collisions in src/main.js (all are per-level-builder closures, NOT contradictions), module-level const/function redeclarations (none at top level), SETTINGS (main.js:23290) and PROGRESS (main.js:35481) default/merge paths (both correct, save-merge rule honored), the THREE light-boost monkeypatch (main.js:406/456-467 — patched copy is threaded through to satellite modules via ctx.THREE, so consistent), helper dups (clamp/expDamp/damp are module-local and numerically identical), and the AI/lean telemetry counters (initialized in src/game/state.js:75-76, so the !=null guards DO pass — telemetry works, NOT a contradiction). Cross-checked CONFIG (main.js:29515) reads, G.wave vs ENDLESS.wave, the armband holo HP bar, and reload-progress divide guards.",
+  "findings": [
+    {
+      "id": "dead-config-competing-source-of-truth",
+      "file": "src/main.js",
+      "lineRange": "29515-29560",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Entire CONFIG balance object is a dead, competing source of truth (0 reads anywhere)",
+      "description": "const CONFIG={player:{moveSpeed:5.0,sprintSpeed:9.8,jumpHeight:5.8,gravity:14.0,maxHp:100,hpRegen:1.5,hpRegenDelay:5.0},combat:{headshotMul:2.0,backstabMul:3.0,closeRange:3.0,...,explosiveRadius:5.2,explosiveDmg:120},enemy:{aggroRadius:18.0,sightRadius:22.0,hearingRadius:14.0,...},ai:{...}} reads as the canonical design-intent table, but `grep -c '\\bCONFIG\\.' src/main.js` returns 0 — nothing in the runtime ever reads it. Every value it 'owns' is actually hardcoded inline somewhere else with potentially different numbers: player movement caps live in the per-archetype locomotion table (main.js:6123-6135), enemy sightRadius/aggro/spd live in the inline EM roster (main.js:6296+ e.g. soldier spd:2.6+diff*.50, sniper rng:22+diff*1.2), headshotMul is the inline 2.0 at main.js:25450/26415, explosiveRadius is the inline RADIUS=5.2 (main.js:23110) for grenades vs RADIUS=4.2 (main.js:33152) for barrels. So CONFIG is a phantom second source of truth that silently disagrees with (and is overridden by) the real inline values. The operator-region agent flagged only CONFIG.player.hpRegen/hpRegenDelay as unused; the cross-cutting truth is that the WHOLE object is inert. A future edit to CONFIG (e.g. nerfing headshotMul or sightRadius) would have zero effect, a classic 'I changed the config but nothing happened' trap.",
+      "evidence": "const CONFIG={player:{moveSpeed:5.0,sprintSpeed:9.8,...}, combat:{headshotMul:2.0,...,explosiveRadius:5.2,explosiveDmg:120}, enemy:{aggroRadius:18.0,sightRadius:22.0,...}}  // grep -c '\\bCONFIG\\.' src/main.js == 0",
+      "fix": "Either (a) delete CONFIG and the few dead helpers that pretend to consume it (tickHealthRegen at 29881, _adjustEnemyHp) to remove the misleading second truth, or (b) make it real by wiring the inline values to read from CONFIG (e.g. enemy roster uses CONFIG.enemy.sightRadius as the base for canSee, grenade explodeGrenade uses CONFIG.combat.explosiveRadius/explosiveDmg, headshot mul reads CONFIG.combat.headshotMul). Option (a) is lower risk and keeps the build green; option (b) is a larger refactor. At minimum, add a comment marking CONFIG as design-reference-only so nobody edits it expecting gameplay to change.",
+      "risk": "Deleting CONFIG is safe (no readers) but must also remove the dead functions that reference it (tickHealthRegen, _adjustEnemyHp, DIFF_HP_MUL consumers) or they'll throw ReferenceError. Wiring it live risks changing tuned gameplay numbers — must diff each CONFIG value against the inline value it would replace. Keep static-probe scripts green.",
+      "confidence": "high"
+    },
+    {
+      "id": "holo-armband-hpbar-ignores-maxhp",
+      "file": "src/main.js",
+      "lineRange": "17967-17969",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Wrist-armband holo HP bar divides by hardcoded 100, ignoring P.maxHp (extraHp perk -> bar under-reports damage)",
+      "description": "In _drawArmBandCanvas (the live first-person wrist-armband holographic HUD), HP fill is computed as hpRatio=clamp((P.hp||0)/100,0,1) and the bar color thresholds key off that same /100 ratio, while the numeric readout prints Math.round(P.hp). But applyPerks sets P.maxHp=125 when the 'extraHp' (Hard Target, +25 max HP) perk is owned (main.js:35952), and several other systems correctly divide by (P.maxHp||100) (e.g. main.js:21992, 30008, 22598). With the perk active: at full 125 HP the bar shows hpRatio=1.25 clamped to full while the printed number is 125 (mismatch between a 'full' 100-scale bar and a 125 number); as the player drops to 100/125 the bar still reads 100% green even though the operator is at 80% of max, so the armband visually under-reports damage and mis-colors the danger threshold. This is a SECOND, distinct location from the main-HUD maxHp bug the execution-region agent reported (main-hpbar-ignores-maxhp) — that one is the #hp DOM bar; this is the 3D armband canvas render path, an independent code site with the same root cause.",
+      "evidence": "const hpRatio=Math.max(0,Math.min(1,(P.hp||0)/100));\\n  ...\\n  _drawHoloMetricBar(g,36,46,c.width-48,11,hpRatio,hpRatio>.6?'#5fff90':hpRatio>.3?'#ffd060':'#ff5048','HP',String(Math.round(P.hp||0)));",
+      "fix": "Replace the hardcoded 100 with the player's max HP: const hpRatio=Math.max(0,Math.min(1,(P.hp||0)/Math.max(1,P.maxHp||100)));  This mirrors the AMMO line directly below it (which already divides by Math.max(1,W.mag||1)) and the other correct HP-ratio sites. One-line change, no save/perf impact.",
+      "risk": "Trivial. Only affects the armband canvas fill ratio/color; the printed number is unchanged. No behavior change for the default 100-HP case (100/100 == 1.0).",
+      "confidence": "high"
+    },
+    {
+      "id": "stale-g-wave-vs-endless-wave",
+      "file": "src/main.js",
+      "lineRange": "44959-44959",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Debug snapshot reports G.wave (stuck at its init value 1) while the live counter is ENDLESS.wave",
+      "description": "createGameState() initializes G.wave:1 / G.wavesTotal:2 / G.waveActive:false (src/game/state.js:72) as vestigial campaign-wave fields, and nothing in the runtime ever reassigns G.wave. The actual endless-mode wave counter is ENDLESS.wave (incremented at main.js:32953 and gating enemy-type unlocks at 32958-32964). The window.__game.debug snapshot at main.js:44959 reads `wave:G.wave`, so the debug/telemetry surface always reports a frozen 1 regardless of how deep the endless run is — it should read ENDLESS.wave (or G.building for campaign). Two parallel 'wave' truths exist (G.wave dead, ENDLESS.wave live) and the diagnostic reads the dead one. Low impact because it is debug-only, but it is a genuine competing-state desync that would mislead anyone reading the snapshot.",
+      "evidence": "// debug snapshot:  wave:G.wave,   (G.wave is set to 1 once in createGameState and never updated)\\n// live counter:    ENDLESS.wave+=1;  (main.js:32953)",
+      "fix": "In the debug snapshot at main.js:44959 read the live source: `wave: (typeof ENDLESS!=='undefined'&&ENDLESS.active)?ENDLESS.wave:G.building`. If G.wave/G.wavesTotal/G.waveActive truly have no campaign consumer, consider dropping them from createGameState to remove the dead parallel state.",
+      "risk": "Debug-only field; no gameplay or save impact. Verify ENDLESS is in scope at that line (it is a module global).",
+      "confidence": "high"
+    },
+    {
+      "id": "reload-progress-unguarded-divide",
+      "file": "src/main.js",
+      "lineRange": "40084-40149",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Two reload-progress computations omit the P.RELOAD_TIME>0 guard that every other site uses (latent NaN/-Infinity into viewmodel pose)",
+      "description": "Reload progress rt is computed in ~20 places as `P.reloading&&P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0`. Two sites drop the `P.RELOAD_TIME>0` half of the guard: line 40084 (`const rt=P.reloading?1-(P.reloadTimer/P.RELOAD_TIME):0;` inside the charging-handle pose) and line 40149 (`const rt=1-(P.reloadTimer/P.RELOAD_TIME);` inside `if(P.reloading){...}` for the main reload animation). If P.RELOAD_TIME is ever 0 while P.reloading is true, these evaluate to 1-(x/0) = NaN (x=0) or -Infinity (x>0), which then flows into _poseViewmodelPart rotations/positions and buildReloadFeelSnapshot(progress:rt), corrupting the viewmodel that frame. In practice startReload always sets P.RELOAD_TIME=finalReload>0 (main.js:27063), and main.js:46175 sets RELOAD_TIME=Math.max(...,.9) for the busy-stub, so the reloading=>RELOAD_TIME>0 invariant is currently held — but it is held by convention, not by these two call sites, which is exactly the kind of inconsistency that breaks when a new reload entry point (or a save-resume that sets reloading without RELOAD_TIME) is added. The 18 sibling sites defending against this make the two unguarded ones a clear inconsistency.",
+      "evidence": "40084:      const rt=P.reloading?1-(P.reloadTimer/P.RELOAD_TIME):0;\\n40149:    const rt=1-(P.reloadTimer/P.RELOAD_TIME); // 0->1 progress\\n// vs the canonical 18 sites: const rt=P.reloading&&P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0;",
+      "fix": "Make the two outliers match the canonical guard: line 40084 -> `const rt=(P.reloading&&P.RELOAD_TIME>0)?1-(P.reloadTimer/P.RELOAD_TIME):0;` and line 40149 -> wrap or guard: `const rt=P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0;` (it is already inside if(P.reloading)).",
+      "confidence": "medium"
+    },
+    {
+      "id": "gradeintensity-default-three-way-disagreement",
+      "file": "src/main.js",
+      "lineRange": "23307-23396",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "SETTINGS.gradeIntensity has three disagreeing 'default' values in the same IIFE (.9 vs .9 vs 1)",
+      "description": "Within the SETTINGS bootstrap IIFE the same key is defaulted three different ways: the base defaults object sets gradeIntensity:.9 (line 23307); the visual-patch version-bump reset block sets gradeIntensity:.9 (line 23336); but the per-key null-backfill sets `if(s.gradeIntensity==null)s.gradeIntensity=1;` (line 23396). So a save that explicitly stored null for gradeIntensity ends up at 1, while a fresh install or a version-bump migration ends up at .9 — the 'default' is path-dependent. It is inert in the current shipping build because STABLE_RENDERING_MODE forces colorGrade off (and _forceStableVisualSettings doesn't even touch gradeIntensity, so the value just sits unused), but it is a real constant-defined-twice-with-different-values contradiction that would surface the moment color grading is re-enabled.",
+      "evidence": "23307: smaa:false,pbrMaterials:true,vignette:false,gradeIntensity:.9,\\n23336:       gradeIntensity:.9,\\n23396:  if(s.gradeIntensity==null)s.gradeIntensity=1;",
+      "fix": "Pick one canonical default and use it in all three spots. Change line 23396 to `if(s.gradeIntensity==null)s.gradeIntensity=.9;` to match the base default and the migration block.",
+      "risk": "None today (grade disabled by STABLE mode). Future-proofing only; no save-compat concern (only affects the null-coalesce branch).",
+      "confidence": "high"
+    }
+  ]
+}

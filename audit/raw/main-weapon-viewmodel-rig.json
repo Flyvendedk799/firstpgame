@@ -1,0 +1,88 @@
+{
+  "scope": "src/main.js lines 16030-17280 (with adjacent context to 17408): deagle GLB attach, weapon material tuning, AA viewmodel rig, dropkick feet. Cross-checked against lines 567-573, 7044-7060, 12891-12922, 14731-14732, 16842-16855, data/weapons.js.",
+  "findings": [
+    {
+      "id": "player-muzzle-flash-not-additive-tonemapped",
+      "file": "src/main.js",
+      "lineRange": "16812-16819",
+      "kind": "aaa-visual",
+      "severity": "high",
+      "visibleImpact": "high",
+      "title": "Player muzzle flash uses normal blending + tone-mapped color, so it reads dull on every shot",
+      "description": "The player's first-person muzzle flash planes share `_pmfMat` (a MeshBasicMaterial with color 0xffee99, opacity peaks at only 0.55 in _pulseMuzzleFlashForSlot). It is NOT additive and NOT toneMapped:false, while the renderer runs ACESFilmicToneMapping at exposure 1.06 (lines 14731-14732). ACES compresses the warm yellow and, without additive blending, the flash blends over the scene like an opaque pale card instead of glowing. Every other glow in the game (dropkick streaks line 17235, light pools, fiber lights) uses THREE.AdditiveBlending. This is the single most-seen VFX in the game (fires on every shot) and currently looks flat/weak.",
+      "evidence": "const _pmfMat=new THREE.MeshBasicMaterial({color:0xffee99,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide});  // no blending:AdditiveBlending, no toneMapped:false ... and _pulseMuzzleFlashForSlot sets mat.opacity=0.55*suppressedMul",
+      "fix": "Add `blending:THREE.AdditiveBlending, toneMapped:false` to the `_pmfMat` definition at line 16812 and the `_pmfMatP2` definition at line 16821, and bump the peak in _pulseMuzzleFlashForSlot (line 16852) from 0.55 to ~0.9. Optionally brighten color to 0xfff0b0. One-line material edits, covers all 6 flash planes since H/V/D each share their slot material.",
+      "risk": "Additive bright flash could look slightly hot at very high fire rates; opacity is already gated by setTimeout so it self-clears. No save-compat or build impact. Keep depthWrite:false (already present) so it composites correctly.",
+      "confidence": "high"
+    },
+    {
+      "id": "deagle-glb-attach-dead-code",
+      "file": "src/main.js",
+      "lineRange": "16030-16088",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "attachDeagleGlbModel() and deagleSlideBone / restPos are unreachable dead code",
+      "description": "`DEAGLE_GLB` is hardcoded `const DEAGLE_GLB=null;` (line 573, intentionally disabled per the comment at 567-568). `attachDeagleGlbModel()` opens with `if(deagleGlbRig||!DEAGLE_GLB)return;` — `!null` is always true, so the entire body (16034-16088) never executes. Consequently `deagleSlideBone` (declared line 16031) and the `restPos` it stashes (line 16082) are written only inside this dead function and are never read anywhere else in the file. The live skinned-USP path is `attachDeagleStaticModel` (16184), which does not use deagleSlideBone at all.",
+      "evidence": "function attachDeagleGlbModel(){ if(deagleGlbRig||!DEAGLE_GLB)return; ... }  // DEAGLE_GLB===null (line 573) => always returns. deagleSlideBone/restPos written but never read (grep shows only 16031/16080/16081/16082).",
+      "fix": "Optional cleanup: delete attachDeagleGlbModel (16032-16088) and the deagleGlbRig-unrelated globals deagleSlideBone (16031) + restPos write. Low priority — it is harmless dead weight, not a correctness bug. Do NOT revive the GLB path (forbidden by project rules).",
+      "risk": "Removing is safe (truly unreferenced), but since it touches the disabled-GLB seam, leaving it is also fine. No functional change either way.",
+      "confidence": "high"
+    },
+    {
+      "id": "enemy-muzzle-flash-comment-additive-mismatch",
+      "file": "src/main.js",
+      "lineRange": "7046-7050",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "medium",
+      "title": "Enemy muzzle flash comment claims 'additive' but the material is normal-blended",
+      "description": "The enemy muzzle flash material `_mfM` is documented as 'The plane sprites below (additive, transparent) still produce a bright muzzle flash visual' (lines 7047-7048), but the material is created without `blending:THREE.AdditiveBlending` (line 7050) — same omission as the player flash. The code contradicts its own comment, and enemy muzzle flashes are weaker than intended (also tone-mapped). Cross-cuts the player-flash finding; fixing both makes ALL gunfire pop.",
+      "evidence": "// The plane sprites below (additive, transparent) still produce a bright muzzle flash visual. ... const _mfM=new THREE.MeshBasicMaterial({color:0xffee88,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide});",
+      "fix": "Add `blending:THREE.AdditiveBlending, toneMapped:false` to `_mfM` at line 7050 (the clones _mfMv/_mfMd inherit via .clone()). This makes the comment truthful and makes enemy gunfire read as a bright flash. Just outside the assigned range but the same defect class.",
+      "risk": "Minimal; opacity is driven up to 0.92 and cleared by the existing visibility/opacity reset (12920-12922). Additive will read brighter — desired.",
+      "confidence": "high"
+    },
+    {
+      "id": "muzzle-flash-settimeout-no-falloff",
+      "file": "src/main.js",
+      "lineRange": "16845-16855",
+      "kind": "aaa-feel",
+      "severity": "low",
+      "visibleImpact": "medium",
+      "title": "Muzzle flash is a binary on/off via setTimeout with no per-frame decay",
+      "description": "_pulseMuzzleFlashForSlot snaps light.intensity and mat.opacity to peak, then a setTimeout (32ms suppressed / 52ms normal) snaps them straight back to 0. There is no easing/falloff, so the flash is a hard pop-and-cut rather than a quick bright-then-fade. AAA muzzle flashes typically decay over 2-4 frames. Also, on auto weapons (MP9 idx4 fireRate .075 = 75ms) the flash re-pulses fine, but a stacked setTimeout will still fire after a weapon switch and harmlessly zero the (already-different) shared material — no crash, just no graceful handling.",
+      "evidence": "light.intensity=(3.0+(Math.random()*1.0))*suppressedMul; mat.opacity=0.55*suppressedMul; ... setTimeout(()=>{light.intensity=0;mat.opacity=0;},suppressedMul<.5?32:52);",
+      "fix": "Optional polish: instead of setTimeout, set a `P._muzzleFlashTimer` and decay opacity/intensity each frame in the main loop (where deagleMixer.update runs, ~41583). Even cheaper: keep setTimeout but lerp opacity toward 0 over the window. Low-risk feel upgrade; pairs with the additive-blending fix.",
+      "risk": "If converted to frame-decay, ensure it is cleared on pause/death so the flash doesn't linger. Pure setTimeout version is already self-clearing and safe.",
+      "confidence": "medium"
+    },
+    {
+      "id": "usp-socket-names-idx6-no-visible-guard",
+      "file": "src/main.js",
+      "lineRange": "16544-16553",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "_activeWeaponSocketNames returns USP GLB nodes for weaponIdx 6 (P226) without a .visible guard",
+      "description": "At line 16549 the guard is `if((P.weaponIdx===1||P.weaponIdx===6)&&deagleGlbRig&&...uspNodes)`, returning the USP GLB's uspNodes for the P226 (idx 6). But idx 6 renders SPP_MESHES (procedural P226, made visible at 27169), not the USP GLB — for idx 6 `deagleGlbRig.visible` is false. The parallel function at line 20519 correctly adds `&&deagleGlbRig.visible` to the same idx1||idx6 check; this one omits it, so socket-name lookups for the P226 can return USP node names that don't correspond to the visible weapon.",
+      "evidence": "if((P.weaponIdx===1||P.weaponIdx===6)&&deagleGlbRig&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes){ return Object.keys(deagleGlbRig.userData.uspNodes); }   // line 20519 has the extra `&&deagleGlbRig.visible` guard this one lacks",
+      "fix": "Add `&&deagleGlbRig.visible` to the condition at line 16549 to match the guard used at line 20519, so the P226 (idx6) does not report USP socket names. Used for diagnostics/attachment sockets, so impact is low.",
+      "confidence": "medium"
+    },
+    {
+      "id": "drop-feet-shared-mats-forced-transparent",
+      "file": "src/main.js",
+      "lineRange": "17401-17407",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Dropkick feet fade loop permanently forces shared materials transparent",
+      "description": "The fade loop iterates _DROP_FEET_PARTS and sets `m.material.transparent=true; m.material.opacity=fade`. The boot/body materials (_dropBootM, _dropPantM, _dropArmorM, etc.) are shared across many meshes, so each is set repeatedly to the same value (harmless) but is left `transparent=true` forever, pushing fully-opaque feet into the transparent render queue (extra sorting / no early-z) every frame the rig is visible. Also, since materials are shared, opacity is effectively driven by the last mesh processed (all equal here, so visually fine).",
+      "evidence": "for(const m of _DROP_FEET_PARTS){ if(m.material&&'opacity' in m.material){ m.material.transparent=true; m.material.opacity=fade; } }",
+      "fix": "Set `m.material.transparent = (fade < 0.999)` so fully-opaque feet stay in the opaque queue, or fade the group via a single shared alpha and reset transparent=false when fade>=1. Tiny perf-only change; the rig is only visible during the brief kick window so impact is low.",
+      "risk": "Toggling transparent flips needsUpdate; do it only on threshold crossing to avoid per-frame shader recompiles. Visual result unchanged.",
+      "confidence": "medium"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "scope": "src/playerAnimation.js + src/animation/*.js (profiles, channels, graph, health, notifies, importedClipController, enemyAnimationController, handGripController, locomotionFeelController, viewmodelPoseResolver, weaponAnimationController, assetPipeline), cross-referenced against src/main.js for wiring/consumption.",
+  "findings": [
+    {
+      "id": "feel-camera-wallkick-discarded",
+      "file": "src/animation/locomotionFeelController.js",
+      "lineRange": "344-345",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Locomotion-feel camera wall-kick (wallKickPitch/wallKickRoll) is computed every frame then discarded",
+      "description": "The locomotion feel layer writes addv.camera.wallKickPitch (line 344) and addv.camera.wallKickRoll (line 345). applyLocomotionFeelToPlayerAnim (line 419) adds these into playerAnimation.resolved.camera.wallKickPitch / .wallKickRoll via add(). But the camera assembly in main.js (line 42953 for pitch, line 42960 for roll) only reads _pa0.headPitch / _pa0.headRoll and never reads _pa0.wallKickPitch / _pa0.wallKickRoll. resolvePlayerAnimLayers folds the BASE wall-kick into headPitch/headRoll (playerAnimation.js lines 960 and 964) BEFORE the feel additive is applied, so the feel-layer's dedicated wallKickPitch/Roll contribution (scaled by wallKickWeight 1.18 and cameraWeight 1.10) lands in resolved.camera.wallKickPitch/Roll where nothing consumes it. The viewmodel equivalents (_pv.wallKickPitch/Roll, lines 372-376) ARE read in main.js (lines 43551-43552), so the asymmetry is clearly unintended. The feel layer also adds to headPitch (-s.wallKick*0.050, line 333) and headRoll (+s.wallKick*s.wallSide*0.056, line 334) which DO land, so wall-jump is not broken — but roughly the larger half of the intended feel-layer camera punch (pitch 0.060, roll 0.080) is silently lost.",
+      "evidence": "locomotionFeelController.js: addv.camera.wallKickPitch = -s.wallKick * 0.060; addv.camera.wallKickRoll = s.wallKick * s.wallSide * 0.080;  | main.js camera.rotation.x assembly (line 42953) reads _pa0.headPitch ... but no _pa0.wallKickPitch; grep '_pa0.wallKickPitch' = 0 reads, while every other addv.camera key (footstepDip, dropkickPitch, slideRoll, gaitPitch, impactSettlePitch, etc.) has >=1 direct read.",
+      "fix": "Either (a) in main.js camera assembly add `+(_pa0.wallKickPitch||0)` to camera.rotation.x (line 42953) and `+(_pa0.wallKickRoll||0)` to camera.rotation.y/z roll term (line 42960), mirroring the viewmodel path; or (b) in locomotionFeelController.js redirect the feel wall-kick into the consumed channels by folding line 344/345 amounts into addv.camera.headPitch / addv.camera.headRoll instead of separate wallKickPitch/Roll keys. Option (a) is the most faithful (restores the dedicated wall-kick camera punch); option (b) is lower-risk (no new camera read). Keep magnitudes as-is to avoid over-kicking.",
+      "risk": "Option (a) adds a real camera pitch/roll punch on wall-jumps (~3-4.5deg) that players were not previously getting — visually a clear improvement but verify it does not exceed comfort under ADS (the viewmodel path already gates with P.adsVis<.92 at line 43546; consider a similar ADS damp). No save-compat or perf concern. Keep player-animation-feel-smoke.mjs green (it does not assert wall-kick camera values).",
+      "confidence": "high"
+    },
+    {
+      "id": "transition-snap-threshold-dead",
+      "file": "src/animation/profiles.js",
+      "lineRange": "625",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "transitionSnapThreshold (1.35) makes the pose-snap detector unable to ever fire; stale 0.62 fallback disagrees",
+      "description": "ANIMATION_FEEL_TUNING.locomotion.transitionSnapThreshold is 1.35. updatePlayerAnimTransitionHealth (playerAnimation.js line 99) compares the per-frame max resolved pose delta against `tuning.transitionSnapThreshold || 0.62`. Resolved camera/viewmodel/proxy values are tiny (typ. 0.01-0.2 rad/units; even large dropkick terms stay < ~0.3), so a single-frame delta can never reach 1.35. Therefore health.snapCount / lastSnapFrame are permanently 0 — the transition-snap diagnostic is dead. The inline `|| 0.62` fallback is also stale: it disagrees with the live 1.35 value and never executes because tuning.transitionSnapThreshold is always defined. The feel smoke probe asserts snapCount===0 (player-animation-feel-smoke.mjs lines 149/158), so the disabled detector is what keeps the test trivially green.",
+      "evidence": "profiles.js: transitionSnapThreshold: 1.35  |  playerAnimation.js line 99: if (delta.maxDelta > (tuning.transitionSnapThreshold || 0.62)) { health.snapCount = ... }  |  resolved pose magnitudes are sub-0.3, so delta.maxDelta >> 1.35 is impossible.",
+      "fix": "Lower transitionSnapThreshold in profiles.js to a value in the actual pose-delta range (e.g. 0.35-0.5) so genuine pose pops are caught, OR explicitly document/remove the detector. Also delete the dead `|| 0.62` fallback in playerAnimation.js line 99 since the tuning key is always present. Diagnostic-only change — verify player-animation-feel-smoke.mjs still passes (it should under normal locomotion if threshold ~0.4).",
+      "risk": "Telemetry-only; no gameplay/visual effect. If threshold is lowered too far the smoke probe's snapCount===0 asserts could start failing during sprint start/stop — pick a threshold validated against the probe before committing.",
+      "confidence": "high"
+    },
+    {
+      "id": "feel-bracedip-scalekey-noop",
+      "file": "src/animation/locomotionFeelController.js",
+      "lineRange": "161",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "'braceDip' listed in bodyCarryWeight scaleKeys but absent from zeroAdditives().camera — silent no-op",
+      "description": "applyFinalLocomotionTuning scales camera keys including 'braceDip' by tuning.bodyCarryWeight (line 161). However zeroAdditives().camera (lines 60-84) does not contain a braceDip field, and scaleKeys only multiplies keys whose value is typeof 'number' (line 152), so the braceDip entry is skipped — a dead reference. The player-animation braceDip (playerAnimation.js line 983, consumed in main.js line 42827 as _pa0.braceDip) is therefore never given any bodyCarryWeight scaling from the feel layer. Harmless, but it signals the scaleKeys list drifted out of sync with the additive schema.",
+      "evidence": "locomotionFeelController.js line 161: scaleKeys(addv.camera, ['headBobX','headBobY','headPitch','headRoll','accelLagX','accelLagZ','braceDip'], tuning.bodyCarryWeight);  |  zeroAdditives().camera (lines 60-84) has no braceDip key.",
+      "fix": "Remove 'braceDip' from the scaleKeys list at line 161 (it does nothing), OR if braceDip is meant to be a feel additive, add `braceDip: 0` to zeroAdditives().camera and emit it in updateLocomotionFeelState. Given braceDip is currently a player-anim-only camera term, removing it from the list is the safe cleanup.",
+      "risk": "None — currently a no-op; either edit is behavior-neutral.",
+      "confidence": "high"
+    },
+    {
+      "id": "dropkickyaw-not-in-resolved-schema",
+      "file": "src/playerAnimation.js",
+      "lineRange": "929",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "cam.dropkickYaw assigned in resolvePlayerAnimLayers but not declared in createPlayerAnimState resolved.camera schema",
+      "description": "resolvePlayerAnimLayers writes cam.dropkickYaw (line 929) and it IS consumed in main.js (line 42952: camera.rotation.y += _pa0.dropkickYaw||0), so it functions. But the field is missing from the resolved.camera initializer in createPlayerAnimState (lines 235-271), unlike every neighboring dropkick* field (dropkickPitch/Roll/Dip/Forward are declared). On frame 0 before resolvePlayerAnimLayers runs, _pa0.dropkickYaw is undefined; main.js guards with `||0` so no crash, and the locomotion feel layer has no dropkickYaw additive so nothing else touches it. This is a schema/contradiction smell (the snapshot/health-diff code in copyPoseSnapshot iterates only over present keys, so dropkickYaw is excluded from transition-health pose-delta accounting) rather than a live bug.",
+      "evidence": "playerAnimation.js line 929: cam.dropkickYaw = dropkickTwirlSide * (...);  |  createPlayerAnimState resolved.camera (lines 235-271) declares dropkickPitch, dropkickRoll, dropkickDip, dropkickForward but NOT dropkickYaw.",
+      "fix": "Add `dropkickYaw: 0,` to the resolved.camera initializer in createPlayerAnimState (near line 256, alongside the other dropkick* fields) so the schema is complete and transition-health pose-delta accounting includes it.",
+      "risk": "None — purely adds an initial 0 field; main.js already defends with ||0. No save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "fire-motion-visual-missing-knife-index",
+      "file": "src/playerAnimation.js",
+      "lineRange": "133-155",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "FIRE_VISUAL and MOTION_VISUAL tables omit weapon index 2 (knife) — silently fall back to rifle profile",
+      "description": "FIRE_VISUAL (lines 133-141) and MOTION_VISUAL (lines 143-151) are keyed by weapon index but have no entry for index 2 (knife per WEAPON_INDEX_TYPE in profiles.js). getFireVisualProfile (line 158) and getMotionVisualProfile (line 154) both fall back to index 0 (rifle). When the knife is equipped, the throw/melee gets rifle-tuned kick (FIRE_VISUAL[0]: kickRX 0.28) and rifle bob/inertia (MOTION_VISUAL[0]). This is a feel inconsistency rather than a crash; knife throw is also driven mostly by the dedicated throw notify path (playerAnimEmitNotify 'throwStart'/'throwRelease' in main.js), so the visible effect is small.",
+      "evidence": "playerAnimation.js: FIRE_VISUAL has keys {0,1,3,4,5,6,7} — no 2; MOTION_VISUAL has keys {0,1,3,4,5,6,7} — no 2. getFireVisualProfile: const base = FIRE_VISUAL[weaponIdx] || FIRE_VISUAL[0];",
+      "fix": "Add a knife-tuned entry FIRE_VISUAL[2] (low/short kick, e.g. dur 0.16, kickRX 0.10) and MOTION_VISUAL[2] (lighter bob/inertia) if knife-specific viewmodel feel is desired; otherwise leave as intentional rifle fallback and document it. Low priority.",
+      "risk": "Adding entries changes knife viewmodel kick/bob slightly — cosmetic only, no gameplay authority. Verify no probe asserts FIRE_VISUAL key count.",
+      "confidence": "medium"
+    },
+    {
+      "id": "death-variant-logic-duplicated",
+      "file": "src/animation/importedClipController.js",
+      "lineRange": "99-118",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Death-variant selection duplicated with divergent logic between enemyAnimationController and importedClipController",
+      "description": "deathVariantFromEnemy (enemyAnimationController.js lines 50-56) and semanticClipForEnemyStatus (importedClipController.js lines 99-104) both decide deathBack/deathSide/deathForward from staggerDir.x/lastPlayerDir.x with the same 0.45 side threshold, but semanticClipForEnemyStatus additionally treats state.includes('back') as deathBack while deathVariantFromEnemy does not. They can therefore disagree on the chosen death variant for the same enemy. deathVariantFromEnemy feeds status.deathVariant / status.channels.additive (display + procedural cue), while semanticClipForEnemyStatus drives imported-clip selection. Imported animation is flag-gated OFF by default (animationFeatureFlags.importedAnimationEnabled=false in profiles.js line 7), so the clip path is dormant and the divergence is latent, but it is a real duplicate-definition contradiction waiting to surface if the flag is enabled.",
+      "evidence": "enemyAnimationController.js deathVariantFromEnemy: if (side > 0.45) return 'deathSide'; return 'deathForward';  (no 'back' check)  vs importedClipController.js semanticClipForEnemyStatus: if (enemy._deathByDropkick || state.includes('back')) return 'deathBack'; if (side > 0.45) return 'deathSide'; return 'deathForward';",
+      "fix": "Extract a single shared deathVariant helper (e.g. in importedClipController.js or a small shared module) and have both call sites use it, so the display variant and the clip variant always agree. Keep the union of conditions (the 'back' check from semanticClipForEnemyStatus).",
+      "risk": "Low — both paths are tiny and one is dormant. Refactor must keep enemy-intent-animation-static-probe.mjs green.",
+      "confidence": "medium"
+    }
+  ]
+}

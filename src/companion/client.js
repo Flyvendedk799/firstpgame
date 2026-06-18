@@ -747,10 +747,13 @@ function bindUi() {
     send(COMPANION_MESSAGES.DRONE_FIRE, { held: true });
   });
   el('fire-btn').addEventListener('pointerup', () => { state.sticks.fireHeld = false; });
+  el('fire-btn').addEventListener('pointercancel', () => { state.sticks.fireHeld = false; });
   el('up-btn').addEventListener('pointerdown', () => { state.sticks.ascend = 1; });
   el('up-btn').addEventListener('pointerup', () => { state.sticks.ascend = 0; });
+  el('up-btn').addEventListener('pointercancel', () => { state.sticks.ascend = 0; });
   el('down-btn').addEventListener('pointerdown', () => { state.sticks.ascend = -1; });
   el('down-btn').addEventListener('pointerup', () => { state.sticks.ascend = 0; });
+  el('down-btn').addEventListener('pointercancel', () => { state.sticks.ascend = 0; });
   el('wake-btn').addEventListener('click', requestWakeLock);
   el('full-btn').addEventListener('click', () => document.documentElement.requestFullscreen?.());
   el('haptic-btn').addEventListener('click', () => {

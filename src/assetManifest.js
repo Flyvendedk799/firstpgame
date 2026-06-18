@@ -119,6 +119,12 @@ export const VFX_FAMILIES = [
 
 const enemyClips = ANIMATION_CLIPS.enemy.slice();
 const vmClips = ANIMATION_CLIPS.viewmodel.slice();
+const authoredHandsClips = Object.freeze([
+  'idle', 'walkSway', 'sprint', 'ads',
+  'reloadRifle', 'fireRifle',
+  'inspect', 'weaponSwap', 'tacticalLean',
+  'wristbandIdle', 'holoInventoryDeploy', 'holoReloadDeploy', 'holoShopDeploy'
+]);
 const requiredEnemySockets = ['root', 'head', 'weapon_grip'];
 
 function characterEntry(id, type, label, accent, options = {}) {
@@ -164,7 +170,11 @@ export const CHARACTER_MANIFEST = {
     requiredBones: ['root', 'core', 'eye'],
     clips: ['idle', 'hover', 'engage', 'fire', 'reposition', 'damage', 'death'],
     materials: ['metal', 'plastic', 'emissivePanel'],
-    weakPoints: ['eye', 'rotor']
+    weakPoints: ['eye', 'rotor'],
+    hitboxBindings: ['core', 'eye', 'rotor_f', 'rotor_b', 'rotor_l', 'rotor_r'],
+    fallback: 'enemy.procedural.drone',
+    skeletonType: 'drone',
+    retargetProfile: 'project.drone.v1'
   }),
   'character.boss.continental': characterEntry('character.boss.continental', 'boss', 'Continental Boss', 0xffd040, { boss: true }),
   'character.boss.nightclub': characterEntry('character.boss.nightclub', 'boss', 'Nightclub Boss', 0xffd040, { boss: true }),
@@ -190,7 +200,8 @@ export const VIEWMODEL_MANIFEST = {
     ],
     materials: ['skin', 'glove', 'fabric', 'rubber', 'metal', 'emissivePanel'],
     materialBudget: 10,
-    clips: vmClips,
+    clips: authoredHandsClips,
+    semanticClips: vmClips,
     fallback: 'viewmodel.procedural.hands'
   },
   'viewmodel.operative.proxy': {
@@ -206,14 +217,16 @@ export const VIEWMODEL_MANIFEST = {
 };
 
 function weaponEntry(id, type, label, options = {}) {
+  const isFirearm = type !== 'knife' && type !== 'grenade';
+  const optionOr = (key, fallback) => Object.prototype.hasOwnProperty.call(options, key) ? options[key] : fallback;
   return {
     id,
     kind: 'weapon',
     type,
     label,
     src: options.src || null,
-    sockets: options.sockets || WEAPON_SOCKETS,
-    requiredSockets: options.requiredSockets || ['muzzle', 'gripLeft', 'gripRight', 'muzzleFlash'],
+    sockets: optionOr('sockets', isFirearm ? WEAPON_SOCKETS : ['gripRight']),
+    requiredSockets: optionOr('requiredSockets', isFirearm ? ['muzzle', 'gripLeft', 'gripRight', 'muzzleFlash'] : ['gripRight']),
     materials: options.materials || ['metal', 'paintedMetal', 'plastic', 'rubber'],
     clips: options.clips || ['idle', 'fire', 'reload', 'ads', 'inspect'],
     triangleBudget: options.triangleBudget ?? 8000,
@@ -222,13 +235,16 @@ function weaponEntry(id, type, label, options = {}) {
     weaponAnimationProfile: options.weaponAnimationProfile || `weapon.${type}`,
     socketContract: options.socketContract || 'weapon-viewmodel.v1',
     scalePolicy: options.scalePolicy || 'meters-applied-scale-1',
-    sightSockets: options.sightSockets || WEAPON_SIGHT_SOCKETS,
-    optionalSockets: options.optionalSockets || OPTIONAL_WEAPON_SIGHT_SOCKETS,
+    sightSockets: optionOr('sightSockets', isFirearm ? WEAPON_SIGHT_SOCKETS : []),
+    optionalSockets: optionOr('optionalSockets', isFirearm ? OPTIONAL_WEAPON_SIGHT_SOCKETS : []),
+    socketAliases: options.socketAliases || {},
     aliases: options.aliases || [],
-    mechanicalParts: options.mechanicalParts || ['trigger', 'mag', 'chargingHandle'],
-    attachments: options.attachments || ['scope', 'muzzle', 'magazine', 'foregrip']
+    mechanicalParts: optionOr('mechanicalParts', isFirearm ? ['trigger', 'mag', 'chargingHandle'] : []),
+    attachments: optionOr('attachments', isFirearm ? ['scope', 'muzzle', 'magazine', 'foregrip'] : [])
   };
 }
+
+const USP_SIGHT_ALIASES = Object.freeze({ frontSight: 'front_sight', rearSight: 'rear_sight' });
 
 export const WEAPON_MANIFEST = {
   'weapon.uspT': weaponEntry('weapon.uspT', 'pistol', 'USP-T Suppressed', {
@@ -236,7 +252,9 @@ export const WEAPON_MANIFEST = {
     triangleBudget: 4200,
     aliases: ['weapon.pistol'],
     socketContract: 'weapon-viewmodel.v2',
-    mechanicalParts: ['trigger', 'mag', 'chargingHandle', 'front_sight', 'rear_sight']
+    sightSockets: ['frontSight', 'rearSight'],
+    socketAliases: USP_SIGHT_ALIASES,
+    mechanicalParts: ['trigger', 'mag', 'chargingHandle', 'front_sight', 'rear_sight', 'optic', 'scopeCamera']
   }),
   'weapon.tac12': weaponEntry('weapon.tac12', 'shotgun', 'TAC-12 Shotgun', {
     triangleBudget: 7600,
@@ -273,25 +291,49 @@ export const WEAPON_MANIFEST = {
     triangleBudget: 12000,
     aliases: ['weapon.rifle'],
     socketContract: 'weapon-viewmodel.v2',
+    sightSockets: ['frontSight', 'rearSight'],
     mechanicalParts: ['trigger', 'mag', 'chargingHandle', 'frontSight', 'rearSight']
   }),
   'weapon.pistol': weaponEntry('weapon.pistol', 'pistol', 'Sidearm', {
     src: 'assets/weapons/usp_viewmodel.glb',
     triangleBudget: 4200,
-    aliases: ['weapon.uspT']
+    aliases: ['weapon.uspT'],
+    socketContract: 'weapon-viewmodel.v2',
+    sightSockets: ['frontSight', 'rearSight'],
+    socketAliases: USP_SIGHT_ALIASES
   }),
   'weapon.rifle': weaponEntry('weapon.rifle', 'rifle', 'Service Rifle', {
     src: 'assets/weapons/m4/m4_viewmodel.glb',
     triangleBudget: 12000,
-    aliases: ['weapon.m4Reference']
+    aliases: ['weapon.m4Reference'],
+    socketContract: 'weapon-viewmodel.v2',
+    sightSockets: ['frontSight', 'rearSight']
   }),
   'weapon.shotgun': weaponEntry('weapon.shotgun', 'shotgun', 'Combat Shotgun', { triangleBudget: 7600, aliases: ['weapon.tac12'] }),
   'weapon.smg': weaponEntry('weapon.smg', 'smg', 'SMG', { triangleBudget: 6800, aliases: ['weapon.mp9Suppressed'] }),
   'weapon.marksman': weaponEntry('weapon.marksman', 'marksman', 'Marksman Rifle', { triangleBudget: 9200, aliases: ['weapon.mk14'] }),
   'weapon.sniper': weaponEntry('weapon.sniper', 'sniper', 'Sniper Rifle', { triangleBudget: 11000, aliases: ['weapon.awm'] }),
   'weapon.heavy': weaponEntry('weapon.heavy', 'heavy', 'Heavy Weapon', { triangleBudget: 12000 }),
-  'weapon.knife': weaponEntry('weapon.knife', 'knife', 'Combat Knife', { triangleBudget: 1800, requiredSockets: ['gripRight'], clips: ['idle', 'attack', 'throw', 'inspect'] }),
-  'weapon.grenade': weaponEntry('weapon.grenade', 'grenade', 'Frag Grenade', { triangleBudget: 2400, requiredSockets: ['gripRight'], clips: ['idle', 'throw'] })
+  'weapon.knife': weaponEntry('weapon.knife', 'knife', 'Combat Knife', {
+    triangleBudget: 1800,
+    sockets: ['gripRight', 'bladeTip'],
+    requiredSockets: ['gripRight'],
+    sightSockets: [],
+    optionalSockets: [],
+    mechanicalParts: ['blade'],
+    attachments: [],
+    clips: ['idle', 'attack', 'throw', 'inspect']
+  }),
+  'weapon.grenade': weaponEntry('weapon.grenade', 'grenade', 'Frag Grenade', {
+    triangleBudget: 2400,
+    sockets: ['gripRight', 'pin', 'spoon'],
+    requiredSockets: ['gripRight'],
+    sightSockets: [],
+    optionalSockets: [],
+    mechanicalParts: ['pin', 'spoon'],
+    attachments: [],
+    clips: ['idle', 'throw']
+  })
 };
 
 export const ATTACHMENT_MANIFEST = {
@@ -346,22 +388,54 @@ function materialEntry(id, presetName, options = {}) {
     preset: presetName,
     src: options.src || null,
     maps: options.maps || ['albedo', 'normal', 'roughness', 'metalness'],
+    mapSources: options.mapSources || null,
     qualityTiers: options.qualityTiers || ['low', 'medium', 'high', 'ultra'],
     fallback: options.fallback || `material.procedural.${presetName}`
   };
 }
 
+const AUTHORED_MATERIAL_FAMILIES = new Set([
+  'armor', 'brass', 'chrome', 'concrete', 'fabric', 'leather', 'marble',
+  'metal', 'paintedMetal', 'plastic', 'rubber', 'tile', 'wood'
+]);
+
+function authoredMaterialSources(name) {
+  if (!AUTHORED_MATERIAL_FAMILIES.has(name)) return null;
+  const root = `assets/materials/${name}/${name}`;
+  return {
+    albedo: `${root}-albedo.png`,
+    normal: `${root}-normal.png`,
+    roughness: `${root}-roughness.png`,
+    metalness: `${root}-metalness.png`,
+    ao: `${root}-ao.png`
+  };
+}
+
 export const MATERIAL_MANIFEST = PBR_TEXTURE_CATEGORIES.reduce((m, name) => {
-  m[`material.${name}`] = materialEntry(`material.${name}`, name, {});
+  const mapSources = authoredMaterialSources(name);
+  m[`material.${name}`] = materialEntry(`material.${name}`, name, {
+    src: mapSources?.albedo || null,
+    mapSources
+  });
   return m;
 }, {});
 
+const DECAL_SOURCES = Object.freeze({
+  bulletHole: { albedo: 'assets/decals/bullethole_albedo.png', normal: 'assets/decals/bullethole_normal.png' },
+  bloodPool: { albedo: 'assets/decals/blood_pool_albedo.png' },
+  grime: { albedo: 'assets/decals/grime_streak_albedo.png' },
+  scuff: { albedo: 'assets/decals/floor_scuff_albedo.png', normal: 'assets/decals/floor_scuff_normal.png' },
+  scorch: { albedo: 'assets/decals/scorch_albedo.png' }
+});
+
 export const DECAL_MANIFEST = DECAL_CATEGORIES.reduce((m, name) => {
+  const mapSources = DECAL_SOURCES[name] || null;
   m[`decal.${name}`] = {
     id: `decal.${name}`,
     kind: 'decal-atlas',
     family: name,
-    src: null,
+    src: mapSources?.albedo || null,
+    mapSources,
     cellGrid: name === 'bulletHole' ? [4, 4] : [3, 3],
     fallback: `decal.procedural.${name}`,
     qualityTiers: ['low', 'medium', 'high']
@@ -384,8 +458,21 @@ function vfxEntry(id, family, options = {}) {
   };
 }
 
+const VFX_ATLAS_SOURCES = Object.freeze({
+  muzzleFlash: 'assets/vfx/muzzle_atlas.png',
+  suppressedMuzzleFlash: 'assets/vfx/muzzle_atlas.png',
+  smoke: 'assets/vfx/smoke_atlas.png',
+  dust: 'assets/vfx/smoke_atlas.png',
+  sparks: 'assets/vfx/sparks_atlas.png',
+  armorImpact: 'assets/vfx/sparks_atlas.png',
+  smokeGrenade: 'assets/vfx/smoke_atlas.png'
+});
+
 export const VFX_MANIFEST = VFX_FAMILIES.reduce((m, family) => {
-  m[`vfx.${family}`] = vfxEntry(`vfx.${family}`, family, {});
+  m[`vfx.${family}`] = vfxEntry(`vfx.${family}`, family, {
+    src: VFX_ATLAS_SOURCES[family] || null,
+    spriteAtlas: VFX_ATLAS_SOURCES[family] || `vfx.${family}.atlas`
+  });
   return m;
 }, {});
 
@@ -759,7 +846,8 @@ export function createAssetRegistry(options = {}) {
       return { id, status: 'unknown', source: 'none', entry: null };
     }
     if (cache.has(id)) return cache.get(id);
-    if (!entry.src) {
+    const hasTextureSources = !!(entry.mapSources && typeof entry.mapSources === 'object');
+    if (!entry.src && !hasTextureSources) {
       const out = { id, entry, status: 'fallback', source: 'procedural', reason: 'no-src' };
       cache.set(id, out);
       noteFallback(id, 'no-src');
@@ -778,8 +866,18 @@ export function createAssetRegistry(options = {}) {
         }
         if (entry.kind === 'material' || entry.kind === 'decal-atlas' || entry.kind === 'vfx') {
           if (!textureLoader) throw new Error('no TextureLoader');
-          const tex = await new Promise((res, rej) => textureLoader.load(resolveManifestUrl(entry.src), res, undefined, rej));
-          const out = { id, entry, status: 'loaded', source: 'authored', texture: tex };
+          const textures = {};
+          if (entry.mapSources && typeof entry.mapSources === 'object') {
+            for (const [mapName, src] of Object.entries(entry.mapSources)) {
+              if (!src) continue;
+              textures[mapName] = await new Promise((res, rej) => textureLoader.load(resolveManifestUrl(src), res, undefined, rej));
+            }
+          }
+          const primarySrc = entry.src || Object.values(entry.mapSources || {})[0] || null;
+          const tex = textures.albedo || (primarySrc
+            ? await new Promise((res, rej) => textureLoader.load(resolveManifestUrl(primarySrc), res, undefined, rej))
+            : null);
+          const out = { id, entry, status: 'loaded', source: 'authored', texture: tex, textures };
           cache.set(id, out);
           usage.loaded++;
           return out;
@@ -819,6 +917,9 @@ export function createAssetRegistry(options = {}) {
         });
       }
       if (slot.texture?.dispose) slot.texture.dispose();
+      if (slot.textures && typeof slot.textures === 'object') {
+        for (const tex of Object.values(slot.textures)) if (tex?.dispose && tex !== slot.texture) tex.dispose();
+      }
     } catch (_) {}
     cache.delete(id);
     return true;

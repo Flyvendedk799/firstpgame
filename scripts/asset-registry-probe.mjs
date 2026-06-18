@@ -50,6 +50,22 @@ assert.equal(pistol.status, 'loaded');
 assert.equal(pistol.source, 'authored');
 assert.ok(loadedUrls.some(url => url.endsWith('/assets/weapons/usp_viewmodel.glb')));
 
+const concrete = await registry.load('material.concrete');
+assert.equal(concrete.status, 'loaded');
+assert.equal(concrete.source, 'authored');
+assert.ok(concrete.textures.albedo, 'material bundle should expose an albedo texture');
+assert.ok(concrete.textures.normal, 'material bundle should expose a normal texture');
+
+const bulletHole = await registry.load('decal.bulletHole');
+assert.equal(bulletHole.status, 'loaded');
+assert.equal(bulletHole.source, 'authored');
+assert.ok(bulletHole.textures.albedo, 'decal bundle should expose an albedo texture');
+
+const muzzle = await registry.load('vfx.muzzleFlash');
+assert.equal(muzzle.status, 'loaded');
+assert.equal(muzzle.source, 'authored');
+assert.ok(muzzle.texture, 'vfx atlas should expose a primary texture');
+
 const unknown = await registry.load('weapon.nope');
 assert.equal(unknown.status, 'unknown');
 

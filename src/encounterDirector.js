@@ -67,6 +67,7 @@ export class EncounterDirector {
       alarmPanelDisabled: false,
       alarmPanelHold: 0,
       secondsInRelayRoom: 0,
+      feel: null,
       completedObjectiveIds: /** @type {Record<string, boolean>} */ ({}),
     };
     this.lastTrigger = null;
@@ -123,6 +124,7 @@ export class EncounterDirector {
       alarmPanelDisabled: false,
       alarmPanelHold: 0,
       secondsInRelayRoom: 0,
+      feel: null,
       completedObjectiveIds: {},
     };
     this.lastTrigger = null;

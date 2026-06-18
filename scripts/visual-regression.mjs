@@ -196,7 +196,9 @@ for (const mode of modes) {
   modeResult.scope = await page.evaluate(async () => {
     const dbg = window.__game.debug;
     const P = dbg.P();
-    P.weaponIdx = 0;
+    const playable = dbg.playableWeaponIndices ? dbg.playableWeaponIndices() : [1, 2, 3, 4, 5, 6, 7];
+    const scopedSlot = playable.includes(7) ? 7 : (playable.includes(5) ? 5 : playable[0]);
+    if (P.weaponIdx !== scopedSlot) dbg.switchWeapon(scopedSlot, true);
     dbg.forcePostState('ads');
     dbg.equipScope(4);
     dbg.setAds(1);
@@ -209,7 +211,13 @@ for (const mode of modes) {
     return { pip: dbg.scopePip(), renderer: dbg.rendererInfo() };
   });
   if (modeResult.scope.pip.stableRenderingMode) {
-    assert(!modeResult.scope.pip.enabled && !modeResult.scope.pip.visible, `${mode}: stable renderer should keep scope PIP disabled`);
+    assert(modeResult.scope.pip.enabled && (modeResult.scope.pip.screenOverlay || modeResult.scope.pip.visible), `${mode}: stable renderer should keep forced scope presentation active: ${JSON.stringify(modeResult.scope.pip)}`);
+    assert(modeResult.scope.pip.error == null, `${mode}: stable scope presentation error: ${modeResult.scope.pip.error}`);
+    if (modeResult.scope.pip.screenOverlay) {
+      assert(modeResult.scope.pip.vignetteOpacity > 0.1, `${mode}: stable scope overlay opacity stuck low`);
+    } else {
+      assert(modeResult.scope.pip.materialOpacity > 0, `${mode}: stable scope PIP opacity stuck at 0`);
+    }
   } else {
     assert(modeResult.scope.pip.rendered, `${mode}: scope PIP not rendering`);
     assert(modeResult.scope.pip.error == null, `${mode}: scope PIP error: ${modeResult.scope.pip.error}`);

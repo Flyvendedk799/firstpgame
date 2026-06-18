@@ -1,0 +1,89 @@
+{
+  "scope": "src/customMaps/*.js (levelEditor.js, customMapCompiler.js, schema.js, customMapValidation.js, customMapStore.js, customMapMenu.js, levelKitRegistry.js, editorGuide.js), cross-referenced against src/main.js wiring",
+  "findings": [
+    {
+      "id": "compiled-map-shadow-frustum-unconfigured",
+      "file": "src/customMaps/customMapCompiler.js",
+      "lineRange": "870-877",
+      "kind": "aaa-visual",
+      "severity": "high",
+      "visibleImpact": "high",
+      "title": "Compiled custom map key light has no shadow camera frustum, so shadows are invisible/badly clipped",
+      "description": "The compiler creates the directional key light with `new THREE.DirectionalLight(0xffd49a, 0.92)`, sets `key.castShadow=false`, and pushes it into `shadowCasters`. main.js's `_applyShadowQuality()` (line 23431-23434) then flips `light.castShadow=true` for every entry in `shadowCasters` when shadows are enabled. But the compiler NEVER configures `key.shadow.camera.left/right/top/bottom/near/far`, `key.shadow.mapSize`, or `key.shadow.bias`. A THREE.DirectionalLight defaults to a shadow frustum of left/right/top/bottom = +/-5 and near 0.5. The custom map bounds are x:+/-18, z:+/-54. So shadows only render in a tiny +/-5 box around origin and are clipped/absent everywhere else. The campaign level explicitly configures this (main.js `_configureLevelShadowLight`, lines 3160-3163: left/right=+/-22, top/bottom=+/-24, far=52, plus mapSize/bias). Custom maps therefore look conspicuously flat and ungrounded versus the campaign the moment you load one.",
+      "evidence": "compiler: `const key = new THREE.DirectionalLight(0xffd49a, 0.92); ... key.castShadow = false; ... shadowCasters.push(key);` with no `key.shadow.*` configuration. main.js _applyShadowQuality: `for(const light of levelData.shadowCasters){ if(light)light.castShadow=enabled; }`. Campaign reference main.js:3160 `light.shadow.camera.near=.5; light.shadow.camera.far=52; light.shadow.camera.left=-22;...`",
+      "fix": "In customMapCompiler.js right after creating `key` (line 870), configure its shadow to cover the map: `key.shadow.mapSize.set(1024,1024); key.shadow.bias=-0.00018; key.shadow.normalBias=0.018; key.shadow.camera.near=0.5; key.shadow.camera.far=120; key.shadow.camera.left=-Math.max(24,(geo.map.bounds.x1-geo.map.bounds.x0)/2+6); key.shadow.camera.right=-key.shadow.camera.left; key.shadow.camera.top=Math.max(40,(geo.map.bounds.z1-geo.map.bounds.z0)/2+6); key.shadow.camera.bottom=-key.shadow.camera.top; key.shadow.camera.updateProjectionMatrix();`. Leave castShadow=false here (main.js toggles it on). This gives compiled custom maps real grounding shadows.",
+      "risk": "Low. Pure additive shadow config; no save-compat impact. Larger shadow frustum slightly lowers shadow resolution density but 1024 over a 36x108 area is acceptable; could bump to 1536 on high. Keeps build/probes green (no API/contract change).",
+      "confidence": "high"
+    },
+    {
+      "id": "custom-zone-doors-double-tick",
+      "file": "src/customMaps/customMapCompiler.js",
+      "lineRange": "984-989",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "Custom-map zone doors advance their open animation twice per frame (double dt)",
+      "description": "The main loop ticks zone doors once at main.js:43947 (`G.levelData.tickZoneDoors(dt)`) and then ticks dyn props at main.js:43950 (`G.levelData.tickDynProps(dt,now)`). For custom maps, the compiler's `tickDynProps` ALSO calls `tickZoneDoors(dt)` internally (line 985). So `tickZoneDoors` runs twice per frame, applying the lerp `door.currentLift += delta * Math.min(1, dt*3.2)` two times — zone gates slide open at roughly double speed. Neither the procedural campaign level nor the B01 level's tickDynProps calls tickZoneDoors internally (they rely on the single main-loop call), so this redundancy is unique to the custom-map compiler and is an inconsistency with the rest of the engine.",
+      "evidence": "compiler tickDynProps: `function tickDynProps(dt){ tickZoneDoors(dt); tickOpenableDoors(dt); ... }` while main.js loop already calls `if(G.levelData&&G.levelData.tickZoneDoors)G.levelData.tickZoneDoors(dt);` (43947) before `if(G.levelData&&G.levelData.tickDynProps)G.levelData.tickDynProps(dt,now);` (43950).",
+      "fix": "Remove the redundant `tickZoneDoors(dt);` call from the compiler's tickDynProps (line 985), keeping `tickOpenableDoors(dt);` (which the main loop does NOT call separately). This matches the campaign/B01 contract where the main loop owns the zone-door tick.",
+      "risk": "Low. tickOpenableDoors stays inside tickDynProps so openable doors are unaffected. Zone-door open animation simply runs at the intended single rate. No save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "editor-recompiles-geometry-per-route-point",
+      "file": "src/customMaps/levelEditor.js",
+      "lineRange": "1296-1303",
+      "kind": "perf",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "addRouteOverlay recompiles the entire map geometry once per route waypoint, every render",
+      "description": "Inside `addRouteOverlay`, for each waypoint (index>0) it calls `collectCustomMapGeometry(map, kit())` again to test if the segment is wall-blocked. `collectCustomMapGeometry` is the full compile pass (aperture cutouts, wall splitting, perimeter walls, tactical graph, player-spawn repair). With several patrol/flank routes of N points each, renderViewport triggers O(total route points) full recompiles. Combined with the recompiles in addCompiledObjects (1135), addAnalysisOverlay (913), and placementQuality/ghost (415), a moderately complex map can recompile geometry dozens of times per renderViewport. renderViewport runs on every mousemove (3069) and during paint/move drags, producing visible editor jank exactly when authoring routes.",
+      "evidence": "`const blocked = kit() && collectCustomMapGeometry(map, kit()).walls.some((wall) => { ... });` inside `pts.forEach((p, index) => { ... if (index > 0) { ... } })`.",
+      "fix": "Compute geometry once at the top of renderViewport and thread it (or a cached walls array) into addCompiledObjects/addMarkers/addRouteOverlay/addAnalysisOverlay/placementQuality, rather than each helper re-calling collectCustomMapGeometry. Minimal version: hoist `const geo = kit() ? collectCustomMapGeometry(map, kit()) : null;` into renderViewport and pass `geo.walls` to addRouteOverlay so line 1298 reuses it instead of recompiling per point.",
+      "risk": "Low-medium. Must ensure the cached geo reflects the current map mutation each render (it does, since renderViewport runs after every edit). No save-compat impact; build/probes unaffected.",
+      "confidence": "high"
+    },
+    {
+      "id": "normalizemarkers-playerspawn-loses-defaults",
+      "file": "src/customMaps/schema.js",
+      "lineRange": "161-165",
+      "kind": "bug",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "normalizeMarkers drops playerSpawn defaults (id/yaw/floorY) for partial input",
+      "description": "`normalizeMarkers` does `const out = Object.assign(base, cloneJson(markers));` which overwrites `base.playerSpawn` with the input's (possibly partial) playerSpawn. It then does `out.playerSpawn = Object.assign(base.playerSpawn, markers.playerSpawn || {})` — but `base.playerSpawn` has ALREADY been replaced by the cloned input on the previous line, so the default fields are gone before the merge. For a pack with a partial playerSpawn (e.g. hand-authored or migrated JSON with just {x,z}), the result is exactly {x,z} with no id, yaw, or floorY. Verified empirically: `normalizeMarkers({playerSpawn:{x:5,z:10}})` returns `{x:5,z:10}` instead of merging the defaults `{id:'player_spawn',yaw:PI,floorY:0.4}`. The runtime compiler's repairPlayerSpawn masks yaw/floorY loss (defaults yaw=PI, floorY=map.floorY), but a deliberately-authored yaw=0 spawn would still be lost, and the id is dropped.",
+      "evidence": "Lines 162-164: `const out = Object.assign(base, cloneJson(markers)); out.playerSpawn = Object.assign(base.playerSpawn, markers.playerSpawn || {});`. Empirical: normalizeMarkers({playerSpawn:{x:5,z:10}}) -> {\"x\":5,\"z\":10}.",
+      "fix": "Merge defaults UNDER the input: `out.playerSpawn = Object.assign({}, defaultMarkers().playerSpawn, markers.playerSpawn || {});` (capture the fresh default spawn before the spread mutates base). This preserves id/yaw/floorY for partial spawns.",
+      "risk": "Low. Only fills in missing default fields; full spawns (the editor always writes full spawns) are unchanged. No localStorage shape change.",
+      "confidence": "high"
+    },
+    {
+      "id": "editor-matcache-route-dot-unbounded",
+      "file": "src/customMaps/levelEditor.js",
+      "lineRange": "632-666, 1283",
+      "kind": "leak",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Editor material cache grows unbounded with route waypoint index keys",
+      "description": "The editor's `material()` cache key incorporates the caller-supplied `key`, and route dots use `material(\\`route-dot:${type}:${color}:${index}:...\\`, ...)`. Because `index` is part of the cache key, each distinct waypoint index produces a new cached MeshStandardMaterial that is never disposed (disposeGroup only disposes geometry, not the shared matCache materials, and the cache is never cleared on openPack). For a session that edits long routes the matCache accumulates one material per (type,color,index,state) tuple. Bounded by the longest route ever rendered, so it is a slow leak, not a runaway one, but it is dead retained memory with no functional benefit (each route-dot material is otherwise identical to its siblings).",
+      "evidence": "`material(\\`route-dot:${type}:${color}:${index}:${selectedRoute ? 'selected' : 'idle'}\\`, {...})` plus material() doing `matCache.set(cacheKey, mat)` with no eviction and disposeGroup only disposing geometry.",
+      "fix": "Drop `${index}` from the route-dot cache key (line 1283) so all idle/selected dots of a given type+color share one material: `material(\\`route-dot:${type}:${color}:${selectedRoute ? 'selected' : 'idle'}\\`, ...)`. Optionally clear matCache in openPack.",
+      "risk": "Very low. The internal material() cacheKey still differentiates by opacity/emissive/color, so visuals are unchanged.",
+      "confidence": "high"
+    },
+    {
+      "id": "compiled-map-flat-lighting-no-fill",
+      "file": "src/customMaps/customMapCompiler.js",
+      "lineRange": "866-877",
+      "kind": "aaa-visual",
+      "severity": "low",
+      "visibleImpact": "medium",
+      "title": "Compiled custom map lighting is a single hemi + one key, much flatter than campaign",
+      "description": "Compiled custom maps get only a HemisphereLight(intensity 0.42) and one DirectionalLight key (0.92) with no fill/rim light and no CSM cascades, versus the campaign's managed room lights + CSM. Even with the loaded HDR environment providing IBL, the lack of any fill light and (currently) any working shadow means surfaces read flat and the scene feels noticeably less 'AAA' than the campaign the instant you enter a custom map. Pairs with the shadow-frustum finding above.",
+      "evidence": "`const hemi = new THREE.HemisphereLight(0xaac4dd, 0x17130f, 0.42); ... const key = new THREE.DirectionalLight(0xffd49a, 0.92); ... key.castShadow=false;` — only two lights, no fill/rim.",
+      "fix": "Add a low-intensity cool fill DirectionalLight (e.g. `new THREE.DirectionalLight(0x66ccff, 0.3)` from the opposite side, castShadow=false) and push to localObjects so cleanup removes it — mirroring the editor viewport which already adds a fill light (levelEditor.js:695). Cheap and immediately visible. Combine with the shadow-frustum fix for the biggest jump.",
+      "risk": "Low. Additive light; must push to localObjects so disposeRoot/cleanup removes it (avoid leaking lights across map loads). No save-compat impact.",
+      "confidence": "medium"
+    }
+  ]
+}

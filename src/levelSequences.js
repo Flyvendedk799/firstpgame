@@ -846,9 +846,10 @@ const ELEMENT_BUILDERS = {
     if (e.back) {
       const bM = new THREE.MeshPhongMaterial({ color: e.col || 0x4a2a1c, shininess: 40 });
       const bk = new THREE.Mesh(new THREE.BoxGeometry(w, 0.7, 0.10), bM);
-      const bx = e.x, bz = e.z - d*0.5 + 0.05;
-      bk.position.set(bx, WT + h + 0.35, bz);
-      if (e.rotY) { bk.rotation.y = e.rotY; }
+      const c = Math.cos(e.rotY||0), s = Math.sin(e.rotY||0);
+      const off = -d*0.5 + 0.05;
+      bk.position.set(e.x + s*off, WT + h + 0.35, e.z + c*off);
+      bk.rotation.y = e.rotY||0;
       scene.add(bk); ob.push(bk);
     }
     const s = Math.sin(e.rotY||0), c = Math.cos(e.rotY||0);
@@ -1377,7 +1378,7 @@ const ELEMENT_BUILDERS = {
     b.position.set(e.x + 0.1, WT + h*1.45, e.z - 0.05); scene.add(b); ob.push(b);
     b.userData.coverHP = e.coverHP != null ? e.coverHP : 4;
     b.userData.breakSound = 'wood';
-    b.userData.linkedSibling = a;  // top breaks → bottom still cover
+    b.userData.noBlock = true;  // top crate breaks independently; bottom box owns the wall/vault AABB
   },
 
   // Cooling unit (B8) — wide, short, blocking with vent fan visual.
@@ -1650,10 +1651,18 @@ const ELEMENT_BUILDERS = {
     const paneT = 0.06;                                  // pane thickness (along normal)
     // Glass pane — transparent + depthWrite false → auto-excluded from solids
     // (so player & enemy bullets pass through cleanly).
-    const glassM = new THREE.MeshPhongMaterial({
-      color: e.col || 0xa8c8e0, transparent: true, opacity: 0.22,
-      shininess: 220, specular: 0xffffff, depthWrite: false,
-    });
+    let q = 'high';
+    try { q = (ctx.settings && ctx.settings.quality) || q; } catch (_) {}
+    const usePhys = (q === 'high' || q === 'ultra') && typeof ctx.aaPhysicalGlass === 'function';
+    const glassM = usePhys
+      ? ctx.aaPhysicalGlass(
+          { color: e.col || 0xa8c8e0, transparent: true, opacity: 0.22, shininess: 220, specular: 0xffffff, depthWrite: false },
+          { transmission: 0.42, thickness: 0.06, roughness: 0.12 }
+        )
+      : new THREE.MeshPhongMaterial({
+          color: e.col || 0xa8c8e0, transparent: true, opacity: 0.22,
+          shininess: 220, specular: 0xffffff, depthWrite: false,
+        });
     const pane = new THREE.Mesh(new THREE.BoxGeometry(len, paneH, paneT), glassM);
     pane.position.set(e.x, WT + sill + paneH/2, e.z);
     if (e.rotY) pane.rotation.y = e.rotY;

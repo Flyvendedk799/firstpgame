@@ -160,8 +160,9 @@ export function createDefaultCustomMapPack(options = {}) {
 
 export function normalizeMarkers(markers = {}) {
   const base = defaultMarkers();
+  const defaults = defaultMarkers();
   const out = Object.assign(base, cloneJson(markers));
-  out.playerSpawn = Object.assign(base.playerSpawn, markers.playerSpawn || {});
+  out.playerSpawn = Object.assign({}, defaults.playerSpawn, markers.playerSpawn || {});
   for (const key of ['exits', 'zoneDoors', 'pickups']) out[key] = Array.isArray(markers[key]) ? markers[key].map((x) => Object.assign({}, x)) : base[key];
   out.enemySpawns = Array.isArray(markers.enemySpawns) ? markers.enemySpawns.map(normalizeEnemySpawn) : base.enemySpawns;
   out.peekAngles = Array.isArray(markers.peekAngles) ? markers.peekAngles.map(normalizePeekAngle) : base.peekAngles;

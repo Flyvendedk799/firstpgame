@@ -10,7 +10,6 @@ fs.mkdirSync(VIDEO_DIR, { recursive: true });
 
 const mode = process.env.RENDER_MODE || 'auto';
 const buildings = Array.from({ length: 12 }, (_, i) => i + 1);
-const weaponSlots = Array.from({ length: 8 }, (_, i) => i);
 const stateShots = ['normal', 'ads', 'focus', 'lowHp', 'killBeat', 'death', 'menu', 'alarm', 'blackout'];
 
 function urlForMode() {
@@ -58,6 +57,14 @@ page.on('console', msg => {
 await page.goto(urlForMode(), { waitUntil: 'load', timeout: 30000 });
 await page.waitForTimeout(1400);
 await page.waitForFunction(() => window.__game?.debug?.forcePostState, null, { timeout: 45000 });
+const weaponSlots = await page.evaluate(() => {
+  const dbg = window.__game?.debug;
+  const playable = dbg?.playableWeaponIndices?.();
+  if (Array.isArray(playable) && playable.length) return playable;
+  const slots = dbg?.weaponSlots?.();
+  if (Array.isArray(slots) && slots.length) return slots.map((slot, index) => slot?.index ?? index);
+  return [1, 2, 3, 4, 5, 6, 7];
+});
 
 const manifest = {
   ok: false,
@@ -148,7 +155,7 @@ for (const slot of weaponSlots) {
     const P = dbg.P();
     P.dead = false;
     dbg.forcePostState('normal');
-    if (P.weaponIdx !== slot) dbg.switchWeapon(slot);
+    if (P.weaponIdx !== slot) dbg.switchWeapon(slot, true);
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   }, slot);
   const weapon = await page.evaluate(() => window.__game.debug.weaponVisualStatus());
@@ -158,9 +165,11 @@ for (const slot of weaponSlots) {
 await page.evaluate(async () => {
   const dbg = window.__game.debug;
   const P = dbg.P();
+  const playable = dbg.playableWeaponIndices?.() || [1, 2, 3, 4, 5, 6, 7];
+  const scopedSlot = playable.includes(7) ? 7 : (playable.includes(5) ? 5 : playable[0]);
   dbg.forcePostState('ads');
+  if (P.weaponIdx !== scopedSlot) dbg.switchWeapon(scopedSlot, true);
   dbg.equipScope(4);
-  P.weaponIdx = 0;
   dbg.setAds(1);
   const start = performance.now();
   while (performance.now() - start < 2200) {

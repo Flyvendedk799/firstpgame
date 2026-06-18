@@ -164,6 +164,11 @@ function _findRouteAnchor(spaces, predicate) {
   return null;
 }
 
+// Capture hand-authored anchors BEFORE the computed loop so authored values win the merge.
+const _AUTHORED_COVER_HINT_ANCHOR_PATCH_BY_BN = {};
+for (const [bn, m] of Object.entries(COVER_HINT_ANCHOR_PATCH_BY_BN)) {
+  _AUTHORED_COVER_HINT_ANCHOR_PATCH_BY_BN[bn] = { ...m };
+}
 for (const [bnRaw, patch] of Object.entries(ROUTE_FLOORPLAN_PATCH_BY_BN)) {
   const bn = Number(bnRaw) | 0;
   const spaces = patch && patch.spaces;
@@ -173,8 +178,7 @@ for (const [bnRaw, patch] of Object.entries(ROUTE_FLOORPLAN_PATCH_BY_BN)) {
   const flank = _findRouteAnchor(spaces, (s) => /flank|return|connector|aisle/.test(String(s.routeRole)));
   const objective = _findRouteAnchor(spaces, (s) => /objective|anchor|board|engine|ops/.test(String(s.routeRole))) || side;
   const signature = _findRouteAnchor(spaces, (s) => /final|signature/.test(String(s.routeRole)));
-  COVER_HINT_ANCHOR_PATCH_BY_BN[bn] = {
-    ...(COVER_HINT_ANCHOR_PATCH_BY_BN[bn] || {}),
+  const computedDefaults = {
     intake_apron: arrival || [0, 15],
     west_lane_fork: side || [-13, 15],
     east_stack: flank || [13, 13],
@@ -187,6 +191,10 @@ for (const [bnRaw, patch] of Object.entries(ROUTE_FLOORPLAN_PATCH_BY_BN)) {
     cage_center_low: signature || [0, -16],
     vestibule_face: signature || [3, -14],
     desk_rail: signature || [13, -16],
+  };
+  COVER_HINT_ANCHOR_PATCH_BY_BN[bn] = {
+    ...computedDefaults,
+    ...(_AUTHORED_COVER_HINT_ANCHOR_PATCH_BY_BN[bn] || {}),
   };
   if (bn === 1) {
     Object.assign(COVER_HINT_ANCHOR_PATCH_BY_BN[bn], {
@@ -202,16 +210,20 @@ function _routePatrolTag(bn, kind) {
   return `b${String(bn).padStart(2, '0')}_${kind}_route`;
 }
 
+// Keyed by the FLOW-room suffix (`e.room` with the `bNN_` prefix stripped), matching the five
+// authored flow rooms in campaignEncounters.js (b01_intake_peek/relay_approach/alarm_relay/
+// drum_flank/relay_cage, deep-remapped to bNN_* for B02–B12). Values are the route kinds emitted
+// by `_routePatrolTag` / `_makeCampaignRoutes` (arrival|side|flank|mid|objective|signature|overwatch),
+// so `b${bn}_${kind}_route` resolves against ENCOUNTER_PATROL_ROUTES.
+// ASSUMPTIONS: relay_approach -> 'mid' (the approach/threshold beat at relay-east-hold ~[1.6,1.8]);
+//   alarm_relay -> 'objective' (panel objective room); drum_flank -> 'flank'; relay_cage ->
+//   'signature' (final cage); intake_peek -> 'arrival'. No flow room maps to 'side' or 'overwatch'.
 const ROOM_PATROL_KIND = {
-  dock_intake: 'arrival',
-  west_service_connector: 'side',
-  east_flank_connector: 'flank',
-  mid_lane_center: 'mid',
-  mid_lane_west: 'mid',
-  alarm_relay_room: 'objective',
-  drum_lane: 'flank',
+  intake_peek: 'arrival',
+  relay_approach: 'mid',
+  alarm_relay: 'objective',
+  drum_flank: 'flank',
   relay_cage: 'signature',
-  foreman_cage: 'overwatch',
 };
 
 export function applyCampaignRouteFloorplanCompletion(raw, bn) {
@@ -291,7 +303,7 @@ export function mergeNativeEncounterTactics(raw, bn) {
         const sp = u.spawn;
         if (Number.isFinite(sp.x)) sp.x = _nudgeCoord(sp.x, dx * 0.85, 18);
         if (Number.isFinite(sp.z)) sp.z = _nudgeCoord(sp.z, dz * 0.85, 24);
-        const kind = ROOM_PATROL_KIND[e.room] || null;
+        const kind = ROOM_PATROL_KIND[String(e.room).replace(/^b\d{2}_/, '')] || null;
         if (kind && u.role !== 'anchor') {
           u.patrol = _routePatrolTag(bn, kind);
         }

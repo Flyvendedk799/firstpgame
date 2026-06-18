@@ -4,6 +4,7 @@ import path from 'path';
 
 const SCREENSHOTS_DIR = path.resolve('./screenshots');
 fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:5173/';
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -25,7 +26,7 @@ page.on('response', res => {
   if (res.status() >= 400) failedRequests.push({ url: res.url(), status: res.status() });
 });
 
-await page.goto('http://127.0.0.1:5173/', { waitUntil: 'load', timeout: 30000 });
+await page.goto(BASE_URL, { waitUntil: 'load', timeout: 30000 });
 await page.waitForTimeout(2500);
 
 const mainMenuVisible = await page.locator('#overlay:not(.hidden)').count();

@@ -1,0 +1,89 @@
+{
+  "scope": "Cross-cutting render/perf/don't-break audit across src/main.js (~46k lines) + src/rendering.js + src/aaaPresence.js. Verified: no material.skinning=true, no Box3.setFromObject(...,true) on rigs, post-processing chain ordering/usage, per-frame allocations in hot ticks, particle/decal caps, scene-object disposal, tone mapping/exposure, three.webgpu chunk usage.",
+  "findings": [
+    {
+      "id": "stable-mode-kills-all-post-fx",
+      "file": "src/main.js",
+      "lineRange": "470-502,15502,23458",
+      "kind": "aaa-visual",
+      "severity": "high",
+      "visibleImpact": "high",
+      "title": "STABLE_RENDERING_MODE=true makes the ENTIRE post-processing chain dead at runtime (no bloom, AO, color grade, vignette, SMAA, sharpen, SSR, DoF, LUT)",
+      "description": "Line 470 hardcodes `const STABLE_RENDERING_MODE=true`. The composer gate at line 15502 is `useComposer = !!(_renderStack && _renderStack.composer && G._useComposer!==false && !STABLE_RENDERING_MODE)` — since STABLE_RENDERING_MODE is always true, `!STABLE_RENDERING_MODE` is always false, so useComposer is ALWAYS false and every frame falls through to _renderFrameDirect (line 15538), bypassing EffectComposer. On top of that, `_forceStableVisualSettings` (471-502) hard-overrides postEnabled, aoQuality, bloomQuality, colorGrade, filmGrain, chromaticAberration, sharpen, smaa, vignette, phase2SSR/LUT/DoF/Volumetrics/Reflections all to off and forces rendererMode='webgl', pixelRatioCap 1.0, scopePipEnabled false. The rendering.js subsystem builds bloom/GTAO/grade/SMAA/sharpen/SSR/bokeh/LUT passes (rendering.js 526-651) that NEVER execute. The game currently renders with only ACES tone mapping + RoomEnvironment IBL + MSAA. Enabling even a conservative subset (bloom on emissives + color grade + vignette) is the single highest-visible-impact change available — emissive signage/holograms/muzzle flashes would bloom, blacks would get filmic grade, and the frame would read dramatically more cinematic the instant it loads.",
+      "evidence": "L470: const STABLE_RENDERING_MODE=true;  L15502: const useComposer=!!(_renderStack&&_renderStack.composer&&G._useComposer!==false&&!STABLE_RENDERING_MODE);  L472-485: postEnabled:false, aoQuality:'off', bloomQuality:'off', colorGrade:false, ... vignette:false",
+      "fix": "This is clearly a deliberate stability kill-switch (likely from the WebGPU/black-frame saga). Do NOT blindly flip to false. Surgical option: leave STABLE_RENDERING_MODE for the WebGPU disable, but carve out a 'safe post' subset that runs on WebGL — e.g. in _forceStableVisualSettings keep bloomQuality:'medium', colorGrade:true, vignette:true (leave SSR/DoF/GTAO/LUT/TAA off) and change line 15502 gate so the composer runs when only the cheap, proven-stable passes are enabled. Verify against scripts/render-smoke.mjs + scripts/visual-runtime-acceptance.mjs that frames are non-black before/after on the target machine.",
+      "risk": "HIGH operationally: STABLE_RENDERING_MODE was set to guard against a real rendering regression (black frames / instability per project memory). Re-enabling the full composer could reintroduce that. Mitigate by enabling only bloom+grade+vignette (no SSR/TAA/GTAO which had documented r170 uniform edge cases) and gating behind the existing render-health self-test.",
+      "confidence": "high"
+    },
+    {
+      "id": "spawn-dmg-number-gutted",
+      "file": "src/main.js",
+      "lineRange": "33699-33702,25230,25555,26549",
+      "kind": "deadcode",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "Floating damage numbers fully removed — spawnDmgNumber() is a no-op that just clears the DOM container, yet 3 hit sites still build+discard a world position every hit",
+      "description": "spawnDmgNumber (33699) reduces to `const c=$e('dmg-numbers'); if(c)c.innerHTML='';` — it never renders a number. It is still called from three hit-resolution paths: hitscan (25230), projectile (25555), and secondary/penetration (26549). Each caller does `h.point.clone().add(new THREE.Vector3(0,.4,0))` — a Vector3 clone + allocation to compute a position that is immediately thrown away, plus a DOM write (innerHTML='') per bullet hit, for zero visual payoff. The #dmg-numbers container (index.html:257) and its CSS (game.css:361) still exist, so the feature is fully scaffolded but the spawn logic was stripped. Floating damage/headshot numbers are a hallmark of AAA hit feedback; restoring them is low risk and high visible impact.",
+      "evidence": "L33699-33702: function spawnDmgNumber(worldPos,amt,isHead,killed,labelExtra){ const c=$e('dmg-numbers'); if(c)c.innerHTML=''; }  — callers L25230/25555/26549: spawnDmgNumber(h.point.clone().add(new THREE.Vector3(0,.4,0)),dmg,isHead,killed)",
+      "fix": "Reimplement spawnDmgNumber to project worldPos to screen (camera.project), create a short-lived absolutely-positioned span in #dmg-numbers with the amount (gold for headshot, white for body, larger pulse on kill), animate opacity/translateY via CSS class + setTimeout removal (cap concurrent nodes, e.g. 24). Keep the innerHTML='' wipe OUT of the per-hit path. Reuse the existing kill-confirm color tokens for consistency.",
+      "risk": "Low. Container/CSS exist; isolated to a UI overlay. Cap node count to avoid DOM growth under sustained fire. No save-compat or perf hot-path concern beyond the cap.",
+      "confidence": "high"
+    },
+    {
+      "id": "trail-cleanup-no-dispose-on-transition",
+      "file": "src/main.js",
+      "lineRange": "32879,32924,35383,38388,38563,38665,38886",
+      "kind": "leak",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "Level/mode transitions remove trail meshes from scene but never dispose their geometry/material (GPU leak on every building advance)",
+      "description": "Multiple transition paths run `G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);});G.trails=[]` — they detach meshes from the scene graph but never call geometry.dispose()/material.dispose(). A proper helper, _disposeTrail(t) (40536), already exists and is used by the per-frame expiry loop (44274) and budget enforcer (40556). The most-traveled path is the building-advance handler at 35383, so this leaks every time the player clears a building (up to ~240 trail entries each with a PlaneGeometry/material, plus extra mats and atlas maps). Over a full 12-building campaign this accumulates orphaned GPU resources.",
+      "evidence": "L35383 (advanceBuilding path): G.trails.forEach(t=>{if(t.line)scene.remove(t.line);if(t.mesh)scene.remove(t.mesh);}); — compare L44274 which uses _disposeTrail(t), and L40536 _disposeTrail which calls geometry.dispose()/material.dispose()/map.dispose().",
+      "fix": "Replace each `G.trails.forEach(t=>{...scene.remove...})` cleanup with `for(let i=G.trails.length-1;i>=0;i--)_disposeTrail(G.trails[i]); G.trails.length=0;` (or `G.trails.forEach(_disposeTrail)` then reset). All 6-7 sites listed should route through _disposeTrail so geometry/material/atlas maps are freed.",
+      "risk": "Low. _disposeTrail already handles line/mesh/extra/extraMats/atlas map. Only behavior change is freeing GPU memory that is otherwise dropped. No gameplay or save impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "enemy-moveto-perframe-vector3",
+      "file": "src/main.js",
+      "lineRange": "10657",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Per-frame THREE.Vector3 allocation in enemy nav-follow hot path (one alloc per navigating enemy per frame)",
+      "description": "In the nav-path follow branch, line 10657 allocates `new THREE.Vector3(wp.x,0,wp.z)` and passes it to _moveTo every frame for every enemy that is following a nav path. With multiple active enemies this is a steady stream of short-lived Vector3s feeding GC pressure during firefights (the worst time for a GC hitch). The non-path fallback at 10650 reuses `tgt`, so only this branch allocates.",
+      "evidence": "L10656-10657: const wp=this.navPath[Math.min(this.navPathIdx,this.navPath.length-1)]; this._moveTo(new THREE.Vector3(wp.x,0,wp.z),dt,walls);",
+      "fix": "Add a per-enemy scratch vector (e.g. this._navTgt = this._navTgt || new THREE.Vector3()) and do `this._navTgt.set(wp.x,0,wp.z); this._moveTo(this._navTgt,dt,walls);`. Confirm _moveTo does not retain the reference across frames (it reads, doesn't store).",
+      "risk": "Very low if _moveTo only reads the target. If _moveTo stores the vector, use a module-level scratch instead. Behavior identical.",
+      "confidence": "medium"
+    },
+    {
+      "id": "muzzle-spill-pointlight-uncapped",
+      "file": "src/aaaPresence.js",
+      "lineRange": "13-29",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "World-space muzzle spill PointLights are added to scene with no count cap and bypass the AA pointlight budget",
+      "description": "spawnAaaMuzzleWorldSpill pushes a fresh THREE.PointLight into the scene per shot (life ~0.055-0.09s). _muzzleSpills is uncapped and these lights carry no aaPointLightRole tag, so they are invisible to the carefully-managed AA_POINTLIGHT_WORLD_BUDGETED accounting in main.js. At very high fire rates (SMG/automatic) several can coexist for a frame or two, transiently spiking the active dynamic-light count above the GPU budget the rest of the lighting system tries to hold (3 managed room lights, etc.), risking shader recompile/cull hitches. Disposal is otherwise correct (tickAaaMuzzleWorldSpills removes + disposes on expiry).",
+      "evidence": "aaaPresence.js L20-28: const L=new THREE.PointLight(...); scene.add(L); _muzzleSpills.push(L); — no length cap; no _tagAaPointLight; main.js light budget (e.g. updateManagedLights cap=3) does not see these.",
+      "fix": "Cap _muzzleSpills (e.g. if length>=3, recycle the oldest: remove+dispose then reuse) and/or pass a tagging callback so the spill light is counted as a temp role. Cheapest: in spawnAaaMuzzleWorldSpill, if _muzzleSpills.length>=3 immediately dispose the oldest before pushing.",
+      "risk": "Low. Short-lived lights; the visible flash is preserved (cap of ~3 is more than enough since each lasts <0.1s). No save/gameplay impact.",
+      "confidence": "medium"
+    },
+    {
+      "id": "dmg-flash-shared-element-color-race",
+      "file": "src/main.js",
+      "lineRange": "22880-22881,23058-23061,37165",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Shared #dmg-flash overlay element multiplexes red damage / green heal / white flashbang via setTimeout-restored background — a damage hit inside the restore window shows the wrong color",
+      "description": "The single #dmg-flash DOM element is repurposed for three effects, each mutating its background then scheduling a setTimeout to restore rgba(255,0,0,.25): heal flash (22880-22881, green, restored after 220ms) and flashbang (23058-23061, white, restored after 2200ms). takeDamage (37165) only sets opacity='.9' and does NOT set the background, relying on it being red. If the player takes damage during a flashbang's 2200ms restore window (very plausible — flashbangs are thrown mid-fight), the damage flash renders WHITE instead of red, misreading as another flashbang. Same for the 220ms heal window.",
+      "evidence": "L37165: pl.hp-=amt;pl.dmgFlash=.2;if(slot===0)$e('dmg-flash').style.opacity='.9'; (no background reset)  L23059-23061: flash.style.background='rgba(255,255,255,.95)';...setTimeout(()=>{...flash.style.background='rgba(255,0,0,.25)';},2200);",
+      "fix": "In takeDamage (and the split-HUD damage path), explicitly set the red background before raising opacity: `const df=$e('dmg-flash'); df.style.background='rgba(255,0,0,.25)'; df.style.opacity='.9';`. Better: give each effect its own overlay element/class so they don't fight over one node.",
+      "risk": "Low. One-line background reset on the damage path; no timing or gameplay change.",
+      "confidence": "medium"
+    }
+  ]
+}

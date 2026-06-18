@@ -1,0 +1,75 @@
+{
+  "scope": "Cross-cutting: save/load + global state consistency. src/main.js localStorage paths (clearance_progress @35492/35506, clearance_settings @501/23330/23413), SETTINGS IIFE (23290-23410) + _readBootSettings/_forceStableVisualSettings (470-510), PROGRESS IIFE (35481-35505), saveRunState/resumeRunState (35842-35895), normalizePlayerRuntime (21233), applyPerks/applyUnlocks (35934-35954), perk hooks (31078-31097). Satellite stores in customMaps/* and companion/client.js reviewed for drift.",
+  "findings": [
+    {
+      "id": "extrafocus-unlock-noop",
+      "file": "src/main.js",
+      "lineRange": "35939",
+      "kind": "deadcode",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "extraFocus unlock applies +0.0 — a no-op; 'Enhanced focus (Lv 5)' reward does nothing",
+      "description": "The Lv-5 unlock 'extraFocus' is advertised in the unlock list (38817 '✓ Enhanced focus (Lv 5)') and stored/migrated in PROGRESS.unlocks, but applyUnlocks() implements it as `P.focus=Math.min(1,(P.focus||1)+0.0)`. Adding 0.0 to a meter that is always clamped to [0,1] is a literal no-op. The feature is half-wired: the unlock is earned, persisted, shown as completed, yet has zero gameplay effect. By contrast the autoFocus perk meaningfully bumps P._focusRegen (31082). extraFocus has no analogous effect — it never touches P._focusRegen, FOCUS_FEEL.regen, or any focus cap.",
+      "evidence": "if(u.extraFocus)P.focus=Math.min(1,(P.focus||1)+0.0);   // line 35939  — vs autoFocus: if(hasPerk('autoFocus'))P._focusRegen=1.35; (line 31082)",
+      "fix": "Give the unlock a real effect. Cheapest faithful fix: make it boost focus regen like autoFocus, e.g. replace 35939 with `if(u.extraFocus)P._focusRegen=Math.max(P._focusRegen||1,1.2);` (applied alongside applyPerks2 ordering) OR start each building with a partial focus charge, e.g. `if(u.extraFocus)P.focus=Math.min(1,(P.focus||0)+0.35);`. Whichever matches design intent of 'Enhanced focus'. Keep it idempotent so it survives the per-building applyUnlocks() call.",
+      "risk": "Low. Pure additive buff. If implemented as a regen bump, ensure it composes with autoFocus's 1.35 rather than being overwritten by applyPerks2 (31082 unconditionally sets P._focusRegen=1.0 when autoFocus absent). Order matters: applyUnlocks runs before/independent of applyPerks2 in some paths — set it inside applyPerks2 to avoid being clobbered.",
+      "confidence": "high"
+    },
+    {
+      "id": "runsave-mode-coop-degrades-to-solo",
+      "file": "src/main.js",
+      "lineRange": "35846-35894",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "Resuming a saved coop (or non-custom) run silently loads it as solo",
+      "description": "saveRunState() faithfully records `mode:G.playMode||'solo'` (35846). The main loop's exit-zone check (44361) calls advanceBuilding() in ANY building-progression mode whose exit is unlocked, and coop is a campaign mode (see damagePlayer coop branch at 37188). advanceBuilding() calls saveRunState() (37061), so a coop run can persist runSave.mode='coop'. But resumeRunState() only special-cases `r.mode==='custom'` (35869); every other value (coop, demo, anything future) falls through to the campaign path (35878) which restores state into the solo P only and calls startBuilding() in whatever G.playMode happens to be set at the time (often 'solo' from the prior menu). The Continue button (refreshMenuContinue 38922) labels it 'CONTINUE · BLDG N' giving no hint it was coop. Net: a coop save resumes as solo, dropping P2 entirely with no warning.",
+      "evidence": "saveRunState: mode:G.playMode||'solo'  (35846)\nresumeRunState: if(r.mode==='custom'){...return true;}  // only custom handled (35869)\nG.building=r.building;... (campaign fallthrough, 35878) — never re-establishes coop/split-screen",
+      "fix": "Either (a) refuse to persist a resumable run for non-resumable modes — in saveRunState guard early `if(G.playMode!=='solo'&&G.playMode!=='custom')return;` so coop/duel/demo never write runSave; or (b) handle r.mode==='coop' explicitly in resumeRunState by re-entering the coop start path. Option (a) is the surgical, low-risk choice and matches that coop has no resume UI.",
+      "risk": "Low. Option (a) only narrows what gets written to localStorage; existing solo/custom saves unaffected and still merge against defaults. Verify endless/range/duel never reached saveRunState (they don't go through advanceBuilding's solo branch, but coop does).",
+      "confidence": "medium"
+    },
+    {
+      "id": "dead-perf-settings-keys",
+      "file": "src/main.js",
+      "lineRange": "23298-23301",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Five SETTINGS perf knobs are written into defaults/saved JSON but never read anywhere",
+      "description": "maxPointLightsEffective (23298), perfHud-adjacent aiSkipFramesModulo (23299), reducedBloomish (23301), maxParticlesBlood and maxParticlesSmoke (23300) each appear exactly once in the entire codebase — only in the SETTINGS defaults object. They are serialized into clearance_settings and survive load, but no runtime code consults them. There is no particle-cap logic keyed off maxParticlesBlood/Smoke and no AI frame-skip keyed off aiSkipFramesModulo (grep confirms zero read sites). These are competing/abandoned config knobs: they imply behavior (light cap, blood/smoke caps, AI throttle) that is actually hardcoded elsewhere, so toggling them in a saved settings JSON does nothing — a silent contradiction between the settings surface and real behavior.",
+      "evidence": "grep -c per key: maxPointLightsEffective=1, aiSkipFramesModulo=1, reducedBloomish=1, maxParticlesSmoke=1, maxParticlesBlood=1 — all single hits are the default declarations at 23298-23301. No reader exists.",
+      "fix": "Either delete these keys from the defaults block (safe — they were never read, removing them cannot regress behavior; saved JSON keeps them harmlessly via Object.assign but new saves drop them) OR wire them to the systems they name. Lowest-risk: remove the dead keys to stop advertising config that does nothing. Do NOT remove keys that ARE read (raycastSpatialIndex=4, perfHud=2, aimAssist=2 are live).",
+      "risk": "Very low. Removing write-only keys cannot break readers (there are none). Save-compat preserved: load still merges saved values onto defaults; an old save that contains these keys simply carries dead fields. No probe depends on them.",
+      "confidence": "high"
+    },
+    {
+      "id": "stable-mode-forces-all-post-off",
+      "file": "src/main.js",
+      "lineRange": "470-497",
+      "kind": "contradiction",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "STABLE_RENDERING_MODE=true unconditionally forces the entire post-FX stack OFF — bloom/AO/grade/SMAA exist but never run",
+      "description": "STABLE_RENDERING_MODE is a hardcoded `const ...=true` (470). On boot (_readBootSettings 503) and on EVERY settings load (23408) it calls _forceStableVisualSettings(s) which Object.assign-overwrites postEnabled:false, bloomQuality:'off', aoQuality:'off', colorGrade:false, vignette:false, smaa:false, filmGrain:false, chromaticAberration:false, and all phase2 passes off (472-496). This makes large swaths of the settings system a contradiction: the version-migration block sets scopePipEnabled:true (23341) and dozens of `if(s.X==null)` defaults run (23373-23402), only to be immediately clobbered by _forceStableVisualSettings at 23408. More importantly the full EffectComposer pipeline — UnrealBloomPass, GTAOPass, gradePass, SMAAPass — is constructed and wired (_renderStack createRenderSubsystem 15262, _configureRenderStack 15244) but can never execute because applyQuality() computes G._useComposer with `STABLE_RENDERING_MODE?false:...` (23458). Tone mapping (ACESFilmic, exposure 1.06) and sRGB output ARE live on the base renderer (14731-14732), so the image is graded-ish but has NO bloom on muzzle flashes/lights/emissives, NO ambient occlusion contact shadows, NO anti-aliasing (jaggies), and NO per-state color grade (POST_STATE_PROFILES at 23461 is entirely dead).",
+      "evidence": "const STABLE_RENDERING_MODE=true; (470)\n_forceStableVisualSettings: postEnabled:false, bloomQuality:'off', aoQuality:'off', smaa:false ... (472-496) — invoked at boot (503) and every load (23408)\nG._useComposer=STABLE_RENDERING_MODE?false:(...) (23458)",
+      "fix": "This is the single highest visible-impact lever in the game IF stability allows. Surgical, reversible test: flip `const STABLE_RENDERING_MODE=true` to `false` (470) and confirm boot stays green / no black-frame fallback (the black-frame guard at 15394+ exists precisely because this was historically risky). If full-off is required for stability, a safer middle path is to allow ONLY bloom + SMAA while keeping the heavy phase2/AO passes pinned: edit _forceStableVisualSettings to NOT force bloomQuality/smaa off (leave 476/481 out) and set G._useComposer to honor SETTINGS.bloomQuality even in stable mode. Bloom alone on muzzle flashes and emissive HUD/neon reads as 'AAA' instantly.",
+      "risk": "MEDIUM-HIGH and must be verified, not assumed. STABLE_RENDERING_MODE=true was almost certainly set to dodge an r170 composer/black-frame regression (the renderer-health localStorage + setBlackFrameReport machinery at 15394-15469 is the evidence). Re-enabling post may reintroduce black frames on some GPUs and could break the 32 static probes / render-smoke acceptance if they assert composer-off. Treat as opt-in experiment: change one flag, run `npm run build` + the *-static-probe.mjs scripts + test:render before trusting it. Do not ship blind.",
+      "confidence": "medium"
+    },
+    {
+      "id": "resume-difficulty-button-not-resynced",
+      "file": "src/main.js",
+      "lineRange": "35886-38935",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Resumed run restores G.difficulty but menu difficulty buttons keep their stale active highlight",
+      "description": "resumeRunState() restores G.difficulty=r.difficulty (35886/35872) from the saved run. But the menu .menu-mode difficulty buttons set G.difficulty on click (38934) and carry the visual .menu-mode-active class independently — refreshMenuContinue (38922) updates only the Continue button label, never re-syncs the difficulty button highlight to the saved run's difficulty. So a player who saved a 'hard' run, then on next launch sees 'normal' highlighted (default), can resume into a hard run while the UI implies normal. The authoritative value (G.difficulty) is correct after resume; only the menu highlight drifts. Pure cosmetic desync between persisted state and menu chrome.",
+      "evidence": "resumeRunState: G.difficulty=r.difficulty||'normal'; (35886)\nmenu buttons: btn.addEventListener('click',()=>{...G.difficulty=btn.dataset.diff;}); (38931-38935) — no reverse sync from G.difficulty back to button active-state on menu show / continue.",
+      "fix": "In refreshMenuContinue() (38922) or a menu-show hook, when PROGRESS.runSave exists, reflect its difficulty: `document.querySelectorAll('.menu-mode[data-diff]').forEach(b=>b.classList.toggle('menu-mode-active', b.dataset.diff===(PROGRESS.runSave?.difficulty||G.difficulty)));`. Low effort, removes the misleading highlight.",
+      "risk": "Very low, cosmetic only. Ensure the selector `.menu-mode[data-diff]` does not also match the operator buttons (which reuse .menu-mode but use data-op) — scoping on [data-diff] avoids that.",
+      "confidence": "medium"
+    }
+  ]
+}

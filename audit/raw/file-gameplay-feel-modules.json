@@ -1,0 +1,47 @@
+{
+  "scope": "src/game/*.js feel modules: gunplayPolish, gameplayAnimationPolish, aimFeel, reloadFeel, knifeFeel, combatFeedback, incomingFirePolish, hologramVisuals, hologramSignals, bodyPresenceLocomotion, storyGameplayPacing — read fully and cross-referenced against src/main.js wiring (frame loop ~41667-41677, HUD sync ~22643, holo sync ~44389-44495).",
+  "findings": [
+    {
+      "id": "break-pulse-double-decay",
+      "file": "src/game/combatFeedback.js",
+      "lineRange": "34-36",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "_attackBreakPulse/_weaponBreakPulse/_coverBreakPulse are decayed twice per frame (combatFeedback AND gunplayPolish both own them)",
+      "description": "These three break-feedback pulses appear in the DECAY table of BOTH combatFeedback.js (lines 34-36, lambdas 6.4/5.8/5.4) and gunplayPolish.js (lines 44-46, identical lambdas). In the frame loop, tickPlayerCombatFeedback(P,dt) (main.js:41667) and tickGunplayPolish(P,dt) (main.js:41670) both run unconditionally and consecutively on the same P every frame. Each applies current*exp(-lambda*dt), so the pulse is multiplied by exp(-lambda*dt) twice => effective decay is ~2x too fast (at 60fps the per-frame survival drops from ~0.90 to ~0.82). gunplayPolish.recordGunplayOutcome is the sole writer (lines 1177-1179); both modules READ these pulses (combatFeedback snapshot attackBreak/weaponBreak/coverBreak at 123-125; gunplayPolish uses them in hudAlpha/recoilReturnBoost/xhairTighten). The shortened pulse is visible: _syncCombatFeedbackHud (main.js:22650) drives the CSS var --combat-attack-break and the combat-attack-break body class (22655) from attackBreakPulse/weaponBreakPulse, so the 'you broke their stance/weapon/cover' crosshair ring pop is cut to roughly half its intended on-screen duration. This is the only cross-module decay-key collision in the entire scope (verified by extracting every DECAY key across all five tick modules).",
+      "evidence": "combatFeedback DECAY: _attackBreakPulse: 6.4, _weaponBreakPulse: 5.8, _coverBreakPulse: 5.4 (lines 34-36). gunplayPolish DECAY: _attackBreakPulse: 8.4-context lines 44-46 with same 6.4/5.8/5.4. Frame loop: 41667 tickPlayerCombatFeedback(P,dt,damp); 41670 tickGunplayPolish(P,dt,damp);. damp = target+(current-target)*exp(-lambda*max(0,dt)) so target 0 => current*exp(-lambda*dt) applied twice.",
+      "fix": "Remove the three keys '_attackBreakPulse', '_weaponBreakPulse', '_coverBreakPulse' from ONE module's DECAY table. Prefer removing them from combatFeedback.js DECAY (lines 34-36) and keep them in gunplayPolish (which is the writer in recordGunplayOutcome). combatFeedback only reads them, so a single decayer in gunplayPolish restores the intended pulse lifetime. Do not change the lambdas. After the edit re-run the static probes to confirm green.",
+      "risk": "Very low. Pure constant-table edit, no signature change, no save-compat impact. Slightly lengthens the break-feedback ring flash (back to intended); could feel marginally more persistent but that is the design intent. No other module decays these keys.",
+      "confidence": "high"
+    },
+    {
+      "id": "shotcadencescore-no-frame-decay",
+      "file": "src/game/combatFeedback.js",
+      "lineRange": "86-111",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "player._shotCadenceScore is event-updated but never decayed per frame, so it 'sticks' between shots",
+      "description": "_shotCadenceScore is raised via Math.max in recordShotFiredFeedback (line 86), reduced only on a miss (x0.45 in recordShotOutcomeFeedback line 111), and read in buildCombatFeedbackSnapshot (line 170, exposed as snapshot.cadenceScore). It is NOT present in any DECAY table and tickPlayerCombatFeedback never touches it, so once set it holds its peak value until the next fire/outcome event rather than easing back toward neutral over time. It is clamped (clamp01) and recomputed on every shot, so there is no NaN/crash risk; the consequence is purely that the displayed cadence score can read 'good' for a while after the player has stopped maintaining tempo. Minor feel inconsistency, not a functional bug.",
+      "evidence": "Line 86: player._shotCadenceScore = Math.max(player._shotCadenceScore || 0, cadenceScore * (.45 + ads * .35)); Line 111 (miss): player._shotCadenceScore = (player._shotCadenceScore || 0) * .45; No occurrence of _shotCadenceScore in any DECAY object or tick loop (grep confirms only these three references exist project-wide).",
+      "fix": "Optional: add '_shotCadenceScore' to the DECAY table in combatFeedback.js with a gentle lambda (e.g. ~1.6-2.5) so cadence relaxes toward 0 between shots, matching the other event-pulse fields. Low priority; only do if cadence-score visuals feel sticky.",
+      "risk": "Low. Adding a decay key changes only how fast a clamped display value relaxes; no save-compat or crash risk. Could slightly reduce cadence-driven crosshair confidence between bursts.",
+      "confidence": "medium"
+    },
+    {
+      "id": "hologram-version-bundle-dead",
+      "file": "src/game/hologramVisuals.js",
+      "lineRange": "7-15",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "hologramVisualVersionBundle() is exported but never imported or called",
+      "description": "hologramVisualVersionBundle (lines 7-15) returns a static object of version strings. It is not in main.js's import-from-hologramVisuals block (lines 315-329, which alias the actually-used helpers) and a project-wide grep finds zero call sites. The other 14 holo* helpers ARE used (they are imported under '_xxx' aliases at 315-329 and called at 17877+ and 44389-44495, which is why a naive grep on their bare names shows count 1). Only this version-bundle helper is genuinely dead. Harmless (tree-shaken by Vite), noted for completeness.",
+      "evidence": "export function hologramVisualVersionBundle() {...} at line 7; grep 'hologramVisualVersionBundle' over src/main.js returns 0 matches.",
+      "fix": "No action required for runtime. If trimming dead exports, delete the function. Otherwise leave as a harmless version manifest.",
+      "risk": "None. Unused export; removal cannot affect runtime, build, or saves.",
+      "confidence": "high"
+    }
+  ]
+}

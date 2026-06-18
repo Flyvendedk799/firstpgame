@@ -12,7 +12,7 @@ import {
 } from './reloadTimelines.js';
 import { describeGripForDebug, blendFingerCurl, weaponTypeFromIdx } from './viewmodelHandRig.js';
 
-export const PLAYER_ANIM_SCHEMA_VERSION = 10;
+export const PLAYER_ANIM_SCHEMA_VERSION = 11;
 
 function dampL(current, target, lambda, dt) {
   const d = Math.max(0, dt || 0);
@@ -342,11 +342,17 @@ export function createPlayerAnimState(opts) {
         footSwing: 0,
         armSwing: 0,
         footPlant: 0,
+        heelStrike: 0,
+        toeOff: 0,
+        strideReach: 0,
+        stancePlant: 0,
+        gaitFootSide: 0,
         sprintPose: 0,
         torsoTwist: 0,
         jumpPose: 0,
         fallPose: 0,
         dropkickPose: 0,
+        vaultTuck: 0,
         landSquash: 0,
         shoulderRoll: 0,
         headCounter: 0,
@@ -407,6 +413,7 @@ export function updatePlayerAnimInputs(state, ctx) {
   const {
     P,
     dt,
+    inputDt = dt,
     now,
     keys,
     mouseDx = 0,
@@ -425,7 +432,7 @@ export function updatePlayerAnimInputs(state, ctx) {
   const strideDrive = smooth01((speed - 0.035) / 0.36);
   const sprintMoveDrive = smooth01((speed - 0.08) / 0.34);
   const sprintOn = moving && grounded && !P.dropkickActive && !P.vaulting && !P.crouching && sprintBlend > 0.48 && sprintMoveDrive > 0.10;
-  const yawDelta = mouseDx || 0;
+  const yawDelta = Math.max(-120, Math.min(120, mouseDx || 0));
   const nowSec = Number.isFinite(now) ? now : performance.now() * 0.001;
   const vy = P.vy != null ? P.vy : 0;
   const px = P.pos.x;
@@ -446,9 +453,10 @@ export function updatePlayerAnimInputs(state, ctx) {
   state.smoothed.prevPx = px;
   state.smoothed.prevPz = pz;
   const dtCl = Math.max(0, dt || 0);
+  const inputDtCl = Math.max(0.001, Number.isFinite(inputDt) ? inputDt : dtCl);
   state.smoothed.breathPhase = ((state.smoothed.breathPhase || 0) + dtCl * (0.72 + sprintBlend * 0.22 + (P.focusActive ? -0.18 : 0))) % 62.83;
   state.smoothed.idleMicroPhase = ((state.smoothed.idleMicroPhase || 0) + dtCl * (0.37 + speed * 0.42 + sprintBlend * 0.18)) % 62.83;
-  const accel = dtCl > 1e-4 ? Math.hypot(vlx - state.smoothed.velLX, vlz - state.smoothed.velLZ) / dtCl : 0;
+  const accel = inputDtCl > 1e-4 ? Math.hypot(vlx - state.smoothed.velLX, vlz - state.smoothed.velLZ) / inputDtCl : 0;
   state.smoothed.velLX = dampL(state.smoothed.velLX, vlx, 10, dtCl);
   state.smoothed.velLZ = dampL(state.smoothed.velLZ, vlz, 10, dtCl);
   state.smoothed.accel = dampL(state.smoothed.accel, Math.min(18, accel), 6, dtCl);
@@ -466,8 +474,8 @@ export function updatePlayerAnimInputs(state, ctx) {
   state.smoothed.toeOffPulse = dampFn(state.smoothed.toeOffPulse || 0, 0, sprintBlend > 0.45 ? 6.8 : 7.6, dtCl);
   state.smoothed.stepReachPulse = dampFn(state.smoothed.stepReachPulse || 0, 0, sprintBlend > 0.45 ? 9.2 : 10.5, dtCl);
   state.smoothed.footPlantSide = dampFn(state.smoothed.footPlantSide || 0, 0, 5.5, dtCl);
-  state.smoothed.turnPlantPulse = dampFn(state.smoothed.turnPlantPulse || 0, 0, 10.5, dtCl);
-  state.smoothed.pivotSide = dampFn(state.smoothed.pivotSide || 0, 0, 7.5, dtCl);
+  state.smoothed.turnPlantPulse = dampFn(state.smoothed.turnPlantPulse || 0, 0, 10.5, inputDtCl);
+  state.smoothed.pivotSide = dampFn(state.smoothed.pivotSide || 0, 0, 7.5, inputDtCl);
   const stride = (3.25 + sprintBlend * 2.85) * speed * strideDrive * (grounded ? 1 : 0.35) * dtCl;
   state.smoothed.footPhase = (state.smoothed.footPhase + stride) % 62.83;
   const adsNow = Math.max(0, Math.min(1, P.adsVis != null ? P.adsVis : (P.ads || 0)));
@@ -478,7 +486,7 @@ export function updatePlayerAnimInputs(state, ctx) {
     state.smoothed.gaitLean || 0,
     Math.max(-0.13, Math.min(0.13, gaitLeanTarget)),
     moving ? 9.5 : 7.5,
-    dtCl
+    inputDtCl
   );
   state.smoothed.gaitShoulder = dampL(
     state.smoothed.gaitShoulder || 0,
@@ -536,7 +544,7 @@ export function updatePlayerAnimInputs(state, ctx) {
     moving ? 6.5 : 9,
     dtCl
   );
-  state.smoothed.turnInertia = dampL(state.smoothed.turnInertia, yawDelta * 0.0041, 11.5, dtCl);
+  state.smoothed.turnInertia = dampL(state.smoothed.turnInertia, yawDelta * 0.0041, 11.5, inputDtCl);
   state.smoothed.strafeLean = dampL(state.smoothed.strafeLean, intentR * (1 - Math.abs(P.ads || 0)) * 0.042, 7.5, dtCl);
   const prevIntentR = Number.isFinite(state.flags.prevIntentR) ? state.flags.prevIntentR : 0;
   const prevIntentF = Number.isFinite(state.flags.prevIntentF) ? state.flags.prevIntentF : 0;
@@ -789,6 +797,7 @@ export function resolvePlayerAnimLayers(state, dt) {
   const sm = state.smoothed;
   const loc = state.layerWeights.locomotion;
   const sprintLayer = inp.dead ? 0 : Math.min(1, Math.max(inp.sprintAmt || 0, sm.sprintEnv || 0));
+  const vaultW = inp.vaulting ? 1 : 0;
   if (inp.dead) {
     loc.idle = 0;
     loc.walk = 0;
@@ -810,8 +819,8 @@ export function resolvePlayerAnimLayers(state, dt) {
     loc.slide = inp.slideAmt;
     loc.wallJump = wallJumpW;
     loc.dropkick = dropkickW;
-    loc.jump = (!inp.grounded && inp.vy > 0.2 ? 1 : 0) * (1 - wallJumpW * 0.55) * (1 - dropkickW * 0.92);
-    loc.fall = (!inp.grounded && inp.vy <= 0.2 ? 1 : 0) * (1 - wallJumpW * 0.4) * (1 - dropkickW * 0.78);
+    loc.jump = (!inp.grounded && inp.vy > 0.2 ? 1 : 0) * (1 - wallJumpW * 0.55) * (1 - dropkickW * 0.92) * (1 - vaultW);
+    loc.fall = (!inp.grounded && inp.vy <= 0.2 ? 1 : 0) * (1 - wallJumpW * 0.4) * (1 - dropkickW * 0.78) * (1 - vaultW);
     loc.land = sm.landEnv > 0.02 ? Math.min(1, sm.landEnv * 4) : 0;
   }
   const wp = state.layerWeights.weaponPose;
@@ -949,9 +958,12 @@ export function resolvePlayerAnimLayers(state, dt) {
   cam.headBobX = runStep2 * (0.014 + cadencePower * 0.003) * bobW * adsDamp + counterPulse * footSide * 0.003 + turnDriveSide * turnDrivePulse * 0.004 + pivotSide * pivotPulse * 0.004;
   cam.headBobY = (runStep * 0.014 - plantWave * (loc.sprint * 0.0015 + cadencePower * 0.0038) - plantPulse * (0.0028 + loc.sprint * 0.0022) + plantRecover * 0.0015 + toePulse * 0.0012) * bobW * adsDamp - jumpPulse * 0.010 - threatPulse * 0.006 + killPulse * 0.007 + combatFlow * 0.003;
   cam.headRoll = sm.turnInertia * -0.115 + sm.strafeLean * 0.105 + cam.wallKickRoll + airRoll + counterPulse * footSide * 0.010 + turnDriveSide * turnDrivePulse * 0.004 + pivotSide * pivotPulse * 0.018;
-  cam.headPitch = sm.accel * -0.0014 * motion.inertia + sm.landEnv * -0.13 * motion.land + Math.sin(sm.footPhase) * (0.0045 + cadencePower * 0.0022) * loc.sprint * adsDamp + stridePunch * 0.0038 - plantPulse * (0.0045 + loc.sprint * 0.0040) + toePulse * 0.0030 + cam.wallKickPitch + airPitch - jumpPulse * 0.016 - combatFlow * 0.004 - killPulse * 0.010 + threatPulse * 0.018 + landingSlidePulse * 0.020 + fireSnap * 0.006 - fireRecover * 0.003;
-  cam.accelLagX = sm.accel * -0.0022 * motion.inertia * Math.sign(sm.velLX || 1);
-  cam.accelLagZ = sm.accel * -0.0018 * motion.inertia * Math.sign(sm.velLZ || 1);
+  // Acceleration "physics tilt" (start/stop of W/S movement) is steadied hard while
+  // aiming so the view doesn't lurch when you release a movement key under ADS.
+  const _accelAdsSteady = 1 - inp.ads * 0.82;
+  cam.headPitch = sm.accel * -0.0014 * motion.inertia * _accelAdsSteady + sm.landEnv * -0.13 * motion.land + Math.sin(sm.footPhase) * (0.0045 + cadencePower * 0.0022) * loc.sprint * adsDamp + stridePunch * 0.0038 - plantPulse * (0.0045 + loc.sprint * 0.0040) + toePulse * 0.0030 + cam.wallKickPitch + airPitch - jumpPulse * 0.016 - combatFlow * 0.004 - killPulse * 0.010 + threatPulse * 0.018 + landingSlidePulse * 0.020 + fireSnap * 0.006 - fireRecover * 0.003;
+  cam.accelLagX = sm.accel * -0.0022 * motion.inertia * Math.sign(sm.velLX || 1) * _accelAdsSteady;
+  cam.accelLagZ = sm.accel * -0.0018 * motion.inertia * Math.sign(sm.velLZ || 1) * _accelAdsSteady;
   cam.turnLagYaw = sm.turnInertia * 0.125;
   cam.turnLagRoll = sm.turnInertia * -0.038;
   cam.landDip = sm.landEnv * -0.06 * motion.land;
@@ -972,8 +984,10 @@ export function resolvePlayerAnimLayers(state, dt) {
   cam.impactSettlePitch = fireSnap * 0.024 + fireRecover * 0.012 - fireTail * 0.004 + combatReady * 0.006 - threatPulse * 0.004;
   cam.impactSettleRoll = shotSide * (fireSnap * 0.010 + fireRecover * 0.006 - fireTail * 0.002) + gaitLean * combatReady * 0.035;
   const vm = state.resolved.viewmodel;
-  vm.lagX = sm.accel * -0.0014 * motion.inertia + loc.slide * slideSideRaw * 0.034 + pivotSide * pivotPulse * 0.003;
-  vm.lagY = sm.accel * -0.0009 * motion.inertia;
+  // The accel-driven weapon lag (the "kick" felt when starting/stopping movement) is
+  // steadied under ADS so the gun doesn't lurch/tilt when you stop while aiming.
+  vm.lagX = sm.accel * -0.0014 * motion.inertia * _accelAdsSteady + loc.slide * slideSideRaw * 0.034 + pivotSide * pivotPulse * 0.003;
+  vm.lagY = sm.accel * -0.0009 * motion.inertia * _accelAdsSteady;
   vm.lagZ = (loc.sprint * -0.024 - sprintStartW * 0.010 + sprintStopW * 0.008) * motion.inertia + loc.slide * (-0.018 - slideForward * 0.020 + slideBack * 0.034);
   vm.shoulderPump = loc.sprint * Math.sin(sm.footPhase * 2) * (0.013 + cadencePower * 0.0045) * motion.bob + stepReachPulse * 0.004;
   vm.slideTuck = loc.slide * (0.19 + (slidePower - 1) * 0.12 + landingSlidePulse * 0.060 + slideSideAbs * 0.035 + slideBack * 0.026);
@@ -1043,11 +1057,17 @@ export function resolvePlayerAnimLayers(state, dt) {
   pr.footSwing = runStep * 0.08 * bobW + footSide * (footPulse * 0.05 + plantPulse * 0.08 - toePulse * 0.035) + pivotSide * pivotPulse * 0.045 + jumpW * -0.10 + fallW * 0.08 + dropkickSnap * -0.38 + loc.slide * (-0.10 * slideForward + 0.12 * slideBack + slideSideRaw * 0.055);
   pr.armSwing = runStep2 * (0.11 + cadencePower * 0.05) * bobW * motion.inertia + footSide * (footPulse * 0.04 + plantPulse * 0.030) + pivotSide * pivotPulse * 0.028 + loc.slide * slideStyleSide * 0.065;
   pr.footPlant = Math.max(-1, Math.min(1, footSide * Math.min(1, footPulse + plantPulse * 1.9 + plantRecover * 0.65) + pivotSide * pivotPulse * 0.32));
+  pr.heelStrike = Math.min(1.4, heelStrike);
+  pr.toeOff = Math.min(1.4, toeOff);
+  pr.strideReach = Math.min(1.6, stridePunch + toeOff * 0.52 + heelStrike * 0.38 + stepReachPulse * 0.28);
+  pr.stancePlant = Math.min(1.4, plantWave * cadencePower + plantPulse * 1.15 + plantRecover * 0.34);
+  pr.gaitFootSide = gaitFootSide;
   pr.sprintPose = Math.min(1, loc.sprint + sprintStartW * 0.34) * (1 - loc.slide * 0.55);
   pr.torsoTwist = runStep2 * (loc.sprint * 0.10 + loc.walk * 0.05) * motion.inertia + turnDriveSide * turnDrivePulse * 0.045 + pivotSide * pivotPulse * 0.070 + loc.slide * slideSideRaw * 0.22;
   pr.jumpPose = jumpW + apexW * 0.35;
   pr.fallPose = fallW;
   pr.dropkickPose = Math.min(1, Math.max(dropkickSnap, dropkickLandW * 0.92));
+  pr.vaultTuck = intr.vault * (0.32 + Math.min(0.68, Math.sin(Math.max(0, Math.min(1, inp.vaultT || 0)) * Math.PI) * 0.68));
   pr.landSquash = loc.land;
   pr.shoulderRoll = gaitLean * 1.25 + footSide * (footPulse * 0.050 + plantPulse * 0.040) + pivotSide * pivotPulse * 0.050 + fireSettle * 0.035 * shotSide;
   pr.headCounter = -gaitLean * 0.74 + sm.turnInertia * -0.055 - pivotSide * pivotPulse * 0.035;

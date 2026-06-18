@@ -1,0 +1,89 @@
+{
+  "scope": "src/main.js lines 19500-21350 — knife mesh/stick/throw runtime, viewmodel root stabilization, iron-sight alignment, equip sanitize, player proxy",
+  "findings": [
+    {
+      "id": "reset-leaks-stuck-beacon",
+      "file": "src/main.js",
+      "lineRange": "19829-19844",
+      "kind": "leak",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "_resetKnifeRuntime leaks the stuck-knife pickup beacon (orphan VFX + GPU resources)",
+      "description": "_resetKnifeRuntime removes each knife's k.grp from the scene and disposes k.grp geometry, but the stuck pickup beacon (k.beaconGrp) is parented to scene, NOT to k.grp (see _ensureKnifeStuckBeacon line 19602 `scene.add(g)`). The reset never calls _disposeKnifeBeacon, so a beacon for any knife that is stuck at reset time stays in the scene forever: a rotating additive ring/pulse/stem that keeps rendering at the last stuck position with no owner, and its geometry+materials are never freed. This fires on level transitions / retries / custom-map reloads while a thrown knife is stuck in a wall.",
+      "evidence": "function _resetKnifeRuntime(){ ... for(const k of G.knives){ if(k&&k.grp){ scene.remove(k.grp); try{k.grp.traverse(o=>{if(o.geometry)o.geometry.dispose();});}catch(_){} } } G.knives.length=0; ...} — no _disposeKnifeBeacon(k) call; beacon is on scene not k.grp.",
+      "fix": "In _resetKnifeRuntime, inside the `for(const k of G.knives)` loop, call `_disposeKnifeBeacon(k);` before/after scene.remove(k.grp). _disposeKnifeBeacon (line 19577) already removes from parent and disposes geometry+material, so one line fixes both the orphan VFX and the leak.",
+      "risk": "Extremely low. _disposeKnifeBeacon is null-safe (early-returns if no beaconGrp) and is already called from _startKnifeReturn/_collectStuckKnife, so behavior is identical to the normal collect path. No save-compat or perf concern.",
+      "confidence": "high"
+    },
+    {
+      "id": "throw-no-flight-trail",
+      "file": "src/main.js",
+      "lineRange": "20177-20186",
+      "kind": "aaa-visual",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "Outgoing thrown knife has NO motion trail — return arc is lavish, throw is a bare spinning box",
+      "description": "Every addTrail call in updateKnives lives inside the k.returning branch (knife-return halo, knife-return-magnetic spiral, cross, catch-snap — 4 trail types). The forward physics tick for an alive, in-flight knife (the part the player watches most) adds zero trail. At 50 m/s with tumble=Math.PI*9 the thrown knife reads as a gray tumbling cube with no whoosh/streak, then suddenly sprouts a gorgeous glowing recall arc on the way back. This asymmetry is both a visible-on-screen AAA miss and a visual inconsistency.",
+      "evidence": "Physics tick: `k.vel.y-=16*dt; k.lastSafePos=prev.clone(); k.grp.position.copy(next); k.grp.rotateOnAxis(new THREE.Vector3(1,0,0),k.tumble*dt);` — no addTrail. Meanwhile the return branch (20023-20058) issues addTrail for kinds knife-return / knife-return-magnetic / knife-return-catch-snap.",
+      "fix": "In the physics tick (after `k.grp.position.copy(next)` around line 20180), add a throttled motion trail mirroring the return style, e.g.: `addTrail(prev,next,{kind:'knife-throw',haloColor:0x80e8ff,coreColor:0xffffff,haloRadius:.030,coreRadius:.007,life:.085,haloOpacity:.55,coreOpacity:.95});`. Per-frame segLen at 50 m/s (~0.83m) clears addTrail's len<.05 guard. Optionally gate to every other frame via k._lastFlightTrailAt like the return path to keep trail-pool pressure low.",
+      "risk": "Low. addTrail is the same pooled VFX used by the return arc and bullets; one call per frame per in-flight knife (usually 0-1 knives) is negligible. No state change, purely additive visual. Keep haloRadius modest so it doesn't overpower the recall arc.",
+      "confidence": "high"
+    },
+    {
+      "id": "dead-not-alive-branch",
+      "file": "src/main.js",
+      "lineRange": "20127-20131",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "`if(!k.alive)` lifetime-expiry branch in updateKnives is unreachable",
+      "description": "A knife only gets alive=false in _stickKnifeAtSurface (which also sets stuck=true) and _startKnifeReturn (which sets returning=true). updateKnives checks k.returning (19969) then k.stuck (20069) BEFORE reaching the `if(!k.alive)` branch at 20127. There is no code path that produces a knife with alive=false AND stuck=false AND returning=false, so this branch — including the `k.stuckLifetime||3.5` fallback expiry — can never execute. (Stuck knives also set stuckLifetime=Infinity at 19789, so even if reached the timer would never trip.)",
+      "evidence": "k.alive=false assignments only at 19789 (`k.alive=false;k.stuck=true;...`) and 19802 (`k.alive=false;...k.returning=true;`). Dead branch: `if(!k.alive){ k.age+=dt; if(k.age>(k.stuckLifetime||3.5)){scene.remove(k.grp);...G.knives.splice(i,1);} continue; }`.",
+      "fix": "Either delete the dead branch (lines 20127-20131) to remove confusion, or — if a thrown knife is ever intended to despawn after a timeout when it neither sticks nor returns — wire a real path that sets alive=false with stuck/returning both false. As-is it is harmless but misleading dead code.",
+      "risk": "Removing it is safe (branch never runs). If kept, no functional effect. Don't add a real despawn path without confirming desired behavior — that WOULD change gameplay.",
+      "confidence": "high"
+    },
+    {
+      "id": "stuck-silhouette-material-leak",
+      "file": "src/main.js",
+      "lineRange": "19814-19821",
+      "kind": "leak",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Per-knife stuck silhouette materials never disposed (geometry-only cleanup)",
+      "description": "_ensureKnifeStuckSilhouette creates fresh MeshBasicMaterial instances per stuck knife (bladeM, edgeM, gripM, plus gripM.clone() for the pommel) and parents the silhouette to k.grp. All knife teardown sites — _collectStuckKnife (19821), the return-complete branch (20063), and _resetKnifeRuntime (19835) — traverse k.grp disposing only `o.geometry`, never `o.material`. So each throw→stick→collect cycle leaks ~6 MeshBasicMaterial instances. (Note: this is correct for the SHARED viewmodel materials tkBladeM/tkEdgeM/etc. which must not be disposed; the bug is specifically the per-instance silhouette/beacon-style materials. _disposeKnifeBeacon does dispose beacon materials correctly; the silhouette path does not.)",
+      "evidence": "_ensureKnifeStuckSilhouette: `const bladeM=new THREE.MeshBasicMaterial(...); ... const pommelLine=new THREE.Mesh(..., gripM.clone());` then `k.grp.add(g)`. Teardown: `k.grp.traverse(o=>{if(o.geometry)o.geometry.dispose();});` — no material disposal.",
+      "fix": "In the three knife-grp teardown traversals (19821, 20063, 19835), also dispose materials, e.g.: `k.grp.traverse(o=>{if(o.geometry)o.geometry.dispose();const m=o.material;if(Array.isArray(m))m.forEach(x=>x&&x.dispose&&x.dispose());else if(m&&m.dispose)m.dispose();});`. WARNING: the in-flight/spawned projectile (spawnKnifeProjectile -> _buildKnifeMesh) reuses the SHARED module materials tkBladeM/tkEdgeM/tkHandleM/tkWrapM/tkBandM/tkGlintM — disposing those would break later knives. Safer: dispose only materials on meshes whose userData.role starts with 'stuck-' (the silhouette parts) and leave _buildKnifeMesh meshes alone. Given the shared-material hazard, prefer the targeted role-based disposal.",
+      "risk": "Medium-risk fix if done naively (blanket material dispose would dispose shared viewmodel materials and blank out subsequent thrown knives / the equipped throw viewmodel). Use the role-scoped disposal. Low gameplay/visible impact; this is a slow accumulation, not a per-frame leak.",
+      "confidence": "medium"
+    },
+    {
+      "id": "tk-view-meshes-unused",
+      "file": "src/main.js",
+      "lineRange": "19534-19534",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "TK_VIEW_MESHES const is assigned but never read",
+      "description": "`const TK_VIEW_MESHES=KNIFE_SLOT_REMOVED?[]:_buildKnifeMesh(throwGrp);` keeps the array of viewmodel knife meshes returned by _buildKnifeMesh, but the const is never referenced anywhere else in the file. Only the side effect of _buildKnifeMesh (attaching meshes to throwGrp) is used. The binding is dead state.",
+      "evidence": "grep TK_VIEW_MESHES across src/main.js returns exactly one hit: the declaration on line 19534. No reads.",
+      "fix": "Drop the binding and keep the side effect: `if(!KNIFE_SLOT_REMOVED)_buildKnifeMesh(throwGrp);`. Purely cosmetic / clarity. Leave as-is if minimizing diff; harmless.",
+      "risk": "Negligible. Removing an unread const cannot change behavior.",
+      "confidence": "high"
+    },
+    {
+      "id": "knife-throw-enemy-null-deref",
+      "file": "src/main.js",
+      "lineRange": "20152-20158",
+      "kind": "crash",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "knife-throw enemy hit calls enemy.takeDamage without the null guard the author uses one line earlier",
+      "description": "In the enemy-hit branch, line 20155 defensively guards `if(enemy&&enemy.lastPlayerDir)`, signalling the author considers enemy possibly falsy, yet line 20158 then calls `enemy.takeDamage(...)` unconditionally. If a returned mesh ever lacked userData.enemy this would throw a TypeError inside the frame loop. In practice every mesh from enemyMgr.getMeshes() (bMesh/hMesh line 6401/6414, limb proxies line 7450) sets userData.enemy, and the established shoot()/ricochet path at line 25228 is also unguarded, so this is consistent with the codebase and not a live crash today — but the local guard inconsistency is a latent hazard if mesh sourcing changes.",
+      "evidence": "Line 20155: `if(enemy&&enemy.lastPlayerDir)enemy.lastPlayerDir.set(...)` then line 20158: `const killed=enemy.takeDamage(isHead?999:200,isHead,true);` with no enemy check.",
+      "fix": "Wrap the damage/kill block in `if(enemy){...}` (mirroring the guard on 20155). If enemy is falsy, fall through to treat the hit like a world surface (or just skip). Keep the existing recall: `k.grp.position.copy(h.point); _startKnifeReturn(k,h.point,{hitReturn:true}); continue;` outside the guard so the knife still returns.",
+      "risk": "Low. Adding a guard only prevents a crash that currently can't happen given mesh invariants; no gameplay change in the normal case. Safe and cheap hardening.",
+      "confidence": "low"
+    }
+  ]
+}

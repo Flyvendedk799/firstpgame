@@ -1,0 +1,103 @@
+{
+  "scope": "src/main.js lines 23410-25900: applyQuality, POST_STATE_PROFILES/_computePostContext, weapon combat/gunplay profiles, enemy suppression, spawnEnemyHitPulse, addImpact/decals, addMuzzleRing/Smoke, pickups + ammo pickup, ricochet, wounded/limb state, _isCritHit, falloff, spawnProjectile/tickProjectiles, aim feel helpers (_aimRayDir*).",
+  "findings": [
+    {
+      "id": "crit-neck-spine-nullified",
+      "file": "src/main.js",
+      "lineRange": "25437-25459",
+      "kind": "bug",
+      "severity": "high",
+      "visibleImpact": "medium",
+      "title": "NECK/SPINE critical hits do no bonus (and SPINE does a penalty) because consumer divides crit mul by 2.0",
+      "description": "_isCritHit returns body-shot crits NECK {crit:true,mul:2.0} and SPINE {crit:true,mul:1.7}. The shoot path (line 26417) applies damage as baseDmg * ... * (_critInfo.crit?(_critInfo.mul/2.0):1.0) where baseDmg=W.dmg for a body hit. The /2.0 normalization only makes sense for HEAD-derived crits (where baseDmg is already hsDmg=2x body). For a NECK hit this yields W.dmg*(2.0/2.0)=W.dmg (no bonus despite the 'NECK = 2x crit' comment). For a SPINE hit it yields W.dmg*(1.7/2.0)=0.85*W.dmg, i.e. a critical hit deals LESS than a normal body shot.",
+      "evidence": "_isCritHit: \"if(distToNeck<.10)return {crit:true,type:'NECK',mul:2.0};\" and \"return {crit:true,type:'SPINE',mul:1.7};\". Consumer (line 26417): \"const finalDmg=baseDmg*...*(_critInfo.crit?(_critInfo.mul/2.0):1.0);\" with baseDmg=isHead?W.hsDmg:W.dmg.",
+      "fix": "Make _isCritHit return multipliers relative to the actual baseDmg, OR fix the consumer at line 26417 to not divide body crits by 2. Surgical option in-scope: add an explicit field to the return, e.g. NECK -> {crit:true,type:'NECK',baseMul:2.0} and have the consumer use (isHead?(_critInfo.mul/2.0):_critInfo.mul). Simplest consumer fix at line 26417: replace the trailing factor with (_critInfo.crit?(isHead?_critInfo.mul/2.0:_critInfo.mul):1.0). This restores NECK=2x body and SPINE=1.7x body as the comments intend.",
+      "risk": "Increases body-crit damage; could shift TTK/balance for neck/back hits. Low save-compat risk. Verify shotgun (idx 3) per-pellet does not over-amplify since each pellet recomputes crit.",
+      "confidence": "high"
+    },
+    {
+      "id": "crit-mul-dead-var",
+      "file": "src/main.js",
+      "lineRange": "26414-26417",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_critMul computed then never used (downstream of _isCritHit)",
+      "description": "Immediately after calling _isCritHit (in-scope at 25437), the consumer computes _critMul=_critInfo.crit?_critInfo.mul:(isHead?2.0:1.0) but never reads it; finalDmg recomputes its own factor inline. Dead local. Flagged because it is the direct evidence that the crit pathway is half-wired and supports the neck/spine bug above.",
+      "evidence": "Line 26415: \"const _critMul=_critInfo.crit?_critInfo.mul:(isHead?2.0:1.0);\" — grep shows _critMul has zero other references.",
+      "fix": "Either delete line 26415, or (preferred) use _critMul as the single source of truth in the finalDmg expression after correcting the body-crit math (see crit-neck-spine-nullified).",
+      "risk": "None if deleted; if reused, couples with the crit math fix.",
+      "confidence": "high"
+    },
+    {
+      "id": "projectile-hitstop-ignores-slot",
+      "file": "src/main.js",
+      "lineRange": "25540-25563",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "tickProjectiles fires triggerHitStop for any owner, but hitstop only affects player slot 0 (P)",
+      "description": "triggerHitStop (def 33827) writes only to P._hitStop* (slot 0). In tickProjectiles the enemy-hit and kill branches call triggerHitStop unconditionally regardless of p.ownerSlot. In split-screen/duel, a projectile fired by P2 (ownerSlot 1) causes a global hitstop freeze on P1's camera/feel. triggerPlayerHitImpactFeedback is correctly slot-aware here, so this is an inconsistency within the same hit handler.",
+      "evidence": "Lines: \"if((isHead||dmg>120)&&typeof triggerHitStop==='function')triggerHitStop(isHead?44:34);\" and on kill \"if(typeof triggerHitStop==='function')triggerHitStop(isHead?46:36);\" — no ownerSlot guard. Compare triggerHitStop: \"P._hitStopUntil=performance.now()+dur;\" (slot-0 only).",
+      "fix": "Guard both triggerHitStop calls with (p.ownerSlot|0)===0, e.g. \"if((p.ownerSlot|0)===0 && (isHead||dmg>120))triggerHitStop(...)\". Same pattern already used implicitly by single-screen shoot(). Long term, parameterize triggerHitStop by slot.",
+      "risk": "Behavior change only in split-screen/duel; single-player unaffected (ownerSlot always 0). No save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "projectile-tracer-no-length-scale",
+      "file": "src/main.js",
+      "lineRange": "25493-25524",
+      "kind": "aaa-visual",
+      "severity": "medium",
+      "visibleImpact": "high",
+      "title": "Ballistic tracer is a fixed 0.30m stub that teleports in large gaps for fast rounds",
+      "description": "spawnProjectile builds a CylinderGeometry of fixed length 0.30m and tickProjectiles only calls _alignCyl (orientation + midpoint position, no scaling). DMR=680 m/s and Sniper=920 m/s travel ~11-15m per 60fps frame, but the visible tracer stays 0.30m long and is centered on the segment midpoint, so the streak appears as a tiny dash hopping in big gaps far from the bullet's actual swept path. The spawn code clearly intended a streak (it pre-aligns along dir*0.30).",
+      "evidence": "\"const tr=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,.30,5,1,true),trM);\" and in tick: \"if(p.mesh){_alignCyl(p.mesh,prev,p.pos);}\" where _alignCyl never sets scale. BALLISTICS: 5:{speed:680...}, 7:{speed:920...}.",
+      "fix": "After _alignCyl in tickProjectiles, stretch the tracer along its local Y to cover the swept segment: compute segLen=p.pos.distanceTo(prev); then p.mesh.scale.set(1, Math.max(1, segLen/0.30), 1). (CylinderGeometry's length axis is Y, which _alignCyl aligns to the travel dir.) Optionally clamp to a max so it doesn't span the whole map: Math.min(segLen/0.30, 60).",
+      "risk": "Purely visual; very low risk. Reusing one geometry with per-frame scale is cheap. No disposal change needed (geometry already disposed on removal).",
+      "confidence": "high"
+    },
+    {
+      "id": "dead-aimraydirwithspread",
+      "file": "src/main.js",
+      "lineRange": "25040-25042",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_aimRayDirWithSpread defined but never called (superseded by _aimRayDirWithSpreadFor)",
+      "description": "_aimRayDirWithSpread is a single-camera spread helper that is never referenced anywhere in the repo; the live shoot path uses _aimRayDirWithSpreadFor (25897), which has a different, better spread model (polar disk sampling, yScale, bias) versus this function's square uniform spread. It also applies the camera quaternion after normalize (harmless mathematically) and uses uniform square spread, so its result would differ from the real path if it were ever wired up — a latent contradiction.",
+      "evidence": "grep across src: only definition site \"function _aimRayDirWithSpread(sp,out=new THREE.Vector3()){ return out.set((Math.random()-.5)*sp,(Math.random()-.5)*sp,-1).normalize().applyQuaternion(camera.quaternion); }\" — zero callers (only _aimRayDirWithSpreadFor is called).",
+      "fix": "Delete _aimRayDirWithSpread (25040-25042) to remove the competing/never-used spread model, or document it as unused. No call sites to update.",
+      "risk": "None; removing unreferenced code keeps build/probes green.",
+      "confidence": "high"
+    },
+    {
+      "id": "muzzlering-shell-smoke-global-camera-p2",
+      "file": "src/main.js",
+      "lineRange": "24304-24344",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "addShell / addMuzzleRing / addMuzzleSmoke derive direction from global camera, wrong for P2 in split-screen",
+      "description": "These VFX use the module-global `camera` (P1) to compute right/forward and to billboard, even when the firing weapon belongs to P2. The eject point itself is correct (gunGroup.localToWorld), but the ejection right-vector, muzzle forward, and corona billboard face P1's view. In split-screen, P2's brass flies toward P1's right and the muzzle ring faces P1, not P2.",
+      "evidence": "addShell: \"const right=new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);\"; addMuzzleRing: \"const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);\"; addMuzzleSmoke similarly. Call site (26301-26303) passes only gun, no slot/cam.",
+      "fix": "Thread the firing camera into these helpers (e.g. addMuzzleRing(originLocal,gunGroup,cam=camera)) and pass _slot===1?cameraP2:camera from the shoot path; use that cam for right/fwd vectors and _orientVfxBillboard. Low priority unless split-screen polish matters.",
+      "risk": "Single-player unaffected (camera===firing cam). Touching shoot-path signatures has minor regression surface; keep default param = camera.",
+      "confidence": "medium"
+    },
+    {
+      "id": "muzzlering-pickup-vfx-strong-aaa",
+      "file": "src/main.js",
+      "lineRange": "24320-24344",
+      "kind": "aaa-feel",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Muzzle ring/corona quality is good; no change needed (clean region note)",
+      "description": "addMuzzleRing already uses additive shockwave ring + atlas-sliced corona with toneMapped:false and grow/roll animation, and spawnEnemyHitPulse layers ring+core+slash+shards. This region is visually well developed; no surgical AAA win found here beyond the projectile tracer fix above. Recorded as a clean-region note to document coverage, not an issue.",
+      "evidence": "addMuzzleRing: \"toneMapped:false\", \"growRate:24\", atlas corona via _sliceAtlasCell; spawnEnemyHitPulse adds core (line 24077), slashes (24096), shards (24118) with billboard + velocity.",
+      "fix": "No change. If a single cheap win is desired, the highest-impact one in scope is projectile-tracer-no-length-scale.",
+      "risk": "None.",
+      "confidence": "medium"
+    }
+  ]
+}

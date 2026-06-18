@@ -1,0 +1,103 @@
+{
+  "scope": "src/encounterDirector.js, src/encounterBehavior.js, src/encounterPatrolRoutes.js, src/campaignEncounters.js — encounter director + behavior + patrol routes + campaign encounter data; cross-referenced against src/main.js, src/campaignRoomFlows.js, src/campaignObjectives.js, src/campaign/nativeEncounterTactics.js for wiring/consumption.",
+  "findings": [
+    {
+      "id": "patrol-retag-namespace-mismatch",
+      "file": "src/campaign/nativeEncounterTactics.js",
+      "lineRange": "205-305",
+      "kind": "contradiction",
+      "severity": "high",
+      "visibleImpact": "medium",
+      "title": "Per-building patrol retag is a permanent no-op (ROOM_PATROL_KIND keyed by floorplan ids, looked up with flow ids) — _makeCampaignRoutes() output is entirely dead",
+      "description": "campaignEncounters._cloneNativeCampaignEncounterFromB01 remaps every encounter's `room` to a FLOW id (b02_intake_peek, b02_relay_cage, ...) BEFORE calling mergeNativeEncounterTactics(raw, bn). Inside that merge, line 294 does `ROOM_PATROL_KIND[e.room]`, but ROOM_PATROL_KIND is keyed by FLOORPLAN-SPACE ids (dock_intake, relay_cage, alarm_relay_room, ...). Flow ids never match floorplan ids, so `kind` is always null. Result: the building-specific patrol retag `u.patrol = _routePatrolTag(bn, kind)` never fires, and the kind-based coverHint defaults (objective->relay_desk, signature->vestibule_face, flank->drum_spool) never apply. B02-B12 enemies keep B01's literal patrol routes (cage_left_arc, drum_lateral, ...) at B01 coordinates instead of the intended per-building routes. Consequently the ENTIRE _makeCampaignRoutes() generator in encounterPatrolRoutes.js (b02_arrival_route ... b12_overwatch_route, the bulk of ENCOUNTER_PATROL_ROUTES) is dead data that nothing ever references.",
+      "evidence": "encounterPatrolRoutes.js:61-83 generates `b${bn}_${kind}_route`; nativeEncounterTactics.js:201-203 `_routePatrolTag(bn,kind)` returns the same name; nativeEncounterTactics.js:294 `const kind = ROOM_PATROL_KIND[e.room] || null;` with ROOM_PATROL_KIND (205-215) keyed dock_intake/relay_cage/... while e.room is 'b0X_intake_peek'/'b0X_relay_cage'. Runtime-verified: getCampaignEncounterDef(2).encounters[drum].enemies[0].patrol === 'drum_lateral' (B01 base route), coverHint === undefined; the generated b02_flank_route is never assigned.",
+      "fix": "Make the room-key namespaces agree. Cheapest fix in scope of the data files: in nativeEncounterTactics.js, key ROOM_PATROL_KIND by the flow-room SUFFIX (intake_peek->arrival, relay_approach->mid, alarm_relay->objective, drum_flank->flank, relay_cage->signature) and change line 294 to strip the `bXX_` prefix from e.room before lookup, e.g. `const kind = ROOM_PATROL_KIND[String(e.room).replace(/^b\\d{2}_/, '')] || null;`. Alternatively delete _makeCampaignRoutes() from encounterPatrolRoutes.js if per-building routes are not wanted. Verify with node import that getCampaignEncounterDef(2) flanker.patrol becomes 'b02_flank_route'.",
+      "risk": "Activating the retag changes enemy patrol paths for B02-B12 (the generated routes must be sane for each building's geometry — they are derived from CAMPAIGN_ROUTE_CENTERS_BY_BN which look plausible). Low crash risk; medium gameplay/positioning risk. No save-compat impact. No probe currently covers this, so add an assertion.",
+      "confidence": "high"
+    },
+    {
+      "id": "overwatch-catwalk-sniper-noop",
+      "file": "src/encounterBehavior.js",
+      "lineRange": "27-43, 49-98",
+      "kind": "deadcode",
+      "severity": "medium",
+      "visibleImpact": "medium",
+      "title": "Authored 'overwatch_catwalk' behavior and 'sniper' role are unhandled — the signature-room overwatch enemy is a plain default scout in all 12 buildings",
+      "description": "campaignEncounters b01_be_scout (the catwalk overwatch in every signature room) is authored with `type:'scout', role:'sniper', behavior:'overwatch_catwalk'`. applyEncounterRole only handles 'lookout'/'anchor'/'flanker' — 'sniper' falls through with no nudge. applyEncounterEnemySpec's behavior switch handles peek_from_cover/patrol_then_alarm/guard_objective/hold_angle/suppress_lane/flank_after_contact/rush_when_player_reloads/ambush_on_crossing/push_after_contact/reposition/patrol_route — but NOT 'overwatch_catwalk'. main.js keys long-range tuning on enemy.type==='sniper'/'marksman', not encounterRole, and this enemy's type stays 'scout'. Net: the intended elevated marksman reads/plays like a generic close-range scout (peekRate=1, holdRiskCap=0.45, scout HP/range/burst).",
+      "evidence": "campaignEncounters.js:504-515 `{ id:'b01_be_scout', type:'scout', role:'sniper', behavior:'overwatch_catwalk', ... }`. Runtime-verified: applyEncounterEnemySpec(...overwatch_catwalk+sniper...) leaves type='scout', peekRate=1, holdRiskCap=0.45, encounterPreferredState=null. 'overwatch_catwalk' appears in ENCOUNTER_BEHAVIORS (campaignEncounters.js:42) but in no handler.",
+      "fix": "Either (a) change the authored enemy type to 'sniper'/'marksman' so existing type-based AI applies (campaignEncounters.js b01_be_scout `type:'sniper'`), and/or (b) handle role 'sniper' in applyEncounterRole (raise attackRange/lower peekRate/raise holdRiskCap, set encounterPreferredState='HOLD_CORNER') and add a `b==='overwatch_catwalk'` case in applyEncounterEnemySpec mirroring 'hold_angle' plus a longer ideal range. Lowest-risk visible win: bump peekRate down and holdRiskCap up for this role so it actually holds the overlook.",
+      "risk": "Changing type to sniper changes HP/damage/burst/visuals — re-balance the signature room. Adding a role/behavior branch is additive and low-risk. No save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "alertlink-preferredstate-write-only",
+      "file": "src/encounterBehavior.js",
+      "lineRange": "53-60",
+      "kind": "state-desync",
+      "severity": "medium",
+      "visibleImpact": "low",
+      "title": "encounterAlertLink and encounterPreferredState are written from authored data but never read anywhere — authored squad alert-coordination and preferred-state are dead",
+      "description": "applyEncounterEnemySpec copies s.alertLink -> enemy.encounterAlertLink and s.preferredState -> enemy.encounterPreferredState (and applyEncounterRole sets encounterPreferredState='HOLD_CORNER' for 'anchor'). The B01 catalog authors alertLink on most enemies (e.g. b01_scout_fe_lane->['b01_fc_doorline'], b01_me_lane->['b01_mw_desk'], b01_bw_hold->['b01_bc_heavy','b01_bc_rifle']) and preferredState:'HOLD_CORNER' on anchors. A grep of main.js (and all src) shows NEITHER field is ever read. So authored alert propagation (one enemy waking its linked teammates) and authored preferred states do not happen — the cross-enemy 'coordinated reveal' the data implies is absent.",
+      "evidence": "encounterBehavior.js:55 `if (Array.isArray(s.alertLink)) enemy.encounterAlertLink = s.alertLink.slice();` and :54 `enemy.encounterPreferredState = s.preferredState || null;`. `grep -rn 'encounterAlertLink|encounterPreferredState' src` returns ONLY encounterBehavior.js. campaignEncounters.js authors alertLink at lines 373,453,478 and preferredState:'HOLD_CORNER' at 421,489.",
+      "fix": "If alert links are desired (cheap AAA feel — coordinated room wake): in main.js where an enemy first acquires the player / sets lastKnownPos, look up enemy.encounterAlertLink, resolve teammates by encounterSpecId in enemyMgr._list, and seed their lastKnownPos/alertTimer. For preferredState, in the AI state machine bias toward HOLD_CORNER (state 6) when enemy.encounterPreferredState==='HOLD_CORNER' and a threat is alive. If neither is wanted, delete the two writes to remove the misleading authoring surface.",
+      "risk": "Wiring alert propagation changes encounter difficulty (rooms can wake as a unit). Make it opt-in and bounded (radius/once). Additive; no save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "relaysec-dead-literal",
+      "file": "src/encounterDirector.js",
+      "lineRange": "769-780",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "objectiveState.secondsInRelayRoom is always 0 (literal 'alarm_relay_room' never equals spec.roomId, which is the flow id 'bXX_alarm_relay')",
+      "description": "_tickReinforcementTimers computes relaySec only when `spec.roomId === 'alarm_relay_room'`, but collectAlarmReinforcementSpecs sets spec.roomId = enc.room, and the alarm encounter's room is the FLOW id 'b01_alarm_relay' (not the floorplan-space id 'alarm_relay_room'). So the comparison never holds, relaySec stays 0, and objectiveState.secondsInRelayRoom is permanently 0. main.js:34395 reads it in _activeStoryObjectiveRuntime as `if(hold<=.001 && relaySec<=.05) return null;` — so the 'CUT ALARM' objective cue can only surface once the player is actively holding E, never from merely dwelling in the relay room as the dwell-based branch intends.",
+      "evidence": "encounterDirector.js:769 `if (spec.roomId === 'alarm_relay_room') relaySec = Math.max(relaySec, acc);` vs campaignObjectives.js:14 `const roomId = enc.room;` and campaignEncounters.js:406-408 encounter room 'b01_alarm_relay'. `grep \"'alarm_relay_room'\"` in encounterDirector.js hits only line 769. Consumer: main.js:34395.",
+      "fix": "Compare against the flow room id, not the floorplan literal. Replace the condition with a robust suffix test, e.g. `if (/_alarm_relay$/.test(String(spec.roomId))) relaySec = Math.max(relaySec, acc);` (covers b01..b12). Then the dwell-based objective prompt will appear when the player is in the relay room with the alarm live.",
+      "risk": "Turns on an early objective HUD prompt that was previously suppressed — verify it does not double-fire with other objective cues. Trivial change; no save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "enterroom-encounter-match-dead",
+      "file": "src/encounterDirector.js",
+      "lineRange": "155-165, 340-366",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Floorplan-based enterRoom() can never match an encounter (floorplan-space ids vs flow-room ids), so its activeEncounterId/lastTrigger assignments are dead and it can transiently null activeEncounterId",
+      "description": "tick() runs the floorplan block first and calls enterRoom(id) where id comes from pickFloorplanSpaceId — a FLOORPLAN-SPACE id (dock_intake, alarm_relay_room, ...). enterRoom does `encountersCatalog.find(e => e.room === roomId || e.room === parentRoom)`, but every catalog encounter's `room` is a FLOW id (b01_intake_peek, ...). The find never hits, so enterRoom always leaves activeEncounterId=null (after setting it null on line 157). The real activeEncounterId comes from the later flow block via enterFlowRoom->startEncounter. On a frame where only the floorplan space changes (but not the flow room), enterRoom nulls activeEncounterId and it stays null until the next flow transition. activeEncounterId is consumed only by snapshot() (debug HUD) and the dev console, so the only effect is a transient/incorrect debug 'active encounter' value — no gameplay impact.",
+      "evidence": "encounterDirector.js:160 `this.encountersCatalog.find((e) => e && (e.room === roomId || e.room === parentRoom))` with roomId from pickFloorplanSpaceId (line 345). Encounter rooms are flow ids (campaignEncounters.js:357,382,408,439,464). `grep activeEncounterId src/main.js` -> only debug setters (45112-45113) and snapshot read.",
+      "fix": "Either drop the encounter-matching half of enterRoom() (keep only the room-transition logging it shares with tick) since enterFlowRoom is the live path, or map the floorplan space id to its flow room before matching. Lowest risk: leave behavior, but stop nulling activeEncounterId in enterRoom when no floorplan match is possible (guard the null-set so the flow-driven id is not clobbered) to keep the debug HUD honest.",
+      "risk": "Debug/tooling only; no gameplay or save-compat impact. Keep snapshot() shape unchanged.",
+      "confidence": "medium"
+    },
+    {
+      "id": "enc-patrol-alarm-route-flags-write-only",
+      "file": "src/encounterBehavior.js",
+      "lineRange": "75-97",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_encPatrolAlarm and _encPatrolRoute flags are set but never read (write-only behavior flags)",
+      "description": "applyEncounterEnemySpec sets enemy._encPatrolAlarm=true for behavior 'patrol_then_alarm' (line 76) and enemy._encPatrolRoute=true for behavior 'patrol_route' (line 96). Neither flag is read anywhere in the codebase (grep finds only these two writes). 'patrol_then_alarm' is the default fallback behavior assigned to custom-map authored enemies (main.js:12512), so this is reachable but inert — the 'alarm on patrol contact' intent the name implies is not implemented. (Note tickEncounterEnemyIntent has no 'patrol_then_alarm' or 'patrol_route' case; the only effect of those behaviors today is the peekRate bump at line 62.)",
+      "evidence": "encounterBehavior.js:76 `enemy._encPatrolAlarm = true;` and :96 `enemy._encPatrolRoute = true;`. `grep -rn '_encPatrolAlarm|_encPatrolRoute' src` returns only encounterBehavior.js (no readers in main.js).",
+      "fix": "If patrol-then-alarm is desired (cheap tension beat): add a tickEncounterEnemyIntent branch — when _encPatrolAlarm and the enemy in PATROL/SEARCH gains line-of-sight/lastKnownPos, trigger the existing alarm path (G.levelState.alarm / a bark) once. Otherwise delete the two dead flag writes.",
+      "risk": "If implemented, can raise difficulty (patrol contact now alarms the level); gate behind authored intent. Pure deletion is zero-risk. No save-compat impact.",
+      "confidence": "high"
+    },
+    {
+      "id": "unused-base-patrol-routes",
+      "file": "src/encounterPatrolRoutes.js",
+      "lineRange": "5-45",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "BASE_PATROL_ROUTES entries 'fe_compression_loop' and 'spine_doorline' are never referenced by any encounter spec",
+      "description": "The 7 BASE_PATROL_ROUTES are looked up via enemy.encounterPatrolTag (set from spec.patrol). Only intake_center_beat, drum_lateral, cage_left_arc, cage_right_shuffle, catwalk_window_beat are used by the B01 catalog (which B02-B12 inherit verbatim, see patrol-retag-namespace-mismatch). 'fe_compression_loop' and 'spine_doorline' are defined but never assigned to any enemy, so they are dead data.",
+      "evidence": "campaignEncounters.js patrol tags in use: intake_center_beat(373), drum_lateral(451), cage_left_arc(477), cage_right_shuffle(501), catwalk_window_beat(513). `grep \"patrol: '\"` shows no fe_compression_loop or spine_doorline. encounterPatrolRoutes.js:6-23 defines both.",
+      "fix": "Either assign them (e.g. give the east_flank/drum enemies fe_compression_loop, or the relay-approach anchor a short spine_doorline pace) to add motion to currently-static authored positions, or remove the two unused entries. Assigning is a cheap way to make otherwise-static guards feel alive.",
+      "risk": "Assigning routes adds enemy movement (visible, generally positive); verify the route coordinates sit inside the enemy's zone band so _patrolPointOk does not reject every waypoint. Pure removal is zero-risk.",
+      "confidence": "high"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ npm run test:ai                  # tactical AI probe
 npm run test:perf                # perf snapshot
 npm run test:perf:stress         # perf stress matrix
 npm run test:asset-registry      # non-browser asset registry cache/fallback/dispose probe
+npm run test:high-class-feel     # static high-class game-feel director probe
 npm run test:visual:runtime      # 12 buildings × 9 post states
 npm run test:render              # auto/webgl/webgpu smoke + post + scope PIP
 npm run test:assets:budget       # asset manifest validation + budget enforcement

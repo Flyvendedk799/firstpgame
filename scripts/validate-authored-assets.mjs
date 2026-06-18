@@ -21,8 +21,10 @@ function typeForEntry(entry) {
   return null;
 }
 
-function runGlbValidator(file, type) {
-  const res = spawnSync(process.execPath, [validator, file, '--type', type], {
+function runGlbValidator(file, type, manifestId) {
+  const args = [validator, file, '--type', type];
+  if (manifestId) args.push('--manifest-id', manifestId);
+  const res = spawnSync(process.execPath, args, {
     cwd: ROOT,
     encoding: 'utf8'
   });
@@ -60,7 +62,7 @@ for (const [kind, manifest] of Object.entries(ALL_MANIFESTS)) {
       failures.push(row);
       continue;
     }
-    const out = runGlbValidator(file, type);
+    const out = runGlbValidator(file, type, entry.id);
     const row = {
       id: entry.id,
       kind,

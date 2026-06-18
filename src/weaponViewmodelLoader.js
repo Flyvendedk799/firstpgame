@@ -142,14 +142,20 @@ export function validateWeaponViewmodel(gltf, entry = {}, options = {}) {
   const clips = new Set((gltf && gltf.animations || []).map(clip => clip.name));
   const requiredSockets = options.requiredSockets || entry.sockets || REQUIRED_WEAPON_SOCKETS;
   const requiredClips = options.requiredClips || entry.clips || REQUIRED_WEAPON_CLIPS;
+  const socketAliases = entry.socketAliases || {};
+  const hasNodeOrAlias = (name) => {
+    const aliases = Array.isArray(socketAliases[name]) ? socketAliases[name] : [socketAliases[name]];
+    return nodes.has(name) || aliases.filter(Boolean).some(alias => nodes.has(alias));
+  };
   const requiredNodes = ['WeaponRoot', 'visual', 'sockets', 'mag', 'trigger', 'chargingHandle'];
   const errors = [];
   const warnings = [];
   for (const name of requiredNodes) if (!nodes.has(name)) errors.push(`missing node:${name}`);
-  for (const name of requiredSockets) if (!nodes.has(name)) errors.push(`missing socket:${name}`);
+  for (const name of requiredSockets) if (!hasNodeOrAlias(name)) errors.push(`missing socket:${name}`);
   for (const name of requiredClips) if (!clips.has(name)) errors.push(`missing clip:${name}`);
-  for (const name of ADVANCED_WEAPON_SIGHT_SOCKETS) {
-    if (!nodes.has(name)) warnings.push(`missing v2 sight socket:${name}`);
+  const sightSockets = options.sightSockets || entry.sightSockets || ADVANCED_WEAPON_SIGHT_SOCKETS;
+  for (const name of sightSockets) {
+    if (!hasNodeOrAlias(name)) warnings.push(`missing v2 sight socket:${name}`);
   }
   const stats = collectViewmodelStats(gltf && gltf.scene);
   const triangleBudget = options.triangleBudget || entry.triangleBudget || 12000;

@@ -282,7 +282,7 @@ const enemy = {
   atCover: true,
   strafeDir: -1,
   _enemyLocomotionDebug: {
-    version: 'enemy-locomotion-realistic-v1',
+    version: 'enemy-locomotion-realistic-v3',
     mode: 'flank',
     speedVis: 2.46,
     desiredSpeed: 2.46,
@@ -293,6 +293,12 @@ const enemy = {
     strafeBlend: 0.28,
     footPlant: 0.42,
     footPlantSide: -1,
+    footAnchor: 0.64,
+    stanceCompression: 0.34,
+    swingClearance: 0.42,
+    toeRoll: 0.45,
+    lateralBrace: 0.22,
+    plantWindow: 0.62,
     finite: true
   },
   group: { userData: {} }
@@ -302,9 +308,11 @@ const enemyStatus = resolveEnemyAnimationStatus(enemy, { importedAnimationEnable
 assert.equal(enemy._movementMode, beforeMode, 'enemy animation status must not mutate AI movement mode');
 assert.ok(enemyStatus.intentCue.headLead > 0, 'enemy peek should expose head lead cue');
 assert.ok(enemyStatus.intentCue.weaponRaise > 0, 'enemy aim should expose weapon raise cue');
-assert.equal(enemyStatus.locomotion.version, 'enemy-locomotion-realistic-v1', 'enemy status should expose active locomotion feel version');
+assert.equal(enemyStatus.locomotion.version, 'enemy-locomotion-realistic-v3', 'enemy status should expose active locomotion feel version');
 assert.ok(enemyStatus.locomotion.runBlend > 0.5, 'enemy locomotion debug should expose run blend');
 assert.ok(enemyStatus.locomotion.strideMeters > 0, 'enemy locomotion debug should expose stride length');
+assert.ok(enemyStatus.locomotion.footAnchor > 0.5, 'enemy locomotion debug should expose foot anchor');
+assert.ok(enemyStatus.locomotion.swingClearance > 0.3, 'enemy locomotion debug should expose swing clearance');
 assertFiniteObject(enemyStatus.intentCue, 'enemy.intentCue');
 assertFiniteObject(enemyStatus.locomotion, 'enemy.locomotion');
 

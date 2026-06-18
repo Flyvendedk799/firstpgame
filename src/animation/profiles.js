@@ -216,7 +216,10 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   1: feelProfile(1, 'pistol', 'USP-T Suppressed', {
     id: 'weapon-feel-profile.usp-t',
     manifestId: 'weapon.uspT',
-    ads: { inLambda: 38, outLambda: 25, fovDelta: 27, viewFit: { y: -0.040, z: -0.170, rx: -0.022, scale: 0.52 } },
+    // viewFit.scale 0.52 is iron-sight ADS only; attachable RDS uses optic profile viewFit in main.js
+    // ADS raise: crisp punch-in (inLambda) with a slightly slower, settled release so the
+    // sight/dot doesn't snap back jarringly. Tactical sidearm — fast to aim, calm to lower.
+    ads: { inLambda: 44, outLambda: 28, fovDelta: 27, viewFit: { y: -0.040, z: -0.170, rx: -0.022, scale: 0.52 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.069, -0.074], { node: 'front_sight', nodeLocal: [0, 0.003, 0], socket: 'frontSight' }),
@@ -227,9 +230,12 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
       maxYaw: 0.060,
       lineTargetY: 0.030
     },
-    recoil: { viewmodelKick: 1.15, cameraKick: 0.96, snap: 1.24, recover: 1.20, shoulderAbsorb: 0.86 },
+    // USP-T single-shot feel: a contained muzzle flip then a snappy recover so the sight
+    // is back on target quickly (semi-auto sidearm cadence). Viewmodel kick kept modest so
+    // the gun doesn't heave on every shot; cameraKick carries the actual aim recoil.
+    recoil: { viewmodelKick: 0.96, cameraKick: 0.98, snap: 1.16, recover: 1.34, shoulderAbsorb: 0.94, tail: 1.0 },
     pose: {
-      fire: { x: 0.004, y: -0.008, z: -0.012, rx: 0.038, ry: 0.002, rz: 0.019 },
+      fire: { x: 0.003, y: -0.007, z: -0.011, rx: 0.030, ry: 0.002, rz: 0.015 },
       reload: { x: -0.020, y: -0.018, z: 0.028, rx: 0.18, ry: -0.08, rz: -0.14 },
       sprint: { x: 0.007, y: -0.011, z: 0.011, rx: 0.050, ry: 0.010, rz: -0.016 }
     },
@@ -488,7 +494,9 @@ export const ENEMY_ANIMATION_PROFILES = Object.freeze({
   scout: { label: 'Scout', weight: 0.75, turnSharpness: 1.35, stepEnergy: 1.3, recoilAbsorb: 0.78, intentLead: 1.18 },
   soldier: { label: 'Soldier', weight: 1, turnSharpness: 1, stepEnergy: 1, recoilAbsorb: 1, intentLead: 1 },
   pistolero: { label: 'Pistolero', weight: 0.86, turnSharpness: 1.2, stepEnergy: 1.12, recoilAbsorb: 0.86, intentLead: 1.1 },
+  lieutenant: { label: 'Lieutenant', weight: 1.14, turnSharpness: 0.92, stepEnergy: 1.02, recoilAbsorb: 1.18, intentLead: 1.16 },
   heavy: { label: 'Heavy', weight: 1.42, turnSharpness: 0.68, stepEnergy: 0.82, recoilAbsorb: 1.4, intentLead: 0.85 },
+  boss: { label: 'Boss', weight: 1.56, turnSharpness: 0.62, stepEnergy: 0.78, recoilAbsorb: 1.55, intentLead: 0.9 },
   riot: { label: 'Riot', weight: 1.3, turnSharpness: 0.72, stepEnergy: 0.84, recoilAbsorb: 1.28, intentLead: 0.9 },
   shielded: { label: 'Shielded', weight: 1.3, turnSharpness: 0.72, stepEnergy: 0.84, recoilAbsorb: 1.28, intentLead: 0.9 },
   marksman: { label: 'Marksman', weight: 0.98, turnSharpness: 0.92, stepEnergy: 0.9, recoilAbsorb: 1.12, intentLead: 0.98 },
@@ -647,6 +655,8 @@ export function animationFeatureFlags(settings = {}) {
 export function weaponTypeFromIndex(indexOrType) {
   if (typeof indexOrType === 'string' && indexOrType) {
     const s = indexOrType.toLowerCase();
+    const canonical = CANONICAL_WEAPON_TYPE_BY_ID[normalizeWeaponKey(s)];
+    if (canonical) return canonical;
     if (s.includes('sniper')) return 'sniper';
     if (s.includes('shotgun')) return 'shotgun';
     if (s.includes('smg')) return 'smg';
@@ -660,19 +670,88 @@ export function weaponTypeFromIndex(indexOrType) {
   return WEAPON_INDEX_TYPE[Number(indexOrType) | 0] || 'rifle';
 }
 
+function normalizeWeaponKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[._-]/g, '');
+}
+
+const CANONICAL_WEAPON_TYPE_BY_ID = Object.freeze({
+  weaponm4reference: 'rifle',
+  weaponrifle: 'rifle',
+  m4reference: 'rifle',
+  m4a1reference: 'rifle',
+  rifle: 'rifle',
+  weaponuspt: 'pistol',
+  weaponpistol: 'pistol',
+  uspt: 'pistol',
+  weaponp226supp: 'pistol',
+  p226supp: 'pistol',
+  p226suppressed: 'pistol',
+  pistol: 'pistol',
+  weapontac12: 'shotgun',
+  weaponshotgun: 'shotgun',
+  tac12: 'shotgun',
+  shotgun: 'shotgun',
+  weaponmp9suppressed: 'smg',
+  weaponsmg: 'smg',
+  mp9suppressed: 'smg',
+  smg: 'smg',
+  weaponmk14: 'marksman',
+  weaponmarksman: 'marksman',
+  mk14: 'marksman',
+  marksman: 'marksman',
+  dmr: 'marksman',
+  weaponawm: 'sniper',
+  weaponsniper: 'sniper',
+  awm: 'sniper',
+  sniper: 'sniper',
+  weaponheavy: 'heavy',
+  heavy: 'heavy',
+  weaponknife: 'knife',
+  knife: 'knife',
+  weapongrenade: 'grenade',
+  grenade: 'grenade'
+});
+
+const CANONICAL_WEAPON_FEEL_KEY_BY_ID = Object.freeze({
+  weaponm4reference: '0',
+  weaponrifle: '0',
+  m4reference: '0',
+  m4a1reference: '0',
+  weaponuspt: '1',
+  weaponpistol: '1',
+  uspt: '1',
+  weaponknife: '2',
+  knife: '2',
+  weapontac12: '3',
+  weaponshotgun: '3',
+  tac12: '3',
+  weaponmp9suppressed: '4',
+  weaponsmg: '4',
+  mp9suppressed: '4',
+  weaponmk14: '5',
+  weaponmarksman: '5',
+  mk14: '5',
+  weaponp226supp: '6',
+  p226supp: '6',
+  p226suppressed: '6',
+  weaponawm: '7',
+  weaponsniper: '7',
+  awm: '7'
+});
+
 function weaponFeelProfileKey(indexOrType) {
   if (typeof indexOrType === 'number' && Number.isFinite(indexOrType)) return String(indexOrType | 0);
   if (typeof indexOrType === 'string' && indexOrType) {
     const s = indexOrType.toLowerCase();
+    const canonical = CANONICAL_WEAPON_FEEL_KEY_BY_ID[normalizeWeaponKey(s)];
+    if (canonical) return canonical;
     for (const [key, profile] of Object.entries(WEAPON_FEEL_PROFILES)) {
       if (!profile) continue;
       if (
         s === key ||
         s === profile.id.toLowerCase() ||
         s === profile.manifestId?.toLowerCase() ||
-        s === profile.label.toLowerCase() ||
-        s.includes(profile.id.toLowerCase().replace(/^weapon-feel-profile\./, '')) ||
-        s.includes(profile.manifestId?.toLowerCase().replace(/^weapon\./, '') || '__never__')
+        s === profile.label.toLowerCase()
       ) return key;
     }
     if (s.includes('m4')) return '0';

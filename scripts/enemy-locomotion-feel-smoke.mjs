@@ -57,7 +57,7 @@ try {
     return { status, walk, run, flank, heavy, juke };
   });
 
-  assert.equal(result.status.version, 'enemy-locomotion-realistic-v1');
+  assert.equal(result.status.version, 'enemy-locomotion-realistic-v3');
   assert.ok(result.status.profiles.soldier.walkStride < result.status.profiles.soldier.runStride, 'soldier run stride should exceed walk stride');
   assert.ok(result.status.profiles.scout.jukeCap <= 5.3, 'scout juke cap should be bounded');
 
@@ -65,11 +65,13 @@ try {
     const row = result[key];
     assert.equal(row.ok, true, `${key} probe should succeed`);
     assert.equal(row.finite, true, `${key} probe should report finite locomotion`);
-    assert.equal(row.locomotion.version, 'enemy-locomotion-realistic-v1', `${key} should use realistic locomotion profile`);
+    assert.equal(row.locomotion.version, 'enemy-locomotion-realistic-v3', `${key} should use realistic locomotion profile`);
     assert.equal(row.statusLocomotion.finite, true, `${key} status locomotion should be finite`);
     assertFiniteObject(row.locomotion, `${key}.locomotion`, 20);
     assertFiniteObject(row.statusLocomotion, `${key}.statusLocomotion`, 20);
     assertPoseUseful(row.pose, key);
+    assert.ok(row.locomotion.footAnchor >= 0, `${key} should expose foot anchor`);
+    assert.ok(row.locomotion.swingClearance >= 0, `${key} should expose swing clearance`);
   }
 
   assert.ok(result.walk.locomotion.runBlend < 0.35, 'patrol walk should stay in walk blend');

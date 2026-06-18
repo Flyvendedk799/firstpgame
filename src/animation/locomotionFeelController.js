@@ -71,8 +71,6 @@ function zeroAdditives() {
       slideDrop: 0,
       slideRoll: 0,
       slideForwardPitch: 0,
-      wallKickPitch: 0,
-      wallKickRoll: 0,
       dropkickPitch: 0,
       dropkickRoll: 0,
       dropkickDip: 0,
@@ -173,7 +171,6 @@ function applyFinalLocomotionTuning(addv, tuning) {
   scaleKeys(addv.camera, ['slideDrop', 'slideRoll', 'slideForwardPitch'], tuning.slideWeight);
   scaleKeys(addv.viewmodel, ['slideTuck'], tuning.slideWeight);
   scaleKeys(addv.proxy, ['kneeBend'], tuning.slideWeight);
-  scaleKeys(addv.camera, ['wallKickPitch', 'wallKickRoll'], tuning.wallKickWeight);
   scaleKeys(addv.viewmodel, ['wallKickX', 'wallKickY', 'wallKickZ', 'wallKickPitch', 'wallKickRoll'], tuning.wallKickWeight);
   scaleKeys(addv.proxy, ['wallBrace'], tuning.wallKickWeight);
   scaleKeys(addv.camera, ['dropkickPitch', 'dropkickRoll', 'dropkickDip', 'dropkickForward'], tuning.dropkickWeight);
@@ -330,8 +327,8 @@ export function updateLocomotionFeelState(state, input = {}) {
 
   addv.camera.headBobX = footHalf * footEnergy * 0.0038 * adsDamp + lean * 0.0032 + counter * 0.0028 + threatSide * threat * 0.0028;
   addv.camera.headBobY = -compression * 0.0046 + toeOff * 0.0018 - s.landing * 0.010 + dropkickImpact * -0.010 - threat * 0.0028;
-  addv.camera.headPitch = -surge * 0.016 - s.sprintStart * 0.014 + s.sprintStop * 0.018 - s.landing * 0.030 - s.wallKick * 0.050 - dropkickImpact * 0.040 + jump * -0.012 + fall * 0.014 + threat * 0.012;
-  addv.camera.headRoll = lean * 0.030 + counter * 0.023 + s.slide * slideStyle * 0.040 + s.wallKick * s.wallSide * 0.056 + s.vault * (s.vaultSide || 0.38) * 0.035 + threatSide * threat * 0.018;
+  addv.camera.headPitch = -surge * 0.016 - s.sprintStart * 0.014 + s.sprintStop * 0.018 - s.landing * 0.030 - s.wallKick * 0.090 - dropkickImpact * 0.040 + jump * -0.012 + fall * 0.014 + threat * 0.012;
+  addv.camera.headRoll = lean * 0.030 + counter * 0.023 + s.slide * slideStyle * 0.040 + s.wallKick * s.wallSide * 0.096 + s.vault * (s.vaultSide || 0.38) * 0.035 + threatSide * threat * 0.018;
   addv.camera.accelLagX = lean * 0.008;
   addv.camera.accelLagZ = -surge * 0.006;
   addv.camera.footstepDip = -heelStrike * 0.0038 - compression * 0.0028;
@@ -341,8 +338,6 @@ export function updateLocomotionFeelState(state, input = {}) {
   addv.camera.slideDrop = -s.slide * (0.026 + slideBack * 0.018 + Math.abs(slideStyle) * 0.010);
   addv.camera.slideRoll = s.slide * slideStyle * (0.055 + slideBack * 0.020);
   addv.camera.slideForwardPitch = s.slide * (0.030 + slideForwardOnly * 0.018 - slideBack * 0.030);
-  addv.camera.wallKickPitch = -s.wallKick * 0.060;
-  addv.camera.wallKickRoll = s.wallKick * s.wallSide * 0.080;
   addv.camera.dropkickPitch = -drop * 0.070 - dropkickImpact * 0.055;
   addv.camera.dropkickRoll = (inp.dropkickTwirlSide || 1) * (drop * 0.055 + dropkickImpact * 0.060);
   addv.camera.dropkickDip = -drop * 0.032 - dropkickImpact * 0.050;

@@ -1,0 +1,89 @@
+{
+  "scope": "src/main.js lines 17280-19500 — dropkick feet tail, slide/body-presence first-person legs, tech armband + canvas, reload holo column + canvas, PIP scope render target + scope camera, pistol optic ADS pose + mesh builder, optic profile resolver, combat viewmodel depth/visibility, authored M4 socket alignment + wristband runtime + visibility, authored M4 viewmodel tick/load.",
+  "findings": [
+    {
+      "id": "wristband-runtime-synced-twice-per-frame",
+      "file": "src/main.js",
+      "lineRange": "19415-19415, 44499-44499",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_syncAuthoredWristbandRuntime runs twice every frame on the authored-M4 path",
+      "description": "Inside the single animation loop, _tickAuthoredM4Viewmodel(dt) (called at line 41582) invokes _syncAuthoredWristbandRuntime(now) at line 19415, and then the holo block calls _syncAuthoredWristbandRuntime(now*1000) again at line 44499. Both run in the same frame when the authored M4 hands are active. The function does heavy per-call work: facePanelToPlayer() builds quaternions via getWorldQuaternion + makeBasis for 6 panels, stabilizeReloadReadout() and syncReloadProjectionBeam() each do worldToLocal/localToWorld round-trips, plus updateMatrixWorld(true) on camera/nodes. All of this executes twice per frame. The deploy-clip toggles are idempotent (guarded by _authoredWristDeployState), so there is no logic corruption — purely wasted matrix math.",
+      "evidence": "Line 19415: `_alignAuthoredHandsToM4Sockets(); _syncAuthoredWristbandRuntime(now);` (inside _tickAuthoredM4Viewmodel). Line 44499: `const _authoredHoloActive=_syncAuthoredWristbandRuntime(now*1000);` — both in the same setAnimationLoop body.",
+      "fix": "Pick one call site. Either remove the call at line 19415 (let the dedicated holo block at 44499 own wristband sync) or remove line 44499's sync and reuse the result computed in _tickAuthoredM4Viewmodel (cache the boolean on a frame-scoped var / state object). Cheapest: delete the `_syncAuthoredWristbandRuntime(now)` at 19415 and have _tickAuthoredM4Viewmodel return nothing wristband-related; the 44499 call already feeds _authoredHoloActive and runs after holo deploy values are advanced.",
+      "risk": "Removing the 19415 call slightly changes ordering: the 19415 call runs BEFORE reloadHoloDeployed/wristDeployed are damped this frame (those advance in the 44380-44432 block), so it actually syncs stale deploy values; the 44499 call syncs fresh values. Removing 19415 is therefore both faster and more correct, but verify hologram-* static probes stay green since they assert sync behavior.",
+      "confidence": "high"
+    },
+    {
+      "id": "slide-legs-opacity-ignores-vis",
+      "file": "src/main.js",
+      "lineRange": "17489-17532",
+      "kind": "aaa-feel",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Slide leg material opacity is driven by slide amount, not by the visibility blend (no fade on enter/exit)",
+      "description": "updateSlideLegs computes a smoothed visibility `vis` (P._slideLegVis) and shows the group when vis>.025, but the per-part opacity write at the end is `m.material.opacity=.92+amt*.08`, which depends only on `amt` (slide amount), never on `vis`. So while the body-presence rig fades opacity with vis (`.30+vis*.62`) and the dropkick rig fades with `show`, the slide legs pop to ~0.92+ opacity the instant vis crosses the 0.025 threshold. The exit is partly masked because the group also slides down/back via `exitSweep`, but on entry — especially the post-slide-to-ADS clear path — the legs can flash in at near-full opacity for a frame or two rather than easing in.",
+      "evidence": "Line 17489 `const vis=THREE.MathUtils.clamp(P._slideLegVis||0,0,1);` then line 17490 `slideLegsGrp.visible=vis>.025;` but lines 17527-17532: `for(const m of _SLIDE_BODY_PARTS){ if(m.material&&'opacity' in m.material){ m.material.transparent=true; m.material.opacity=.92+amt*.08; } }` — no `vis` factor.",
+      "fix": "Multiply the slide opacity by the visibility blend, mirroring body presence: `m.material.opacity=(.92+amt*.08)*THREE.MathUtils.clamp(vis,0,1);` (or fade only near the edges to keep the skid mostly solid: `*THREE.MathUtils.smoothstep(vis,.025,.30)`).",
+      "risk": "Pure visual; very low risk. Keep transparent=true (already set). The body-presence probe asserts its own opacity; slide legs have no equivalent assertion, so unlikely to break a probe. Confirm no perceived flicker if vis hovers near the threshold.",
+      "confidence": "medium"
+    },
+    {
+      "id": "bodypresence-vis-damp-reads-undefined-lambda",
+      "file": "src/main.js",
+      "lineRange": "17782-17782",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Body-presence damp lambda selector reads raw P._bodyPresenceVis (undefined on first frame)",
+      "description": "The `current` argument is guarded (`Number.isFinite(P._bodyPresenceVis)?P._bodyPresenceVis:0`), but the lambda-selection ternary reads `P._bodyPresenceVis` directly: `target>P._bodyPresenceVis?12:18`. On the very first frame P._bodyPresenceVis is undefined, so `target>undefined` evaluates to false and the slower lambda (18) is chosen even when the rig should be appearing (target rising). It self-corrects on frame 2. No crash, no NaN (the guarded current is used in the actual damp), just a one-frame-slower fade-in.",
+      "evidence": "Line 17782: `P._bodyPresenceVis=damp(Number.isFinite(P._bodyPresenceVis)?P._bodyPresenceVis:0,target,target>P._bodyPresenceVis?12:18,dt);` — the lambda selector dereferences the unguarded global.",
+      "fix": "Reuse the guarded current in the selector: `const cur=Number.isFinite(P._bodyPresenceVis)?P._bodyPresenceVis:0; P._bodyPresenceVis=damp(cur,target,target>cur?12:18,dt);`",
+      "risk": "Trivial; deterministic improvement on the first visible frame only. No probe risk.",
+      "confidence": "high"
+    },
+    {
+      "id": "bodypresence-accent-stripe-same-opacity-as-solids",
+      "file": "src/main.js",
+      "lineRange": "17557-17557, 17616-17621, 17647-17647",
+      "kind": "aaa-visual",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Additive cyan shin-stripe shares the global body-presence opacity, blowing out at full presence",
+      "description": "_setBodyPresenceOpacity applies one opacity value (capped at .96) to EVERY material in _BODY_PRESENCE_MATERIALS, including _bodyAccentM, a MeshBasicMaterial with AdditiveBlending used for the shin stripes (shin_stripe parts). At full presence the additive stripe is pushed to ~0.96 opacity additively over the dark legs, which reads as an overly hot cyan bar rather than a subtle tech accent. Solid pant/armor materials want high opacity; an additive accent generally wants a much lower, separately-tuned alpha.",
+      "evidence": "Line 17557 `const _bodyAccentM=_cloneBodyPresenceMat(new THREE.MeshBasicMaterial({color:0x72d7ff,...blending:THREE.AdditiveBlending}));` is pushed into _BODY_PRESENCE_MATERIALS. Line 17618-17620: `for(const m of _BODY_PRESENCE_MATERIALS){ if(m&&Math.abs((m.opacity||0)-o)>.004)m.opacity=o; }` applies the same `o` to all, including the additive accent.",
+      "fix": "Exclude the accent from the bulk setter and scale it separately, e.g. keep a reference and set `_bodyAccentM.opacity=Math.min(.55,o*.55)` after the loop, or store accent materials in a separate list with their own multiplier. This makes the stripe glow read as a tasteful edge highlight instead of a blown-out bar.",
+      "risk": "Visual only; low risk. Verify body-presence-locomotion probe doesn't assert _BODY_PRESENCE_MATERIALS[0]-style opacity equality across all materials (snapshot reads _BODY_PRESENCE_MATERIALS[0], which is _bodyPantM, so safe).",
+      "confidence": "medium"
+    },
+    {
+      "id": "optic-profile-m4-lensY-hardcoded-vs-socket",
+      "file": "src/main.js",
+      "lineRange": "18478-18481, 18553-18553",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "M4 optic profile uses socket-driven lensLocal but a hardcoded lensY for the gun-Y offset",
+      "description": "_currentOpticProfile (M4 branch) returns `lensLocal:_scopeLensLocalM4` (updated each frame from the authored/procedural socket by _syncAuthoredM4Sockets / construction) AND a separately hardcoded `lensY:authoredM4?.24:.078`. _opticGunY() uses the hardcoded lensY (`-(profile.lensY||.078)`) while other code paths read lensLocal.y. If the authored scope socket Y drifts from .24 (or the procedural lens from .078) the gun's vertical ADS offset won't track the actual lens position, biasing the sight picture slightly. The two values are only guaranteed equal by construction, not by code.",
+      "evidence": "Line 18478 `lensLocal:_scopeLensLocalM4,` line 18479 `lensY:authoredM4?.24:.078,`. _scopeLensLocalM4 is reassigned at runtime in _syncAuthoredM4Sockets (line 18843 `_scopeLensLocalM4.copy(scope);`) but lensY stays constant. _opticGunY (line 18553) returns `-(profile.lensY||.078)`.",
+      "fix": "Derive lensY from the live socket vector to keep them in lockstep: `lensY:authoredM4?(Number.isFinite(_scopeLensLocalM4.y)?_scopeLensLocalM4.y:.24):.078` (or simply `lensY:_scopeLensLocalM4.y`). The pistol branch already does this (`lensY:_scopeLensLocalPistol.y`).",
+      "risk": "Changes the M4 ADS vertical offset to follow the socket; could shift the existing tuned ADS pose by the socket-vs-.24 delta. Re-verify ads-scope-gunplay and focus-ads-viewmodel probes plus the on-screen ADS framing before committing. Keep procedural .078 fixed if the procedural lens vector isn't socket-synced.",
+      "confidence": "low"
+    },
+    {
+      "id": "emitter-led-opacity-can-exceed-one",
+      "file": "src/main.js",
+      "lineRange": "44501-44503",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Armband emitter opacity computed >1 while reloading (no clamp)",
+      "description": "The procedural armband emitter pulse during reload is `_emitM.opacity=.55+(P.reloading?.40+.20*Math.sin(now*9):0)`, whose peak is .55+.40+.20 = 1.15, exceeding the valid [0,1] opacity range. three.js clamps internally so there is no crash and the visible result is a flat saturated emitter (the top .15 of the sine swing is clipped, killing the intended pulse at the bright end). Same shape, smaller magnitudes, on _ledM_R/_ledM_L (max .95, fine).",
+      "evidence": "Line 44501: `_emitM.opacity=.55+(P.reloading?.40+.20*Math.sin(now*9):0);` — max value 1.15.",
+      "fix": "Clamp or rebalance so the pulse stays sub-1, e.g. `_emitM.opacity=THREE.MathUtils.clamp(.55+(P.reloading?.30+.18*Math.sin(now*9):0),0,1);` keeping headroom so the sine actually modulates at the bright end.",
+      "risk": "Cosmetic; only affects the procedural armband path (hidden when authored hands own the wrist computer). No probe risk.",
+      "confidence": "medium"
+    }
+  ]
+}

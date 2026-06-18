@@ -1,0 +1,89 @@
+{
+  "scope": "src/main.js lines 1-2418 — boot/settings, texture+LUT loading, PBR materials, level lighting controller",
+  "findings": [
+    {
+      "id": "stable-mode-kills-post-fx",
+      "file": "src/main.js",
+      "lineRange": "470-507",
+      "kind": "aaa-visual",
+      "severity": "high",
+      "visibleImpact": "high",
+      "title": "STABLE_RENDERING_MODE permanently disables the entire post-processing stack (bloom/SMAA/grade/LUT/vignette) in the shipping build",
+      "description": "STABLE_RENDERING_MODE=true (line 470). _forceStableVisualSettings() hard-overrides every visual toggle to false/off (postEnabled, bloomQuality, colorGrade, smaa, vignette, filmGrain, phase2LUT, phase2SSR, phase2DoF, sharpen, etc.) and is applied to BOTH the saved settings and the empty-settings fallback in _readBootSettings (lines 503,505). Downstream, the composer is gated off entirely: at line 15502 `useComposer=!!(_renderStack&&_renderStack.composer&&G._useComposer!==false&&!STABLE_RENDERING_MODE)`. So the game ALWAYS renders via renderer.render() direct and NONE of the imported post passes (UnrealBloomPass, SMAAPass, LUTPass, BokehPass, GTAOPass, OutputPass, the grade pass) ever execute. The bloom on every emissive trim/neon/monitor, the anti-alias edge cleanup, and per-building cinematic LUTs (_applyLutForBuilding, lines 2081-2108, also dead because SETTINGS.phase2LUT is forced false at line 2083) are all silent. This is the single highest-leverage 'looks AAA the moment you load it' change in the file.",
+      "evidence": "const STABLE_RENDERING_MODE=true;  ...  postEnabled:false, bloomQuality:'off', colorGrade:false, smaa:false, vignette:false, phase2LUT:false  ...  const useComposer=!!(_renderStack&&_renderStack.composer&&G._useComposer!==false&&!STABLE_RENDERING_MODE);",
+      "fix": "Surgical, low-risk: re-enable a curated subset rather than flipping STABLE_RENDERING_MODE globally (which exists for black-frame stability). In _forceStableVisualSettings, stop forcing the cheap, safe passes off: leave bloomQuality at its saved value (or set 'medium'), smaa:true, vignette:true. The risk passes (phase2SSR/DoF/Volumetrics/PlanarReflections) can stay off. Then change line 15502 to allow the composer when only those safe passes are active, e.g. gate on a new STABLE_POST_ALLOWLIST flag instead of the blanket !STABLE_RENDERING_MODE. Validate via the black-frame self-test (line 15394) and the *-static-probe.mjs scripts.",
+      "risk": "STABLE_RENDERING_MODE was clearly added as a stability/black-frame guard; re-enabling post can resurface the black-frame issue on some GPUs. Mitigate by keeping the blackFrameSelfTest fallback path (setSessionFallback) which already disables post on detected failure. Do NOT enable SSR/DoF/Volumetrics. Keep save-compat: still merge against defaults.",
+      "confidence": "high"
+    },
+    {
+      "id": "skyline-tex-rgba-precedence",
+      "file": "src/main.js",
+      "lineRange": "904-907",
+      "kind": "bug",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Operator-precedence bug builds an invalid fillStyle (evaluates to number 0) in _skylineTex window dots",
+      "description": "In the original _skylineTex generator, the window-dot fillStyle is assembled as `'rgba('+r|0+','+gn|0+','+b|0+','+a+')'`. JS '+' binds tighter than '|', so this parses as a chain of string-concats bitwise-OR'd together, and the whole expression collapses to the NUMBER 0 (verified in node: it returns 0, not a string). Assigning g.fillStyle=0 is an invalid color so the canvas silently keeps the previous fillStyle, and the warm window dots are not drawn as intended. This is ONLY a latent bug: _skylineTex is dead code — grep shows it is never referenced; the live skyline is _skylineTexB / _skylineTexBExt / _skylinePerBuilding (line 1598), which correctly use template literals (lines 1387-1392). Hence visibleImpact=none.",
+      "evidence": "const r=210+Math.random()*45,gn=130+Math.random()*70,b=40+Math.random()*40;\n    const a=.45+Math.random()*.45;\n    g.fillStyle='rgba('+r|0+','+gn|0+','+b|0+','+a+')';   // -> evaluates to 0, not 'rgba(...)'",
+      "fix": "Either delete the dead _skylineTex IIFE (lines 876-918) entirely, or if kept, parenthesize: `g.fillStyle='rgba('+(r|0)+','+(gn|0)+','+(b|0)+','+a+')';`.",
+      "risk": "None — texture is unused. Deletion is safest and removes a one-time canvas allocation at module load.",
+      "confidence": "high"
+    },
+    {
+      "id": "skyline-tex-dead-code",
+      "file": "src/main.js",
+      "lineRange": "876-918",
+      "kind": "deadcode",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "_skylineTex is defined but never referenced (superseded by _skylineTexB / _skylinePerBuilding)",
+      "description": "The original single-palette night-city _skylineTex (lines 876-918) is allocated at module load (creates a 256x256 canvas + CanvasTexture) but is never used anywhere in the codebase. grep for `_skylineTex\\b` returns only its own definition. The live per-building skylines are generated by _skylineTexB (line 1344) and _skylineTexBExt (line 1413) and stored in _skylinePerBuilding (line 1598). The dead version also harbors the rgba precedence bug above.",
+      "evidence": "grep -n '_skylineTex\\\\b' src/main.js -> only line 876 (the definition).",
+      "fix": "Delete lines 876-918. Frees the eager canvas/texture allocation and removes the buggy code path.",
+      "risk": "None — confirmed unreferenced.",
+      "confidence": "high"
+    },
+    {
+      "id": "stale-pi-light-boost-comment",
+      "file": "src/main.js",
+      "lineRange": "1-7",
+      "kind": "contradiction",
+      "severity": "low",
+      "visibleImpact": "none",
+      "title": "Header comment says light intensities are 'multiplied by π' but the actual boost is 1.82",
+      "description": "The file header (lines 4-5) documents 'light intensities multiplied by π to match r128 pre-physical brightness'. The real implementation uses const _LIGHT_BOOST=1.82 (line 456), and the inline comment there explicitly says the π boost was abandoned because it blew out PBR materials. The header is stale and contradicts the live constant, which can mislead anyone reasoning about scene brightness/exposure tuning (the value materially affects how bright every authored light renders). Verified only a single boost is applied (no double-multiply).",
+      "evidence": "header: '- light intensities multiplied by π to match r128's pre-physical brightness'   vs   line 456: const _LIGHT_BOOST = 1.82;  // comment: 'The old π boost made every authored source feel like a blown-out work light'",
+      "fix": "Update the header comment line 5 to reference the 1.82 bridge factor (or drop the specific value and say 'a smaller bridge factor').",
+      "risk": "None — comment-only.",
+      "confidence": "high"
+    },
+    {
+      "id": "lighting-controller-exposure-vs-debug-api",
+      "file": "src/main.js",
+      "lineRange": "2394-2398",
+      "kind": "state-desync",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "Adaptive lighting controller rewrites renderer.toneMappingExposure every frame, silently overriding the debug setToneMappingExposure API",
+      "description": "_makeLevelLightingController.tick() lerps renderer.toneMappingExposure toward base.exposure*(1+lampNear*.035-ads*.014) every frame (lines 2394-2398) and tickLighting is called each frame (line 44105). The debug API setToneMappingExposure (line 45347) writes the same property but is reverted on the very next frame, so manual exposure tweaks via the debug console appear to 'not stick'. base.exposure is captured once at controller construction (line 2271) from renderer.toneMappingExposure at that instant, so any external exposure change is also discarded on the next level build. This is the intended 'adaptive control wins' design but is an easy source of confusion when tuning visuals; not a crash.",
+      "evidence": "const exposureTarget=base.exposure*(1+lampNear*.035-ads*.014);\n      renderer.toneMappingExposure+=(exposureTarget-renderer.toneMappingExposure)*step*.50;   ...   setToneMappingExposure:(v)=>{if(renderer&&typeof v==='number')renderer.toneMappingExposure=v; ...}",
+      "fix": "Optional: have the lighting controller read a mutable base-exposure source (e.g. an outer let _exposureBias) that the debug setter updates, instead of a snapshot, so manual exposure overrides survive. Or document that exposure is adaptive and should be tuned via the controller base, not the debug setter.",
+      "risk": "Low. If you let the debug setter feed base.exposure, ensure it can't drift unbounded across level rebuilds. No save-compat impact.",
+      "confidence": "medium"
+    },
+    {
+      "id": "eager-authored-texture-loads",
+      "file": "src/main.js",
+      "lineRange": "1930-1940",
+      "kind": "perf",
+      "severity": "low",
+      "visibleImpact": "low",
+      "title": "All authored PBR map sets are network-loaded eagerly at module init (65 requests) regardless of whether the current level uses them",
+      "description": "The loop over AA_AUTHORED_MATERIALS (13 material families x 5 map types = 65 textures, lines 1930-1940) fires _aaLoadTex() unconditionally at module load, kicking off 65 HTTP requests for /assets/materials/<name>/<name>-<map>.<ext> before any level is built. Each has an onError that only console.warns (line 1899), so missing sets degrade gracefully, but on first paint this competes for bandwidth/decode with the assets actually needed by building 1 and can delay the first interactive frame. Combined with the ~20 procedural CanvasTexture IIFEs (each rasterizing 256-512px canvases with thousands of fillRect calls, e.g. _wallTex 14000 dots, _carpetTex 22000 dots, _subwayConcreteTex 10000 dots) all evaluated synchronously at module init, this is a measurable boot-time stall.",
+      "evidence": "for(const [name,opt] of Object.entries(AA_AUTHORED_MATERIALS)){ ... _aaAuthoredTextures[key]=_aaLoadTex(`/assets/materials/${name}/${name}-${m.suffix}.${ext}`, ...); } // runs at module top-level, all 13 families",
+      "fix": "Defer authored-texture loading to first use per building (lazy-load when buildLevel(bn) requests a family), or at minimum gate the 65 requests behind requestIdleCallback so building-1 assets win the network. The heavy procedural canvas IIFEs could likewise be wrapped in lazy getters so only the textures a level uses are rasterized.",
+      "risk": "Low-medium: lazy loading must preserve the synchronous fallback shape that AA_MATERIALS/_cloneConcreteFloorMaps expect (they read _aaAuthoredTextures[key] and check .isTexture). Keep the eager-allocated empty Texture objects so existing references stay valid; just defer the .load() call.",
+      "confidence": "medium"
+    }
+  ]
+}

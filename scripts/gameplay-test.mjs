@@ -2,13 +2,12 @@ import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:5173/';
 const SCREENSHOTS_DIR = path.resolve('./screenshots');
 fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({
-  viewport: { width: 1280, height: 800 },
-});
+const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const page = await context.newPage();
 
 const consoleEvents = [];
@@ -19,82 +18,72 @@ page.on('pageerror', err => {
   consoleEvents.push({ type: 'pageerror', text: err.message });
 });
 
-console.log('navigating...');
-await page.goto('http://127.0.0.1:5173/', { waitUntil: 'load', timeout: 30000 });
+try {
+  console.log(`navigating ${BASE_URL}...`);
+  await page.goto(BASE_URL, { waitUntil: 'load', timeout: 30000 });
+  await page.waitForFunction(() => window.__game?.debug?.snapshot, null, { timeout: 45000 });
+  await page.waitForTimeout(1000);
+  await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '02-menu.png') });
 
-// Wait for assets to finish loading
-await page.waitForTimeout(6000);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '02-menu.png') });
+  console.log('clicking deploy...');
+  await page.evaluate(() => {
+    const deploy = [...document.querySelectorAll('button, .menu-cta, .menu-cta-go')]
+      .find(b => /deploy/i.test(b.textContent || ''));
+    if (!deploy) throw new Error('Deploy button not found');
+    deploy.click();
+  });
 
-// Click the DEPLOY button to start. Pointer-lock will be requested but we ignore
-// it; the game's main loop runs anyway.
-console.log('clicking deploy...');
-await page.evaluate(() => {
-  // Find the DEPLOY button by text and click it
-  const btns = [...document.querySelectorAll('button, .menu-cta, .menu-cta-go')];
-  const deploy = btns.find(b => /deploy/i.test(b.textContent || ''));
-  if (deploy) deploy.click();
-});
-
-await page.waitForTimeout(2000);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '03-intro.png') });
-
-// Skip intro: click + press Space + Escape repeatedly
-console.log('skipping intro...');
-for (let i = 0; i < 12; i++) {
-  await page.keyboard.press('Space');
-  await page.keyboard.press('Enter');
-  await page.mouse.click(640, 400);
-  await page.waitForTimeout(800);
-}
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '04-after-intro-skip.png') });
-
-// Wait for actual gameplay frames
-await page.waitForTimeout(3000);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '05-gameplay.png') });
-
-// Spawn an enemy directly for visual inspection
-console.log('spawning soldier for inspection...');
-const spawnResult = await page.evaluate(() => {
-  try {
-    if (typeof Enemy !== 'undefined' && window.scene && window.G && window.G.enemyMgr) {
-      const e = new Enemy(window.scene, new (window.THREE.Vector3)(0, 0.2, 12), 1, 'soldier');
-      window.G.enemyMgr._list = window.G.enemyMgr._list || [];
-      window.G.enemyMgr._list.push(e);
-      return 'spawned';
-    }
-    return 'unable: classes not on window';
-  } catch (err) {
-    return 'error: ' + err.message;
+  await page.waitForTimeout(1500);
+  console.log('skipping intro...');
+  for (let i = 0; i < 12; i++) {
+    await page.keyboard.press('Space');
+    await page.keyboard.press('Enter');
+    await page.mouse.click(640, 400);
+    await page.waitForTimeout(150);
   }
-});
-console.log('spawn result:', spawnResult);
-await page.waitForTimeout(2500);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '06-after-spawn.png') });
+  await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '04-after-intro-skip.png') });
 
-// Switch to USP-T (key 1 after M4 removal)
-console.log('pressing 1 for USP-T...');
-await page.keyboard.press('Digit1');
-await page.waitForTimeout(1500);
-await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '07-usp.png') });
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '05-gameplay.png') });
 
-// Summary
-const errors = consoleEvents.filter(e => e.type === 'error' || e.type === 'pageerror');
-const warnings = consoleEvents.filter(e => e.type === 'warning' || e.type === 'warn');
-const logs = consoleEvents.filter(e => e.type === 'log');
+  console.log('spawning soldier for inspection...');
+  const spawnResult = await page.evaluate(() => {
+    const dbg = window.__game?.debug;
+    if (!dbg?.spawnAt || !dbg?.G) throw new Error('debug spawn helpers missing');
+    const before = dbg.G().enemyMgr?._list?.length || 0;
+    const enemy = dbg.spawnAt('soldier', 0, 12);
+    const after = dbg.G().enemyMgr?._list?.length || 0;
+    return { ok: !!enemy || after > before, before, after };
+  });
+  console.log('spawn result:', JSON.stringify(spawnResult));
+  if (!spawnResult.ok) throw new Error(`spawn failed: ${JSON.stringify(spawnResult)}`);
 
-console.log('\n=== ERRORS ===');
-errors.forEach(e => console.log(`  ${e.type}: ${e.text}`));
-console.log('\n=== INTERESTING LOGS ===');
-logs.filter(l => /soldier|deagle|rig|anim|glb|gltf|skeleton|G keys/i.test(l.text)).forEach(l => console.log('  ' + l.text));
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '06-after-spawn.png') });
 
-const debugSnap = await page.evaluate(() => {
-  return window.__game?.debug?.snapshot?.() || null;
-});
-console.log('\n=== GAME STATE ===');
-console.log(JSON.stringify(debugSnap, null, 2));
+  console.log('switching to first playable weapon...');
+  await page.evaluate(() => {
+    const dbg = window.__game.debug;
+    const slot = dbg.playableWeaponIndices?.()[0] ?? 1;
+    dbg.switchWeapon(slot, true);
+  });
+  await page.waitForTimeout(1000);
+  await page.screenshot({ path: path.join(SCREENSHOTS_DIR, '07-weapon.png') });
 
-console.log('\nerrors:', errors.length, '/ warnings:', warnings.length);
+  const errors = consoleEvents.filter(e => e.type === 'error' || e.type === 'pageerror');
+  const warnings = consoleEvents.filter(e => e.type === 'warning' || e.type === 'warn');
+  const logs = consoleEvents.filter(e => e.type === 'log');
+  console.log('\n=== ERRORS ===');
+  errors.forEach(e => console.log(`  ${e.type}: ${e.text}`));
+  console.log('\n=== INTERESTING LOGS ===');
+  logs.filter(l => /soldier|rig|anim|glb|gltf|skeleton|G keys/i.test(l.text)).forEach(l => console.log('  ' + l.text));
 
-await context.close();
-await browser.close();
+  const debugSnap = await page.evaluate(() => window.__game.debug.snapshot());
+  console.log('\n=== GAME STATE ===');
+  console.log(JSON.stringify(debugSnap, null, 2));
+  console.log('\nerrors:', errors.length, '/ warnings:', warnings.length);
+  if (errors.length) throw new Error(`browser errors: ${JSON.stringify(errors)}`);
+} finally {
+  await context.close();
+  await browser.close();
+}

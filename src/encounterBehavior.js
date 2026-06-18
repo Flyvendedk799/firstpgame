@@ -39,6 +39,10 @@ export function applyEncounterRole(enemy, role) {
     enemy._encFlankNudge = true;
     enemy.peekRate = (enemy.peekRate || 1) * 1.05;
     if (enemy.personality) enemy.personality.speedMul = (enemy.personality.speedMul || 1) * 1.06;
+  } else if (role === 'sniper') {
+    enemy.attackRange = (enemy.attackRange || 12) * 1.25;
+    enemy.peekRate = (enemy.peekRate || 1) * 0.78;
+    enemy.holdRiskCap = Math.min(0.95, (enemy.holdRiskCap || 0.55) + 0.12);
   }
 }
 
@@ -65,6 +69,11 @@ export function applyEncounterEnemySpec(enemy, hit) {
   if (b === 'guard_objective' || b === 'hold_angle') {
     enemy.holdRiskCap = Math.min(0.95, (enemy.holdRiskCap || 0.55) + 0.12);
     enemy.peekRate = (enemy.peekRate || 1) * 0.88;
+  }
+  if (b === 'overwatch_catwalk') {
+    enemy.holdRiskCap = Math.min(0.95, (enemy.holdRiskCap || 0.55) + 0.12);
+    enemy.peekRate = (enemy.peekRate || 1) * 0.88;
+    enemy.idealDist = (enemy.idealDist || 8) * 1.4;
   }
   if (b === 'suppress_lane') {
     enemy.useSuppress = true;

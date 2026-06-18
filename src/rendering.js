@@ -511,9 +511,6 @@ export function createRenderSubsystem({
   /** @param {import('three').Data3DTexture|null} tex */
   function setLUT3D(tex) {
     const nextTex = tex && tex.texture3D ? tex.texture3D : tex;
-    try {
-      if (lut3dTexture && lut3dTexture.dispose) lut3dTexture.dispose();
-    } catch (_) {}
     lut3dTexture = nextTex || null;
     if (passes.lut) passes.lut.lut = lut3dTexture || null;
   }
