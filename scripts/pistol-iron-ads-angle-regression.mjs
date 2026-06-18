@@ -85,7 +85,24 @@ try {
         viewFit: visual.weaponFeelProfile?.ads?.viewFit || null
       });
     }
-    return { playable, rows };
+    let rds = null;
+    if (pistolIds.includes(1) && typeof dbg.equipPistolScope === 'function') {
+      dbg.equipPistolScope(2);
+      dbg.setAds(1);
+      await wait(1100);
+      const pov = dbg.povState();
+      const pose = dbg.viewmodelPose();
+      rds = {
+        weaponIdx: P.weaponIdx,
+        optic: pov.optic || null,
+        alignment: pov.ironSight || null,
+        gunY: Number((pov.gun?.y || 0).toFixed(5)),
+        gunZ: Number((pov.gun?.z || 0).toFixed(5)),
+        gunPitch: Number((pov.gun?.rx || 0).toFixed(5)),
+        gunScale: Number((pose.gunGrp?.s?.[0] || 0).toFixed(4))
+      };
+    }
+    return { playable, rows, rds };
   });
 
   assert(result.rows.length > 0, `no pistol weapons available: ${result.playable.join(',')}`);
@@ -93,9 +110,19 @@ try {
     assert(row.adsVis > 0.96, `${row.name} did not reach settled ADS: ${JSON.stringify(row)}`);
     assert(row.ironSight?.active, `${row.name} iron sight solver inactive: ${JSON.stringify(row.ironSight)}`);
     assert(row.ironSight?.withinTolerance, `${row.name} iron sight residual outside tolerance: ${JSON.stringify(row.ironSight)}`);
+    assert(row.ironSight?.targetNdcY <= -0.024 && row.ironSight?.targetNdcY >= -0.045, `${row.name} iron sight should leave fire-center visible above the post: ${JSON.stringify(row.ironSight)}`);
+    assert(row.ironSight?.ndcY <= -0.020 && row.ironSight?.ndcY >= -0.052, `${row.name} front sight settled too close to center fire point: ${JSON.stringify(row.ironSight)}`);
+    assert(row.ironSight?.lineTargetY <= 0.006, `${row.name} iron sight line target pitches the post too high: ${JSON.stringify(row.ironSight)}`);
     assert(row.gunPitch <= 0.012, `${row.name} iron ADS points down too far: pitch=${row.gunPitch}`);
-    assert(row.gunPitch >= -0.055, `${row.name} iron ADS over-corrected nose-up: pitch=${row.gunPitch}`);
+    assert(row.gunPitch >= -0.070, `${row.name} iron ADS over-corrected nose-up: pitch=${row.gunPitch}`);
   }
+  assert(result.rds, `pistol RDS scenario missing: ${JSON.stringify(result.playable)}`);
+  assert(result.rds.optic, `pistol RDS optic profile missing: ${JSON.stringify(result.rds)}`);
+  assert(result.rds.alignment?.mode === 'pistol-rds', `pistol RDS alignment did not run: ${JSON.stringify(result.rds)}`);
+  assert(result.rds.alignment?.withinTolerance, `pistol RDS dot should settle on fire center after correction: ${JSON.stringify(result.rds)}`);
+  assert(result.rds.gunScale <= 0.84 && result.rds.gunScale >= 0.72, `pistol RDS view scale should be backed off from face-filling: ${JSON.stringify(result.rds)}`);
+  assert(result.rds.gunZ <= -0.25 && result.rds.gunZ >= -0.38, `pistol RDS depth should leave center readable: ${JSON.stringify(result.rds)}`);
+  assert(Math.abs(result.rds.gunPitch) < 0.19, `pistol RDS pitch should stay readable: ${JSON.stringify(result.rds)}`);
 
   fs.writeFileSync(path.join(OUT_DIR, 'pistol-iron-ads-angle-regression.json'), `${JSON.stringify(result, null, 2)}\n`);
   console.log('pistol iron ADS angle regression ok');

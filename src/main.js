@@ -20327,10 +20327,10 @@ function _handFitForWeapon(idx){
 function _adsWeaponViewFit(idx){
   return getWeaponAdsViewFit(idx|0);
 }
-// Now that the looming forearms are cropped at ADS, the gun/scope can sit at a
-// near-full size so the optic reads clearly (was scale 0.76, which made it small).
-// rx kept at 0 so the bore stays level — the dot is centered by translation, not pitch.
-const _PISTOL_RDS_VIEW_FIT={y:-0.018,z:-0.072,rx:0,scale:0.94};
+// Pistol RDS sits close enough to read the dot but backed off enough that the
+// slide/optic body does not cover the fire center. The dot is centered by
+// translation, not pitch, so rx stays level.
+const _PISTOL_RDS_VIEW_FIT={y:-0.024,z:-0.145,rx:0,scale:0.78};
 function _adsOpticViewFit(profile){
   if(profile&&profile.pistolOptic&&profile.viewFit)return profile.viewFit;
   return null;
@@ -20760,10 +20760,21 @@ function _alignPistolOpticToAimCenter(dt){
     P._ironSightAlign={active:true,weaponIdx:P.weaponIdx|0,profileId:getWeaponFeelProfile(P.weaponIdx|0).id,mode:'pistol-rds',ads:Number(ads.toFixed(3)),readiness:Number((aimSnap.readiness||0).toFixed(3)),residual:Number(ndcOff.toFixed(5)),withinTolerance:true};
     return false;
   }
+  const preNdcX=_ironSightNdcTmp.x,preNdcY=_ironSightNdcTmp.y;
   const corrX=THREE.MathUtils.clamp((0-_ironSightNdcTmp.x)*depth*tanY*aspect,-.04,.04)*alignAmt;
   const corrY=THREE.MathUtils.clamp((0-_ironSightNdcTmp.y)*depth*tanY,-.04,.04)*alignAmt;
   gunGrp.position.x+=corrX;
   gunGrp.position.y+=corrY;
+  gunGrp.updateMatrixWorld(true);
+  if(pistolOpticGrp)pistolOpticGrp.updateMatrixWorld(true);
+  if(gPistolReticle&&gPistolReticle.visible)gPistolReticle.getWorldPosition(world);
+  else{
+    const lensLocal=optic.lensLocal||_scopeLensLocalPistol;
+    world.copy(lensLocal);
+    gunGrp.localToWorld(world);
+  }
+  _ironSightPostNdcTmp.copy(world).project(camera);
+  const residual=Math.hypot(_ironSightPostNdcTmp.x,_ironSightPostNdcTmp.y);
   P._ironSightAlign={
     active:true,
     weaponIdx:P.weaponIdx|0,
@@ -20771,11 +20782,13 @@ function _alignPistolOpticToAimCenter(dt){
     mode:'pistol-rds',
     ads:Number(ads.toFixed(3)),
     readiness:Number((aimSnap.readiness||0).toFixed(3)),
-    ndcX:Number(_ironSightNdcTmp.x.toFixed(4)),
-    ndcY:Number(_ironSightNdcTmp.y.toFixed(4)),
-    residual:Number(ndcOff.toFixed(5)),
+    ndcX:Number(_ironSightPostNdcTmp.x.toFixed(4)),
+    ndcY:Number(_ironSightPostNdcTmp.y.toFixed(4)),
+    preNdcX:Number(preNdcX.toFixed(4)),
+    preNdcY:Number(preNdcY.toFixed(4)),
+    residual:Number(residual.toFixed(5)),
     tolerance:.020,
-    withinTolerance:ndcOff<=.020||ads<.98,
+    withinTolerance:residual<=.020||ads<.98,
     corrX:Number(corrX.toFixed(5)),
     corrY:Number(corrY.toFixed(5)),
     fireRide:Number(_fireRide.toFixed(3))

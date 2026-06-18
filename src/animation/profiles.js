@@ -219,16 +219,17 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
     // viewFit.scale 0.52 is iron-sight ADS only; attachable RDS uses optic profile viewFit in main.js
     // ADS raise: crisp punch-in (inLambda) with a slightly slower, settled release so the
     // sight/dot doesn't snap back jarringly. Tactical sidearm — fast to aim, calm to lower.
-    ads: { inLambda: 44, outLambda: 28, fovDelta: 27, viewFit: { y: -0.040, z: -0.170, rx: -0.022, scale: 0.52 } },
+    ads: { inLambda: 44, outLambda: 28, fovDelta: 27, viewFit: { y: -0.046, z: -0.190, rx: -0.018, scale: 0.50 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.069, -0.074], { node: 'front_sight', nodeLocal: [0, 0.003, 0], socket: 'frontSight' }),
       rear: sightPoint([0, 0.067, 0.058], { node: 'rear_sight', nodeLocal: [0, 0.003, 0], socket: 'rearSight' }),
+      aimNdcY: -0.032,
       maxX: 0.18,
       maxY: 0.28,
       maxPitch: 0.085,
       maxYaw: 0.060,
-      lineTargetY: 0.008
+      lineTargetY: -0.006
     },
     // USP-T single-shot feel: a contained muzzle flip then a snappy recover so the sight
     // is back on target quickly (semi-auto sidearm cadence). Viewmodel kick kept modest so
@@ -324,16 +325,17 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   6: feelProfile(6, 'pistol', 'P226 Suppressed', {
     id: 'weapon-feel-profile.p226-suppressed',
     manifestId: 'weapon.p226Supp',
-    ads: { inLambda: 44, outLambda: 30, fovDelta: 26, viewFit: { y: -0.046, z: -0.215, rx: -0.018, scale: 0.52 } },
+    ads: { inLambda: 44, outLambda: 30, fovDelta: 26, viewFit: { y: -0.052, z: -0.235, rx: -0.014, scale: 0.50 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.054, -0.080], { socket: 'frontSight' }),
       rear: sightPoint([0, 0.050, 0.060], { socket: 'rearSight' }),
+      aimNdcY: -0.030,
       maxX: 0.18,
       maxY: 0.28,
       maxPitch: 0.085,
       maxYaw: 0.060,
-      lineTargetY: 0.032
+      lineTargetY: 0.004
     },
     recoil: { viewmodelKick: 1.02, cameraKick: 0.88, snap: 1.35, recover: 1.28, shoulderAbsorb: 0.82 },
     pose: {
