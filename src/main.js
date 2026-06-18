@@ -20337,6 +20337,7 @@ function _adsOpticViewFit(profile){
 }
 const FIRST_PERSON_WEAPON_SWITCH_PULSE_DECAY_VERSION='first-person-weapon-switch-pulse-decay.v1';
 const FIRST_PERSON_PISTOL_REEQUIP_CLEANUP_VERSION='first-person-pistol-reequip-cleanup.v1';
+const FIRST_PERSON_WEAPON_EQUIP_CLEANUP_VERSION='first-person-weapon-equip-cleanup.v1';
 function _decayFirstPersonWeaponSwitchPulses(pl=P,dt=0){
   if(!pl)return null;
   const sw=Number.isFinite(pl._weaponSwitchPulse)?pl._weaponSwitchPulse:0;
@@ -20353,6 +20354,70 @@ function _decayFirstPersonWeaponSwitchPulses(pl=P,dt=0){
     drawAfter:Number((pl._weaponDrawPulse||0).toFixed(3))
   };
   return pl._firstPersonWeaponSwitchPulseDecay;
+}
+function _weaponIdxUsesFirstPersonOptic(idx,pl=P){
+  idx=idx|0;
+  if(idx===5||idx===7)return true;
+  if(!pl||!pl.attachments||!pl.attachments.scope)return false;
+  return idx===0||idx===1||idx===6;
+}
+function _capFirstPersonEquipPulse(pl,key,cap=0){
+  if(!pl)return;
+  const v=Number.isFinite(pl[key])?pl[key]:0;
+  pl[key]=Math.min(v,cap);
+}
+function _resetFirstPersonWeaponEquipCarryover(idx,prevIdx,reason='switch'){
+  if(!P)return null;
+  const nowMs=performance.now();
+  const nextOptic=_weaponIdxUsesFirstPersonOptic(idx,P);
+  const prevOptic=_weaponIdxUsesFirstPersonOptic(prevIdx,P);
+  const opticSensitive=!!(nextOptic||prevOptic);
+  const hadAds=THREE.MathUtils.clamp(Math.max(P.ads||0,P.adsVis||0,P.adsTarget||0,P.scopeSettle||0),0,1);
+  const suppressMs=opticSensitive?190:115;
+  const cleanMs=opticSensitive?460:280;
+  P._weaponEquipAdsSuppressUntil=Math.max(P._weaponEquipAdsSuppressUntil||0,nowMs+suppressMs);
+  P._firstPersonWeaponEquipCleanUntil=Math.max(P._firstPersonWeaponEquipCleanUntil||0,nowMs+cleanMs);
+  P._firstPersonWeaponEquipCleanStrength=1;
+  P.adsTarget=0;
+  P.ads=0;
+  P.adsVis=0;
+  P.adsSettle=0;
+  P.scopeSettle=0;
+  P.adsKick=0;
+  P.scopeEyeX=0;
+  P.scopeEyeY=0;
+  P._adsRaisePulse=0;
+  P._adsShoulderPulse=0;
+  P._adsLowerPulse=0;
+  P._firstPersonPistolAdsReleasePulse=0;
+  P._ironSightReacquireUntil=Math.max(P._ironSightReacquireUntil||0,nowMs+(opticSensitive?260:180));
+  _capFirstPersonEquipPulse(P,'_shotImpulse',.08);
+  _capFirstPersonEquipPulse(P,'_shotImpulseKick',.08);
+  _capFirstPersonEquipPulse(P,'_lastRoundPulse',.05);
+  _capFirstPersonEquipPulse(P,'_emptyClickPulse',.05);
+  _capFirstPersonEquipPulse(P,'_dryFirePulse',.05);
+  _capFirstPersonEquipPulse(P,'_triggerBreakPulse',.05);
+  _capFirstPersonEquipPulse(P,'_followThroughPulse',.05);
+  _capFirstPersonEquipPulse(P,'_sightRecoveryPulse',.05);
+  _capFirstPersonEquipPulse(P,'_turnDrivePulse',.04);
+  _capFirstPersonEquipPulse(P,'_targetTransitionPulse',.08);
+  _capFirstPersonEquipPulse(P,'_hitConfirmSettlePulse',.08);
+  _capFirstPersonEquipPulse(P,'_targetSwitchRecenterPulse',.08);
+  if(P._focusAdsViewmodelStability&&typeof P._focusAdsViewmodelStability==='object'){
+    P._focusAdsViewmodelStability=Object.assign({},P._focusAdsViewmodelStability,{active:false,strength:0,reason:'weapon-equip-clean'});
+  }
+  P._firstPersonWeaponEquipCleanup={
+    version:FIRST_PERSON_WEAPON_EQUIP_CLEANUP_VERSION,
+    active:true,
+    reason:String(reason||'switch'),
+    weaponIdx:idx|0,
+    prevIdx:Number.isFinite(prevIdx)?prevIdx|0:null,
+    opticSensitive,
+    hadAds:Number(hadAds.toFixed(3)),
+    adsSuppressUntil:Math.round(P._weaponEquipAdsSuppressUntil||0),
+    cleanUntil:Math.round(P._firstPersonWeaponEquipCleanUntil||0)
+  };
+  return P._firstPersonWeaponEquipCleanup;
 }
 function _resetPistolReequipViewmodelState(prevIdx,idx,reason='switch'){
   if(!(idx===1||idx===6)||!P)return false;
@@ -20486,6 +20551,12 @@ function _stabilizeFirstPersonViewmodelRoot(dt,reason='frame'){
   let snapped=false;
   let changed=false;
   const clamps=[];
+  const equipClean=nowMs<(P._firstPersonWeaponEquipCleanUntil||0);
+  if(P._firstPersonWeaponEquipCleanup){
+    P._firstPersonWeaponEquipCleanup.active=!!equipClean;
+    P._firstPersonWeaponEquipCleanup.msLeft=Math.max(0,Math.round((P._firstPersonWeaponEquipCleanUntil||0)-nowMs));
+    P._firstPersonWeaponEquipCleanup.adsSuppressMsLeft=Math.max(0,Math.round((P._weaponEquipAdsSuppressUntil||0)-nowMs));
+  }
   const finite=_viewmodelRootPoseFinite(gunGrp);
   const extreme=finite&&Math.max(
     Math.abs(gunGrp.position.x),Math.abs(gunGrp.position.y),Math.abs(gunGrp.position.z),
@@ -20517,10 +20588,11 @@ function _stabilizeFirstPersonViewmodelRoot(dt,reason='frame'){
     Math.abs(gunGrp.rotation.y-target.ry)>ryWin+.140||
     Math.abs(gunGrp.rotation.z-target.rz)>rzWin+.160
   );
-  if(normalPistol||outHard||focusStability>.12||pistolReequipClean){
-    const alphaBase=snapped?1:Math.min(1,Math.max(0,dt||0)*((normalPistol||pistolReequipClean)?(32+focusStability*16):18));
+  if(normalPistol||outHard||focusStability>.12||pistolReequipClean||equipClean){
+    const equipLambda=equipClean?20+THREE.MathUtils.clamp(P._firstPersonWeaponEquipCleanStrength||1,0,1)*22:0;
+    const alphaBase=snapped?1:Math.min(1,Math.max(0,dt||0)*((normalPistol||pistolReequipClean)?(32+focusStability*16):(equipClean?equipLambda:18)));
     const actionFade=normalPistol?THREE.MathUtils.lerp(1,.38,THREE.MathUtils.smoothstep(action,.20,.85)):1;
-    const guardActionFade=pistolReequipClean?Math.max(actionFade,.82):actionFade;
+    const guardActionFade=(pistolReequipClean||equipClean)?Math.max(actionFade,.82):actionFade;
     const alpha=THREE.MathUtils.clamp(alphaBase*guardActionFade,0,1);
     const px=gunGrp.position.x,py=gunGrp.position.y,pz=gunGrp.position.z;
     const rx=gunGrp.rotation.x,ry=gunGrp.rotation.y,rz=gunGrp.rotation.z;
@@ -20550,10 +20622,11 @@ function _stabilizeFirstPersonViewmodelRoot(dt,reason='frame'){
   }
   P._firstPersonViewmodelRootGuard={
     version:FIRST_PERSON_VIEWMODEL_ROOT_GUARD_VERSION,
-    active:!!(normalPistol||changed||focusStability>.12||pistolReequipClean),
+    active:!!(normalPistol||changed||focusStability>.12||pistolReequipClean||equipClean),
     weaponIdx:wi,
     pistol,
     reequip:!!pistolReequipClean,
+    equipClean:!!equipClean,
     reason:String(reason||'frame'),
     changed:!!changed,
     snapped:!!snapped,
@@ -20876,8 +20949,31 @@ function _sanitizeFirstPersonWeaponEquipState(idx,prevIdx,handFit,knifeEquipped=
   const nowMs=performance.now();
   const pistol=(idx===1||idx===6);
   const restGun=(handFit&&handFit.gun)||DEFAULT_HAND_FIT.gun;
+  const equipCleanup=_resetFirstPersonWeaponEquipCarryover(idx,prevIdx,'equip-sanity');
+  const opticSensitive=!!(equipCleanup&&equipCleanup.opticSensitive);
+  const hardEquipSnap=!!(!knifeEquipped&&restGun&&(!pistol||opticSensitive));
   if(!knifeEquipped&&restGun){
-    if(pistol){
+    if(hardEquipSnap){
+      gunGrp.position.set(restGun.x,restGun.y,restGun.z);
+      gunGrp.rotation.set(0,0,0);
+      gunGrp.scale.setScalar(1);
+      if(rGrp&&H.rBase){
+        rGrp.position.set(H.rBase.x,H.rBase.y,H.rBase.z);
+        rGrp.rotation.set(H.rBase.rx||0,H.rBase.ry||0,H.rBase.rz||0);
+      }
+      if(lGrp&&H.lBase&&handFit&&handFit.left){
+        lGrp.position.set(H.lBase.x,H.lBase.y,H.lBase.z);
+        lGrp.rotation.set(H.lBase.rx||0,H.lBase.ry||0,H.lBase.rz||0);
+      }
+      P._viewmodelPoseSnapUntil=Math.max(P._viewmodelPoseSnapUntil||0,nowMs+(opticSensitive?360:240));
+      if(pistol){
+        H.swapDur=.20;
+        H.swapT=Math.min(Number.isFinite(H.swapT)?H.swapT:H.swapDur,H.swapDur);
+        P._weaponSwitchPulse=THREE.MathUtils.clamp(P._weaponSwitchPulse||0,0,.30);
+        P._weaponDrawPulse=THREE.MathUtils.clamp(P._weaponDrawPulse||0,0,.36);
+        P._firstPersonPistolReequipCleanUntil=Math.max(P._firstPersonPistolReequipCleanUntil||0,nowMs+360);
+      }
+    }else if(pistol){
       gunGrp.position.set(restGun.x,restGun.y,restGun.z);
       gunGrp.rotation.set(0,0,0);
       gunGrp.scale.setScalar(1);
@@ -20913,7 +21009,9 @@ function _sanitizeFirstPersonWeaponEquipState(idx,prevIdx,handFit,knifeEquipped=
     weaponIdx:idx|0,
     prevIdx:Number.isFinite(prevIdx)?prevIdx|0:null,
     pistol,
-    rootSnapped:!!(pistol&&!knifeEquipped),
+    rootSnapped:!!((pistol||hardEquipSnap)&&!knifeEquipped),
+    opticSensitive,
+    equipCleanup:equipCleanup?Object.assign({},equipCleanup):null,
     swapDur:Number((H.swapDur||0).toFixed(3)),
     switchPulse:Number((P._weaponSwitchPulse||0).toFixed(3)),
     drawPulse:Number((P._weaponDrawPulse||0).toFixed(3)),
@@ -39205,7 +39303,10 @@ function updateHands(dt){
     performance.now()<(P._focusAdsViewmodelRecoveryUntil||0) ? .62 : 0
   ),0,1);
   const _pistolHandSettleFast=(_wi===1||_wi===6)?THREE.MathUtils.clamp(Math.max(_pistolPostSprintSettle,_pistolIdleUpright*.35),0,1):0;
-  const ls=22+_pistolHandSettleFast*16+_focusAdsHandStability*18,lm=14+_pistolHandSettleFast*18+_focusAdsHandStability*20;
+  const _equipHandClean=performance.now()<(P._firstPersonWeaponEquipCleanUntil||0)?THREE.MathUtils.clamp(P._firstPersonWeaponEquipCleanStrength||1,0,1):0;
+  const ls=22+_pistolHandSettleFast*16+_focusAdsHandStability*18+_equipHandClean*28,lm=14+_pistolHandSettleFast*18+_focusAdsHandStability*20+_equipHandClean*34;
+  P._firstPersonWeaponEquipCleanStrength=damp(Number.isFinite(P._firstPersonWeaponEquipCleanStrength)?P._firstPersonWeaponEquipCleanStrength:0,0,_equipHandClean>0?9:16,dt);
+  if(Math.abs(P._firstPersonWeaponEquipCleanStrength)<.001)P._firstPersonWeaponEquipCleanStrength=0;
   rGrp.position.x=damp(rGrp.position.x,rTX,ls,dt);
   rGrp.position.y=damp(rGrp.position.y,rTY,ls,dt);
   rGrp.position.z=damp(rGrp.position.z,rTZ,ls,dt);
@@ -39830,6 +39931,7 @@ function _weaponVisualStatus(){
 			    armPoseGuard:P._firstPersonArmPoseGuard?Object.assign({},P._firstPersonArmPoseGuard):null,
 			    rootGuard:P._firstPersonViewmodelRootGuard?Object.assign({},P._firstPersonViewmodelRootGuard):null,
 			    equipSanity:P._firstPersonWeaponEquipSanity?Object.assign({},P._firstPersonWeaponEquipSanity):null,
+			    equipCleanup:P._firstPersonWeaponEquipCleanup?Object.assign({},P._firstPersonWeaponEquipCleanup):null,
 			    pistolReequip:P._firstPersonPistolReequipCleanup?Object.assign({},P._firstPersonPistolReequipCleanup):null,
 			    switchPulseDecay:P._firstPersonWeaponSwitchPulseDecay?Object.assign({},P._firstPersonWeaponSwitchPulseDecay):null,
 			    bodyPresence:typeof _bodyPresenceSnapshot==='function'?_bodyPresenceSnapshot():null,
@@ -40847,7 +40949,8 @@ renderer.setAnimationLoop(()=>{
     P._turnDrivePulse=damp(Number.isFinite(P._turnDrivePulse)?P._turnDrivePulse:0,0,18,dt);
     const _adsPrevTarget=Number.isFinite(P.adsTarget)?P.adsTarget:0;
     const _adsHeld=!!((M.rmbDown&&!_knifeRmbIntent)||P._debugAdsHold);
-    P.adsTarget=_adsHeld&&!P.reloading&&P.sprintBlend<.38&&!P.dropkickActive?1:0;
+    const _equipAdsSuppressed=performance.now()<(P._weaponEquipAdsSuppressUntil||0);
+    P.adsTarget=_adsHeld&&!_equipAdsSuppressed&&!P.reloading&&P.sprintBlend<.38&&!P.dropkickActive?1:0;
     if(P.adsTarget>.5&&_adsPrevTarget<=.5){
       P.adsKick=Math.max(P.adsKick||0,1.0);
       P.adsSettle=0;
@@ -44866,6 +44969,7 @@ installDebugApi({
 	      pistolMobilitySettle:P._firstPersonPistolMobilitySettle?Object.assign({},P._firstPersonPistolMobilitySettle):null,
 	      pistolAdsRelease:P._firstPersonPistolAdsRelease?Object.assign({},P._firstPersonPistolAdsRelease):null,
 	      viewmodelRootGuard:P._firstPersonViewmodelRootGuard?Object.assign({},P._firstPersonViewmodelRootGuard):null,
+	      weaponEquipCleanup:P._firstPersonWeaponEquipCleanup?Object.assign({},P._firstPersonWeaponEquipCleanup):null,
 	      pistolReequip:P._firstPersonPistolReequipCleanup?Object.assign({},P._firstPersonPistolReequipCleanup):null,
 	      switchPulseDecay:P._firstPersonWeaponSwitchPulseDecay?Object.assign({},P._firstPersonWeaponSwitchPulseDecay):null,
 	      focusAdsViewmodel:P._focusAdsViewmodelStability?Object.assign({},P._focusAdsViewmodelStability):null,

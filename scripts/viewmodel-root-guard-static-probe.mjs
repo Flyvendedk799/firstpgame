@@ -28,7 +28,9 @@ assert(
 assert(
   main.includes("FIRST_PERSON_WEAPON_SWITCH_PULSE_DECAY_VERSION='first-person-weapon-switch-pulse-decay.v1'") &&
     main.includes("FIRST_PERSON_PISTOL_REEQUIP_CLEANUP_VERSION='first-person-pistol-reequip-cleanup.v1'") &&
+    main.includes("FIRST_PERSON_WEAPON_EQUIP_CLEANUP_VERSION='first-person-weapon-equip-cleanup.v1'") &&
     main.includes('function _decayFirstPersonWeaponSwitchPulses(pl=P,dt=0)') &&
+    main.includes("function _resetFirstPersonWeaponEquipCarryover(idx,prevIdx,reason='switch')") &&
     main.includes("function _resetPistolReequipViewmodelState(prevIdx,idx,reason='switch')") &&
     main.includes("_decayFirstPersonWeaponSwitchPulses(P,dt)") &&
     main.includes("_decayFirstPersonWeaponSwitchPulses(pl,dt)") &&
@@ -38,7 +40,8 @@ assert(
 
 assert(
   main.includes('const pistolReequipClean=pistol&&nowMs<(P._firstPersonPistolReequipCleanUntil||0)') &&
-    main.includes('const guardActionFade=pistolReequipClean?Math.max(actionFade,.82):actionFade') &&
+    main.includes('const equipClean=nowMs<(P._firstPersonWeaponEquipCleanUntil||0)') &&
+    main.includes('const guardActionFade=(pistolReequipClean||equipClean)?Math.max(actionFade,.82):actionFade') &&
     main.includes('H.swapDur=nextIsPistol?.20:.42;H.swapT=H.swapDur;') &&
     main.includes('P._weaponSwitchPulse=.30;') &&
     main.includes('P._weaponDrawPulse=.36;') &&
@@ -50,14 +53,16 @@ assert(
 assert(
   main.includes("_stabilizeFirstPersonViewmodelRoot(dt,'post-frame')") &&
     main.includes('P.scopeEyeX=Number.isFinite(P.scopeEyeX)?P.scopeEyeX*.25:0') &&
+    main.includes('P._weaponEquipAdsSuppressUntil=Math.max(P._weaponEquipAdsSuppressUntil||0,nowMs+suppressMs)') &&
     main.includes('st.turnInertia=(Number.isFinite(st.turnInertia)?st.turnInertia:0)*.40') &&
     main.includes('st.pivotSide=(Number.isFinite(st.pivotSide)?st.pivotSide:0)*.35'),
-  'post-frame root stabilization must clear stale aim/turn state'
+  'post-frame root stabilization must clear stale aim/turn state and scoped ADS carryover'
 );
 
 assert(
   main.includes('rootGuard:P._firstPersonViewmodelRootGuard') &&
     main.includes('viewmodelRootGuard:P._firstPersonViewmodelRootGuard') &&
+    main.includes('weaponEquipCleanup:P._firstPersonWeaponEquipCleanup') &&
     main.includes('setViewmodelRootFaultProbe:') &&
     main.includes("_stabilizeFirstPersonViewmodelRoot(1/30,'fault-probe')"),
   'viewmodel root guard debug/fault probe is missing'
@@ -69,6 +74,7 @@ console.log(JSON.stringify({
   versions: [
     'first-person-viewmodel-root-guard.v1',
     'first-person-weapon-switch-pulse-decay.v1',
-    'first-person-pistol-reequip-cleanup.v1'
+    'first-person-pistol-reequip-cleanup.v1',
+    'first-person-weapon-equip-cleanup.v1'
   ]
 }, null, 2));

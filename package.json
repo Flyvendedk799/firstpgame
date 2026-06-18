@@ -43,6 +43,7 @@
     "test:enemy:locomotion": "node scripts/with-preview.mjs node scripts/enemy-locomotion-feel-smoke.mjs",
     "test:embodiment:feel": "node scripts/with-preview.mjs node scripts/embodiment-feel-smoke.mjs",
     "test:focus:scope": "node scripts/with-preview.mjs node scripts/focus-scope-attachment-smoke.mjs",
+    "test:scoped-switch:viewmodel": "node scripts/with-preview.mjs node scripts/scoped-switch-viewmodel-regression.mjs",
     "test:gameplay:qol": "node scripts/with-preview.mjs node scripts/gameplay-qol-smoke.mjs",
     "test:high-class-feel": "node scripts/high-class-feel-static-probe.mjs",
     "test:weapon:feel": "node scripts/with-preview.mjs node scripts/weapon-feel-acceptance.mjs",
