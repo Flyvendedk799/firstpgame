@@ -141,6 +141,17 @@ try {
     return samples;
   }
 
+  async function waitForScopedAds(label, timeoutMs = 1800) {
+    const started = Date.now();
+    let last = null;
+    while (Date.now() - started < timeoutMs) {
+      last = await sample(label);
+      if ((last.pov.adsVis || 0) > 0.65 && (last.pov.adsTarget || 0) > 0.5 && last.pov.optic) return last;
+      await page.waitForTimeout(60);
+    }
+    throw new Error(`scoped ADS did not engage before switch: ${JSON.stringify(last?.pov || null)}`);
+  }
+
   await page.keyboard.down('KeyW');
   await page.keyboard.down('KeyD');
   await page.evaluate(({ scopedIdx }) => {
@@ -148,9 +159,7 @@ try {
     dbg.switchWeapon(scopedIdx);
     dbg.setAds(1);
   }, setup);
-  await page.waitForTimeout(640);
-  const scopedBefore = await sample('scoped-before-switch');
-  assert(scopedBefore.pov.adsVis > 0.65, `scoped ADS did not engage before switch: ${JSON.stringify(scopedBefore.pov)}`);
+  const scopedBefore = await waitForScopedAds('scoped-before-switch');
   assert(scopedBefore.pov.optic, `scoped weapon missing optic profile before switch: ${JSON.stringify(scopedBefore.pov.optic)}`);
 
   await page.evaluate(({ awayIdx }) => window.__game.debug.switchWeapon(awayIdx), setup);

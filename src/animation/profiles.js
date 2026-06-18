@@ -228,7 +228,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
       maxY: 0.28,
       maxPitch: 0.085,
       maxYaw: 0.060,
-      lineTargetY: 0.030
+      lineTargetY: 0.008
     },
     // USP-T single-shot feel: a contained muzzle flip then a snappy recover so the sight
     // is back on target quickly (semi-auto sidearm cadence). Viewmodel kick kept modest so
