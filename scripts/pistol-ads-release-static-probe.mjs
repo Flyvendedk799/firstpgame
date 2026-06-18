@@ -29,10 +29,19 @@ assert(
 assert(
   main.includes('P._firstPersonPistolAdsReleaseUntil=_adsReleaseNow+420') &&
     main.includes('P._firstPersonPistolAdsReleasePulse=Math.max(P._firstPersonPistolAdsReleasePulse||0,1)') &&
+    main.includes('P._firstPersonPistolAdsHipRestoreArmed=true') &&
     main.includes('if(_pistolAdsReleased&&P.ads<.028&&P.adsVis<.085)') &&
     main.includes('P._adsRaisePulse=0') &&
     main.includes('P._adsShoulderPulse=0'),
   'ADS release state cleanup missing'
+);
+assert(
+  main.includes("FIRST_PERSON_PISTOL_ADS_HIP_RESTORE_VERSION='first-person-pistol-ads-hip-restore.v1'") &&
+    main.includes('function _restoreFirstPersonPistolHipViewmodelState(reason=') &&
+    main.includes("P._adsSightlineHandClearance={version:'ads-sightline-hand-clearance.v1',active:false,weaponIdx:wi,clear:0,restored:true}") &&
+    main.includes("P._firstPersonPistolAdsHipRestore={") &&
+    main.includes("_restoreFirstPersonPistolHipViewmodelState('ads-release')"),
+  'pistol ADS hip restore cleanup missing'
 );
 assert(
   main.includes('const _adsPoseRaw=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1)') &&
@@ -48,7 +57,10 @@ assert(
 );
 assert(
   main.includes("version:FIRST_PERSON_PISTOL_ADS_RELEASE_VERSION") &&
-    main.includes('pistolAdsRelease:P._firstPersonPistolAdsRelease'),
+    main.includes('pistolAdsRelease:P._firstPersonPistolAdsRelease') &&
+    main.includes('pistolAdsHipRestore:P._firstPersonPistolAdsHipRestore') &&
+    main.includes('armSightlineCrop:P._firstPersonArmSightlineCrop') &&
+    main.includes('pistolSupportSightlineCropActive:!!P._pistolSupportSightlineCropActive'),
   'pistol ADS release debug state missing'
 );
 

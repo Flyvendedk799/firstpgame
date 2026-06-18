@@ -20390,6 +20390,26 @@ function _resetFirstPersonWeaponEquipCarryover(idx,prevIdx,reason='switch'){
   P._adsShoulderPulse=0;
   P._adsLowerPulse=0;
   P._firstPersonPistolAdsReleasePulse=0;
+  P._firstPersonPistolAdsReleaseUntil=0;
+  P._firstPersonPistolAdsHipRestoreArmed=false;
+  P._firstPersonPistolAdsHipRestoreUntil=0;
+  if(P._firstPersonPistolAdsHipRestore){
+    P._firstPersonPistolAdsHipRestore=Object.assign({},P._firstPersonPistolAdsHipRestore,{
+      active:false,
+      reason:'equip-clean',
+      weaponIdx:idx|0,
+      msLeft:0
+    });
+  }
+  P._pistolSupportSightlineCropActive=false;
+  P._pistolSightlineHandsHidden=false;
+  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
+  if(idx===1||idx===6||prevIdx===1||prevIdx===6){
+    for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+    for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+    P._firstPersonArmSightlineCrop={version:'first-person-arm-clearance.v1',weaponIdx:idx|0,ads:0,rightForearm:false,leftForearm:false,pistolSupport:false,restored:true};
+    P._adsSightlineHandClearance={version:'ads-sightline-hand-clearance.v1',active:false,weaponIdx:idx|0,clear:0,restored:true};
+  }
   P._ironSightReacquireUntil=Math.max(P._ironSightReacquireUntil||0,nowMs+(opticSensitive?260:180));
   _capFirstPersonEquipPulse(P,'_shotImpulse',.08);
   _capFirstPersonEquipPulse(P,'_shotImpulseKick',.08);
@@ -38221,6 +38241,7 @@ _refreshQualityButtons();applyQuality();
 	const FIRST_PERSON_IDLE_ARM_UPRIGHT_VERSION='first-person-idle-arm-upright.v1';
 	const FIRST_PERSON_PISTOL_POSE_STABILITY_VERSION='first-person-pistol-pose-stability.v1';
 	const FIRST_PERSON_PISTOL_ADS_RELEASE_VERSION='first-person-pistol-ads-release-cleanup.v1';
+	const FIRST_PERSON_PISTOL_ADS_HIP_RESTORE_VERSION='first-person-pistol-ads-hip-restore.v1';
 	function _firstPersonAdsPoseWeight(rawAds,weaponIdx,adsTarget=0){
 	  const a=THREE.MathUtils.clamp(Number.isFinite(rawAds)?rawAds:0,0,1);
 	  const pistol=(weaponIdx===1||weaponIdx===6);
@@ -38386,10 +38407,74 @@ function _safeHandScale(value,fallback,health,key){
   const n=_handPlacementFinite(value,fallback,health,`${key}.scale`);
   return _handPlacementClamp(n,.64,1.28,health,`${key}.scale`);
 }
+function _restoreFirstPersonPistolHipViewmodelState(reason='ads-release'){
+  if(!P||!(P.weaponIdx===1||P.weaponIdx===6))return null;
+  const nowMs=performance.now();
+  const wi=P.weaponIdx|0;
+  const handFit=H.handFit||_handFitForWeapon(wi);
+  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
+  for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+  for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+  P._pistolSupportSightlineCropActive=false;
+  P._pistolSightlineHandsHidden=false;
+  P._firstPersonArmSightlineCrop={
+    version:'first-person-arm-clearance.v1',
+    weaponIdx:wi,
+    ads:0,
+    rightForearm:false,
+    leftForearm:false,
+    pistolSupport:false,
+    restored:true
+  };
+  P._adsSightlineHandClearance={version:'ads-sightline-hand-clearance.v1',active:false,weaponIdx:wi,clear:0,restored:true};
+  P._firstPersonPistolAdsReleasePulse=0;
+  P._firstPersonPistolAdsReleaseUntil=0;
+  P._firstPersonPistolAdsHipRestoreArmed=false;
+  let rightSnapped=false,leftSnapped=false;
+  if(rGrp&&H.rBase){
+    rGrp.visible=true;
+    rGrp.position.set(H.rBase.x,H.rBase.y,H.rBase.z);
+    rGrp.rotation.set(H.rBase.rx||0,H.rBase.ry||0,H.rBase.rz||0);
+    rGrp.scale.setScalar(_HAND_PROM_SCALE);
+    rightSnapped=true;
+  }
+  if(lGrp&&H.lBase){
+    lGrp.visible=!!(handFit&&handFit.left);
+    if(lGrp.visible){
+      lGrp.position.set(H.lBase.x,H.lBase.y,H.lBase.z);
+      lGrp.rotation.set(H.lBase.rx||0,H.lBase.ry||0,H.lBase.rz||0);
+      lGrp.scale.setScalar(_HAND_PROM_SCALE*(handFit.leftScale||1.04));
+      leftSnapped=true;
+    }
+  }
+  const gripReset=typeof _resetHandGripStateForEquip==='function'&&typeof _HAND_GRIP_STATE!=='undefined'
+    ? _resetHandGripStateForEquip(_HAND_GRIP_STATE,wi)
+    : false;
+  P._viewmodelPoseSnapUntil=Math.max(P._viewmodelPoseSnapUntil||0,nowMs+180);
+  P._firstPersonPistolAdsHipRestoreUntil=nowMs+260;
+  P._firstPersonPistolAdsHipRestore={
+    version:FIRST_PERSON_PISTOL_ADS_HIP_RESTORE_VERSION,
+    active:true,
+    reason:String(reason||'ads-release'),
+    weaponIdx:wi,
+    at:Math.round(nowMs),
+    msLeft:260,
+    rightSnapped,
+    leftSnapped,
+    cropsRestored:true,
+    gripReset:!!gripReset
+  };
+  return P._firstPersonPistolAdsHipRestore;
+}
 function updateHands(dt){
   H.idlePhase+=dt;
   const ip=H.idlePhase;
   const _wi=P.weaponIdx|0;
+  if(P._firstPersonPistolAdsHipRestore){
+    const _hipRestoreMsLeft=Math.max(0,Math.round((P._firstPersonPistolAdsHipRestoreUntil||0)-performance.now()));
+    P._firstPersonPistolAdsHipRestore.active=_hipRestoreMsLeft>0;
+    P._firstPersonPistolAdsHipRestore.msLeft=_hipRestoreMsLeft;
+  }
   const _handHealth=_ensureHandPlacementHealth();
   let handFit=H.handFit||_handFitForWeapon(_wi);
   const expectedHandFit=_handFitForWeapon(_wi);
@@ -39929,6 +40014,12 @@ function _weaponVisualStatus(){
 			    handGrip:handGripDebug(_HAND_GRIP_STATE),
 			    handPlacement:P._handPlacementHealth?Object.assign({},P._handPlacementHealth):null,
 			    armPoseGuard:P._firstPersonArmPoseGuard?Object.assign({},P._firstPersonArmPoseGuard):null,
+			    armSightlineCrop:P._firstPersonArmSightlineCrop?Object.assign({},P._firstPersonArmSightlineCrop):null,
+			    adsSightlineHandClearance:P._adsSightlineHandClearance?Object.assign({},P._adsSightlineHandClearance):null,
+			    pistolAdsRelease:P._firstPersonPistolAdsRelease?Object.assign({},P._firstPersonPistolAdsRelease):null,
+			    pistolAdsHipRestore:P._firstPersonPistolAdsHipRestore?Object.assign({},P._firstPersonPistolAdsHipRestore):null,
+			    pistolSightlineHandsHidden:!!P._pistolSightlineHandsHidden,
+			    pistolSupportSightlineCropActive:!!P._pistolSupportSightlineCropActive,
 			    rootGuard:P._firstPersonViewmodelRootGuard?Object.assign({},P._firstPersonViewmodelRootGuard):null,
 			    equipSanity:P._firstPersonWeaponEquipSanity?Object.assign({},P._firstPersonWeaponEquipSanity):null,
 			    equipCleanup:P._firstPersonWeaponEquipCleanup?Object.assign({},P._firstPersonWeaponEquipCleanup):null,
@@ -40963,6 +41054,7 @@ renderer.setAnimationLoop(()=>{
         const _adsReleaseNow=performance.now();
         P._firstPersonPistolAdsReleaseUntil=_adsReleaseNow+420;
         P._firstPersonPistolAdsReleasePulse=Math.max(P._firstPersonPistolAdsReleasePulse||0,1);
+        P._firstPersonPistolAdsHipRestoreArmed=true;
         P.scopeEyeX=0;
         P.scopeEyeY=0;
       }
@@ -40988,6 +41080,9 @@ renderer.setAnimationLoop(()=>{
       P._adsLowerPulse=0;
       P.scopeEyeX=0;
       P.scopeEyeY=0;
+      if(P._firstPersonPistolAdsHipRestoreArmed||P._pistolSupportSightlineCropActive||P._pistolSightlineHandsHidden||(P._firstPersonPistolAdsReleasePulse||0)>.001){
+        _restoreFirstPersonPistolHipViewmodelState('ads-release');
+      }
     }
     const _adsVis01=THREE.MathUtils.clamp(P.adsVis||0,0,1);
     const _scopeEaseForFov=_opticForFov?THREE.MathUtils.smoothstep(_adsVis01,.20,.92):0;
@@ -44968,6 +45063,11 @@ installDebugApi({
 	      pistolPoseStability:P._firstPersonPistolPoseStability?Object.assign({},P._firstPersonPistolPoseStability):null,
 	      pistolMobilitySettle:P._firstPersonPistolMobilitySettle?Object.assign({},P._firstPersonPistolMobilitySettle):null,
 	      pistolAdsRelease:P._firstPersonPistolAdsRelease?Object.assign({},P._firstPersonPistolAdsRelease):null,
+	      pistolAdsHipRestore:P._firstPersonPistolAdsHipRestore?Object.assign({},P._firstPersonPistolAdsHipRestore):null,
+	      armSightlineCrop:P._firstPersonArmSightlineCrop?Object.assign({},P._firstPersonArmSightlineCrop):null,
+	      adsSightlineHandClearance:P._adsSightlineHandClearance?Object.assign({},P._adsSightlineHandClearance):null,
+	      pistolSightlineHandsHidden:!!P._pistolSightlineHandsHidden,
+	      pistolSupportSightlineCropActive:!!P._pistolSupportSightlineCropActive,
 	      viewmodelRootGuard:P._firstPersonViewmodelRootGuard?Object.assign({},P._firstPersonViewmodelRootGuard):null,
 	      weaponEquipCleanup:P._firstPersonWeaponEquipCleanup?Object.assign({},P._firstPersonWeaponEquipCleanup):null,
 	      pistolReequip:P._firstPersonPistolReequipCleanup?Object.assign({},P._firstPersonPistolReequipCleanup):null,
