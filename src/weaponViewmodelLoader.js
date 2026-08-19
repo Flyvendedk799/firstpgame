@@ -147,7 +147,7 @@ export function validateWeaponViewmodel(gltf, entry = {}, options = {}) {
     const aliases = Array.isArray(socketAliases[name]) ? socketAliases[name] : [socketAliases[name]];
     return nodes.has(name) || aliases.filter(Boolean).some(alias => nodes.has(alias));
   };
-  const requiredNodes = ['WeaponRoot', 'visual', 'sockets', 'mag', 'trigger', 'chargingHandle'];
+  const requiredNodes = options.requiredNodes || ['WeaponRoot', 'visual', 'sockets', ...(entry.mechanicalParts || ['mag', 'trigger', 'chargingHandle'])];
   const errors = [];
   const warnings = [];
   for (const name of requiredNodes) if (!nodes.has(name)) errors.push(`missing node:${name}`);

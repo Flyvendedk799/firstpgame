@@ -41,7 +41,8 @@ const DECAY = Object.freeze({
   _precisionFlowPulse: 4.4,
   _ammoBeatPulse: 7.5,
   _combatStreakPulse: 4.2,
-  _suppressionEdgePulse: 7.2
+  _suppressionEdgePulse: 7.2,
+  _shotCadenceScore: 2.0
 });
 
 function pulseMax(player, key, value) {

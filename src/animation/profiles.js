@@ -624,7 +624,7 @@ export const ANIMATION_FEEL_TUNING = Object.freeze({
     adsDampen: 1.06,
     adsAlignmentTolerance: 0.015,
     beadAlignmentTolerance: 0.026,
-    transitionSnapThreshold: 1.35,
+    transitionSnapThreshold: 1.3,
     transitionRecoveryMs: 260,
     notifyDedupeBudget: 3
   },

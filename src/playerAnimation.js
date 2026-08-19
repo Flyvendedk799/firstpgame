@@ -96,7 +96,7 @@ export function updatePlayerAnimTransitionHealth(state, dt) {
     health.lastPoseDelta = delta.maxDelta;
     health.maxPoseDelta = Math.max(health.maxPoseDelta || 0, delta.maxDelta);
     health.nonFiniteCount = (health.nonFiniteCount || 0) + delta.nonFinite;
-    if (delta.maxDelta > (tuning.transitionSnapThreshold || 0.62)) {
+    if (delta.maxDelta > tuning.transitionSnapThreshold) {
       health.snapCount = (health.snapCount || 0) + 1;
       health.lastSnapFrame = state.flags.frameSeq || 0;
     }

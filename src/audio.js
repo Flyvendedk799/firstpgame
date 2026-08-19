@@ -10,6 +10,7 @@ let AC = null;
 
 export function getAC() {
   if (!AC) AC = new AudioContext();
+  if (AC.state === 'suspended') AC.resume();
   if (!AC._masterBus) {
     const comp = AC.createDynamicsCompressor();
     comp.threshold.value = -8;

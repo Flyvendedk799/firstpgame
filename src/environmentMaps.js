@@ -101,7 +101,7 @@ export function applySkyBackgroundFromEquirect(scene, THREE, tex, intensity = 1,
   tex.mapping = THREE.EquirectangularReflectionMapping;
   if ('backgroundIntensity' in scene && scene.backgroundIntensity !== undefined)
     scene.backgroundIntensity = intensity;
-  if ('backgroundBlurriness' in scene && blurriness > 0) scene.backgroundBlurriness = blurriness;
+  if ('backgroundBlurriness' in scene) scene.backgroundBlurriness = Math.max(0, blurriness || 0);
   return true;
 }
 

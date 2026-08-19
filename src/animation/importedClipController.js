@@ -92,15 +92,22 @@ export function buildSemanticClipBinding(source, options = {}) {
   };
 }
 
+// Shared death-variant selection (deathBack/deathSide/deathForward). Used by
+// both the imported-clip semantic mapping below and enemyAnimationController's
+// display/procedural status so the two never disagree on the chosen variant.
+export function deathVariantFromEnemy(enemy = {}, state = '') {
+  const side = Math.abs(enemy.staggerDir?.x || enemy.lastPlayerDir?.x || 0);
+  if (enemy._deathByDropkick || String(state).toLowerCase().includes('back')) return 'deathBack';
+  if (side > 0.45) return 'deathSide';
+  return 'deathForward';
+}
+
 export function semanticClipForEnemyStatus(status = {}, enemy = {}) {
   const state = String(status.state || enemy.animationState || '').toLowerCase();
   const intent = String(status.intent || '').toLowerCase();
   const limb = String(enemy._lastHitLimbId || enemy.group?.userData?.lastHitLimb || '').toLowerCase();
   if (enemy.dead || state === 'death' || intent === 'death') {
-    const side = Math.abs(enemy.staggerDir?.x || enemy.lastPlayerDir?.x || 0);
-    if (enemy._deathByDropkick || state.includes('back')) return 'deathBack';
-    if (side > 0.45) return 'deathSide';
-    return 'deathForward';
+    return deathVariantFromEnemy(enemy, state);
   }
   if (state.includes('hit') || intent === 'hit') {
     if (state.includes('head') || limb.includes('head') || limb.includes('neck')) return 'hitHead';

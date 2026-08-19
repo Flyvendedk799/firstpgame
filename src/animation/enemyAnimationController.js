@@ -1,6 +1,6 @@
 import { getEnemyAnimationProfile, getEnemyFeelTuning } from './profiles.js';
 import { ANIMATION_MANIFEST } from '../assetManifest.js';
-import { resolveImportedClipPlan, importedClipPlanDebug } from './importedClipController.js';
+import { resolveImportedClipPlan, importedClipPlanDebug, deathVariantFromEnemy } from './importedClipController.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -45,14 +45,6 @@ function hitZoneFromEnemy(enemy) {
   if (limb.includes('thigh') || limb.includes('shin') || limb.includes('leg')) return 'leg';
   if (limb.includes('arm')) return 'arm';
   return 'body';
-}
-
-function deathVariantFromEnemy(enemy) {
-  if (!enemy?.dead) return null;
-  if (enemy?._deathByDropkick) return 'deathBack';
-  const side = Math.abs(enemy?.staggerDir?.x || enemy?.lastPlayerDir?.x || 0);
-  if (side > 0.45) return 'deathSide';
-  return 'deathForward';
 }
 
 function enemyLocomotionDebug(enemy, speed, movementMode) {
@@ -137,7 +129,7 @@ export function resolveEnemyAnimationStatus(enemy, options = {}) {
     channels: {
       locomotion: speed > 0.1 ? movementMode : 'idle',
       upperBody: intent === 'reload' ? 'reload' : intent === 'fire' || aimReady > 0.4 ? 'aim' : 'relaxed',
-      additive: intent === 'hit' ? `hitReact:${hitZoneFromEnemy(enemy)}` : intent === 'death' ? deathVariantFromEnemy(enemy) : 'none'
+      additive: intent === 'hit' ? `hitReact:${hitZoneFromEnemy(enemy)}` : intent === 'death' ? deathVariantFromEnemy(enemy, state) : 'none'
     },
     assetProfiles: {
       enemy: enemy?.enemyAnimationProfileId || enemy?.profileId || null,
@@ -147,7 +139,7 @@ export function resolveEnemyAnimationStatus(enemy, options = {}) {
       importedAsset: enemy?.importedAssetId || null
     },
     hitZone: intent === 'hit' ? hitZoneFromEnemy(enemy) : null,
-    deathVariant: intent === 'death' ? deathVariantFromEnemy(enemy) : null,
+    deathVariant: intent === 'death' ? deathVariantFromEnemy(enemy, state) : null,
     intentCue: enemyIntentCue(intent, profile, enemy, tuning),
     fallback: 'procedural-enemy-pose'
   };
