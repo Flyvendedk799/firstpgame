@@ -5,7 +5,7 @@
 export function buildDuelArena(THREE, scene, WT) {
   const ob = [];
   const wl = [];
-  const floorRegions = [{ x0: -40, x1: 40, z0: -40, z1: 40, floorY: WT }];
+  const floorRegions = [{ x0: -40, x1: 40, z0: -40, z1: 40, floorY: 0 }];
 
   function addWallAabb(x0, x1, z0, z1) {
     wl.push({ x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1) });
@@ -18,7 +18,7 @@ export function buildDuelArena(THREE, scene, WT) {
   const arena = 26;
   const h = 0.35;
   const floor = new THREE.Mesh(new THREE.BoxGeometry(arena * 2, h, arena * 2), floorMat);
-  floor.position.set(0, WT + h / 2 - 0.02, 0);
+  floor.position.set(0, -h / 2 - 0.02, 0);
   floor.receiveShadow = true;
   scene.add(floor);
   ob.push(floor);

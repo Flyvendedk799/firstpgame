@@ -829,7 +829,7 @@ function polishVisualProfile(profile) {
 }
 
 export function getVisualProfile(building, opts) {
-  const profile = VISUAL_TARGETS[building] || VISUAL_TARGETS[((building - 1) % 8) + 1] || VISUAL_TARGETS[1];
+  const profile = VISUAL_TARGETS[building] || VISUAL_TARGETS[(((building - 1) % 12) + 12) % 12 + 1] || VISUAL_TARGETS[1];
   const polished = polishVisualProfile(profile);
   const sk = opts && opts.spaceKind;
   if (polished && polished.atmosphere && (sk === 'connector' || sk === 'service_hall' || sk === 'transit_wedge')) {

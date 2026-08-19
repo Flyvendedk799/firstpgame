@@ -416,7 +416,7 @@ export function updateStoryExperience(state, ctx = {}) {
     }
     const progress = Number(setpiece.progress) || 0;
     if (kind === 'hostage' && progress > s.lastSetpieceProgress) {
-      enqueueCue(s, cloneCue(cset && cset.trigger, { building, setpiece: kind }), `setpiece:${building}:${kind}:hostage-hit`);
+      enqueueCue(s, cloneCue(cset && cset.trigger, { building, setpiece: kind }), `setpiece:${building}:${kind}:hostage-hit:${progress}`);
     }
     s.lastSetpieceProgress = progress;
     const silenced = !!(setpiece._relaySilenced || (kind === 'alarm' && setpiece.rewardGiven && !setpiece.triggered));
@@ -426,7 +426,9 @@ export function updateStoryExperience(state, ctx = {}) {
     }
     if (!!setpiece.rewardGiven && !s.lastSetpieceRewardGiven) {
       s.lastSetpieceRewardGiven = true;
-      enqueueCue(s, cloneCue(cset && cset.silenced, { building, setpiece: kind }), `setpiece:${building}:${kind}:reward`);
+      if (!s.lastSetpieceSilenced) {
+        enqueueCue(s, cloneCue(cset && cset.silenced, { building, setpiece: kind }), `setpiece:${building}:${kind}:reward`);
+      }
     }
   } else {
     s.lastSetpieceKind = null;

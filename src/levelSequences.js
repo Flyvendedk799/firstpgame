@@ -947,7 +947,11 @@ const ELEMENT_BUILDERS = {
     const ac = new THREE.Mesh(new THREE.BoxGeometry(w*0.9, 0.04, t*0.6), accentM);
     ac.position.set(e.x, WT + h - 0.07, e.z); scene.add(ac); ob.push(ac);
     if (e.rotY) {
-      // Rotate whole arch as a group: simpler — re-rotate each piece.
+      // Rotate whole arch as a group about the arch center (e.x,e.z):
+      // recompute each piece's world offset by rotating its local offset, then rotate the piece.
+      const rc = Math.cos(e.rotY), rs = Math.sin(e.rotY);
+      post1.position.set(e.x - (w/2)*rc, WT + h/2, e.z - (w/2)*rs);
+      post2.position.set(e.x + (w/2)*rc, WT + h/2, e.z + (w/2)*rs);
       [post1, post2, lin, ac].forEach(p => p.rotation.y = e.rotY);
     }
   },
@@ -1081,7 +1085,11 @@ const ELEMENT_BUILDERS = {
     top.position.set(e.x, WT + h + 0.05, e.z); scene.add(top); ob.push(top);
     if (e.rotY) top.rotation.y = e.rotY;
     const head = new THREE.Mesh(new THREE.BoxGeometry(w*0.92, 0.32, 0.32), mat);
-    head.position.set(e.x, WT + h + 0.20, e.z + d*0.5 - 0.20);
+    {
+      const hc = Math.cos(e.rotY||0), hs = Math.sin(e.rotY||0);
+      const hoff = d*0.5 - 0.20;
+      head.position.set(e.x - hs*hoff, WT + h + 0.20, e.z + hc*hoff);
+    }
     if (e.rotY) { head.rotation.y = e.rotY; }
     scene.add(head); ob.push(head);
     const s = Math.sin(e.rotY||0), c = Math.cos(e.rotY||0);
@@ -1248,9 +1256,16 @@ const ELEMENT_BUILDERS = {
     if (e.rotY) fork.rotation.y = e.rotY;
     scene.add(fork); ob.push(fork);
     const s = Math.sin(e.rotY||0), c = Math.cos(e.rotY||0);
-    const ax = Math.abs(c)*1.4/2 + Math.abs(s)*2.0/2;
-    const az = Math.abs(s)*1.4/2 + Math.abs(c)*2.0/2;
+    // Body footprint matches BoxGeometry(1.4, 1.05, 1.9) above (was hard-coded 2.0).
+    const ax = Math.abs(c)*1.4/2 + Math.abs(s)*1.9/2;
+    const az = Math.abs(s)*1.4/2 + Math.abs(c)*1.9/2;
     wl.push({ x0: e.x - ax, x1: e.x + ax, z0: e.z - az, z1: e.z + az });
+    // Fork tines footprint matches BoxGeometry(1.2, 0.06, 0.9) at local z+1.2 above,
+    // so the collider covers the forks that protrude past the body.
+    const fx = e.x - s*1.2, fz = e.z + c*1.2;
+    const fax = Math.abs(c)*1.2/2 + Math.abs(s)*0.9/2;
+    const faz = Math.abs(s)*1.2/2 + Math.abs(c)*0.9/2;
+    wl.push({ x0: fx - fax, x1: fx + fax, z0: fz - faz, z1: fz + faz });
   },
 
   // Floor lamp / standing light (B2, B7 cabin) — accent + slight glow.
@@ -1508,7 +1523,9 @@ const ELEMENT_BUILDERS = {
   // Reception desk wraparound (B2, B7) — L-shape via two bars.
   desk(ctx, e) {
     ELEMENT_BUILDERS.bar(ctx, { ...e, w: 3.4, d: 0.7, h: 1.05, top: 0xc8a040, glow: e.glow });
-    ELEMENT_BUILDERS.bar(ctx, { ...e, x: e.x + (e.lx || 1.55), z: e.z + (e.lz || 1.20), w: 0.7, d: 1.8, h: 1.05, rotY: 0, top: 0xc8a040, glow: e.glow });
+    const dc = Math.cos(e.rotY||0), ds = Math.sin(e.rotY||0);
+    const lx = e.lx || 1.55, lz = e.lz || 1.20;
+    ELEMENT_BUILDERS.bar(ctx, { ...e, x: e.x + lx*dc - lz*ds, z: e.z + lx*ds + lz*dc, w: 0.7, d: 1.8, h: 1.05, rotY: e.rotY || 0, top: 0xc8a040, glow: e.glow });
   },
 
   // Two-tile dance floor (B3) — emissive floor decals (non-blocking).

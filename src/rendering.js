@@ -87,7 +87,6 @@ function makeColorGradeShader(THREE) {
 
         col *= exposure;
         col = (col - 0.5) * contrast + 0.5;
-        col = col / (col + vec3(0.72));
 
         float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
         col = mix(vec3(luma), col, saturation);
@@ -944,10 +943,6 @@ export function createRenderSubsystem({
         && (nextSettings.atmosphereQuality || 'high') !== 'low'
         && (q === 'high' || q === 'ultra');
       passes.godRay.enabled = !!(postEnabled && volTier && godRayRuntime && !context.phase2VolumetricsHeldOff);
-      if (passes.godRay.enabled && godRayRuntime && context.godRay) {
-        if (typeof context.godRay.density === 'number') godRayRuntime.uniforms.density.value = context.godRay.density;
-        if (typeof context.godRay.weight === 'number') godRayRuntime.uniforms.weight.value = context.godRay.weight;
-      }
     }
 
     if (passes.bokeh) {

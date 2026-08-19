@@ -113,7 +113,7 @@ function _navAStarScratch(ng, nn) {
 function _navGridLineOpen(ng, sx, sz, gx, gz) {
   const dx = gx - sx;
   const dz = gz - sz;
-  const steps = Math.max(Math.abs(dx), Math.abs(dz));
+  const steps = Math.ceil(Math.abs(dx) + Math.abs(dz));
   if (steps <= 1) return true;
   for (let i = 1; i < steps; i++) {
     const t = i / steps;

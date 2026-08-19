@@ -1280,7 +1280,7 @@ export function createLevelEditorController(options = {}) {
       const selectedRoute = selected && selected.type === type && selected.id === route.id;
       const dot = new THREE.Mesh(
         new THREE.CylinderGeometry(selectedRoute ? 0.33 : 0.26, selectedRoute ? 0.33 : 0.26, 0.08, 20),
-        material(`route-dot:${type}:${color}:${index}:${selectedRoute ? 'selected' : 'idle'}`, {
+        material(`route-dot:${type}:${color}:${selectedRoute ? 'selected' : 'idle'}`, {
           color: selectedRoute ? '#ffffff' : color,
           opacity: options.ghost ? 0.42 : 0.9,
           emissive: selectedRoute ? color : null,
