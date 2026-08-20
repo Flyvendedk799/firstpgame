@@ -141,13 +141,16 @@ try {
     return samples;
   }
 
-  async function waitForScopedAds(label, timeoutMs = 1800) {
+  async function waitForScopedAds(label, timeoutMs = 6000) {
+    // Generous window + coarser poll: under software WebGL (headless CI) the page
+    // runs at ~10-20 fps and each sample evaluate starves the frame loop, so early
+    // samples land inside the equip-ADS-suppress window with adsTarget still 0.
     const started = Date.now();
     let last = null;
     while (Date.now() - started < timeoutMs) {
       last = await sample(label);
       if ((last.pov.adsVis || 0) > 0.65 && (last.pov.adsTarget || 0) > 0.5 && last.pov.optic) return last;
-      await page.waitForTimeout(60);
+      await page.waitForTimeout(140);
     }
     throw new Error(`scoped ADS did not engage before switch: ${JSON.stringify(last?.pov || null)}`);
   }

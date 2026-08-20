@@ -120,8 +120,10 @@ try {
   assert(result.rds.optic, `pistol RDS optic profile missing: ${JSON.stringify(result.rds)}`);
   assert(result.rds.alignment?.mode === 'pistol-rds', `pistol RDS alignment did not run: ${JSON.stringify(result.rds)}`);
   assert(result.rds.alignment?.withinTolerance, `pistol RDS dot should settle on fire center after correction: ${JSON.stringify(result.rds)}`);
-  assert(result.rds.gunScale <= 0.84 && result.rds.gunScale >= 0.72, `pistol RDS view scale should be backed off from face-filling: ${JSON.stringify(result.rds)}`);
-  assert(result.rds.gunZ <= -0.25 && result.rds.gunZ >= -0.38, `pistol RDS depth should leave center readable: ${JSON.stringify(result.rds)}`);
+  // The viewmodel renders through its own fixed-FOV camera now: no scale hack, and the
+  // RDS sits at arm's length in viewmodel space.
+  assert(result.rds.gunScale <= 1.02 && result.rds.gunScale >= 0.98, `pistol RDS view scale must stay 1 (viewmodel camera owns the FOV): ${JSON.stringify(result.rds)}`);
+  assert(result.rds.gunZ <= -0.22 && result.rds.gunZ >= -0.40, `pistol RDS depth should sit at arm's length: ${JSON.stringify(result.rds)}`);
   assert(Math.abs(result.rds.gunPitch) < 0.19, `pistol RDS pitch should stay readable: ${JSON.stringify(result.rds)}`);
 
   fs.writeFileSync(path.join(OUT_DIR, 'pistol-iron-ads-angle-regression.json'), `${JSON.stringify(result, null, 2)}\n`);

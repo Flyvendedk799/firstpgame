@@ -465,6 +465,8 @@ for (const cls of ['AmbientLight','HemisphereLight','DirectionalLight','PointLig
   const Patched = function (...args) {
     const inst = new Orig(...args);
     inst.intensity *= _LIGHT_BOOST;
+    // Lights must reach the viewmodel render layers too (world 0, vm 1/2, body 3).
+    if (inst.layers) inst.layers.mask |= 0b1111;
     return inst;
   };
   Patched.prototype = Orig.prototype;
@@ -14587,9 +14589,15 @@ function updateKnife(dt){
   // Idle bob — subtle ready stance
   const bY=Math.sin(ip*2.1)*.0035,bRX=Math.sin(ip*2.1)*.013,bRZ=Math.cos(ip*1.4)*.007;
   // Rest positions vary subtly per combo to show knife orientation change
-  const rests=[[.18,-.13,-.24,.12,-.22,.15],[.17,-.14,-.24,.10,-.20,.10],[.20,-.15,-.24,.14,-.24,.18],[.17,-.13,-.24,.12,-.20,.13]];
-  const rs=rests[MELEE.slash%4];
+  // Rest pose angles the blade across the view (edge-on it read as a featureless
+  // plank through the fixed-FOV viewmodel camera).
+  const rests=[[.19,-.14,-.27,-.10,-.30,.55],[.18,-.15,-.27,-.07,-.27,.48],[.21,-.16,-.27,-.12,-.34,.60],[.18,-.14,-.27,-.09,-.29,.52]];
+  const rs=(typeof window!=='undefined'&&Array.isArray(window.__knifeRestOverride)&&window.__knifeRestOverride.length===6)?window.__knifeRestOverride:rests[MELEE.slash%4];
   let tx=rs[0],ty=rs[1]+bY,tz=rs[2],trx=rs[3]+bRX,try2=rs[4],trz=rs[5]+bRZ;
+  // Sprint carry: raise the blade into a visible cross-body hold (the knife used to
+  // stay pinned at its rest pose and left only a sliver in the corner at sprint).
+  const _kSpr=THREE.MathUtils.clamp(P.sprintAmt||0,0,1);
+  if(_kSpr>.001){tx-=_kSpr*.015;ty+=_kSpr*.045;tz+=_kSpr*.015;trx+=_kSpr*.32;try2+=_kSpr*.12;trz+=_kSpr*.05;}
   const stabPulse=Number.isFinite(P._knifeStabPulse)?P._knifeStabPulse:0;
   const impactPulse=Number.isFinite(P._knifeImpactPulse)?P._knifeImpactPulse:0;
   const returnPulse=Number.isFinite(P._knifeReturnPulse)?P._knifeReturnPulse:0;
@@ -14816,6 +14824,98 @@ const viewmodelFillP2=new THREE.PointLight(0xe4ecff,0.68,4.4,1.65);
 viewmodelFillP2.position.copy(viewmodelFill.position);
 _tagAaPointLight(viewmodelFillP2,AA_POINTLIGHT_CAMERA_VM_FILL);
 cameraP2.add(viewmodelFillP2);
+// ── FIRST-PERSON VIEWMODEL CAMERA ────────────────────────────────────────────
+// The world renders with the gameplay camera (FOV changes with ADS/sprint/focus).
+// The first-person viewmodel (gun, hands, holograms) renders in a second pass with
+// its own fixed-FOV camera so zooming the world never magnifies or warps the gun,
+// and the near plane can sit much closer without clipping the hands.
+//   layer 0 = world, layer 1 = P1 viewmodel, layer 2 = P2 viewmodel,
+//   layer 3 = first-person world-space presence (body/legs) — seen by the
+//             gameplay camera but never by scope/PIP cameras.
+const VIEWMODEL_LAYER=1,VIEWMODEL_LAYER_P2=2,FIRST_PERSON_WORLD_LAYER=3;
+const VIEWMODEL_FOV_DEFAULT=56;
+const VIEWMODEL_CAMERA_NEAR=.012;
+// Holograms/HUD-ish viewmodel props were authored for the 75° world camera; scale them
+// by the FOV ratio so they keep their on-screen size through the viewmodel camera.
+const VIEWMODEL_HOLO_FOV_COMP=Math.tan(THREE.MathUtils.degToRad(VIEWMODEL_FOV_DEFAULT)*.5)/Math.tan(THREE.MathUtils.degToRad(75)*.5);
+camera.layers.disable(VIEWMODEL_LAYER);camera.layers.enable(FIRST_PERSON_WORLD_LAYER);
+cameraP2.layers.disable(VIEWMODEL_LAYER_P2);
+const vmCamera=new THREE.PerspectiveCamera(VIEWMODEL_FOV_DEFAULT,camera.aspect,VIEWMODEL_CAMERA_NEAR,60);
+vmCamera.name='viewmodelCamera';vmCamera.layers.set(VIEWMODEL_LAYER);camera.add(vmCamera);
+const vmCameraP2=new THREE.PerspectiveCamera(VIEWMODEL_FOV_DEFAULT,cameraP2.aspect,VIEWMODEL_CAMERA_NEAR,60);
+vmCameraP2.name='viewmodelCameraP2';vmCameraP2.layers.set(VIEWMODEL_LAYER_P2);cameraP2.add(vmCameraP2);
+// Lights must be visible to every camera that renders lit geometry.
+const _ALL_RENDER_LAYERS_MASK=(1<<0)|(1<<VIEWMODEL_LAYER)|(1<<VIEWMODEL_LAYER_P2)|(1<<FIRST_PERSON_WORLD_LAYER);
+function _tagLightForAllLayers(light){if(light&&light.isLight&&light.layers)light.layers.mask|=_ALL_RENDER_LAYERS_MASK;}
+_tagLightForAllLayers(viewmodelFill);_tagLightForAllLayers(viewmodelFillP2);
+let _vmLightLayerSyncFrame=-1;
+function _syncViewmodelLightLayers(force=false){
+  const f=(typeof G!=='undefined'&&G&&Number.isFinite(G._frame))?G._frame:0;
+  if(!force&&_vmLightLayerSyncFrame>=0&&(f-_vmLightLayerSyncFrame)<30)return;
+  _vmLightLayerSyncFrame=f;
+  scene.traverse(o=>{if(o.isLight)_tagLightForAllLayers(o);});
+}
+function _viewmodelCameraFor(cam){return cam===cameraP2?vmCameraP2:vmCamera;}
+function _viewmodelFovFor(cam){
+  const base=(typeof SETTINGS!=='undefined'&&SETTINGS&&Number.isFinite(SETTINGS.viewmodelFov))?SETTINGS.viewmodelFov:VIEWMODEL_FOV_DEFAULT;
+  return THREE.MathUtils.clamp(base,40,80);
+}
+function _syncViewmodelCamera(cam=camera){
+  const vc=_viewmodelCameraFor(cam);
+  const fov=_viewmodelFovFor(cam);
+  if(vc.aspect!==cam.aspect||vc.fov!==fov){
+    vc.aspect=cam.aspect;vc.fov=fov;vc.updateProjectionMatrix();
+  }
+  return vc;
+}
+// Keep every viewmodel descendant on the viewmodel layer (meshes added at runtime
+// default to layer 0 and would otherwise render through the world camera). Lights
+// stay visible to all layers so muzzle flashes still light the world.
+function _enforceViewmodelLayers(root,layer){
+  if(!root)return;
+  const mask=1<<layer;
+  root.traverse(o=>{
+    if(!o||!o.layers)return;
+    if(o.isLight){_tagLightForAllLayers(o);return;}
+    if(o.layers.mask!==mask)o.layers.mask=mask;
+  });
+}
+// Map a camera-local point that lives in viewmodel space to the world-space point
+// that projects to the same screen position through the gameplay camera, so world
+// VFX (tracers, spill light) line up with the rendered muzzle.
+const _vmVisualTmp=new THREE.Vector3();
+function _viewmodelVisualToWorld(localInCamera,cam=camera,out=new THREE.Vector3()){
+  const vc=_syncViewmodelCamera(cam);
+  const kWorld=Math.tan(THREE.MathUtils.degToRad(cam.fov)*.5);
+  const kVm=Math.tan(THREE.MathUtils.degToRad(vc.fov)*.5);
+  const k=kWorld>1e-6&&kVm>1e-6?kVm/kWorld:1;
+  _vmVisualTmp.set(localInCamera.x*k,localInCamera.y*k,localInCamera.z);
+  cam.updateMatrixWorld(true);
+  return out.copy(_vmVisualTmp).applyMatrix4(cam.matrixWorld);
+}
+function _renderViewmodelPass(cam=camera){
+  if(!renderer||!scene)return false;
+  const vc=_syncViewmodelCamera(cam);
+  const prevAutoClear=renderer.autoClear;
+  const prevShadowAuto=renderer.shadowMap?renderer.shadowMap.autoUpdate:null;
+  const prevBackground=scene.background;
+  renderer.autoClear=false;
+  if(renderer.shadowMap)renderer.shadowMap.autoUpdate=false;
+  scene.background=null;
+  try{
+    if(typeof _enforceFirstPersonViewmodelLayers==='function')_enforceFirstPersonViewmodelLayers(cam);
+    renderer.clearDepth();
+    renderer.render(scene,vc);
+    return true;
+  }catch(err){
+    console.warn('[render] viewmodel pass skipped',err);
+    return false;
+  }finally{
+    scene.background=prevBackground;
+    renderer.autoClear=prevAutoClear;
+    if(renderer.shadowMap&&prevShadowAuto!==null)renderer.shadowMap.autoUpdate=prevShadowAuto;
+  }
+}
 const _peripheralLightRig=[
   {light:new THREE.PointLight(0xcfe4ff,0,5.2,1.78),pos:[-.74,.00,.62],weight:.95},
   {light:new THREE.PointLight(0xffdfb8,0,4.4,1.92),pos:[ .72,.10,.78],weight:.72},
@@ -15531,7 +15631,12 @@ queueMicrotask(()=>{_resolveRendererHealth().catch(err=>console.warn('[render] h
 function _renderFrameDirect(cam=camera,endProfile=true){
   _frameProfilePreRender();
   const t0=performance.now();
-  try{_sanitizeUndefinedTextureSlots(scene);_renderStack?_renderStack.renderDirect(cam):renderer.render(scene,cam);}
+  try{
+    _sanitizeUndefinedTextureSlots(scene);
+    _syncViewmodelLightLayers();
+    _renderStack?_renderStack.renderDirect(cam):renderer.render(scene,cam);
+    _renderViewmodelPass(cam);
+  }
   finally{
     _frameProfileMark('renderDirect',performance.now()-t0);
     if(endProfile)_frameProfileEnd('direct');
@@ -15599,7 +15704,7 @@ function _renderFramePost(){
   const renderT0=performance.now();
   _sanitizeUndefinedTextureSlots(scene);
   try{
-    if(useComposer)_renderStack.render(nowMs*.001);
+    if(useComposer){_syncViewmodelLightLayers();_renderStack.render(nowMs*.001);_renderViewmodelPass(camera);}
     else _renderFrameDirect(camera,false);
   }catch(err){
     console.warn('[render] composer frame skipped after renderer uniform error',err);
@@ -16456,11 +16561,16 @@ const smTrigGd  =_sm(.030,.008,.034,smFrameM, 0,-.030, .015);
 const smTrig    =_sm(.005,.018,.010,smMetalM, 0,-.022, .020);
 const smStock   =_sm(.030,.012,.10, smPolyM,  0, .020, .130);
 const smStockBack=_sm(.038,.040,.012,smPolyM, 0, .010, .184);
-const smRdLensM =new THREE.MeshPhongMaterial({color:0x1a3030,shininess:200,specular:0x60d0d0,emissive:0x081818});
-const smRedDot  =_sm(.022,.022,.036,smMetalM, 0, .046,-.020);
-const smRedLens =_sm(.018,.018,.005,smRdLensM,0, .046,-.040);
+const smRdLensM =new THREE.MeshPhongMaterial({color:0x1a3030,shininess:200,specular:0x60d0d0,emissive:0x081818,transparent:true,opacity:.22,depthWrite:false});
+// Reflex housing is an open tube (four thin walls) so the shooter looks THROUGH it in ADS.
+const smRedDot  =_sm(.022,.003,.036,smMetalM, 0, .0555,-.020);   // top wall
+const smRedDotB =_sm(.022,.003,.036,smMetalM, 0, .0365,-.020);   // bottom wall / base
+const smRedDotL =_sm(.003,.022,.036,smMetalM,-.0095,.046,-.020);  // left wall
+const smRedDotR =_sm(.003,.022,.036,smMetalM, .0095,.046,-.020);  // right wall
+const smRedLens =_sm(.018,.018,.003,smRdLensM,0, .046,-.036);
+smRedLens.renderOrder=1060;
 const smGripGrip=_sm(.025,.010,.032,smFrameM, 0,-.072, .040);
-const SM_MESHES=[smBody,smTop,smCharge,smBarrel,smSuppr,smSupRib1,smSupRib2,smSupRib3,smMag,smMagBase,smGrip,smTrigGd,smTrig,smStock,smStockBack,smRedDot,smRedLens,smGripGrip];
+const SM_MESHES=[smBody,smTop,smCharge,smBarrel,smSuppr,smSupRib1,smSupRib2,smSupRib3,smMag,smMagBase,smGrip,smTrigGd,smTrig,smStock,smStockBack,smRedDot,smRedDotB,smRedDotL,smRedDotR,smRedLens,smGripGrip];
 // ── MK14 DMR — long-barrel marksman rifle with scope, pistol grip, full stock
 const dmrFrameM=new THREE.MeshPhongMaterial({color:0x18181c,shininess:38,specular:0x202028});
 const dmrMetalM=new THREE.MeshPhongMaterial({color:0x14141a,shininess:140,specular:0x484858});
@@ -16663,6 +16773,7 @@ function applyAAWeaponSurfacePass(){
   const amberMarkM=_aaMat('emissivePanel',{color:0xffb15a,roughness:.44,metalness:.18,emissive:0x1a0900,emissiveIntensity:.22});
   const sightPaintM=_aaMat('emissivePanel',{color:0xeaf2ff,roughness:.34,metalness:.08,emissive:0x4a6fff,emissiveIntensity:.42});
   const opticDotM=new THREE.MeshBasicMaterial({color:0xff4030,transparent:true,opacity:.98,depthTest:false,toneMapped:false});
+  const opticHaloM=new THREE.MeshBasicMaterial({color:0xff5a40,transparent:true,opacity:.28,depthTest:false,depthWrite:false,toneMapped:false,blending:THREE.AdditiveBlending});
   const opticGlintM=_aaMat('glass',{color:0x123840,roughness:.18,metalness:.12,emissive:0x0a3038,emissiveIntensity:.35,transparent:false,opacity:1});
   [
     [scratchM,'wear'],[darkInsetM,'receiver'],[gripRubberM,'rubber'],
@@ -16696,8 +16807,8 @@ function applyAAWeaponSurfacePass(){
   _aaWeaponDetail(SG_MESHES,false,.050,.004,.010,gripRubberM,0,-.032,-.226,0,0,0);
   _aaWeaponDetail(SG_MESHES,false,.014,.014,.006,sightPaintM,0,.073,-.498,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(SM_MESHES,false,.036,.004,.006,scratchM,0,.030,-.205,0,0,0);
-  _aaWeaponDetail(SM_MESHES,false,.020,.020,.003,opticGlintM,0,.046,-.043,0,0,0);
-  _aaWeaponDetail(SM_MESHES,false,.018,.018,.004,opticDotM,0,.046,-.050,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SM_MESHES,false,.0035,.0035,.002,opticDotM,0,.046,-.0365,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SM_MESHES,false,.009,.009,.002,opticHaloM,0,.046,-.0368,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(DMR_MESHES,false,.036,.003,.070,scratchM,0,.060,-.090,0,0,0);
   _aaWeaponDetail(DMR_MESHES,false,.026,.026,.003,opticGlintM,0,.080,.031,0,0,0);
   _aaWeaponDetail(SPP_MESHES,false,.040,.003,.055,scratchM,0,.040,-.018,0,0,0);
@@ -16762,9 +16873,11 @@ function _updateCoreViewmodelPolishRuntime(dt,heatN){
     if('shininess' in m4LensM_active)m4LensM_active.shininess=218+adsSettle*32+lensFocus*34;
   }
   if(pistolOpticLensM){
-    pistolOpticLensM.opacity=THREE.MathUtils.clamp(.25+adsSettle*.05+hot*.02+lensFocus*.055-scopeShadow*.040,.18,.42);
-    if(pistolOpticLensM.emissive)pistolOpticLensM.emissive.setRGB(.030+adsSettle*.10+hot*.03+lensFocus*.030,.070+adsSettle*.20+hot*.05+lensFocus*.060,.045+adsSettle*.13+hot*.02+lensFocus*.038);
-    if('shininess' in pistolOpticLensM)pistolOpticLensM.shininess=196+adsSettle*36+lensFocus*38;
+    // Clear-glass window: barely-there tint that relaxes further as the sight
+    // settles, so the world through the lens stays as bright as the world around it.
+    pistolOpticLensM.opacity=THREE.MathUtils.clamp(.10-adsSettle*.03+hot*.01+lensFocus*.02-scopeShadow*.02,.05,.14);
+    if(pistolOpticLensM.emissive)pistolOpticLensM.emissive.setRGB(.010+hot*.010,.020+adsSettle*.03+lensFocus*.02,.028+adsSettle*.04+lensFocus*.025);
+    if('shininess' in pistolOpticLensM)pistolOpticLensM.shininess=220+adsSettle*30+lensFocus*30;
   }
   const opticGlow=(.15+adsSettle*.28+hot*.08+lensFocus*.14-scopeShadow*.08)*pulse;
   const polishLens=(mat,r,g,b)=>{
@@ -16793,6 +16906,10 @@ function _syncPracticalIronSightViewmodel(){
   const shotgunAds=P.weaponIdx===3&&ads>.62&&!P.reloading&&!P.vaulting&&!P.dropkickActive;
   for(const m of [sgStock,sgPad,sgComb,sgShellHldr,sgShellSlot]){
     if(m)m.visible=P.weaponIdx===3&&!shotgunAds;
+  }
+  const smgAds=P.weaponIdx===4&&ads>.55&&!P.reloading&&!P.vaulting&&!P.dropkickActive;
+  for(const m of [smStock,smStockBack]){
+    if(m)m.visible=P.weaponIdx===4&&!smgAds;
   }
 }
 gunGrp.position.set(.12,-.11,-.22);camera.add(gunGrp);
@@ -16994,8 +17111,8 @@ const _kth=new THREE.Mesh(new THREE.BoxGeometry(.011,.032,.013),kGloveM);_kth.po
 // Knuckle ridge accent
 const _kkr=new THREE.Mesh(new THREE.BoxGeometry(.048,.008,.018),kGuardM);_kkr.position.set(.001,-.024,.044);
 knifGrp.add(_kb,_ke,_ks,_kcp,_kt,_kbg,_kgu,_kgu1,_kgu2,_kh,_kp,_kpl_h,_kpl,_kth,_kkr);
-knifGrp.position.set(.18,-.13,-.24);
-knifGrp.rotation.set(.12,-.22,.15);
+knifGrp.position.set(.19,-.14,-.27);
+knifGrp.rotation.set(-.10,-.30,.55);
 knifGrp.visible=false;
 camera.add(knifGrp);
 // ── HANDS ─────────────────────────────────────────────────────────────────────
@@ -17003,7 +17120,7 @@ camera.add(knifGrp);
 // it reads as a glove; the authored M4 hand rig below carries the bare-skin look.
 const skinM=_aaMat('skin',{color:0xd6a383,roughness:.70,metalness:0});
 const gloveM=_aaMat('rubber',{color:0x17161a,roughness:.88,metalness:.02});
-const sleeveM=_aaMat('skin',{color:0xc99072,roughness:.78,metalness:0});
+const sleeveM=_aaMat('fabric',{color:0x262a2c,roughness:.86,metalness:.02});
 const gloveDarkM=_aaMat('rubber',{color:0x0d0d10,roughness:.92,metalness:.01});
 function hBox(w,h,d,mat,px,py,pz,rx,ry,rz){
   const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat||gloveM);
@@ -17080,7 +17197,7 @@ function _aaViewMat(color,roughness=.72,metalness=.03,extra={},kind='fabric'){
 const vmSkinM=_aaViewMat(0xd6a383,.68,0,{},'skin');
 const vmGloveM=_aaViewMat(0x17161a,.86,.02,{},'rubber');
 const vmGlovePanelM=_aaViewMat(0x0a0a0d,.90,.02,{},'rubber');
-const vmSleeveM=_aaViewMat(0xc99072,.78,0,{},'skin');
+const vmSleeveM=_aaViewMat(0x262a2c,.86,.02,{},'fabric');
 const vmArmorM=_aaViewMat(0x0e1116,.72,.04,{},'rubber');
 const vmSkinCreaseM=_aaViewMat(0x8f5f4b,.82,0,{},'skin');
 const vmGloveSeamM=_aaViewMat(0x07080a,.94,.01,{},'rubber');
@@ -17115,12 +17232,35 @@ function _aaVmCapsule(parent,r,len,mat,axis,x,y,z,rx=0,ry=0,rz=0,sx=1,sy=1,sz=1)
   else if(axis==='x')az+=Math.PI/2;
   return _aaVmAdd(parent,geom,mat,x,y,z,ax,ay,az,sx,sy,sz);
 }
+// Direction (hand-group local: +x right, +y up, +z toward the player) from the
+// wrist pivot toward the elbow/shoulder.
+const VIEWMODEL_FOREARM_DIR_RIGHT=new THREE.Vector3(.36,-.50,.79).normalize();
+const VIEWMODEL_FOREARM_DIR_LEFT=new THREE.Vector3(-.30,-.50,.81).normalize();
+const _vmForearmAxis=new THREE.Vector3(0,0,1);
+function _aimViewmodelForearm(pivot,dir){
+  if(!pivot||!dir)return;
+  pivot.quaternion.setFromUnitVectors(_vmForearmAxis,dir.clone().normalize());
+}
+// Visibility toggle that never resurrects legacy blockout meshes hidden by the
+// AA-shell dedupe pass (the old boxes used to pop back on every frame here).
+function _setVmPartVisible(part,on){
+  if(!part)return;
+  if(part.userData&&part.userData.legacyViewmodelBlockoutSuppressed){if(part.visible)part.visible=false;return;}
+  const v=!!on;
+  if(part.visible!==v)part.visible=v;
+}
 function applyAAViewmodelRig(){
   rGrp.userData.viewmodelRole='right-hand';
   lGrp.userData.viewmodelRole='left-support-hand';
+  // Forearms hang off a wrist pivot that is aimed back toward the shoulder
+  // (down / outward / toward the player) instead of straight into the lens, so
+  // they leave the frame at the lower corners like a real first-person rig.
+  const _rForearmPivot=new THREE.Group();_rForearmPivot.name='rForearmPivot';_rForearmPivot.position.set(.005,.000,.048);rGrp.add(_rForearmPivot);
+  _aimViewmodelForearm(_rForearmPivot,VIEWMODEL_FOREARM_DIR_RIGHT);
   _M4_RIGHT_FOREARM_CROP_PARTS.push(
-    _aaVmCapsule(rGrp,.032,.240,vmSleeveM,'z',.005,.005,.136,0,0,0,.82,1,1),
-    _aaVmBox(rGrp,.066,.009,.075,vmArmorM,.005,.040,.090),
+    _rForearmPivot,
+    _aaVmCapsule(_rForearmPivot,.031,.230,vmSleeveM,'z',0,0,.112,0,0,0,.88,1,1),
+    _aaVmBox(_rForearmPivot,.062,.008,.070,vmArmorM,0,.033,.070),
     _aaVmBox(rGrp,.052,.008,.030,vmGlovePanelM,.005,.037,.018),
     _aaVmCapsule(rGrp,.026,.054,vmSkinM,'z',.004,.003,.022,0,0,0,.92,1,1)
   );
@@ -17157,8 +17297,13 @@ function applyAAViewmodelRig(){
     _part.userData.m4TriggerGripPart=true;
   }
 
-  _aaVmCapsule(lGrp,.031,.220,vmSleeveM,'z',-.008,.003,.108,0,0,0,.82,1,1);
-  _aaVmBox(lGrp,.066,.009,.070,vmArmorM,-.008,.039,.064);
+  const _lForearmPivot=new THREE.Group();_lForearmPivot.name='lForearmPivot';_lForearmPivot.position.set(-.006,.000,.048);lGrp.add(_lForearmPivot);
+  _aimViewmodelForearm(_lForearmPivot,VIEWMODEL_FOREARM_DIR_LEFT);
+  _M4_LEFT_FOREARM_CROP_PARTS.push(
+    _lForearmPivot,
+    _aaVmCapsule(_lForearmPivot,.030,.220,vmSleeveM,'z',0,0,.108,0,0,0,.88,1,1),
+    _aaVmBox(_lForearmPivot,.062,.008,.066,vmArmorM,0,.032,.066)
+  );
   _aaVmBox(lGrp,.052,.008,.030,vmGlovePanelM,-.006,.035,.018);
   _aaVmCapsule(lGrp,.026,.056,vmSkinM,'z',-.005,.001,.021,0,0,0,.92,1,1);
   _aaVmBox(lGrp,.040,.003,.010,vmSkinCreaseM,-.005,.029,.002,.05,0,0);
@@ -17230,6 +17375,41 @@ const _HAND_PROM_SCALE=1.10;
 rGrp.scale.setScalar(_HAND_PROM_SCALE);
 lGrp.scale.setScalar(_HAND_PROM_SCALE);
 rGrp.renderOrder=8;lGrp.renderOrder=8;
+// Fresh-magazine prop the support hand carries during reload retrieve→insert.
+const _HAND_MAG_FITS={
+  1:{dim:[.040,.058,.046],pos:[-.002,-.030,-.028],rx:.20},
+  4:{dim:[.023,.076,.029],pos:[-.002,-.034,-.030],rx:.22},
+  5:{dim:[.029,.076,.038],pos:[-.002,-.036,-.032],rx:.22},
+  6:{dim:[.034,.052,.046],pos:[-.002,-.028,-.028],rx:.20},
+  7:{dim:[.029,.056,.038],pos:[-.002,-.030,-.030],rx:.22},
+  0:{dim:[.027,.086,.038],pos:[-.002,-.038,-.034],rx:.24}
+};
+const _handMagPropM=new THREE.MeshPhongMaterial({color:0x1a1a20,shininess:70,specular:0x2a2a34});
+const _handMagPropLipM=new THREE.MeshPhongMaterial({color:0x24242c,shininess:90,specular:0x38384a});
+const _handMagProp=new THREE.Group();
+{
+  const body=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),_handMagPropM);
+  const lip=new THREE.Mesh(new THREE.BoxGeometry(1.08,.09,1.08),_handMagPropLipM);
+  lip.position.y=.5;
+  _handMagProp.add(body,lip);
+}
+_handMagProp.visible=false;
+lGrp.add(_handMagProp);
+function _syncReloadHandMagProp(){
+  const wi=P&&P.weaponIdx|0;
+  const fit=_HAND_MAG_FITS[wi];
+  const spec=(P&&P.reloading&&typeof getReloadTimelineSpec==='function')?getReloadTimelineSpec(wi):null;
+  if(!fit||!spec||!lGrp.visible){if(_handMagProp.visible)_handMagProp.visible=false;return;}
+  const rt=P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0;
+  const grabAt=spec.magDropAt+(spec.magHidden[1]-spec.magDropAt)*.42;
+  const show=rt>=grabAt&&rt<spec.magHidden[1];
+  if(_handMagProp.visible!==show)_handMagProp.visible=show;
+  if(!show)return;
+  const settle=THREE.MathUtils.smoothstep(rt,grabAt,Math.min(spec.magHidden[1],grabAt+.10));
+  _handMagProp.position.set(fit.pos[0],fit.pos[1]+(1-settle)*-.02,fit.pos[2]);
+  _handMagProp.rotation.set(fit.rx,0,0);
+  _handMagProp.scale.set(fit.dim[0],fit.dim[1],fit.dim[2]);
+}
 function _vmHandTouchDepthBias(grp){
   grp.traverse(o=>{
     if(!o.isMesh)return;
@@ -17694,10 +17874,19 @@ function _poseBodyPresencePart(part,dx=0,dy=0,dz=0,drx=0,dry=0,drz=0){
 }
 function _sanitizeBodyPresenceNode(node,health,key){
   if(!node)return;
-  const values=[node.position.x,node.position.y,node.position.z,node.rotation.x,node.rotation.y,node.rotation.z,node.scale.x,node.scale.y,node.scale.z];
+  // bodyPresenceGrp lives in WORLD space (anchored under the camera): judge its
+  // position relative to the camera, not in absolute coords, or the guard fires
+  // for any level location further than 12m from the origin and pins the legs
+  // to a boot pose (legs were invisible across most of the megamap).
+  const camRef=(key==='bodyPresenceGrp'&&typeof camera!=='undefined'&&camera&&camera.position)?camera.position:null;
+  const px=node.position.x-(camRef?camRef.x:0);
+  const py=node.position.y-(camRef?camRef.y:0);
+  const pz=node.position.z-(camRef?camRef.z:0);
+  const values=[px,py,pz,node.rotation.x,node.rotation.y,node.rotation.z,node.scale.x,node.scale.y,node.scale.z];
   const sane=values.every(Number.isFinite)&&values.every(v=>Math.abs(v)<12);
   if(sane)return;
-  node.position.set(0,-.92,-.56);
+  if(camRef)node.position.set(camRef.x,camRef.y-.92,camRef.z-.56);
+  else node.position.set(0,-.92,-.56);
   node.rotation.set(.50,0,0);
   node.scale.setScalar(.70);
   if(health){
@@ -17867,7 +18056,8 @@ function updateBodyPresenceLegs(dt){
     vault,
     vaultT,
     vaultDir,
-    lookDown:THREE.MathUtils.clamp((P.pitch||0)/1.10,0,1),
+    // camera.rotation.x = P.pitch, so looking DOWN is negative pitch
+    lookDown:THREE.MathUtils.clamp(-(P.pitch||0)/1.10,0,1),
     kneeBend:THREE.MathUtils.clamp(pr.kneeBend||0,0,1)
   });
   const target=blocked?0:frame.targetPresence;
@@ -18403,6 +18593,14 @@ function _setPistolIronSightSuppressedForOptic(on){
   for(const key of ['front_sight','rear_sight','front_sight_dot','rear_sight_dot_l','rear_sight_dot_r']){
     if(nodes[key])nodes[key].visible=!on;
   }
+  // Hide every iron-sight mesh by NAME too: the tritium dots (front_sight_dot,
+  // rear_sight_dot_l/r) are separate GLB meshes that are NOT in the uspNodes
+  // registry, and the baked chamber-glint strip sits right in the optic window —
+  // all of them read as white smudges behind the red dot at ADS.
+  if(deagleGlbRig&&deagleGlbRig.traverse)deagleGlbRig.traverse(o=>{
+    if(!o||!o.isMesh||!o.name)return;
+    if(/^(front_sight|rear_sight)/.test(o.name)||o.name==='barrel_chamber_glint')o.visible=!on;
+  });
 }
 function _applyPistolOpticAdsPose(scopeAds,slideOff=0){
   if(!pistolOpticGrp||!pistolOpticGrp.visible)return;
@@ -18459,7 +18657,11 @@ function buildPistolOpticMesh(att){
   const lensZ=_PISTOL_OPTIC_LENS_GROUP_LOCAL.z;
   const bodyM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:att.bodyColor||0x1a1c22,shininess:150,specular:0x485060}),'metal');
   const housingM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:0x080a10,shininess:90,specular:0x303848}),'receiver');
-  const lensM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:att.lensColor||0x142828,shininess:200,specular:0x70c8b0,emissive:att.glowEm||0x061210,transparent:true,opacity:.36,side:THREE.DoubleSide}),'optic');
+  // Clear glass: the world renders live behind the viewmodel pass, so a nearly
+  // transparent pane gives a perfect 1:1 see-through picture (better than a PIP
+  // re-render — no misalignment or resolution loss). Keep only a faint cool tint
+  // and specular sparkle so the lens still reads as glass.
+  const lensM=_applyCoreViewmodelMaterialPolish(new THREE.MeshPhongMaterial({color:0xd6ecff,shininess:240,specular:0x9ad8ff,emissive:0x0a1218,transparent:true,opacity:.12,side:THREE.DoubleSide,depthWrite:false}),'optic');
   pistolOpticLensM=lensM;
   const tierW=(.028+(tier-1)*.0024)*scaleMul;
   const bodyH=(.033+(tier-1)*.0034)*scaleMul;
@@ -18589,7 +18791,7 @@ function _currentOpticProfile(){
 	      vignetteColor:att.vignetteColor||'rgba(120,230,255,.10)',
 	      lensLocal:_scopeLensLocalPistol,
 	      lensY:_scopeLensLocalPistol.y,
-	      adsGunZ:-.090,
+	      adsGunZ:-.250,
 	      // Gentle 1x-style red-dot zoom (~1.3x): pulls the sight picture toward the
 	      // eye so the dot reads clearly AND flattens the wide-FOV perspective that
 	      // was warping the pistol on ADS. Far shy of sniper magnification (FOV ~4-22).
@@ -18614,7 +18816,7 @@ function _currentOpticProfile(){
 	      vignetteColor:'rgba(92,190,255,.14)',
       lensLocal:_scopeLensLocalDmr,
       lensY:.080,
-      adsGunZ:-.205,
+      adsGunZ:-.300,
 	      adsFovDelta:48,
       forcePip:true,
       screenScope:true,
@@ -18631,7 +18833,7 @@ function _currentOpticProfile(){
 	      vignetteColor:'rgba(86,188,255,.20)',
       lensLocal:_scopeLensLocalSniper,
       lensY:.092,
-	      adsGunZ:-.235,
+	      adsGunZ:-.320,
 	      adsFovDelta:58,
 	      forcePip:true,
 	      screenScope:true,
@@ -18645,11 +18847,12 @@ function _currentOpticProfile(){
 function _opticGunX(profile){return profile&&profile.lensLocal?-profile.lensLocal.x:0;}
 function _opticGunY(profile){return profile?-(profile.lensY||.078):-.078;}
 function _opticGunZ(profile){
-  if(!profile)return -.22;
+  const _hipZ=_hipGunVal(typeof _hipGunPose==='function'?_hipGunPose(P&&P.weaponIdx):null,'z');
+  if(!profile)return _hipZ;
   const adsZ=Number.isFinite(profile.adsGunZ)?profile.adsGunZ:-.12;
   const rawAds=THREE.MathUtils.clamp(Number.isFinite(P&&P.adsVis)?P.adsVis:(P&&P.ads)||0,0,1);
   const adsAmt=typeof _firstPersonAdsPoseWeight==='function'?_firstPersonAdsPoseWeight(rawAds,P&&P.weaponIdx,P&&P.adsTarget):rawAds;
-  return -.22+adsAmt*(adsZ+.22);
+  return _hipZ+adsAmt*(adsZ-_hipZ);
 }
 function _setScopePipView(profile,alpha){
   const a=THREE.MathUtils.clamp(Number.isFinite(alpha)?alpha:0,0,1);
@@ -18673,8 +18876,16 @@ function _setScopePipView(profile,alpha){
 function _syncScopedViewmodelVisibility(profile,scopeEase=0){
   const guardSidePeek=!!(((P.guardBehindAmt||0)>.08||P.guardBehindHeld)&&P.guardMode==='wall'&&(Math.abs(P.guardPeekSide||0)>.035||P.guardBehindActive||P._guardCoverLockKey));
   const slidePresentation=_slidePresentationActiveForViewmodel();
-  const hide=!!(profile&&profile.screenScope&&scopeEase>.84&&!P.reloading&&!P.vaulting&&!P.dropkickActive&&!guardSidePeek&&!slidePresentation);
-  if(gunGrp)gunGrp.visible=!hide;
+  // Hide the rifle while the scope overlay is still translucent (hysteresis so it
+  // never flickers at the threshold); at .84 the gun used to pop out fully zoomed.
+  const wasHidden=!!_scopePipStatus.viewmodelHidden;
+  const hideAt=wasHidden?.34:.52;
+  const hide=!!(profile&&profile.screenScope&&scopeEase>hideAt&&!P.reloading&&!P.vaulting&&!P.dropkickActive&&!guardSidePeek&&!slidePresentation);
+  if(hide!==wasHidden&&profile&&profile.screenScope)P._scopeVmSwapMask=1;
+  // Knife rig owns the viewmodel while the knife is out or a throw plays — this
+  // late per-frame write used to resurrect the procedural gun-hand next to it.
+  const _knifeOut=!KNIFE_SLOT_REMOVED&&((P.weaponIdx|0)===2||(TK&&TK.active));
+  if(gunGrp)gunGrp.visible=!hide&&!_knifeOut;
   _scopePipStatus.viewmodelHidden=hide;
   return hide;
 }
@@ -19687,9 +19898,9 @@ function _ensureKnifeStuckBeacon(k){
     const pulse=new THREE.Mesh(new THREE.SphereGeometry(.045,10,8),pulseM);
     pulse.position.y=.18;
     pulse.userData.role='pickup-pulse';
-    const stemM=new THREE.MeshBasicMaterial({color:0xffb860,transparent:true,opacity:.28,depthWrite:false,blending:THREE.AdditiveBlending});
-    const stem=new THREE.Mesh(new THREE.CylinderGeometry(.006,.014,.36,8,1,true),stemM);
-    stem.position.y=.18;
+    const stemM=new THREE.MeshBasicMaterial({color:0xffb860,transparent:true,opacity:.42,depthWrite:false,blending:THREE.AdditiveBlending});
+    const stem=new THREE.Mesh(new THREE.CylinderGeometry(.010,.030,1.5,8,1,true),stemM);
+    stem.position.y=.75;
     stem.userData.role='pickup-stem';
     g.add(ring,pulse,stem);
     scene.add(g);
@@ -19984,17 +20195,17 @@ function updateThrowAnim(dt){
     // Wind-up — quick pull back behind shoulder
     const raw=t/.14;
     const ph=raw*raw*(3-2*raw);
-    throwGrp.position.x=.10+ph*.15;
-    throwGrp.position.y=-.12+ph*.23;
-    throwGrp.position.z=-.24+ph*.28;
+    throwGrp.position.x=.10+ph*.08;
+    throwGrp.position.y=-.12+ph*.18;
+    throwGrp.position.z=-.24+ph*.10;
     throwGrp.rotation.x=ph*1.55;
     throwGrp.rotation.y=-ph*.18;
     throwGrp.rotation.z=-ph*.48;
   } else if(t<.20){
     // Brief anticipation hold — enough to read the throw silhouette.
-    throwGrp.position.x=.25;
-    throwGrp.position.y=.11;
-    throwGrp.position.z=.04;
+    throwGrp.position.x=.18;
+    throwGrp.position.y=.06;
+    throwGrp.position.z=-.14;
     throwGrp.rotation.x=1.55;
     throwGrp.rotation.y=-.18;
     throwGrp.rotation.z=-.48;
@@ -20002,9 +20213,9 @@ function updateThrowAnim(dt){
     // Explosive swing forward — out-cubic snap, release at ~50% of swing
     const ph=(t-.20)/.14;
     const ease=1-Math.pow(1-ph,3.0);
-    throwGrp.position.x=.25-ease*.39;
-    throwGrp.position.y=.11-ease*.35;
-    throwGrp.position.z=.04-ease*.62;
+    throwGrp.position.x=.18-ease*.32;
+    throwGrp.position.y=.06-ease*.30;
+    throwGrp.position.z=-.14-ease*.44;
     throwGrp.rotation.x=1.55-ease*2.42;
     throwGrp.rotation.y=-.18+ease*.12;
     throwGrp.rotation.z=-.48+ease*.48;
@@ -20330,19 +20541,19 @@ const DEFAULT_HAND_FIT={
   left:{x:-.012,y:-.046,z:-.115,rx:.135,ry:.040,rz:.010},
   leftScale:1.04,
   fine:{hipX:-.010,hipY:0,hipZ:.004,hipRY:.012,hipRZ:.006,adsX:.004,adsY:.006,adsZ:-.004,adsRY:.014,adsRZ:.010},
-  gun:{x:.13,y:-.115,z:-.22}
+  gun:{x:.12,y:-.125,z:-.30}
 };
 const WEAPON_HAND_FITS={
-  0:{id:'m4-rifle',right:{x:.004,y:-.052,z:.042,rx:.016,ry:.030,rz:-.028},left:{x:-.018,y:-.032,z:-.198,rx:.168,ry:.072,rz:.048},leftScale:1.01,fine:{hipX:-.006,hipY:.004,hipZ:.002,hipRY:.012,hipRZ:.012,adsX:.012,adsY:.006,adsZ:-.014,adsRY:.018,adsRZ:.030},gun:{x:.13,y:-.115,z:-.225}},
+  0:{id:'m4-rifle',right:{x:.004,y:-.052,z:.042,rx:.016,ry:.030,rz:-.028},left:{x:-.018,y:-.032,z:-.198,rx:.168,ry:.072,rz:.048},leftScale:1.01,fine:{hipX:-.006,hipY:.004,hipZ:.002,hipRY:.012,hipRZ:.012,adsX:.012,adsY:.006,adsZ:-.014,adsRY:.018,adsRZ:.030},gun:{x:.12,y:-.13,z:-.36,ry:.035}},
   // Pistol support hand pulled back/down toward the grip (was left z:-.074, rx:.220) so it
   // cups the firing hand instead of floating forward under the barrel / leaning out detached.
-  1:{id:'usp-two-hand',right:{x:.004,y:-.058,z:.050,rx:.020,ry:.034,rz:-.030},left:{x:-.044,y:-.050,z:-.042,rx:.150,ry:.110,rz:.052},leftScale:1.02,fine:{hipX:-.026,hipY:-.018,hipZ:.034,hipRY:.040,hipRZ:.060,adsX:.010,adsY:-.002,adsZ:.010,adsRY:-.012,adsRZ:.050},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
-  2:{id:'knife',right:{x:.010,y:-.060,z:.050,rx:.035,ry:.070,rz:-.060},left:null,leftScale:1.0,fine:{},gun:{x:.12,y:-.10,z:-.20}},
-  3:{id:'shotgun-pump',right:{x:.003,y:-.054,z:.060,rx:.012,ry:.020,rz:-.024},left:{x:-.018,y:-.026,z:-.206,rx:.170,ry:.050,rz:.024},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.002,hipRY:.012,hipRZ:.010,adsX:.012,adsY:.004,adsZ:-.010,adsRY:.020,adsRZ:.028},gun:{x:.132,y:-.114,z:-.230}},
-  4:{id:'smg-foregrip',right:{x:.003,y:-.054,z:.050,rx:.014,ry:.025,rz:-.026},left:{x:-.024,y:-.033,z:-.150,rx:.160,ry:.062,rz:.036},leftScale:1.045,fine:{hipX:-.006,hipY:.000,hipZ:.004,hipRY:.016,hipRZ:.012,adsX:.010,adsY:.005,adsZ:-.008,adsRY:.018,adsRZ:.024},gun:{x:.122,y:-.106,z:-.205}},
-  5:{id:'dmr-fore-end',right:{x:.003,y:-.058,z:.054,rx:.012,ry:.018,rz:-.022},left:{x:-.026,y:-.028,z:-.260,rx:.166,ry:.050,rz:.026},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.006,hipRY:.012,hipRZ:.010,adsX:.010,adsY:.004,adsZ:-.012,adsRY:.016,adsRZ:.026},gun:{x:.130,y:-.112,z:-.235}},
-  6:{id:'p226-two-hand',right:{x:.004,y:-.058,z:.052,rx:.018,ry:.032,rz:-.028},left:{x:-.054,y:-.044,z:-.082,rx:.216,ry:.120,rz:.042},leftScale:1.02,fine:{hipX:-.030,hipY:-.018,hipZ:.032,hipRY:.038,hipRZ:.054,adsX:.010,adsY:-.001,adsZ:.010,adsRY:-.010,adsRZ:.046},gun:{x:.105,y:-.087,z:-.185},offHandHip:true},
-  7:{id:'sniper-fore-end',right:{x:.003,y:-.057,z:.060,rx:.010,ry:.016,rz:-.020},left:{x:-.028,y:-.026,z:-.314,rx:.158,ry:.044,rz:.018},leftScale:1.065,fine:{hipX:-.004,hipY:.002,hipZ:-.008,hipRY:.010,hipRZ:.008,adsX:.010,adsY:.004,adsZ:-.014,adsRY:.014,adsRZ:.022},gun:{x:.132,y:-.114,z:-.250}}
+  1:{id:'usp-two-hand',right:{x:.004,y:-.058,z:.050,rx:.020,ry:.034,rz:-.030},left:{x:-.044,y:-.050,z:-.042,rx:.150,ry:.110,rz:.052},leftScale:1.02,fine:{hipX:-.026,hipY:-.018,hipZ:.034,hipRY:.040,hipRZ:.060,adsX:.010,adsY:-.002,adsZ:.010,adsRY:-.012,adsRZ:.050},gun:{x:.105,y:-.112,z:-.265},offHandHip:true},
+  2:{id:'knife',right:{x:.010,y:-.060,z:.050,rx:.035,ry:.070,rz:-.060},left:null,leftScale:1.0,fine:{},gun:{x:.12,y:-.115,z:-.23}},
+  3:{id:'shotgun-pump',right:{x:.003,y:-.054,z:.060,rx:.012,ry:.020,rz:-.024},left:{x:-.018,y:-.026,z:-.206,rx:.170,ry:.050,rz:.024},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.002,hipRY:.012,hipRZ:.010,adsX:.012,adsY:.004,adsZ:-.010,adsRY:.020,adsRZ:.028},gun:{x:.125,y:-.14,z:-.40,ry:.04}},
+  4:{id:'smg-foregrip',right:{x:.003,y:-.054,z:.050,rx:.014,ry:.025,rz:-.026},left:{x:-.024,y:-.033,z:-.150,rx:.160,ry:.062,rz:.036},leftScale:1.045,fine:{hipX:-.006,hipY:.000,hipZ:.004,hipRY:.016,hipRZ:.012,adsX:.010,adsY:.005,adsZ:-.008,adsRY:.018,adsRZ:.024},gun:{x:.12,y:-.13,z:-.34,ry:.03}},
+  5:{id:'dmr-fore-end',right:{x:.003,y:-.058,z:.054,rx:.012,ry:.018,rz:-.022},left:{x:-.026,y:-.028,z:-.260,rx:.166,ry:.050,rz:.026},leftScale:1.06,fine:{hipX:-.004,hipY:.002,hipZ:-.006,hipRY:.012,hipRZ:.010,adsX:.010,adsY:.004,adsZ:-.012,adsRY:.016,adsRZ:.026},gun:{x:.125,y:-.14,z:-.43,ry:.04}},
+  6:{id:'p226-two-hand',right:{x:.004,y:-.058,z:.052,rx:.018,ry:.032,rz:-.028},left:{x:-.054,y:-.044,z:-.082,rx:.216,ry:.120,rz:.042},leftScale:1.02,fine:{hipX:-.030,hipY:-.018,hipZ:.032,hipRY:.038,hipRZ:.054,adsX:.010,adsY:-.001,adsZ:.010,adsRY:-.010,adsRZ:.046},gun:{x:.105,y:-.112,z:-.265},offHandHip:true},
+  7:{id:'sniper-fore-end',right:{x:.003,y:-.057,z:.060,rx:.010,ry:.016,rz:-.020},left:{x:-.028,y:-.026,z:-.314,rx:.158,ry:.044,rz:.018},leftScale:1.065,fine:{hipX:-.004,hipY:.002,hipZ:-.008,hipRY:.010,hipRZ:.008,adsX:.010,adsY:.004,adsZ:-.014,adsRY:.014,adsRZ:.022},gun:{x:.125,y:-.145,z:-.47,ry:.04}}
 };
 const _ironSightWorldTmp=new THREE.Vector3();
 const _ironSightRearWorldTmp=new THREE.Vector3();
@@ -20354,13 +20565,29 @@ const _ironSightPostNdcTmp=new THREE.Vector3();
 function _handFitForWeapon(idx){
   return WEAPON_HAND_FITS[idx|0]||DEFAULT_HAND_FIT;
 }
+// Per-weapon hip rest pose of the viewmodel root (camera-local, viewmodel camera).
+// Long guns sit further back/lower so stocks leave the frame bottom-right instead
+// of parking in front of the lens; pistols sit closer.
+const _HIP_GUN_POSE_FALLBACK={x:.12,y:-.11,z:-.22,rx:0,ry:0,rz:0};
+function _hipGunPose(idx){
+  const fit=_handFitForWeapon(idx|0)||DEFAULT_HAND_FIT;
+  const g=(fit&&fit.gun)||DEFAULT_HAND_FIT.gun||_HIP_GUN_POSE_FALLBACK;
+  return g;
+}
+function _hipGunVal(g,key){const v=g&&g[key];return Number.isFinite(v)?v:(_HIP_GUN_POSE_FALLBACK[key]||0);}
+// The main loop drives gunGrp z / rotation from damped base trackers; call this after
+// snapping the root directly so the next frame continues from the snapped pose.
+function _resetViewmodelBaseTrackers(){
+  if(typeof gunGrp==='undefined'||!gunGrp||typeof P==='undefined'||!P)return;
+  P._vmBaseZ=gunGrp.position.z;P._vmBaseRX=gunGrp.rotation.x;P._vmBaseRY=gunGrp.rotation.y;P._vmBaseRZ=gunGrp.rotation.z;
+}
 function _adsWeaponViewFit(idx){
   return getWeaponAdsViewFit(idx|0);
 }
 // Pistol RDS sits close enough to read the dot but backed off enough that the
 // slide/optic body does not cover the fire center. The dot is centered by
 // translation, not pitch, so rx stays level.
-const _PISTOL_RDS_VIEW_FIT={y:-0.024,z:-0.145,rx:0,scale:0.78};
+const _PISTOL_RDS_VIEW_FIT={y:-.012,z:0,rx:0,scale:1.0};
 function _adsOpticViewFit(profile){
   if(profile&&profile.pistolOptic&&profile.viewFit)return profile.viewFit;
   return null;
@@ -20433,10 +20660,10 @@ function _resetFirstPersonWeaponEquipCarryover(idx,prevIdx,reason='switch'){
   }
   P._pistolSupportSightlineCropActive=false;
   P._pistolSightlineHandsHidden=false;
-  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
+  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)_setVmPartVisible(part,true);
   if(idx===1||idx===6||prevIdx===1||prevIdx===6){
-    for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=true;
-    for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+    for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)_setVmPartVisible(part,true);
+    for(const part of _M4_LEFT_FOREARM_CROP_PARTS)_setVmPartVisible(part,true);
     P._firstPersonArmSightlineCrop={version:'first-person-arm-clearance.v1',weaponIdx:idx|0,ads:0,rightForearm:false,leftForearm:false,pistolSupport:false,restored:true};
     P._adsSightlineHandClearance={version:'ads-sightline-hand-clearance.v1',active:false,weaponIdx:idx|0,clear:0,restored:true};
   }
@@ -20576,8 +20803,8 @@ function _stabilizeFirstPersonViewmodelRoot(dt,reason='frame'){
   const opticY=optic?_opticGunY(optic):-.078;
   const opticZ=optic?_opticGunZ(optic):(Number.isFinite(rest.z)?rest.z:-.22);
   const target={
-    x:.12+(opticX-.12)*ads+adsFitX,
-    y:-.11+(opticY+.11)*ads+((!optic&&pistol)?ads*.045:0)+adsFitY,
+    x:_hipGunVal(rest,'x')+(opticX-_hipGunVal(rest,'x'))*ads+adsFitX,
+    y:_hipGunVal(rest,'y')+(opticY-_hipGunVal(rest,'y'))*ads+((!optic&&pistol)?ads*.045:0)+adsFitY,
     z:THREE.MathUtils.lerp(Number.isFinite(rest.z)?rest.z:-.22,opticZ,Math.min(1,ads*.92))+adsFitZ,
     rx:adsFitRX,ry:0,rz:0
   };
@@ -20616,6 +20843,7 @@ function _stabilizeFirstPersonViewmodelRoot(dt,reason='frame'){
     gunGrp.position.set(Number.isFinite(rest.x)?rest.x:target.x,Number.isFinite(rest.y)?rest.y:target.y,Number.isFinite(rest.z)?rest.z:target.z);
     gunGrp.rotation.set(0,0,0);
     gunGrp.scale.setScalar(1);
+    _resetViewmodelBaseTrackers();
     snapped=true;
     changed=true;
     clamps.push(finite?'extreme':'nonfinite');
@@ -20768,6 +20996,7 @@ function _alignPistolOpticToAimCenter(dt){
     return false;
   }
   camera.updateMatrixWorld(true);
+  const projCam=_syncViewmodelCamera(camera);
   gunGrp.updateMatrixWorld(true);
   if(pistolOpticGrp)pistolOpticGrp.updateMatrixWorld(true);
   const world=_ironSightWorldTmp;
@@ -20781,10 +21010,10 @@ function _alignPistolOpticToAimCenter(dt){
   camera.worldToLocal(_ironSightCamTmp);
   const depth=-_ironSightCamTmp.z;
   if(!(depth>.02))return false;
-  _ironSightNdcTmp.copy(world).project(camera);
-  const fovRad=THREE.MathUtils.degToRad(camera.fov||SETTINGS.fov||75);
+  _ironSightNdcTmp.copy(world).project(projCam);
+  const fovRad=THREE.MathUtils.degToRad(projCam.fov||VIEWMODEL_FOV_DEFAULT);
   const tanY=Math.tan(fovRad*.5);
-  const aspect=camera.aspect||((innerWidth||16)/(innerHeight||9));
+  const aspect=projCam.aspect||camera.aspect||((innerWidth||16)/(innerHeight||9));
   const ndcOff=Math.hypot(_ironSightNdcTmp.x,_ironSightNdcTmp.y);
   if(ndcOff<.012){
     P._ironSightAlign={active:true,weaponIdx:P.weaponIdx|0,profileId:getWeaponFeelProfile(P.weaponIdx|0).id,mode:'pistol-rds',ads:Number(ads.toFixed(3)),readiness:Number((aimSnap.readiness||0).toFixed(3)),residual:Number(ndcOff.toFixed(5)),withinTolerance:true};
@@ -20803,7 +21032,7 @@ function _alignPistolOpticToAimCenter(dt){
     world.copy(lensLocal);
     gunGrp.localToWorld(world);
   }
-  _ironSightPostNdcTmp.copy(world).project(camera);
+  _ironSightPostNdcTmp.copy(world).project(projCam);
   const residual=Math.hypot(_ironSightPostNdcTmp.x,_ironSightPostNdcTmp.y);
   P._ironSightAlign={
     active:true,
@@ -20847,6 +21076,7 @@ function _alignIronSightToAimCenter(dt){
     return false;
   }
   camera.updateMatrixWorld(true);
+  const projCam=_syncViewmodelCamera(camera);
   gunGrp.updateMatrixWorld(true);
   const world=_ironSightWorldReference(idx,_ironSightWorldTmp);
   if(!world)return false;
@@ -20875,7 +21105,7 @@ function _alignIronSightToAimCenter(dt){
       camera.updateMatrixWorld(true);
       _ironSightWorldReference(idx,_ironSightWorldTmp);
       _ironSightWorldReference(idx,_ironSightRearWorldTmp,'rear');
-      _ironSightRearNdcTmp.copy(_ironSightRearWorldTmp).project(camera);
+      _ironSightRearNdcTmp.copy(_ironSightRearWorldTmp).project(projCam);
       rearNdcX=_ironSightRearNdcTmp.x;
       rearNdcY=_ironSightRearNdcTmp.y;
     }
@@ -20887,12 +21117,12 @@ function _alignIronSightToAimCenter(dt){
     P._ironSightAlign={active:false,weaponIdx:idx,reason:'behind-camera',depth:Number(depth.toFixed(4))};
     return false;
   }
-  _ironSightNdcTmp.copy(world).project(camera);
+  _ironSightNdcTmp.copy(world).project(projCam);
   const preNdcX=_ironSightNdcTmp.x;
   const preNdcY=_ironSightNdcTmp.y;
-  const fovRad=THREE.MathUtils.degToRad(camera.fov||SETTINGS.fov||75);
+  const fovRad=THREE.MathUtils.degToRad(projCam.fov||VIEWMODEL_FOV_DEFAULT);
   const tanY=Math.tan(fovRad*.5);
-  const aspect=camera.aspect||((innerWidth||16)/(innerHeight||9));
+  const aspect=projCam.aspect||camera.aspect||((innerWidth||16)/(innerHeight||9));
   const postureState=_combatPostureAimState();
   const postureAlign=!!postureState.active;
   const reacquire=performance.now()<(P._ironSightReacquireUntil||0);
@@ -20906,7 +21136,7 @@ function _alignIronSightToAimCenter(dt){
   gunGrp.position.y+=corrY;
   gunGrp.updateMatrixWorld(true);
   const postWorld=_ironSightWorldReference(idx,_ironSightWorldTmp);
-  if(postWorld)_ironSightPostNdcTmp.copy(postWorld).project(camera);
+  if(postWorld)_ironSightPostNdcTmp.copy(postWorld).project(projCam);
   else _ironSightPostNdcTmp.set(preNdcX,preNdcY,0);
   const residualX=_ironSightPostNdcTmp.x-targetNdcX;
   const residualY=_ironSightPostNdcTmp.y-targetNdcY;
@@ -21020,6 +21250,7 @@ function _sanitizeFirstPersonWeaponEquipState(idx,prevIdx,handFit,knifeEquipped=
       gunGrp.position.set(restGun.x,restGun.y,restGun.z);
       gunGrp.rotation.set(0,0,0);
       gunGrp.scale.setScalar(1);
+      _resetViewmodelBaseTrackers();
       if(rGrp&&H.rBase){
         rGrp.position.set(H.rBase.x,H.rBase.y,H.rBase.z);
         rGrp.rotation.set(H.rBase.rx||0,H.rBase.ry||0,H.rBase.rz||0);
@@ -21040,6 +21271,7 @@ function _sanitizeFirstPersonWeaponEquipState(idx,prevIdx,handFit,knifeEquipped=
       gunGrp.position.set(restGun.x,restGun.y,restGun.z);
       gunGrp.rotation.set(0,0,0);
       gunGrp.scale.setScalar(1);
+      _resetViewmodelBaseTrackers();
       if(rGrp&&H.rBase){
         rGrp.position.set(H.rBase.x,H.rBase.y,H.rBase.z);
         rGrp.rotation.set(H.rBase.rx||0,H.rBase.ry||0,H.rBase.rz||0);
@@ -24598,8 +24830,19 @@ function addImpact(pos,normal,opts={}){
   return feel;
 }
 // Brass shell ejection — small box arcs out + bounces
+// Gun-local → world position that lines up on screen with the viewmodel (rendered
+// through its own FOV camera) so world-space VFX spawn where the barrel/magwell appear.
+function _gunLocalToVisualWorld(local,gunGroup,out=new THREE.Vector3()){
+  out.copy(local);gunGroup.localToWorld(out);
+  try{
+    const cam=(typeof gunGrpP2!=='undefined'&&gunGroup===gunGrpP2)?cameraP2:camera;
+    cam.worldToLocal(out);
+    _viewmodelVisualToWorld(out,cam,out);
+  }catch(_){out.copy(local);gunGroup.localToWorld(out);}
+  return out;
+}
 function addShell(originLocal,gunGroup){
-  const wp=originLocal.clone();gunGroup.localToWorld(wp);
+  const wp=_gunLocalToVisualWorld(originLocal,gunGroup);
   const mat=new THREE.MeshPhongMaterial({color:0xd4a040,shininess:150,specular:0xfff0c0,emissive:0x241000,transparent:true,opacity:1});
   const mesh=new THREE.Mesh(new THREE.BoxGeometry(.012,.012,.034),mat);
   mesh.userData.coreVisualVfxPolish=_CORE_VISUAL_COMBAT_VFX_POLISH_VERSION;
@@ -24615,22 +24858,24 @@ function addShell(originLocal,gunGroup){
 }
 // Muzzle shockwave — bright additive ring expanding outward at the barrel
 function addMuzzleRing(originLocal,gunGroup){
-  const wp=originLocal.clone();gunGroup.localToWorld(wp);
+  const wp=_gunLocalToVisualWorld(originLocal,gunGroup);
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const focusTrail=THREE.MathUtils.clamp(P._focusVisual||0,0,1);
   const ringM=new THREE.MeshBasicMaterial({color:focusTrail>.04?0x9feeff:0xfff0a0,transparent:true,opacity:.50+focusTrail*.18,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide,toneMapped:false});
-  const ring=new THREE.Mesh(new THREE.RingGeometry(.04,.10+focusTrail*.045,16),ringM);
+  // Keep the shockwave ring a muzzle-sized accent (it used to balloon across the screen)
+  const suppressedRing=(typeof _weaponSuppressed==='function'&&_weaponSuppressed())?.55:1;
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.022*suppressedRing,(.062+focusTrail*.03)*suppressedRing,16),ringM);
   ring.position.copy(wp);
   ring.lookAt(wp.clone().add(fwd));
   scene.add(ring);
   const ringLife=.10*(1+focusTrail*.90);
-  G.trails.push({mesh:ring,mat:ringM,timer:ringLife,maxTime:ringLife,isMuzzleRing:true,opacityScale:.88+focusTrail*.18,growRate:24});
+  G.trails.push({mesh:ring,mat:ringM,timer:ringLife,maxTime:ringLife,isMuzzleRing:true,opacityScale:.80+focusTrail*.18,growRate:14});
   // Soft corona — toned to avoid bloom blowout (+ optional atlas cell)
   const mslice=_sliceAtlasCell(_optionalPubAssets.muzzleAtlas,Math.floor(Math.random()*13),4,4);
   const coronaM=mslice
     ? new THREE.MeshBasicMaterial({map:mslice,color:focusTrail>.04?0xbff8ff:0xffe080,transparent:true,opacity:.34+focusTrail*.12,depthWrite:false,blending:THREE.AdditiveBlending,toneMapped:false})
     : new THREE.MeshBasicMaterial({map:_vfxImpactFlashTex,color:focusTrail>.04?0xbff8ff:0xffe080,transparent:true,opacity:.40+focusTrail*.12,depthWrite:false,blending:THREE.AdditiveBlending,toneMapped:false});
-  const corona=new THREE.Mesh(new THREE.PlaneGeometry(.18*(1+focusTrail*.35),.18*(1+focusTrail*.35)),coronaM);
+  const corona=new THREE.Mesh(new THREE.PlaneGeometry(.13*(1+focusTrail*.35)*suppressedRing,.13*(1+focusTrail*.35)*suppressedRing),coronaM);
   corona.position.copy(wp);
   corona.lookAt(wp.clone().add(fwd));
   scene.add(corona);
@@ -24641,7 +24886,7 @@ function addMuzzleRing(originLocal,gunGroup){
 }
 // Muzzle smoke puff — slowly expanding, drifting, fading
 function addMuzzleSmoke(originLocal,gunGroup){
-  const wp=originLocal.clone();gunGroup.localToWorld(wp);
+  const wp=_gunLocalToVisualWorld(originLocal,gunGroup);
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const am=_additiveVfxTierMul();
   const smAtlas=_optionalPubAssets.smokeAtlas;
@@ -25187,7 +25432,7 @@ const shopRipple=_createHoloRippleRing(.398,.251,0xffd060,1003);
 const shopGlowM=new THREE.MeshBasicMaterial({map:_softRadialTex,color:0xffd060,transparent:true,opacity:0,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending});
 const shopGlow=new THREE.Mesh(new THREE.PlaneGeometry(.62,.46),shopGlowM);shopGlow.position.z=-.001;shopGlow.renderOrder=998;
 const shopGrp=new THREE.Group();shopGrp.add(shopGlow,shopGhost,shopPanel,shopLayer,shopDepthFrame,shopMotes,shopRipple);
-shopGrp.position.set(.21,-.09,-.36);
+shopGrp.position.set(.21*VIEWMODEL_HOLO_FOV_COMP,-.09*VIEWMODEL_HOLO_FOV_COMP,-.36);
 shopGrp.rotation.set(-.05,-.32,.04);
 shopGrp.scale.setScalar(.001);
 camera.add(shopGrp);
@@ -26555,6 +26800,17 @@ function shoot(){
   const muzzleFallback=new THREE.Vector3(0,pl.weaponIdx===0?.030:pl.weaponIdx===1?.026:pl.weaponIdx===3?.034:pl.weaponIdx===4?.010:.052,muzzleZ);
   const muzzleLocal=(pl.weaponIdx===0&&_slot===0&&_isAuthoredM4RuntimeActive())?_m4SocketLocal('muzzle',muzzleFallback):muzzleFallback;
   const muzzleWorld=muzzleLocal.clone();gun.localToWorld(muzzleWorld);
+  // The viewmodel renders through its own fixed-FOV camera; remap the muzzle so
+  // world-space tracers/spill start where the barrel appears on screen.
+  try{cam.worldToLocal(muzzleWorld);_viewmodelVisualToWorld(muzzleWorld,cam,muzzleWorld);}catch(_){gun.localToWorld(muzzleWorld.copy(muzzleLocal));}
+  // Screen-scope shots hide the viewmodel; the near-camera remapped muzzle point
+  // renders enormous through the zoomed world camera (giant corona/smoke/tracer
+  // blobs in the scope picture). Spawn the muzzle VFX down the aim ray instead.
+  const _scopedMuzzleFx=!!(pl===P&&typeof _scopePipStatus!=='undefined'&&_scopePipStatus.viewmodelHidden);
+  if(_scopedMuzzleFx){
+    const _scopedFwd=new THREE.Vector3();cam.getWorldDirection(_scopedFwd);
+    muzzleWorld.copy(cam.position).addScaledVector(_scopedFwd,1.6).addScaledVector(new THREE.Vector3(0,1,0),-.05);
+  }
   try{
     spawnAaaMuzzleWorldSpill(THREE,scene,muzzleWorld,{suppressedMul:_weaponSuppressedFor(pl)?.35:1,weaponIdx:pl.weaponIdx});
   }catch(_){}
@@ -26632,9 +26888,9 @@ function shoot(){
     // Brass + smoke
     const ejectFallback2=new THREE.Vector3(W.ejectX||.038,W.ejectY||.032,W.ejectZ||-.04);
     const ejectLocal2=(pl.weaponIdx===0&&_slot===0&&_isAuthoredM4RuntimeActive())?_m4SocketLocal('ejectionPort',ejectFallback2):ejectFallback2;
-    addShell(ejectLocal2,gun);
-    if(pl.weaponIdx===1||pl.weaponIdx===5||pl.weaponIdx===7)addMuzzleSmoke(muzzleLocal,gun);
-    addMuzzleRing(muzzleLocal,gun);
+    if(!_scopedMuzzleFx)addShell(ejectLocal2,gun);
+    if((pl.weaponIdx===1||pl.weaponIdx===5||pl.weaponIdx===7)&&!_scopedMuzzleFx)addMuzzleSmoke(muzzleLocal,gun);
+    if(!_scopedMuzzleFx)addMuzzleRing(muzzleLocal,gun);
     if(pl.ammo===0&&pl.ammoRes>0){
       const emptyWeaponIdx=pl.weaponIdx;
       setTimeout(()=>{_startReloadIfStillEmpty(pl,emptyWeaponIdx);},220);
@@ -26987,21 +27243,31 @@ function spawnDroppedMag(){
   // body+follower silhouette of the M4 / Deagle mag.
   const grp=new THREE.Group();
   const isM4=P.weaponIdx===0;
+  // Per-weapon magwell socket + silhouette (gun-local), matching the mounted mag meshes.
+  const MAG_DROP_FIT={
+    1:{pos:[0,-.098,.029],dim:[.042,.060,.049]},
+    4:{pos:[0,-.080,-.030],dim:[.024,.080,.030]},
+    5:{pos:[0,-.054,-.020],dim:[.030,.080,.040]},
+    6:{pos:[0,-.105,.040],dim:[.036,.055,.050]},
+    7:{pos:[0,-.034,-.020],dim:[.030,.060,.040]}
+  };
+  const magFit=MAG_DROP_FIT[P.weaponIdx]||null;
   const magM=new THREE.MeshPhongMaterial({color:isM4?0x222226:0x18181c,shininess:isM4?18:90,specular:0x101014,transparent:true,opacity:1});
   const lipM=new THREE.MeshPhongMaterial({color:isM4?0x141418:0x202028,shininess:80,specular:0x303040,transparent:true,opacity:1});
-  const body=new THREE.Mesh(new THREE.BoxGeometry(isM4?.028:.054,isM4?.090:.014,isM4?.040:.058),magM);grp.add(body);
-  const lip=new THREE.Mesh(new THREE.BoxGeometry(isM4?.030:.058,.005,isM4?.042:.060),lipM);
-  lip.position.y=isM4?.046:.008;grp.add(lip);
+  const bodyDim=isM4?[.028,.090,.040]:(magFit?magFit.dim:[.054,.014,.058]);
+  const body=new THREE.Mesh(new THREE.BoxGeometry(bodyDim[0],bodyDim[1],bodyDim[2]),magM);grp.add(body);
+  const lip=new THREE.Mesh(new THREE.BoxGeometry(bodyDim[0]+.002,.005,bodyDim[2]+.002),lipM);
+  lip.position.y=isM4?.046:bodyDim[1]*.5;grp.add(lip);
   // Spawn at the magwell world position
-  const magFallback=new THREE.Vector3(0,isM4?-.060:-.090,isM4?-.012:.034);
+  const magFallback=magFit?new THREE.Vector3(magFit.pos[0],magFit.pos[1],magFit.pos[2]):new THREE.Vector3(0,isM4?-.060:-.090,isM4?-.012:.034);
   const localPos=(isM4&&_isAuthoredM4RuntimeActive())?_m4SocketLocal('magazine',magFallback):magFallback;
-  gunGrp.localToWorld(localPos);
+  _gunLocalToVisualWorld(localPos,gunGrp,localPos);
   grp.position.copy(localPos);
   grp.quaternion.copy(camera.quaternion);
   scene.add(grp);
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const right=new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
-  const vel=fwd.clone().multiplyScalar(.5).add(right.multiplyScalar(-.3)).add(new THREE.Vector3(0,-.6,0));
+  const vel=fwd.clone().multiplyScalar(.2).add(right.multiplyScalar(-.15)).add(new THREE.Vector3(0,-.15,0));
   G.trails.push({mesh:grp,mat:magM,vel,spin:new THREE.Vector3(3,1.5,2),timer:3.0,maxTime:3.0,isDroppedMag:true,extraMats:[lipM]});
 }
 // ── FOCUS MODE (bullet time) ────────────────────────────────────────────
@@ -38481,9 +38747,9 @@ function _restoreFirstPersonPistolHipViewmodelState(reason='ads-release'){
   const nowMs=performance.now();
   const wi=P.weaponIdx|0;
   const handFit=H.handFit||_handFitForWeapon(wi);
-  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
-  for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=true;
-  for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=true;
+  for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)_setVmPartVisible(part,true);
+  for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)_setVmPartVisible(part,true);
+  for(const part of _M4_LEFT_FOREARM_CROP_PARTS)_setVmPartVisible(part,true);
   P._pistolSupportSightlineCropActive=false;
   P._pistolSightlineHandsHidden=false;
   P._firstPersonArmSightlineCrop={
@@ -38563,27 +38829,29 @@ function updateHands(dt){
   // Crop the pistol forearms once aiming: the procedural forearms loom toward the
   // camera at ADS (reading as "floating in front" with irons and oversized arms with
   // the optic). Hide forearm+wrist while aimed; the gripping hands stay on the gun.
-  const _cropPistolAdsForearm=(_wi===1||_wi===6)&&!P.reloading&&_adsVisForSight>.55;
-  const _cropSupportAdsForearm=(_wi===3||_wi===4)&&!P.reloading&&_adsVisForSight>.52;
-  const _cropLongGunAdsForearm=(_wi===0||_wi===5||_wi===7)&&!P.reloading&&_adsVisForSight>.58;
+  // With the dedicated viewmodel camera the forearms hang down/out of frame and the
+  // ADS gun sits further from the eye, so the hands can stay on the weapon while aiming.
+  const _cropPistolAdsForearm=false;
+  const _cropSupportAdsForearm=false;
+  const _cropLongGunAdsForearm=false;
   const _cropM4RightForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop||_cropPistolAdsForearm||_cropLongGunAdsForearm;
-  for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4RightForearm;
+  for(const part of _M4_RIGHT_FOREARM_CROP_PARTS)_setVmPartVisible(part,!_cropM4RightForearm);
   const _cropM4LeftForearm=(_wi===0&&_isAuthoredM4RuntimeActive()&&M4_BAKED_RIFLE_HANDS_ENABLED)||_vaultForearmCrop||_cropPistolAdsForearm||_cropSupportAdsForearm||_cropLongGunAdsForearm;
-  for(const part of _M4_LEFT_FOREARM_CROP_PARTS)if(part)part.visible=!_cropM4LeftForearm;
+  for(const part of _M4_LEFT_FOREARM_CROP_PARTS)_setVmPartVisible(part,!_cropM4LeftForearm);
   const _m4RuntimeGrip=_wi===0&&_isAuthoredM4RuntimeActive();
-  for(const part of _M4_SUPPORT_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
-  for(const part of _M4_SUPPORT_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
-  for(const part of _M4_TRIGGER_HAND_HIDE_PARTS)if(part)part.visible=!_m4RuntimeGrip;
-  for(const part of _M4_TRIGGER_HAND_GRIP_PARTS)if(part)part.visible=!!_m4RuntimeGrip;
-  const _cropPistolSupportSightline=(_wi===1||_wi===6)&&!P.reloading&&_adsVisForSight>.70;
+  for(const part of _M4_SUPPORT_HAND_HIDE_PARTS)_setVmPartVisible(part,!_m4RuntimeGrip);
+  for(const part of _M4_SUPPORT_HAND_GRIP_PARTS)_setVmPartVisible(part,!!_m4RuntimeGrip);
+  for(const part of _M4_TRIGGER_HAND_HIDE_PARTS)_setVmPartVisible(part,!_m4RuntimeGrip);
+  for(const part of _M4_TRIGGER_HAND_GRIP_PARTS)_setVmPartVisible(part,!!_m4RuntimeGrip);
+  const _cropPistolSupportSightline=false;
   if(_wi===1||_wi===6){
-    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=!_cropPistolSupportSightline;
+    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)_setVmPartVisible(part,!_cropPistolSupportSightline);
     P._pistolSupportSightlineCropActive=_cropPistolSupportSightline;
     rGrp.visible=true;
     lGrp.visible=!!handFit.left;
     P._pistolSightlineHandsHidden=_cropPistolSupportSightline;
   }else if(P._pistolSupportSightlineCropActive){
-    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)if(part)part.visible=true;
+    for(const part of _PISTOL_SUPPORT_SIGHTLINE_CROP_PARTS)_setVmPartVisible(part,true);
     P._pistolSupportSightlineCropActive=false;
     P._pistolSightlineHandsHidden=false;
   }else{
@@ -38708,14 +38976,13 @@ function updateHands(dt){
   }
   // Per-weapon ADS sight-line offset (where the gun must end up to align iron
   // sights / scope dot with center crosshair). M4 sight is high, deagle low.
-  const adsProf=({0:{x:-.014,y:.020,z:.000,rx:-.05},1:{x:-.012,y:.022,z:.000,rx:-.06},
-                  3:{x:-.016,y:.020,z:-.005,rx:-.05},4:{x:-.014,y:.022,z:-.004,rx:-.05},
-                  5:{x:-.015,y:.019,z:-.003,rx:-.048},6:{x:-.012,y:.021,z:.000,rx:-.058},7:{x:-.016,y:.018,z:-.006,rx:-.046}})[P.weaponIdx]||{x:-.004,y:.013,z:0,rx:-.04};
+  // Hands are parented to the gun: they must stay planted on the grip/fore-end when
+  // aiming (the gun is what moves to the eye). Only a subtle wrist tighten remains.
+  const adsProf=({1:{x:0,y:.002,z:0,rx:-.02},6:{x:0,y:.002,z:0,rx:-.02}})[P.weaponIdx]||{x:0,y:.003,z:0,rx:-.018};
   rTX+=a*adsProf.x;rTY+=a*adsProf.y;rTZ+=a*adsProf.z;rTRX+=a*adsProf.rx;
-  lTX+=a*(.0045);lTY+=a*(.012);lTRX+=a*(-.055);
-  lTZ+=a*(.0085);
-  lTRY+=a*.024;
-  lTRZ+=a*(-.03);
+  lTY+=a*(.003);lTRX+=a*(-.022);
+  lTRY+=a*.010;
+  lTRZ+=a*(-.012);
   idxTRX+=a*.038;
   if(adsFocus>.001){
     const shoulderCue=adsFocus*(adsShoulder*.62+adsRaise*.28);
@@ -38739,15 +39006,15 @@ function updateHands(dt){
       lTRX+=c*.048;lTRZ+=c*.052;
       rTZ+=c*.01;rTX+=c*.006;
     }else if(_wi===1||_wi===6){
-      lTX+=c*.030;lTY-=c*.078;lTZ-=c*.064;
-      lTRX+=c*.036;lTRY-=c*.094;lTRZ-=c*.050;
-      rTX+=c*.012;rTY-=c*.028;rTZ-=c*.004;rTRX-=c*.024;idxTRX-=c*.040;
-      _lHandScale*=1-c*.155;
-      _rHandScale*=1-c*.055;
+      // Two-hand pistol grip: support hand wraps the firing hand (it idles slightly
+      // forward/below in hip so the offhand reads relaxed).
+      lTX+=c*.008;lTY-=c*.012;lTZ+=c*.056;
+      lTRX+=c*.020;lTRY-=c*.060;lTRZ+=c*.040;
+      rTX+=c*.004;rTY-=c*.006;rTZ-=c*.004;rTRX-=c*.010;idxTRX-=c*.040;
     }else if(_wi===3||_wi===4||_wi===5||_wi===7){
-      lTX+=c*.02;lTY+=c*.007;lTZ-=c*.014;
-      lTRX+=c*.042;lTRZ+=c*.048;
-      rTZ+=c*.008;
+      lTX+=c*.006;lTY+=c*.004;lTZ-=c*.006;
+      lTRX+=c*.020;lTRZ+=c*.020;
+      rTZ+=c*.004;
     }
     lTX+=Math.sin(ip*1.07)*pr*92;lTY+=Math.cos(ip*.93)*pr*70;lTZ+=Math.sin(ip*.84)*pr*48;
     rTX+=Math.sin(ip*.79)*pr*38;rTY+=Math.cos(ip*1.02)*pr*28;
@@ -38814,11 +39081,17 @@ function updateHands(dt){
   P._firstPersonPistolSettlePulse=damp(Number.isFinite(P._firstPersonPistolSettlePulse)?P._firstPersonPistolSettlePulse:0,0,8,dt);
 	  if(sprAmt>0){
 	    const sprintCarryMul=(_wi===1||_wi===6)?.52:1;
-	    rTX+=sprAmt*.010;
-	    rTY-=sprAmt*.026*sprintCarryMul;
-	    rTZ+=sprAmt*.018*sprintCarryMul;
-	    rTRX+=sprAmt*.135*sprintCarryMul;       // lower-ready without drooping off the weapon
-	    rTRZ-=sprAmt*.105*sprintCarryMul;       // gun tilts inward (cradle pose)
+	    // Pistols: rGrp is a child of gunGrp — extra local sprint offsets shoved the
+	    // trigger hand off the grip and below the frame; keep it glued instead.
+	    const rSprintMul=(_wi===1||_wi===6)?0:sprintCarryMul;
+	    if(rSprintMul>0){
+	      rTX+=sprAmt*.010;
+	      rTY-=sprAmt*.026*rSprintMul;
+	      rTZ+=sprAmt*.018*rSprintMul;
+	      rTRX+=sprAmt*.135*rSprintMul;       // lower-ready without drooping off the weapon
+	      rTRZ-=sprAmt*.105*rSprintMul;       // gun tilts inward (cradle pose)
+	    }
+	    if(_wi===1||_wi===6){lTX-=sprAmt*.030;lTY-=sprAmt*.022;}
 	    lTX-=sprAmt*.016;
 	    lTY+=sprAmt*.006*sprintCarryMul;
 	    lTZ+=sprAmt*.012*sprintCarryMul;
@@ -38978,6 +39251,9 @@ function updateHands(dt){
     let drop;
     if(sp<.45){drop=sp/.45;} // lower
     else{const rp=(sp-.45)/.55;drop=Math.cos(rp*Math.PI*.5);} // raise
+    // Sync with the gun's own draw pulses so the hands never hang below a gun
+    // that has already settled (visible detach during the swap tail).
+    drop*=THREE.MathUtils.clamp(Math.max(P._weaponSwitchPulse||0,P._weaponDrawPulse||0)*3.4,0,1);
     const pistolSwap=(_wi===1||_wi===6);
     const swapMul=pistolSwap?.16:1;
     rTY-=drop*.10*swapMul;
@@ -39222,6 +39498,19 @@ function updateHands(dt){
   };
   // ── RELOAD ANIMATION — hide gun-mounted mag during phases 1-3 so it
   // visually matches the dropped-mag spawn, restore at phase 4 (insert).
+  // When the mag re-appears it slides up into the well instead of popping in.
+  // (Hand mag prop synced via _syncReloadHandMagProp below.)
+  const _reloadMagInsertDrop=(rt)=>{
+    if(!P.reloading)return 0;
+    const spec=getReloadTimelineSpec(P.weaponIdx);
+    if(!spec)return 0;
+    const a=spec.magHidden[1],b=Math.max(a+.05,spec.chamber[0]);
+    if(rt<a)return 0;
+    return 1-THREE.MathUtils.smoothstep(rt,a,b);
+  };
+  // Fresh-mag prop carried by the support hand between retrieve and insert so the
+  // hand doesn't pantomime an empty grab. Parented to lGrp; sized per weapon.
+  _syncReloadHandMagProp();
   if(P.weaponIdx===0){
     const rt=P.reloading&&P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0;
     const inP1to3=P.reloading&&reloadMagHidden(rt,P.weaponIdx);
@@ -39256,10 +39545,10 @@ function updateHands(dt){
   }
   if(P.weaponIdx===3){
     const rt=P.reloading&&P.RELOAD_TIME>0?1-(P.reloadTimer/P.RELOAD_TIME):0;
-    const inP1to3=P.reloading&&reloadMagHidden(rt,P.weaponIdx);
+    const inP1to3=false; // tube-fed: the magazine tube is fixed to the barrel
     if(typeof sgMagTube!=='undefined'){
-      sgMagTube.visible=!inP1to3;
-      if(typeof sgMagCap!=='undefined')sgMagCap.visible=!inP1to3;
+      sgMagTube.visible=true;
+      if(typeof sgMagCap!=='undefined')sgMagCap.visible=true;
       const magW=!inP1to3?_weaponMagMotion:0;
       _poseViewmodelPart(sgMagTube,{z:-magW*.006,rx:magW*.010});
       if(typeof sgMagCap!=='undefined')_poseViewmodelPart(sgMagCap,{z:-magW*.007,rx:magW*.012});
@@ -39273,8 +39562,9 @@ function updateHands(dt){
       smMag.visible=!inP1to3;
       if(typeof smMagBase!=='undefined')smMagBase.visible=!inP1to3;
       const magW=!inP1to3?_weaponMagMotion:0;
-      _poseViewmodelPart(smMag,{y:-magW*.010,z:magW*.005,rx:magW*.035,rz:magW*.014});
-      if(typeof smMagBase!=='undefined')_poseViewmodelPart(smMagBase,{y:-magW*.012,z:magW*.005,rx:magW*.040,rz:magW*.016});
+      const insDrop=_reloadMagInsertDrop(rt);
+      _poseViewmodelPart(smMag,{y:-magW*.010-insDrop*.050,z:magW*.005,rx:magW*.035+insDrop*.14,rz:magW*.014});
+      if(typeof smMagBase!=='undefined')_poseViewmodelPart(smMagBase,{y:-magW*.012-insDrop*.050,z:magW*.005,rx:magW*.040+insDrop*.14,rz:magW*.016});
     }
   }
   if(P.weaponIdx===5||P.weaponIdx===6||P.weaponIdx===7){
@@ -39283,8 +39573,9 @@ function updateHands(dt){
     if(P.weaponIdx===5&&typeof dmrMag!=='undefined'){
       dmrMag.visible=!inP1to3;dmrMagBase.visible=!inP1to3;
       const magW=!inP1to3?_weaponMagMotion:0;
-      _poseViewmodelPart(dmrMag,{y:-magW*.010,z:magW*.006,rx:magW*.036,rz:-magW*.010});
-      _poseViewmodelPart(dmrMagBase,{y:-magW*.012,z:magW*.006,rx:magW*.040,rz:-magW*.012});
+      const insDrop=_reloadMagInsertDrop(rt);
+      _poseViewmodelPart(dmrMag,{y:-magW*.010-insDrop*.055,z:magW*.006,rx:magW*.036+insDrop*.16,rz:-magW*.010});
+      _poseViewmodelPart(dmrMagBase,{y:-magW*.012-insDrop*.055,z:magW*.006,rx:magW*.040+insDrop*.16,rz:-magW*.012});
     }
     if(P.weaponIdx===6&&typeof sppMag!=='undefined'){
       sppMag.visible=!inP1to3;
@@ -39294,8 +39585,9 @@ function updateHands(dt){
     if(P.weaponIdx===7&&typeof snMag!=='undefined'){
       snMag.visible=!inP1to3;if(typeof snMagBase!=='undefined')snMagBase.visible=!inP1to3;
       const magW=!inP1to3?_weaponMagMotion:0;
-      _poseViewmodelPart(snMag,{y:-magW*.008,z:magW*.006,rx:magW*.030,rz:magW*.010});
-      if(typeof snMagBase!=='undefined')_poseViewmodelPart(snMagBase,{y:-magW*.010,z:magW*.006,rx:magW*.034,rz:magW*.012});
+      const insDrop=_reloadMagInsertDrop(rt);
+      _poseViewmodelPart(snMag,{y:-magW*.008-insDrop*.050,z:magW*.006,rx:magW*.030+insDrop*.15,rz:magW*.010});
+      if(typeof snMagBase!=='undefined')_poseViewmodelPart(snMagBase,{y:-magW*.010-insDrop*.050,z:magW*.006,rx:magW*.034+insDrop*.15,rz:magW*.012});
     }
   }
   // ── RELOAD ANIMATION (synced to P.reloadTimer / P.RELOAD_TIME)
@@ -39645,15 +39937,30 @@ function updateHands(dt){
 }
 // ── MAIN LOOP ─────────────────────────────────────────────────────────────────
 // Tag all viewmodel groups to layer 1 so the scope camera (layer 0 only) ignores them
-_setLayer(gunGrp,1);
-_setLayer(knifGrp,1);
-_setLayer(dropkickFeetGrp,1);
-_setLayer(slideLegsGrp,1);
-_setLayer(bodyPresenceGrp,1);
-_setLayer(wristGrp,1);
-_setLayer(shopGrp,1);
-_setLayer(reloadHoloGrp,1);
-_setLayer(throwGrp,1);
+_setLayer(gunGrp,VIEWMODEL_LAYER);
+_setLayer(knifGrp,VIEWMODEL_LAYER);
+// Drop-kick feet / slide legs are body parts authored for the 75° gameplay camera:
+// keep them on the world-FOV first-person layer (never seen by scope cameras).
+_setLayer(dropkickFeetGrp,FIRST_PERSON_WORLD_LAYER);
+_setLayer(slideLegsGrp,FIRST_PERSON_WORLD_LAYER);
+// Body presence lives in world space (legs/torso under the camera): render it with
+// the gameplay camera so it is occluded/perspective-correct, but keep it off the
+// scope/PIP cameras.
+_setLayer(bodyPresenceGrp,FIRST_PERSON_WORLD_LAYER);
+_setLayer(wristGrp,VIEWMODEL_LAYER);
+_setLayer(shopGrp,VIEWMODEL_LAYER);
+_setLayer(reloadHoloGrp,VIEWMODEL_LAYER);
+_setLayer(throwGrp,VIEWMODEL_LAYER);
+const _VIEWMODEL_LAYER_ROOTS_P1=[gunGrp,knifGrp,wristGrp,shopGrp,reloadHoloGrp,throwGrp];
+const _FIRST_PERSON_WORLD_LAYER_ROOTS=[bodyPresenceGrp,dropkickFeetGrp,slideLegsGrp];
+function _enforceFirstPersonViewmodelLayers(cam){
+  if(cam===cameraP2){
+    if(typeof gunGrpP2!=='undefined')_enforceViewmodelLayers(gunGrpP2,VIEWMODEL_LAYER_P2);
+    return;
+  }
+  for(const root of _VIEWMODEL_LAYER_ROOTS_P1)_enforceViewmodelLayers(root,VIEWMODEL_LAYER);
+  for(const root of _FIRST_PERSON_WORLD_LAYER_ROOTS)_enforceViewmodelLayers(root,FIRST_PERSON_WORLD_LAYER);
+}
 const clock=new THREE.Clock();
 const PERF={emaMs:16.7,emaFps:60,samples:new Float32Array(120),sampleIdx:0,lastHudUpdate:0,lastMemLog:0,hud:null,txtA:null,txtB:null,txtC:null,txtD:null,txtE:null,lastP95ms:0,lastP99ms:0,worstRecentFrameMs:0};
 const _perfEnabled=()=>SETTINGS.perfHud||new URLSearchParams(location.search).get('perf')==='1';
@@ -42290,49 +42597,56 @@ renderer.setAnimationLoop(()=>{
     const envIn=t<0.45?Math.sin((t/0.45)*Math.PI*0.5):1.0;
     const envOut=t>0.72?Math.sin(((t-0.72)/0.28)*Math.PI*0.5):0.0;
     const h=envIn*(1-envOut); // handAmt 0→1→0
+    const _vaultHipRaw=_hipGunPose(P.weaponIdx);
+    const _vaultHip={x:_hipGunVal(_vaultHipRaw,'x'),y:_hipGunVal(_vaultHipRaw,'y')};
     switch(P.vaultDir){
       case 'forward':
         // Right hand plants on top of barrier — CW roll, barrel tips up
         gunGrp.rotation.z=h*1.35;
         gunGrp.rotation.x=h*-0.55;
         gunGrp.rotation.y=h*0.30;
-        gunGrp.position.x=(.12-P.ads*.12)+h*0.09;
-        gunGrp.position.y=(-.11+P.ads*.032)-h*0.07;
+        gunGrp.position.x=_vaultHip.x*(1-P.ads)+h*0.09;
+        gunGrp.position.y=_vaultHip.y+P.ads*(-.078-_vaultHip.y)-h*0.07;
         break;
       case 'backward':
         // Both hands stay on gun; arms rise as player leans back — barrel swings down/forward
         gunGrp.rotation.z=h*-0.35;    // slight CCW (no hand-plant, symmetric lean)
         gunGrp.rotation.x=h*0.65;     // barrel tips downward (arms swing up)
         gunGrp.rotation.y=h*-0.40;    // muzzle tracks left
-        gunGrp.position.x=(.12-P.ads*.12)-h*0.05;
-        gunGrp.position.y=(-.11+P.ads*.032)+h*0.06;
+        gunGrp.position.x=_vaultHip.x*(1-P.ads)-h*0.05;
+        gunGrp.position.y=_vaultHip.y+P.ads*(-.078-_vaultHip.y)+h*0.06;
         break;
       case 'left':
         // Left hand/arm hooks over barrier — gun swings outward to right, CCW roll
         gunGrp.rotation.z=h*-1.30;    // CCW: left arm leads
         gunGrp.rotation.x=h*-0.30;
         gunGrp.rotation.y=h*-0.50;    // muzzle swings right
-        gunGrp.position.x=(.12-P.ads*.12)-h*0.13;
-        gunGrp.position.y=(-.11+P.ads*.032)-h*0.05;
+        gunGrp.position.x=_vaultHip.x*(1-P.ads)-h*0.13;
+        gunGrp.position.y=_vaultHip.y+P.ads*(-.078-_vaultHip.y)-h*0.05;
         break;
       case 'right':
         // Right arm swings hard over barrier — stronger CW roll than forward
         gunGrp.rotation.z=h*1.70;     // strong CW
         gunGrp.rotation.x=h*-0.45;
         gunGrp.rotation.y=h*0.55;     // muzzle swings left
-        gunGrp.position.x=(.12-P.ads*.12)+h*0.14;
-        gunGrp.position.y=(-.11+P.ads*.032)-h*0.09;
+        gunGrp.position.x=_vaultHip.x*(1-P.ads)+h*0.14;
+        gunGrp.position.y=_vaultHip.y+P.ads*(-.078-_vaultHip.y)-h*0.09;
         break;
     }
     {const _opticPose=_currentOpticProfile();
      const _zT=_opticGunZ(_opticPose);
-     gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);}
+     gunGrp.position.z=damp(gunGrp.position.z,_zT,18,dt);
+     P._vmBaseZ=gunGrp.position.z;P._vmBaseRX=gunGrp.rotation.x;P._vmBaseRY=gunGrp.rotation.y;P._vmBaseRZ=gunGrp.rotation.z;}
 	    } else {
 	      const _viewPoseSnap=performance.now()<(P._viewmodelPoseSnapUntil||0);
 	      // Smoothly decay vault rotation back to zero
-	      gunGrp.rotation.z=damp(gunGrp.rotation.z,0,_viewPoseSnap?30:11,dt);
-	      gunGrp.rotation.x=damp(gunGrp.rotation.x,0,_viewPoseSnap?32:12,dt);
-	      gunGrp.rotation.y=damp(gunGrp.rotation.y,0,_viewPoseSnap?30:11,dt);
+	      // Viewmodel root pose = damped base (tracked separately in P._vmBase*) + per-frame
+	      // additive pulses. The base must NOT be damped from the previous frame's final
+	      // pose, otherwise every additive offset feeds back and the gun slowly drifts
+	      // (idle z used to wander ~8cm back over a few seconds).
+	      {const _hipYawRaw=_hipGunPose(P.weaponIdx);const _hipYawT=_hipGunVal(_hipYawRaw,'ry')*(1-_firstPersonAdsPoseWeight(THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1),P.weaponIdx,P.adsTarget));
+	      P._vmBaseRY=damp(Number.isFinite(P._vmBaseRY)?P._vmBaseRY:_hipYawT,_hipYawT,_viewPoseSnap?30:11,dt);
+	      gunGrp.rotation.y=P._vmBaseRY;}
       // Sprint pose: gun drops + tilts down + extra bob amplitude.
       // Smoothed lerp so the transition into / out of sprint feels heavy.
       const _sprintTarget=(P.running&&!P.ads&&!P.reloading)?1:0;
@@ -42374,16 +42688,25 @@ renderer.setAnimationLoop(()=>{
       const _adsFitZ=((_adsFit&&Number.isFinite(_adsFit.z))?_adsFit.z:0)*_adsFitW;
       const _adsFitRX=((_adsFit&&Number.isFinite(_adsFit.rx))?_adsFit.rx:0)*_adsFitW;
       const _adsFitScale=1+(((_adsFit&&Number.isFinite(_adsFit.scale))?_adsFit.scale:1)-1)*_adsFitW;
-      const _baseGunX=.12+(_adsGunX-.12)*_adsPose;
-      const _baseGunY=-.11+(_adsGunY+.11)*_adsPose+_pistolIronAds*.045;
+      const _hipPoseRaw=_hipGunPose(P.weaponIdx);
+      const _hipX=_hipGunVal(_hipPoseRaw,'x'),_hipY=_hipGunVal(_hipPoseRaw,'y');
+      const _hipRX=_hipGunVal(_hipPoseRaw,'rx')*(1-_adsPose),_hipRY=_hipGunVal(_hipPoseRaw,'ry')*(1-_adsPose),_hipRZ=_hipGunVal(_hipPoseRaw,'rz')*(1-_adsPose);
+      const _baseGunX=_hipX+(_adsGunX-_hipX)*_adsPose;
+      const _baseGunY=_hipY+(_adsGunY-_hipY)*_adsPose+_pistolIronAds*.045;
       const _adsKickAmt=P.adsKick||0;
       gunGrp.position.x=_baseGunX+_adsFitX+P.sprintAmt*.04+Math.sin(_gT*.68)*_swAmt-_strafeBias-_accelLag*.018-(P.scopeEyeX||0)*.72*_scopePose+_shotImpulseSide*_shotImpulse*.006+_shotImpulseSide*(_badShotPulse*.007-_perfectShotPulse*.004+_recenterCuePulse*.006+_triggerBreakPulse*.010-_triggerCommitPulse*.004-_followThroughPulse*.006-_recenterConfidencePulse*.004+_cadenceMistimePulse*.010-_targetTransferWindowPulse*.003)+_shotImpulseSide*_lastRoundPulse*.010+_shotImpulseSide*_emptyClickPulse*.006+_counterStrafePulse*_intentR*.007+_nearMissSide*_nearMissPulse*.010+_damageShockSide*_damageShock*.014+_turnDriveSide*_turnDrivePulse*.010+_pickupPromptPulse*.003-_moveContactStall*_intentR*.006+Math.sin(_gT*.92)*_focusVm*.010+_focusVmPulse*.020;
       gunGrp.position.y=_baseGunY+_adsFitY-P.sprintAmt*.05*_sprintCarryMul+Math.sin(_gT*.50)*_swAmt*.45+_breath-_crouchDip-Math.abs(_accelLag)*.006-(P.scopeEyeY||0)*.55*_scopePose+_adsKickAmt*.006*_scopePose+_adsSettlePulse*.003*_scopePose-_adsFireSettlePulse*.004*_scopePose-_shotImpulse*.010-_badShotPulse*.010+_perfectShotPulse*.004+_shotQualityPulse*.002+_impactConfirmMicroPulse*.005+_suppressionControlPulse*.004+_triggerPrepPulse*.004-_triggerBreakPulse*.012+_triggerCommitPulse*.007+_followThroughPulse*.010+_sightRecoveryPulse*.006+_recenterConfidencePulse*.005-_cadenceMistimePulse*.012+_targetTransferWindowPulse*.004-_lastRoundPulse*.012+_reloadReadyPulse*.008-_emptyClickPulse*.004-_reloadBlockedPulse*.006+_vaultCuePulse*.006-_criticalHitPulse*.010-_moveContactStall*.004-_jumpInputPulse*.012-_damageShock*.018-_damageWeaponDrop*.014+_damageRecovery*.004-_landingSlidePulse*.016-_slideBlockedPulse*.018+_killFlowPulse*.010+_combatFlow*.004-_focusVm*.018-_focusVmPulse*.026;
 	      {const _zT=_opticGunZ(_opticPose);
-	     gunGrp.position.z=damp(gunGrp.position.z,_zT+_adsFitZ+_adsKickAmt*.012*_scopePose-_adsFireSettlePulse*.012*_scopePose-_adsSettlePulse*.006*_scopePose-_shotImpulse*.026-_badShotPulse*.018+_perfectShotPulse*.006+_impactConfirmMicroPulse*.010+_recenterCuePulse*.006+_triggerPrepPulse*.010-_triggerBreakPulse*.032+_triggerCommitPulse*.018+_followThroughPulse*.022+_sightRecoveryPulse*.012+_recenterConfidencePulse*.012-_cadenceMistimePulse*.026+_targetTransferWindowPulse*.010-_lastRoundPulse*.026+_emptyClickPulse*.018+_triggerBufferPulse*.008-_triggerReadyPulse*.010+_reloadReadyPulse*.016+_vaultCuePulse*.014+_hitFlowPulse*.010+_killFlowPulse*.016-_damageShock*.020-_damageWeaponDrop*.018-_criticalHitPulse*.014+_landingSlidePulse*.020-_slideBlockedPulse*.026-_moveContactStall*.010+_focusVm*.030-_focusVmPulse*.032,_viewPoseSnap?42:18,dt);}
+	     {const _zTarget=_zT+_adsFitZ+_adsKickAmt*.012*_scopePose-_adsFireSettlePulse*.012*_scopePose-_adsSettlePulse*.006*_scopePose-_shotImpulse*.026-_badShotPulse*.018+_perfectShotPulse*.006+_impactConfirmMicroPulse*.010+_recenterCuePulse*.006+_triggerPrepPulse*.010-_triggerBreakPulse*.032+_triggerCommitPulse*.018+_followThroughPulse*.022+_sightRecoveryPulse*.012+_recenterConfidencePulse*.012-_cadenceMistimePulse*.026+_targetTransferWindowPulse*.010-_lastRoundPulse*.026+_emptyClickPulse*.018+_triggerBufferPulse*.008-_triggerReadyPulse*.010+_reloadReadyPulse*.016+_vaultCuePulse*.014+_hitFlowPulse*.010+_killFlowPulse*.016-_damageShock*.020-_damageWeaponDrop*.018-_criticalHitPulse*.014+_landingSlidePulse*.020-_slideBlockedPulse*.026-_moveContactStall*.010+_focusVm*.030-_focusVmPulse*.032;
+	     P._vmBaseZ=damp(Number.isFinite(P._vmBaseZ)?P._vmBaseZ:_zTarget,_zTarget,_viewPoseSnap?42:18,dt);
+	     gunGrp.position.z=P._vmBaseZ;}}
       // Sprint tilt — barrel angles down + slight roll
-	      gunGrp.rotation.x=damp(gunGrp.rotation.x,P.sprintAmt*.285*_sprintCarryMul-_adsKickAmt*.018*_scopePose-_adsSettlePulse*.006*_scopePose+_adsFireSettlePulse*.018*_scopePose-_pistolIronAds*.040+_adsFitRX+_shotImpulseKick*.030+_badShotPulse*.024-_perfectShotPulse*.014+_impactConfirmMicroPulse*.010-_triggerPrepPulse*.018+_triggerBreakPulse*.050-_triggerCommitPulse*.026-_followThroughPulse*.030-_sightRecoveryPulse*.014-_recenterConfidencePulse*.016+_cadenceMistimePulse*.040-_targetTransferWindowPulse*.014+_lastRoundPulse*.050+_emptyClickPulse*.026-_triggerReadyPulse*.018-_reloadReadyPulse*.020+_reloadBlockedPulse*.028-_vaultCuePulse*.018-_jumpInputPulse*.035-_combatFlow*.010-_killFlowPulse*.020+_damageShock*.040+_damageWeaponDrop*.055-_damageRecovery*.012+_criticalHitPulse*.040+_landingSlidePulse*.045+_slideBlockedPulse*.050+_moveContactStall*.025-_focusVm*.030+_focusVmPulse*.052,_viewPoseSnap?24:7,dt);
-	      gunGrp.rotation.z=damp(gunGrp.rotation.z,P.sprintAmt*-.085*_sprintCarryMul+_shotImpulseSide*_shotImpulse*.010+_shotImpulseSide*(_badShotPulse*.018-_perfectShotPulse*.008+_recenterCuePulse*.014+_triggerBreakPulse*.036-_followThroughPulse*.026+_cadenceMistimePulse*.038)+_shotImpulseSide*_lastRoundPulse*.030+_shotImpulseSide*_dryFirePulse*.020+_counterStrafePulse*_intentR*.010+_nearMissSide*_nearMissPulse*.024+_damageShockSide*(_damageShock*.044+_damageWeaponDrop*.030)+_damageShockSide*_criticalHitPulse*.018+_turnDriveSide*_turnDrivePulse*.008+_moveContactStall*_intentR*.018+Math.sin(_gT*1.15)*_focusVm*.012-_focusVmPulse*.016,_viewPoseSnap?24:7,dt);
+	      {const _rxTarget=_hipRX+P.sprintAmt*.285*_sprintCarryMul-_adsKickAmt*.018*_scopePose-_adsSettlePulse*.006*_scopePose+_adsFireSettlePulse*.018*_scopePose+_adsFitRX+_shotImpulseKick*.030+_badShotPulse*.024-_perfectShotPulse*.014+_impactConfirmMicroPulse*.010-_triggerPrepPulse*.018+_triggerBreakPulse*.050-_triggerCommitPulse*.026-_followThroughPulse*.030-_sightRecoveryPulse*.014-_recenterConfidencePulse*.016+_cadenceMistimePulse*.040-_targetTransferWindowPulse*.014+_lastRoundPulse*.050+_emptyClickPulse*.026-_triggerReadyPulse*.018-_reloadReadyPulse*.020+_reloadBlockedPulse*.028-_vaultCuePulse*.018-_jumpInputPulse*.035-_combatFlow*.010-_killFlowPulse*.020+_damageShock*.040+_damageWeaponDrop*.055-_damageRecovery*.012+_criticalHitPulse*.040+_landingSlidePulse*.045+_slideBlockedPulse*.050+_moveContactStall*.025-_focusVm*.030+_focusVmPulse*.052;
+	      P._vmBaseRX=damp(Number.isFinite(P._vmBaseRX)?P._vmBaseRX:_rxTarget,_rxTarget,_viewPoseSnap?24:7,dt);
+	      gunGrp.rotation.x=P._vmBaseRX;}
+	      {const _rzTarget=_hipRZ+P.sprintAmt*-.085*_sprintCarryMul+_shotImpulseSide*_shotImpulse*.010+_shotImpulseSide*(_badShotPulse*.018-_perfectShotPulse*.008+_recenterCuePulse*.014+_triggerBreakPulse*.036-_followThroughPulse*.026+_cadenceMistimePulse*.038)+_shotImpulseSide*_lastRoundPulse*.030+_shotImpulseSide*_dryFirePulse*.020+_counterStrafePulse*_intentR*.010+_nearMissSide*_nearMissPulse*.024+_damageShockSide*(_damageShock*.044+_damageWeaponDrop*.030)+_damageShockSide*_criticalHitPulse*.018+_turnDriveSide*_turnDrivePulse*.008+_moveContactStall*_intentR*.018+Math.sin(_gT*1.15)*_focusVm*.012-_focusVmPulse*.016;
+	      P._vmBaseRZ=damp(Number.isFinite(P._vmBaseRZ)?P._vmBaseRZ:_rzTarget,_rzTarget,_viewPoseSnap?24:7,dt);
+	      gunGrp.rotation.z=P._vmBaseRZ;}
 	      if(P.weaponIdx!==2){
 	        const _wpAdsFade=1-THREE.MathUtils.clamp(P.adsVis||0,0,1)*.55;
 	        const _lowAmmoNervous=Math.sin(_gT*12.4+1.1)*_weaponLowAmmoFidget;
@@ -42395,12 +42718,15 @@ renderer.setAnimationLoop(()=>{
 	        gunGrp.rotation.z+=_shotImpulseSide*(_weaponUrgencyPolish*.020-_weaponReadyPolish*.012)+_lowAmmoNervous*.010*_wpAdsFade;
 	        if(_combatStance&&_combatStance.active){
 	          const _stanceAdsFade=1-THREE.MathUtils.clamp(P.adsVis||0,0,1)*.38;
+	          // Pitch/roll offsets must vanish at ADS — the iron-sight solver can only
+	          // correct a small pitch window, and any leftover tilt shows the slide top.
+	          const _stanceAdsRotFade=1-THREE.MathUtils.clamp(P.adsVis||0,0,1)*.96;
 	          gunGrp.position.x+=(_combatStance.viewmodelX||0)*_stanceAdsFade+_stanceSide*_stancePressure*.004;
 	          gunGrp.position.y+=(_combatStance.viewmodelY||0)+_stanceShoulder*.006-_stanceLowReady*.006;
 	          gunGrp.position.z+=(_combatStance.viewmodelZ||0)*_stanceAdsFade-_stanceShoulder*.010+_stanceReloadShield*.012;
-	          gunGrp.rotation.x+=(_combatStance.viewmodelPitch||0)*_stanceAdsFade-_stanceShoulder*.022+_stanceReloadShield*.030;
-	          gunGrp.rotation.y+=(_combatStance.viewmodelYaw||0)*_stanceAdsFade;
-	          gunGrp.rotation.z+=(_combatStance.viewmodelRoll||0)*_stanceAdsFade+_stanceSide*(_stanceLowReady*.020-_stanceShoulder*.012);
+	          gunGrp.rotation.x+=((_combatStance.viewmodelPitch||0)-_stanceShoulder*.022)*_stanceAdsRotFade+_stanceReloadShield*.030;
+	          gunGrp.rotation.y+=(_combatStance.viewmodelYaw||0)*_stanceAdsRotFade;
+	          gunGrp.rotation.z+=((_combatStance.viewmodelRoll||0)+_stanceSide*(_stanceLowReady*.020-_stanceShoulder*.012))*_stanceAdsRotFade;
 	        }
 			        if(_weaponSwitchBlend>.001||_pickupCollectPulse>.001){
 			          const _drawFade=1-THREE.MathUtils.clamp(P.adsVis||0,0,1)*.62;
@@ -42910,7 +43236,7 @@ renderer.setAnimationLoop(()=>{
     _drawReloadHolo(_liveAmmo,_Wr.mag,_holoProg,_prog);
     const _thr=(getReloadTimelineSpec(P.weaponIdx)||{magDropAt:0.2}).magDropAt;
     const _wasBelow=(P._reloadLastRt??-1)<_thr;
-    if(!_reloadMagDropped&&reloadShouldDropMag(_prog,P.weaponIdx,_wasBelow)){
+    if(!_reloadMagDropped&&P.weaponIdx!==3&&reloadShouldDropMag(_prog,P.weaponIdx,_wasBelow)){
       _reloadMagDropped=true;
       spawnDroppedMag();
       PP.shakeY-=.045;P.dmgPitch+=.010;
@@ -43590,7 +43916,7 @@ renderer.setAnimationLoop(()=>{
       wristDeployed+=(wristTarget-wristDeployed)*_wAnim;
       let _scl=Math.max(.001,wristDeployed);
       if(wristTarget===1&&wristDeployed<.95)_scl*=(1+(.96-wristDeployed)*.22);
-      wristGrp.scale.setScalar(_scl);
+      wristGrp.scale.setScalar(_scl*VIEWMODEL_HOLO_FOV_COMP);
       // Hover bob in armband-local space, panel still anchored above emitter
       wristGrp.position.y=_bandY+.090+Math.sin(now*1.7)*.0030*wristDeployed;
       wristGrp.rotation.z=Math.sin(now*1.3)*.020*wristDeployed;
@@ -43617,8 +43943,8 @@ renderer.setAnimationLoop(()=>{
       shopDeployed+=(shopTarget-shopDeployed)*_wAnim;
       let _scl2=Math.max(.001,shopDeployed);
       if(shopTarget===1&&shopDeployed<.95)_scl2*=(1+(.96-shopDeployed)*.20);
-      shopGrp.scale.setScalar(_scl2);
-      shopGrp.position.y=-.09+Math.sin(now*1.6)*.0040*shopDeployed;
+      shopGrp.scale.setScalar(_scl2*VIEWMODEL_HOLO_FOV_COMP);
+      shopGrp.position.y=(-.09+Math.sin(now*1.6)*.0040*shopDeployed)*VIEWMODEL_HOLO_FOV_COMP;
       shopGrp.rotation.z=.04+Math.sin(now*1.2)*.013*shopDeployed;
       shopLayer.rotation.z=Math.sin(now*2.2+.6)*.014*shopDeployed;
       shopLayer.position.z=.0025+Math.sin(now*4.8)*.0007*shopDeployed;
@@ -43640,7 +43966,7 @@ renderer.setAnimationLoop(()=>{
       let _scl3=Math.max(.001,reloadHoloDeployed);
       if(reloadHoloTarget===1&&reloadHoloDeployed<.95)_scl3*=(1+(.96-reloadHoloDeployed)*.22);
       _scl3*=1+.010*Math.sin(now*12.0)*reloadHoloDeployed;
-      reloadHoloGrp.scale.setScalar(_scl3);
+      reloadHoloGrp.scale.setScalar(_scl3*VIEWMODEL_HOLO_FOV_COMP);
       // World matrices lag one phase unless we flatten here — stale localToWorld
       // pinned the hologram incorrectly while the wrist moved (fixed by end pose).
       camera.updateMatrixWorld(true);
@@ -43650,13 +43976,14 @@ renderer.setAnimationLoop(()=>{
       // clamp the readout in camera-local space so reload hand motion cannot
       // fling the text off-screen or too close to the near plane.
       _reloadHoloSafeCam.copy(_reloadHoloAnchorW);camera.worldToLocal(_reloadHoloSafeCam);
-      const _safeX=THREE.MathUtils.clamp(_reloadHoloSafeCam.x,-.205,.205);
-      const _safeY=THREE.MathUtils.clamp(_reloadHoloSafeCam.y,-.150,.135);
+      const _pocketX=.205*VIEWMODEL_HOLO_FOV_COMP,_pocketDn=.150*VIEWMODEL_HOLO_FOV_COMP,_pocketUp=.135*VIEWMODEL_HOLO_FOV_COMP;
+      const _safeX=THREE.MathUtils.clamp(_reloadHoloSafeCam.x,-_pocketX,_pocketX);
+      const _safeY=THREE.MathUtils.clamp(_reloadHoloSafeCam.y,-_pocketDn,_pocketUp);
       const _safeZ=THREE.MathUtils.clamp(_reloadHoloSafeCam.z,-.58,-.34);
-      const _edge=Math.max(Math.abs(_reloadHoloSafeCam.x)/.205,Math.abs(_reloadHoloSafeCam.y)/.150,_reloadHoloSafeCam.z>-.34?1:0,_reloadHoloSafeCam.z<-.58?1:0);
+      const _edge=Math.max(Math.abs(_reloadHoloSafeCam.x)/_pocketX,Math.abs(_reloadHoloSafeCam.y)/_pocketDn,_reloadHoloSafeCam.z>-.34?1:0,_reloadHoloSafeCam.z<-.58?1:0);
       _reloadHoloSafeCam.set(_safeX,_safeY,_safeZ);
       _reloadHoloSafeW.copy(_reloadHoloSafeCam);camera.localToWorld(_reloadHoloSafeW);
-      const _stabilize=THREE.MathUtils.clamp(.38+Math.max(0,_edge-0.72)*.55+(P.reloading?.16:0),0,0.82);
+      const _stabilize=THREE.MathUtils.clamp(.38+Math.max(0,_edge-0.60)*.85+(P.reloading?.16:0),0,1);
       _reloadHoloTgtW.copy(_reloadHoloAnchorW).lerp(_reloadHoloSafeW,_stabilize);
       if(_reloadHoloNeedsSnap){_reloadHoloSmW.copy(_reloadHoloTgtW);_reloadHoloNeedsSnap=false;}
       const _rDpl=reloadHoloDeployed;
@@ -43785,7 +44112,9 @@ renderer.setAnimationLoop(()=>{
 	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-eye-y',`${_scopeEyePxY.toFixed(2)}px`);
 	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-reticle-x',`${(_scopeEyePxX*.42).toFixed(2)}px`);
 	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-reticle-y',`${(_scopeEyePxY*.42).toFixed(2)}px`);
-	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-shadow-alpha',String(THREE.MathUtils.clamp(_scopeShadowUi*.58,0,.58)));
+	          P._scopeVmSwapMask=Math.max(0,(P._scopeVmSwapMask||0)-dt*6);
+	          const _vmSwapShadow=THREE.MathUtils.smoothstep(P._scopeVmSwapMask||0,.10,.70)*.94;
+	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-shadow-alpha',String(THREE.MathUtils.clamp(Math.max(_scopeShadowUi*.58,_vmSwapShadow),0,.94)));
 	          _uiSetStyleProperty(_vig,'scope-vignette','--scope-lens-focus',String(_scopeLensFocusUi.toFixed(3)));
 	          _uiSetClass(_vig,'scope-vignette','screen-scope',_screenScope);
 	          _uiSetClass(_vig,'scope-vignette','sniper-scope',!!_opticForPip.sniperScope);
@@ -43842,7 +44171,7 @@ renderer.setAnimationLoop(()=>{
         }
         _setScopePipView(_screenScope?null:_opticForPip,_shouldPip?_pipAlpha:0);
         P.scopeVignetteOpacity=_vigOpacity;
-        if(_vig)_uiSetStyle(_vig,'scope-vignette','opacity',String(_vigOpacity));
+        if(_vig)_uiSetStyle(_vig,'scope-vignette','opacity',String(Math.max(_vigOpacity,THREE.MathUtils.smoothstep(P._scopeVmSwapMask||0,.10,.70)*.85)));
         }
       } else {
         _setScopePipView(null,0);
