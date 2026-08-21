@@ -15873,7 +15873,7 @@ const m4FrameM =new THREE.MeshPhongMaterial({color:0x1c1c20,shininess:38,specula
 const m4MetalM =new THREE.MeshPhongMaterial({color:0x141418,shininess:80,specular:0x303040});
 const m4PolyM  =new THREE.MeshPhongMaterial({color:0x222226,shininess:18,specular:0x101014});
 const m4OpticM =new THREE.MeshPhongMaterial({color:0x0a0a0e,shininess:120,specular:0x404858});
-const m4LensM  =new THREE.MeshPhongMaterial({color:0x1a3a2a,shininess:150,specular:0x60d0a0,emissive:0x081208});
+const m4LensM  =new THREE.MeshPhongMaterial({color:0x9fc4b8,shininess:220,specular:0x60d0a0,emissive:0x030906,transparent:true,opacity:.16,depthWrite:false});
 function _m4(w,h,d,mat,x,y,z,rx){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);if(rx)m.rotation.x=rx;gunGrp.add(m);return m;}
 // Lower receiver (mag well + trigger group housing)
 const gLower    = _m4(.040,.052,.16, m4FrameM, 0,-.012,-.02);
@@ -16561,7 +16561,7 @@ const smTrigGd  =_sm(.030,.008,.034,smFrameM, 0,-.030, .015);
 const smTrig    =_sm(.005,.018,.010,smMetalM, 0,-.022, .020);
 const smStock   =_sm(.030,.012,.10, smPolyM,  0, .020, .130);
 const smStockBack=_sm(.038,.040,.012,smPolyM, 0, .010, .184);
-const smRdLensM =new THREE.MeshPhongMaterial({color:0x1a3030,shininess:200,specular:0x60d0d0,emissive:0x081818,transparent:true,opacity:.22,depthWrite:false});
+const smRdLensM =new THREE.MeshPhongMaterial({color:0xbfe4e4,shininess:220,specular:0x60d0d0,emissive:0x041010,transparent:true,opacity:.14,depthWrite:false});
 // Reflex housing is an open tube (four thin walls) so the shooter looks THROUGH it in ADS.
 const smRedDot  =_sm(.022,.003,.036,smMetalM, 0, .0555,-.020);   // top wall
 const smRedDotB =_sm(.022,.003,.036,smMetalM, 0, .0365,-.020);   // bottom wall / base
@@ -16591,7 +16591,7 @@ const dmrScopeRing2=_dmr(.034,.034,.014,dmrFrameM,0,.080,-.040);
 const dmrScopeFront=_dmr(.040,.040,.018,dmrMetalM,0,.080,-.078);
 const dmrScopeRear =_dmr(.030,.030,.014,dmrMetalM,0,.080, .024);
 const dmrScopeTurret=_dmr(.014,.020,.018,dmrMetalM,0,.108,-.020);
-const dmrLensM=new THREE.MeshPhongMaterial({color:0x081826,shininess:240,specular:0x40c8ff,emissive:0x041018});
+const dmrLensM=new THREE.MeshPhongMaterial({color:0xa8ccdd,shininess:260,specular:0x40c8ff,emissive:0x020a10,transparent:true,opacity:.18,depthWrite:false});
 const dmrScopeLens=_dmr(.026,.026,.005,dmrLensM,0,.080, .034);
 const dmrMag    =_dmr(.030,.080,.040,dmrMetalM,0,-.054,-.020);
 const dmrMagBase=_dmr(.034,.014,.044,dmrMetalM,0,-.100,-.020);
@@ -16643,7 +16643,7 @@ const snBarrel   =_sn(.014,.014,.42, snMetalM, 0,.030,-.40);
 const snBarrelEnd=_sn(.024,.024,.022,snMetalM, 0,.030,-.620);
 const snBolt     =_sn(.018,.022,.045,snMetalM, .026,.030, .018);
 const snBoltKnob =_sn(.018,.018,.018,snMetalM, .046,.032, .020);
-const snLensM=new THREE.MeshPhongMaterial({color:0x041824,shininess:280,specular:0x40c8ff,emissive:0x041018});
+const snLensM=new THREE.MeshPhongMaterial({color:0xa8ccdd,shininess:280,specular:0x40c8ff,emissive:0x020a10,transparent:true,opacity:.18,depthWrite:false});
 const snScope    =_sn(.034,.034,.110,snMetalM, 0,.092,-.020);
 const snScopeR1  =_sn(.038,.038,.014,snFrameM, 0,.092,-.005);
 const snScopeR2  =_sn(.038,.038,.014,snFrameM, 0,.092,-.045);
@@ -16774,7 +16774,7 @@ function applyAAWeaponSurfacePass(){
   const sightPaintM=_aaMat('emissivePanel',{color:0xeaf2ff,roughness:.34,metalness:.08,emissive:0x4a6fff,emissiveIntensity:.42});
   const opticDotM=new THREE.MeshBasicMaterial({color:0xff4030,transparent:true,opacity:.98,depthTest:false,toneMapped:false});
   const opticHaloM=new THREE.MeshBasicMaterial({color:0xff5a40,transparent:true,opacity:.28,depthTest:false,depthWrite:false,toneMapped:false,blending:THREE.AdditiveBlending});
-  const opticGlintM=_aaMat('glass',{color:0x123840,roughness:.18,metalness:.12,emissive:0x0a3038,emissiveIntensity:.35,transparent:false,opacity:1});
+  const opticGlintM=_aaMat('glass',{color:0x9fd0e0,roughness:.16,metalness:.10,emissive:0x061a20,emissiveIntensity:.12,transparent:true,opacity:.15,depthWrite:false});
   [
     [scratchM,'wear'],[darkInsetM,'receiver'],[gripRubberM,'rubber'],
     [amberMarkM,'sight'],[sightPaintM,'sight'],[opticDotM,'sight'],[opticGlintM,'optic']
@@ -16879,11 +16879,16 @@ function _updateCoreViewmodelPolishRuntime(dt,heatN){
     if(pistolOpticLensM.emissive)pistolOpticLensM.emissive.setRGB(.010+hot*.010,.020+adsSettle*.03+lensFocus*.02,.028+adsSettle*.04+lensFocus*.025);
     if('shininess' in pistolOpticLensM)pistolOpticLensM.shininess=220+adsSettle*30+lensFocus*30;
   }
-  const opticGlow=(.15+adsSettle*.28+hot*.08+lensFocus*.14-scopeShadow*.08)*pulse;
+  // Baked optic glass must stay CLEAR: a fraction of the old emissive drive is kept
+  // as a faint coating sheen. Full strength rendered the DMR/AWM/MP9 lenses as
+  // glowing opaque teal slabs.
+  const opticGlow=(.15+adsSettle*.28+hot*.08+lensFocus*.14-scopeShadow*.08)*pulse*.12;
   const polishLens=(mat,r,g,b)=>{
     if(!mat||!mat.emissive)return;
     mat.emissive.setRGB(r*opticGlow,g*opticGlow,b*opticGlow);
     if('shininess' in mat)mat.shininess=220+adsSettle*46;
+    if(mat.transparent!==true||mat.depthWrite){mat.transparent=true;mat.depthWrite=false;mat.needsUpdate=true;}
+    if(!(mat.opacity<=.20))mat.opacity=.18;
   };
   polishLens(smRdLensM,.20,.68,.62);
   polishLens(dmrLensM,.10,.56,.88);
