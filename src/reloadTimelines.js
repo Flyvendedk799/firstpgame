@@ -24,13 +24,13 @@ function T(magHide0, magHide1, magDrop, chamber0, chamber1) {
 }
 
 const DEFAULTS = {
-  rifle: T(0, 0.78, 0.2, 0.8, 1),
-  pistol: T(0, 0.78, 0.22, 0.78, 1),
-  pistolCompact: T(0, 0.76, 0.2, 0.76, 1),
-  smg: T(0, 0.75, 0.18, 0.74, 1),
+  rifle: T(0.2, 0.72, 0.2, 0.8, 1),
+  pistol: T(0.22, 0.70, 0.22, 0.78, 1),
+  pistolCompact: T(0.2, 0.68, 0.2, 0.76, 1),
+  smg: T(0.18, 0.68, 0.18, 0.74, 1),
   shotgun: T(0, 0.72, 0.25, 0.7, 1),
-  marksman: T(0, 0.8, 0.24, 0.82, 1),
-  sniper: T(0, 0.82, 0.28, 0.84, 1),
+  marksman: T(0.24, 0.74, 0.24, 0.82, 1),
+  sniper: T(0.28, 0.76, 0.28, 0.84, 1),
   knife: null
 };
 
@@ -70,7 +70,8 @@ export function reloadPhaseLabel(rt, weaponIdx) {
   const s = getReloadTimelineSpec(weaponIdx);
   if (!s) return 'n/a';
   if (rt < 0.12) return 'release';
-  if (reloadMagHidden(rt, weaponIdx)) return rt < s.magDropAt ? 'remove' : 'retrieve';
+  if (rt < s.magDropAt) return 'remove';
+  if (reloadMagHidden(rt, weaponIdx)) return 'retrieve';
   if (rt < s.chamber[0]) return 'insert';
   if (rt < s.chamber[1]) return 'chamber';
   return 'settle';

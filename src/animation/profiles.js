@@ -194,7 +194,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   0: feelProfile(0, 'rifle', 'M4A1 Reference', {
     id: 'weapon-feel-profile.m4-reference',
     manifestId: 'weapon.m4Reference',
-    ads: { inLambda: 34, outLambda: 23, fovDelta: 31, viewFit: { y: -0.032, z: -0.210, rx: -0.012, scale: 0.66 } },
+    ads: { inLambda: 34, outLambda: 23, fovDelta: 31, viewFit: { y: -0.016, z: 0.060, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.071, -0.296], { socket: 'frontSight' }),
@@ -219,7 +219,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
     // viewFit.scale 0.52 is iron-sight ADS only; attachable RDS uses optic profile viewFit in main.js
     // ADS raise: crisp punch-in (inLambda) with a slightly slower, settled release so the
     // sight/dot doesn't snap back jarringly. Tactical sidearm — fast to aim, calm to lower.
-    ads: { inLambda: 44, outLambda: 28, fovDelta: 27, viewFit: { y: -0.046, z: -0.190, rx: -0.018, scale: 0.50 } },
+    ads: { inLambda: 18, outLambda: 15, fovDelta: 24, viewFit: { y: -0.030, z: -0.150, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.069, -0.074], { node: 'front_sight', nodeLocal: [0, 0.003, 0], socket: 'frontSight' }),
@@ -256,7 +256,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   3: feelProfile(3, 'shotgun', 'TAC-12 Shotgun', {
     id: 'weapon-feel-profile.tac12',
     manifestId: 'weapon.tac12',
-    ads: { inLambda: 24, outLambda: 18, fovDelta: 22, viewFit: { y: -0.030, z: -0.220, rx: 0.004, scale: 0.58 } },
+    ads: { inLambda: 15, outLambda: 13, fovDelta: 20, viewFit: { y: -0.018, z: 0.080, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'bead',
       front: sightPoint([0, 0.071, -0.498], { socket: 'frontSight' }),
@@ -280,7 +280,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   4: feelProfile(4, 'smg', 'MP9 Suppressed', {
     id: 'weapon-feel-profile.mp9-suppressed',
     manifestId: 'weapon.mp9Suppressed',
-    ads: { inLambda: 40, outLambda: 27, fovDelta: 25, viewFit: { y: -0.034, z: -0.220, rx: 0.002, scale: 0.58 } },
+    ads: { inLambda: 17, outLambda: 15, fovDelta: 23, viewFit: { y: -0.018, z: 0.040, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.046, -0.043], { socket: 'frontSight' }),
@@ -303,7 +303,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   5: feelProfile(5, 'marksman', 'MK14 DMR', {
     id: 'weapon-feel-profile.mk14',
     manifestId: 'weapon.mk14',
-    ads: { inLambda: 23, outLambda: 17, settleInLambda: 10, fovDelta: 38, viewFit: { y: -0.034, z: -0.235, rx: -0.004, scale: 0.62 } },
+    ads: { inLambda: 21, outLambda: 16, settleInLambda: 10, fovDelta: 38, viewFit: { y: -0.020, z: 0.120, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'optic',
       front: sightPoint([0, 0.080, 0.034], { socket: 'scopeCamera' }),
@@ -325,7 +325,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   6: feelProfile(6, 'pistol', 'P226 Suppressed', {
     id: 'weapon-feel-profile.p226-suppressed',
     manifestId: 'weapon.p226Supp',
-    ads: { inLambda: 44, outLambda: 30, fovDelta: 26, viewFit: { y: -0.052, z: -0.235, rx: -0.014, scale: 0.50 } },
+    ads: { inLambda: 18, outLambda: 15, fovDelta: 24, viewFit: { y: -0.032, z: -0.150, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'iron',
       front: sightPoint([0, 0.054, -0.080], { socket: 'frontSight' }),
@@ -348,7 +348,7 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
   7: feelProfile(7, 'sniper', 'AWM Sniper', {
     id: 'weapon-feel-profile.awm',
     manifestId: 'weapon.awm',
-    ads: { inLambda: 16, outLambda: 13, settleInLambda: 8.5, settleOutLambda: 13, fovDelta: 48, viewFit: { y: -0.040, z: -0.250, rx: -0.004, scale: 0.62 } },
+    ads: { inLambda: 16, outLambda: 13, settleInLambda: 8.5, settleOutLambda: 13, fovDelta: 48, viewFit: { y: -0.022, z: 0.140, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'optic',
       front: sightPoint([0, 0.092, 0.034], { socket: 'scopeCamera' }),

@@ -49,6 +49,36 @@ modules with named exports.
 - Custom maps: keep changes in `src/customMaps/` unless boot orchestration needs
   to call into them.
 
+## First-Person Viewmodel Rendering
+
+- The world renders with the gameplay `camera` (layer 0; FOV changes with ADS /
+  sprint / focus). The first-person viewmodel — `gunGrp`, the procedural hands,
+  knife, holograms, drop-kick feet, slide legs — renders in a **second pass**
+  through `vmCamera` (child of `camera`, fixed FOV `VIEWMODEL_FOV_DEFAULT`
+  = 56, near 0.012, layer 1). `vmCameraP2` / layer 2 does the same for the
+  split-screen second player. Body presence (legs under the camera) is layer 3:
+  rendered by the gameplay camera but never by the scope/PIP cameras.
+- Consequences: zooming the world never magnifies/warps the gun, ADS uses
+  `viewFit` scale 1 (see `src/animation/profiles.js`; `viewFit.z` is relative to
+  the per-weapon hip rest z in `WEAPON_HAND_FITS[idx].gun`), and the viewmodel
+  never clips into walls (depth is cleared before the pass).
+- Anything you add under `gunGrp` is forced onto the viewmodel layer every frame
+  (`_enforceFirstPersonViewmodelLayers`); lights get all render layers
+  (`_tagLightForAllLayers`, also applied in the patched light constructors).
+- World-space VFX that must line up with the barrel / magwell (tracers, muzzle
+  ring, smoke, shells, dropped mags) must map their origin through
+  `_gunLocalToVisualWorld` / `_viewmodelVisualToWorld`, because the viewmodel's
+  screen position differs from its true world position.
+- The iron-sight and pistol-RDS solvers project through `vmCamera`
+  (`_syncViewmodelCamera(camera)`), never through `camera`.
+- `gunGrp` z/rotation are driven from damped base trackers
+  (`P._vmBaseZ/_vmBaseRX/_vmBaseRY/_vmBaseRZ`) plus per-frame additive pulses; do
+  not damp `gunGrp` from its own previous-frame pose (that feeds additive offsets
+  back and makes the gun drift). After snapping the root directly, call
+  `_resetViewmodelBaseTrackers()`.
+- Toggle procedural hand parts only through `_setVmPartVisible` so the legacy
+  blockout meshes hidden by the AA-shell dedupe never reappear.
+
 ## Debug API Contract
 
 Playwright and regression scripts use `window.__game.debug` and
