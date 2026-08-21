@@ -16041,8 +16041,8 @@ function refreshAttachmentVisuals(){
   // Scope attachment stat multipliers apply globally. Runtime optic meshes are
   // weapon-specific so pistol RDS visuals can share the same PIP/profile path.
   buildScopeMesh(P.weaponIdx===0?att:null);
-  buildPistolOpticMesh(P.weaponIdx===1?att:null);
-  if(P.weaponIdx===1)_syncPistolOpticSockets();
+  buildPistolOpticMesh(_rdsMountWeapon(P.weaponIdx)?att:null);
+  if(_rdsMountWeapon(P.weaponIdx))_syncPistolOpticSockets();
 }
 // Ejection port cover (small rectangle on right side of upper)
 const gEject    = _m4(.005,.018,.038,m4MetalM, .021,.024,-.04);
@@ -16561,16 +16561,18 @@ const smTrigGd  =_sm(.030,.008,.034,smFrameM, 0,-.030, .015);
 const smTrig    =_sm(.005,.018,.010,smMetalM, 0,-.022, .020);
 const smStock   =_sm(.030,.012,.10, smPolyM,  0, .020, .130);
 const smStockBack=_sm(.038,.040,.012,smPolyM, 0, .010, .184);
-const smRdLensM =new THREE.MeshPhongMaterial({color:0xbfe4e4,shininess:220,specular:0x60d0d0,emissive:0x041010,transparent:true,opacity:.14,depthWrite:false});
-// Reflex housing is an open tube (four thin walls) so the shooter looks THROUGH it in ADS.
-const smRedDot  =_sm(.022,.003,.036,smMetalM, 0, .0555,-.020);   // top wall
-const smRedDotB =_sm(.022,.003,.036,smMetalM, 0, .0365,-.020);   // bottom wall / base
-const smRedDotL =_sm(.003,.022,.036,smMetalM,-.0095,.046,-.020);  // left wall
-const smRedDotR =_sm(.003,.022,.036,smMetalM, .0095,.046,-.020);  // right wall
-const smRedLens =_sm(.018,.018,.003,smRdLensM,0, .046,-.036);
-smRedLens.renderOrder=1060;
+// Iron sights — optics are pickups/attachments, never baked onto the base gun
+// (gun-standards.md: scope meshes are attachments). Front post + rear notch.
+const smFsBase  =_sm(.016,.006,.014,smMetalM, 0, .039,-.043);
+const smFsPost  =_sm(.005,.014,.005,smMetalM, 0, .048,-.043);
+const smFsWingL =_sm(.003,.016,.012,smMetalM,-.0085,.047,-.043);
+const smFsWingR =_sm(.003,.016,.012,smMetalM, .0085,.047,-.043);
+const smRsBase  =_sm(.024,.006,.014,smMetalM, 0, .039, .034);
+const smRsNotchL=_sm(.007,.012,.012,smMetalM,-.0075,.046, .034);
+const smRsNotchR=_sm(.007,.012,.012,smMetalM, .0075,.046, .034);
+const SM_IRON_SIGHT_MESHES=[smFsBase,smFsPost,smFsWingL,smFsWingR,smRsBase,smRsNotchL,smRsNotchR];
 const smGripGrip=_sm(.025,.010,.032,smFrameM, 0,-.072, .040);
-const SM_MESHES=[smBody,smTop,smCharge,smBarrel,smSuppr,smSupRib1,smSupRib2,smSupRib3,smMag,smMagBase,smGrip,smTrigGd,smTrig,smStock,smStockBack,smRedDot,smRedDotB,smRedDotL,smRedDotR,smRedLens,smGripGrip];
+const SM_MESHES=[smBody,smTop,smCharge,smBarrel,smSuppr,smSupRib1,smSupRib2,smSupRib3,smMag,smMagBase,smGrip,smTrigGd,smTrig,smStock,smStockBack,smFsBase,smFsPost,smFsWingL,smFsWingR,smRsBase,smRsNotchL,smRsNotchR,smGripGrip];
 // ── MK14 DMR — long-barrel marksman rifle with scope, pistol grip, full stock
 const dmrFrameM=new THREE.MeshPhongMaterial({color:0x18181c,shininess:38,specular:0x202028});
 const dmrMetalM=new THREE.MeshPhongMaterial({color:0x14141a,shininess:140,specular:0x484858});
@@ -16790,7 +16792,7 @@ function applyAAWeaponSurfacePass(){
     [m4FrameM,'receiver'],[m4MetalM,'metal'],[m4PolyM,'polymer'],[m4OpticM,'metal'],[m4LensM,'optic'],[m4HeatM,'heat'],[m4PadM,'rubber'],
     [deFrameM,'receiver'],[deSlideM,'metal'],[deBarrelM,'metal'],[deGripM,'rubber'],[deSupprM,'heat'],
     [sgFrameM,'receiver'],[sgMetalM,'metal'],[sgWoodM,'wood'],[sgPumpM,'rubber'],
-    [smFrameM,'receiver'],[smMetalM,'metal'],[smPolyM,'polymer'],[smRdLensM,'optic'],
+    [smFrameM,'receiver'],[smMetalM,'metal'],[smPolyM,'polymer'],
     [dmrFrameM,'receiver'],[dmrMetalM,'metal'],[dmrWoodM,'wood'],[dmrLensM,'optic'],
     [sppFrameM,'receiver'],[sppSlideM,'metal'],[sppGripM,'rubber'],
     [snFrameM,'receiver'],[snMetalM,'metal'],[snStockM,'polymer'],[snLensM,'optic']
@@ -16807,8 +16809,9 @@ function applyAAWeaponSurfacePass(){
   _aaWeaponDetail(SG_MESHES,false,.050,.004,.010,gripRubberM,0,-.032,-.226,0,0,0);
   _aaWeaponDetail(SG_MESHES,false,.014,.014,.006,sightPaintM,0,.073,-.498,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(SM_MESHES,false,.036,.004,.006,scratchM,0,.030,-.205,0,0,0);
-  _aaWeaponDetail(SM_MESHES,false,.0035,.0035,.002,opticDotM,0,.046,-.0365,0,0,0).userData.adsSightPaint=true;
-  _aaWeaponDetail(SM_MESHES,false,.009,.009,.002,opticHaloM,0,.046,-.0368,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SM_MESHES,false,.0045,.0045,.003,sightPaintM,0,.0555,-.043,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SM_MESHES,false,.004,.004,.003,sightPaintM,-.0075,.0530,.034,0,0,0).userData.adsSightPaint=true;
+  _aaWeaponDetail(SM_MESHES,false,.004,.004,.003,sightPaintM,.0075,.0530,.034,0,0,0).userData.adsSightPaint=true;
   _aaWeaponDetail(DMR_MESHES,false,.036,.003,.070,scratchM,0,.060,-.090,0,0,0);
   _aaWeaponDetail(DMR_MESHES,false,.026,.026,.003,opticGlintM,0,.080,.031,0,0,0);
   _aaWeaponDetail(SPP_MESHES,false,.040,.003,.055,scratchM,0,.040,-.018,0,0,0);
@@ -16890,7 +16893,6 @@ function _updateCoreViewmodelPolishRuntime(dt,heatN){
     if(mat.transparent!==true||mat.depthWrite){mat.transparent=true;mat.depthWrite=false;mat.needsUpdate=true;}
     if(!(mat.opacity<=.20))mat.opacity=.18;
   };
-  polishLens(smRdLensM,.20,.68,.62);
   polishLens(dmrLensM,.10,.56,.88);
   polishLens(snLensM,.08,.50,.82);
   _CORE_VISUAL_VIEWMODEL_POLISH_STATS.lastRuntime={
@@ -16905,9 +16907,18 @@ function _updateCoreViewmodelPolishRuntime(dt,heatN){
   gunGrp.userData.coreVisualViewmodelRuntime=_CORE_VISUAL_VIEWMODEL_POLISH_STATS.lastRuntime;
   return _CORE_VISUAL_VIEWMODEL_POLISH_STATS.lastRuntime;
 }
+let _smgIronsSuppressed=false;
 function _syncPracticalIronSightViewmodel(){
   if(typeof P==='undefined')return;
   const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
+  // A mounted pickup optic replaces the MP9 irons (they would poke through the lens).
+  if(P.weaponIdx===4&&typeof SM_IRON_SIGHT_MESHES!=='undefined'){
+    const showIrons=!_smgIronsSuppressed;
+    for(const s of SM_IRON_SIGHT_MESHES)if(s&&s.visible!==showIrons)s.visible=showIrons;
+    if(!showIrons&&typeof _AA_WEAPON_SURFACE_PARTS!=='undefined'){
+      for(const d of _AA_WEAPON_SURFACE_PARTS)if(d&&d.userData.adsSightPaint&&d.userData.aaWeaponGroup===SM_MESHES&&d.visible)d.visible=false;
+    }
+  }
   const shotgunAds=P.weaponIdx===3&&ads>.62&&!P.reloading&&!P.vaulting&&!P.dropkickActive;
   for(const m of [sgStock,sgPad,sgComb,sgShellHldr,sgShellSlot]){
     if(m)m.visible=P.weaponIdx===3&&!shotgunAds;
@@ -18528,6 +18539,10 @@ let pistolOpticView=null,pistolOpticViewM=null,pistolOpticReticleM=null,pistolOp
 let gPistolReticle=null,gPistolReticleHalo=null;
 const _scopeLensLocalM4=new THREE.Vector3(0,.078,-.057);
 const _PISTOL_OPTIC_PROCEDURAL_SOCKET=new THREE.Vector3(0,.064,-.018);
+// Weapons that physically mount the pickup optic (others get stats only for now).
+const RDS_MOUNT_WEAPONS={1:true,4:true};
+const RDS_PROC_SOCKETS={4:new THREE.Vector3(0,.058,-.004)};
+function _rdsMountWeapon(idx){return !!RDS_MOUNT_WEAPONS[idx|0];}
 const _PISTOL_OPTIC_LENS_GROUP_LOCAL=new THREE.Vector3(0,.064,-.051);
 const _scopeLensLocalPistol=_PISTOL_OPTIC_PROCEDURAL_SOCKET.clone();
 const _pistolOpticSocketOffset=new THREE.Vector3();
@@ -18567,6 +18582,14 @@ function _pistolSlideOpticFallback(spaceParent=null){
 }
 function _syncPistolOpticSockets(){
   _ensurePistolOpticParent();
+  const railSocket=_rdsFixedSocketFor(P&&P.weaponIdx);
+  if(railSocket&&P.weaponIdx!==1){
+    _scopeLensLocalPistol.copy(railSocket);
+    _pistolOpticSocketOffset.copy(railSocket).sub(_PISTOL_OPTIC_LENS_GROUP_LOCAL);
+    if(pistolOpticGrp&&pistolOpticGrp.parent!==gunGrp){pistolOpticGrp.parent&&pistolOpticGrp.parent.remove(pistolOpticGrp);gunGrp.add(pistolOpticGrp);}
+    if(pistolOpticGrp&&pistolOpticGrp.visible&&typeof _applyPistolOpticAdsPose==='function')_applyPistolOpticAdsPose(P.adsVis||P.ads||0,0);
+    return;
+  }
   const space=_pistolOpticMountParent();
   const slideFb=_pistolSlideOpticFallback(space);
   // The authored `optic` node sits MID-slide. Slide it back toward the authored
@@ -18621,7 +18644,7 @@ function _applyPistolOpticAdsPose(scopeAds,slideOff=0){
   // double the recoil dip and make the dot jump on every shot. Only fold in slide
   // motion manually when the optic is mounted to gunGrp (no slide node available).
   const mountedToSlide=!!(slideNode&&pistolOpticGrp.parent===slideNode);
-  if(!mountedToSlide){
+  if(!mountedToSlide&&P.weaponIdx===1){
     if(slideNode&&slideNode.userData&&slideNode.userData.uspRest){
       const r=slideNode.userData.uspRest;
       slideDy=slideNode.position.y-r.pos.y;
@@ -18654,7 +18677,7 @@ function buildPistolOpticMesh(att){
   pistolOpticGrp.position.copy(_pistolOpticSocketOffset);
   pistolOpticGrp.rotation.set(0,0,0);
   pistolOpticGrp.scale.setScalar(1);
-  if(!att){pistolOpticGrp.visible=false;_setPistolIronSightSuppressedForOptic(false);return;}
+  if(!att){pistolOpticGrp.visible=false;_setPistolIronSightSuppressedForOptic(false);_smgIronsSuppressed=false;return;}
   _ensurePistolOpticParent();
   const tier=Math.max(1,att.tier|0);
   const scaleMul=1.72;
@@ -18715,8 +18738,10 @@ function buildPistolOpticMesh(att){
   pistolOpticGrp.add(pistolOpticView);
   pistolOpticGrp.userData.pipDisabled=true;
   pistolOpticReticleM=_applyCoreViewmodelMaterialPolish(new THREE.MeshBasicMaterial({color:att.dotColor||0xff2c24,transparent:true,opacity:1,depthWrite:false,depthTest:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,toneMapped:false}),'sight');
-  const dotSize=(.0072+(tier-1)*.0006)*(att.dotRadiusMul||1);
-  const haloOuter=(.0128+(tier-1)*.0009)*(att.haloRadiusMul||1);
+  // Aiming-point sizes: the old values rendered the tier-3/4 halo at ~10% of the
+  // screen at ADS — a blob, not a dot.
+  const dotSize=(.0038+(tier-1)*.0003)*(att.dotRadiusMul||1);
+  const haloOuter=(.0072+(tier-1)*.0005)*(att.haloRadiusMul||1);
   pistolOpticHaloM=_applyCoreViewmodelMaterialPolish(new THREE.MeshBasicMaterial({color:att.haloColor||0xff5850,transparent:true,opacity:.30,depthWrite:false,depthTest:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,toneMapped:false}),'sight');
   const _placeReticle=(mesh,zOff=0,order=1112)=>{
     mesh.position.set(0,lensY,lensZ+zOff);
@@ -18736,7 +18761,8 @@ function buildPistolOpticMesh(att){
     gPistolReticle.visible=true;
     _placeReticle(gPistolReticle,.0012,1113);
   }else{
-    gPistolReticle=new THREE.Mesh(new THREE.PlaneGeometry(dotSize,dotSize),pistolOpticReticleM);
+    // Round dot — a square plane reads as a glitch once it covers more than a few px.
+    gPistolReticle=new THREE.Mesh(new THREE.CircleGeometry(dotSize*.5,20),pistolOpticReticleM);
     gPistolReticle.visible=true;
     _placeReticle(gPistolReticle,.0012,1113);
   }
@@ -18744,9 +18770,10 @@ function buildPistolOpticMesh(att){
   const led=new THREE.Mesh(new THREE.BoxGeometry(.0022,.0022,.0022),ledMat);
   led.position.set(tierW/2+.008,lensY+.003,-.040*scaleMul);led.layers.set(1);led.renderOrder=1114;led.userData.hideWhenAds=true;
   pistolOpticGrp.add(led);
-  pistolOpticGrp.visible=(P.weaponIdx===1);
+  pistolOpticGrp.visible=_rdsMountWeapon(P.weaponIdx);
   _syncPistolOpticSockets();
-  _setPistolIronSightSuppressedForOptic(true);
+  _setPistolIronSightSuppressedForOptic(P.weaponIdx===1);
+  _smgIronsSuppressed=(P.weaponIdx===4);
 }
 function _hideScopePipViews(except=null){
   const keep=except&&except.viewM;
@@ -18784,7 +18811,7 @@ function _currentOpticProfile(){
 	      viewM:m4ScopeViewM
 	    };
 	  }
-	  if(P.weaponIdx===1&&att&&pistolOpticViewM&&pistolOpticView){
+	  if(_rdsMountWeapon(P.weaponIdx)&&att&&pistolOpticViewM&&pistolOpticView){
 	    const tier=Math.max(1,att.tier|0);
 	    const pipAspect=pistolOpticGrp&&pistolOpticGrp.userData&&Number.isFinite(pistolOpticGrp.userData.pipAspect)?pistolOpticGrp.userData.pipAspect:1.12;
 	    return {
@@ -18796,7 +18823,7 @@ function _currentOpticProfile(){
 	      vignetteColor:att.vignetteColor||'rgba(120,230,255,.10)',
 	      lensLocal:_scopeLensLocalPistol,
 	      lensY:_scopeLensLocalPistol.y,
-	      adsGunZ:-.250,
+	      adsGunZ:P.weaponIdx===4?-.300:-.250,
 	      // Gentle 1x-style red-dot zoom (~1.3x): pulls the sight picture toward the
 	      // eye so the dot reads clearly AND flattens the wide-FOV perspective that
 	      // was warping the pistol on ADS. Far shy of sniper magnification (FOV ~4-22).
@@ -20928,6 +20955,11 @@ function _pistolOpticMountParent(){
   const slide=deagleGlbRig&&deagleGlbRig.userData&&deagleGlbRig.userData.uspNodes&&deagleGlbRig.userData.uspNodes.chargingHandle;
   if(P&&P.weaponIdx===1&&LEGACY_PISTOL_GLB_RUNTIME_ENABLED&&deagleGlbRig&&slide)return slide;
   return gunGrp;
+}
+// Fixed rail socket for non-pistol mounts (gun-local).
+function _rdsFixedSocketFor(idx){
+  const s=RDS_PROC_SOCKETS[idx|0];
+  return s?s.clone():null;
 }
 function _ensurePistolOpticParent(){
   if(!pistolOpticGrp)return;
@@ -41442,9 +41474,13 @@ renderer.setAnimationLoop(()=>{
     }
     const _weaponFeelProfile=getWeaponFeelProfile(P.weaponIdx);
     const _adsFeel=_weaponFeelProfile&&_weaponFeelProfile.ads?_weaponFeelProfile.ads:{};
-    const _scopeAdsSpeed=(P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1;
+    const _scopeAdsSpeedRaw=(P.attachments&&P.attachments.scope)?P.attachments.scope.adsSpeedMul:1;
+    // A malformed attachment (missing adsSpeedMul) must not NaN the damp chain —
+    // P.ads never recovers from NaN and ADS bricks for the rest of the run.
+    const _scopeAdsSpeed=Number.isFinite(_scopeAdsSpeedRaw)?_scopeAdsSpeedRaw:1;
     const _adsLamIn=(_adsFeel.inLambda||32)*_scopeAdsSpeed*(_adsFeel.speedMul||1);
     const _adsLamOut=(_adsFeel.outLambda||22)*_scopeAdsSpeed*(_adsFeel.speedMul||1);
+    if(!Number.isFinite(P.ads))P.ads=0;
     P.ads=damp(P.ads,P.adsTarget,P.adsTarget>P.ads?_adsLamIn:_adsLamOut,dt);
     P.adsVis=damp(typeof P.adsVis==='number'?P.adsVis:P.ads,P.ads,_adsFeel.visualLambda||13,dt);
     const _opticForFov=_currentOpticProfile();

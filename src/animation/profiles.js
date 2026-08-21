@@ -283,14 +283,15 @@ export const WEAPON_FEEL_PROFILES = Object.freeze({
     ads: { inLambda: 17, outLambda: 15, fovDelta: 23, viewFit: { y: -0.018, z: 0.040, rx: 0, scale: 1.0 } },
     sight: {
       mode: 'iron',
-      front: sightPoint([0, 0.046, -0.043], { socket: 'frontSight' }),
-      rear: sightPoint([0, 0.046, 0.034], { socket: 'rearSight' }),
+      front: sightPoint([0, 0.0555, -0.043], { socket: 'frontSight' }),
+      rear: sightPoint([0, 0.0530, 0.034], { socket: 'rearSight' }),
+      aimNdcY: -0.028,
       maxX: 0.18,
       maxY: 0.30,
       maxPitch: 0.070,
       maxYaw: 0.055,
       lineWeight: 0.70,
-      lineTargetY: 0.035
+      lineTargetY: 0.004
     },
     recoil: { viewmodelKick: 0.92, cameraKick: 0.82, snap: 1.18, recover: 1.35, shoulderAbsorb: 0.88, tail: 0.78 },
     pose: {
