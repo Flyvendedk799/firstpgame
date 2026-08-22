@@ -18548,7 +18548,7 @@ const _scopeLensLocalPistol=_PISTOL_OPTIC_PROCEDURAL_SOCKET.clone();
 const _pistolOpticSocketOffset=new THREE.Vector3();
 // Uniform size of the slide-mounted red dot. Folded into the ADS pose scale so
 // the lens stays pinned to its mount point regardless of how big the optic is.
-const PISTOL_OPTIC_BASE_SCALE=2.05;
+const PISTOL_OPTIC_BASE_SCALE=.78;
 // 0 = authored mid-slide `optic` node, 1 = rear sight. >0.9 keeps the dot near the
 // back of the slide so little of the gun's rear sits behind it in the ADS view.
 const _PISTOL_OPTIC_REAR_BIAS=0.92;
@@ -18630,11 +18630,20 @@ function _setPistolIronSightSuppressedForOptic(on){
     if(/^(front_sight|rear_sight)/.test(o.name)||o.name==='barrel_chamber_glint')o.visible=!on;
   });
 }
+const _opticParentWsTmp=new THREE.Vector3();
 function _applyPistolOpticAdsPose(scopeAds,slideOff=0){
   if(!pistolOpticGrp||!pistolOpticGrp.visible)return;
   const att=P.attachments&&P.attachments.scope;
   const _adsScaleMul=Math.min(.05,(att&&Number.isFinite(att.adsScaleMul))?att.adsScaleMul*.08:.05);
-  const _s=(1+scopeAds*_adsScaleMul)*PISTOL_OPTIC_BASE_SCALE;
+  // Normalize by the mount parent's world scale so the optic renders the same
+  // physical size whether it sits on the USP slide (GLB import scale) or a
+  // procedural top rail (scale 1).
+  let _parentWs=1;
+  if(pistolOpticGrp.parent&&pistolOpticGrp.parent.getWorldScale){
+    const ws=pistolOpticGrp.parent.getWorldScale(_opticParentWsTmp).x;
+    if(Number.isFinite(ws)&&ws>1e-4)_parentWs=ws;
+  }
+  const _s=(1+scopeAds*_adsScaleMul)*PISTOL_OPTIC_BASE_SCALE/_parentWs;
   const lens=_PISTOL_OPTIC_LENS_GROUP_LOCAL;
   const base=_pistolOpticSocketOffset;
   let slideDy=0,slideDz=0,slideRx=0;
@@ -18662,7 +18671,9 @@ function _applyPistolOpticAdsPose(scopeAds,slideOff=0){
     base.z+slideDz+lens.z*(1-_s)-scopeAds*.004
   );
   pistolOpticGrp.rotation.x=slideRx;
-  const _reticleInv=_s>0.001?1/_s:1;
+  // Reticle world size stays the authored dot size on every mount.
+  const _worldS=_s*_parentWs;
+  const _reticleInv=_worldS>0.001?1/_worldS:1;
   if(gPistolReticle)gPistolReticle.scale.setScalar(_reticleInv);
   if(gPistolReticleHalo)gPistolReticleHalo.scale.setScalar(_reticleInv);
 }
@@ -18694,7 +18705,7 @@ function buildPistolOpticMesh(att){
   const tierW=(.028+(tier-1)*.0024)*scaleMul;
   const bodyH=(.033+(tier-1)*.0034)*scaleMul;
   const mountY=.050*scaleMul;
-  const GLASS_TILT=.18;
+  const GLASS_TILT=.06;
   const _add=(w,h,d,mat,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.layers.set(1);pistolOpticGrp.add(m);return m;};
   const _addOpenFrame=()=>{
     _add(tierW+.009,.007,.040,bodyM,0,mountY,-.046*scaleMul);
@@ -18723,7 +18734,7 @@ function buildPistolOpticMesh(att){
     }
   }
   const glassW=tier>=4?tierW*.88:tierW-.001;
-  const glassH=tier>=3?bodyH*.94:bodyH-.012;
+  const glassH=tier>=4?glassW:bodyH-.012;
   pistolOpticGrp.userData.pipAspect=Math.max(.9,glassW/Math.max(glassH,.001));
   const glass=new THREE.Mesh(new THREE.PlaneGeometry(glassW,glassH),lensM);
   glass.position.set(0,lensY,lensZ);glass.rotation.x=GLASS_TILT;glass.layers.set(1);glass.renderOrder=1080;
