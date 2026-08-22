@@ -16908,15 +16908,24 @@ function _updateCoreViewmodelPolishRuntime(dt,heatN){
   return _CORE_VISUAL_VIEWMODEL_POLISH_STATS.lastRuntime;
 }
 let _smgIronsSuppressed=false;
+let _p226IronsSuppressed=false;
 function _syncPracticalIronSightViewmodel(){
   if(typeof P==='undefined')return;
   const ads=THREE.MathUtils.clamp(P.adsVis||P.ads||0,0,1);
-  // A mounted pickup optic replaces the MP9 irons (they would poke through the lens).
+  // A mounted pickup optic replaces the host gun's irons (they would poke through the lens).
   if(P.weaponIdx===4&&typeof SM_IRON_SIGHT_MESHES!=='undefined'){
     const showIrons=!_smgIronsSuppressed;
     for(const s of SM_IRON_SIGHT_MESHES)if(s&&s.visible!==showIrons)s.visible=showIrons;
     if(!showIrons&&typeof _AA_WEAPON_SURFACE_PARTS!=='undefined'){
       for(const d of _AA_WEAPON_SURFACE_PARTS)if(d&&d.userData.adsSightPaint&&d.userData.aaWeaponGroup===SM_MESHES&&d.visible)d.visible=false;
+    }
+  }
+  if(P.weaponIdx===6&&typeof sppFsight!=='undefined'){
+    const showIrons=!_p226IronsSuppressed;
+    if(sppFsight.visible!==showIrons)sppFsight.visible=showIrons;
+    if(typeof sppRsight!=='undefined'&&sppRsight.visible!==showIrons)sppRsight.visible=showIrons;
+    if(!showIrons&&typeof _AA_WEAPON_SURFACE_PARTS!=='undefined'){
+      for(const d of _AA_WEAPON_SURFACE_PARTS)if(d&&d.userData.adsSightPaint&&d.userData.aaWeaponGroup===SPP_MESHES&&d.visible)d.visible=false;
     }
   }
   const shotgunAds=P.weaponIdx===3&&ads>.62&&!P.reloading&&!P.vaulting&&!P.dropkickActive;
@@ -18539,9 +18548,15 @@ let pistolOpticView=null,pistolOpticViewM=null,pistolOpticReticleM=null,pistolOp
 let gPistolReticle=null,gPistolReticleHalo=null;
 const _scopeLensLocalM4=new THREE.Vector3(0,.078,-.057);
 const _PISTOL_OPTIC_PROCEDURAL_SOCKET=new THREE.Vector3(0,.064,-.018);
-// Weapons that physically mount the pickup optic (others get stats only for now).
-const RDS_MOUNT_WEAPONS={1:true,4:true};
-const RDS_PROC_SOCKETS={4:new THREE.Vector3(0,.058,-.004)};
+// Weapons that physically mount the pickup optic (DMR/AWM keep their integral scopes).
+const RDS_MOUNT_WEAPONS={1:true,3:true,4:true,6:true};
+// ~2.2cm of window clearance above each gun's top surface (matched to the MP9,
+// whose mount was tuned by screenshot): shotgun top .052, MP9 .036, P226 .039.
+const RDS_PROC_SOCKETS={
+  3:new THREE.Vector3(0,.074,.010),
+  4:new THREE.Vector3(0,.058,-.004),
+  6:new THREE.Vector3(0,.061,.042)
+};
 function _rdsMountWeapon(idx){return !!RDS_MOUNT_WEAPONS[idx|0];}
 const _PISTOL_OPTIC_LENS_GROUP_LOCAL=new THREE.Vector3(0,.064,-.051);
 const _scopeLensLocalPistol=_PISTOL_OPTIC_PROCEDURAL_SOCKET.clone();
@@ -18688,7 +18703,7 @@ function buildPistolOpticMesh(att){
   pistolOpticGrp.position.copy(_pistolOpticSocketOffset);
   pistolOpticGrp.rotation.set(0,0,0);
   pistolOpticGrp.scale.setScalar(1);
-  if(!att){pistolOpticGrp.visible=false;_setPistolIronSightSuppressedForOptic(false);_smgIronsSuppressed=false;return;}
+  if(!att){pistolOpticGrp.visible=false;_setPistolIronSightSuppressedForOptic(false);_smgIronsSuppressed=false;_p226IronsSuppressed=false;return;}
   _ensurePistolOpticParent();
   const tier=Math.max(1,att.tier|0);
   const scaleMul=1.72;
@@ -18715,8 +18730,10 @@ function buildPistolOpticMesh(att){
     _add(tierW+.007,.004,.016,bodyM,0,lensY+(bodyH-.014)/2+.001,-.048*scaleMul);
   };
   if(tier>=4){
+    // Prism sight: same structural frame as the lower tiers (the frameless
+    // version read as a floating cap over a bare pane) plus the ring bezel.
+    _addOpenFrame();
     _add(tierW+.010,.012,.042,bodyM,0,mountY,-.040*scaleMul);
-    _add(tierW+.006,.008,.018,housingM,0,mountY+.004,-.032*scaleMul);
     const tubeR=tierW*.54;
     const tube=new THREE.Mesh(new THREE.RingGeometry(tubeR*.82,tubeR,32),bodyM);
     tube.position.set(0,lensY,lensZ+.0001);tube.rotation.x=GLASS_TILT;tube.rotation.y=Math.PI;tube.layers.set(1);
@@ -18733,8 +18750,8 @@ function buildPistolOpticMesh(att){
       _add(.0038,.007,.015,bodyM,-tierW/2+.001,mountY+.006,-.034*scaleMul);
     }
   }
-  const glassW=tier>=4?tierW*.88:tierW-.001;
-  const glassH=tier>=4?glassW:bodyH-.012;
+  const glassW=tierW-.001;
+  const glassH=bodyH-.012;
   pistolOpticGrp.userData.pipAspect=Math.max(.9,glassW/Math.max(glassH,.001));
   const glass=new THREE.Mesh(new THREE.PlaneGeometry(glassW,glassH),lensM);
   glass.position.set(0,lensY,lensZ);glass.rotation.x=GLASS_TILT;glass.layers.set(1);glass.renderOrder=1080;
@@ -18785,6 +18802,7 @@ function buildPistolOpticMesh(att){
   _syncPistolOpticSockets();
   _setPistolIronSightSuppressedForOptic(P.weaponIdx===1);
   _smgIronsSuppressed=(P.weaponIdx===4);
+  _p226IronsSuppressed=(P.weaponIdx===6);
 }
 function _hideScopePipViews(except=null){
   const keep=except&&except.viewM;
@@ -18834,7 +18852,7 @@ function _currentOpticProfile(){
 	      vignetteColor:att.vignetteColor||'rgba(120,230,255,.10)',
 	      lensLocal:_scopeLensLocalPistol,
 	      lensY:_scopeLensLocalPistol.y,
-	      adsGunZ:P.weaponIdx===4?-.300:-.250,
+	      adsGunZ:({1:-.250,3:-.320,4:-.300,6:-.250})[P.weaponIdx]??-.280,
 	      // Gentle 1x-style red-dot zoom (~1.3x): pulls the sight picture toward the
 	      // eye so the dot reads clearly AND flattens the wide-FOV perspective that
 	      // was warping the pistol on ADS. Far shy of sniper magnification (FOV ~4-22).
