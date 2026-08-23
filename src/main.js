@@ -18275,6 +18275,30 @@ armBandShell.name='armband_shell';
 }
 lGrp.add(armBandGrp);
 armBandGrp.visible=true;
+// ── Left-hand pronation ──────────────────────────────────────────────────────
+// The support hand was built palm-up (fingers extend +Y from a palm plate whose
+// normal is +Y) while the wrist device also sits on +Y — i.e. the band was on the
+// PALM side of the forearm, which no real hand can do and reads as the hand
+// facing the wrong way. Rotate ONLY the hand (palm/fingers/thumb) about the
+// forearm axis so the palm turns in toward the weapon and the back of the hand —
+// where the band lives — faces outward. Rotating lGrp as a whole was tried first
+// and looked worse: it swings the forearm across the screen like a log.
+const LEFT_HAND_PRONATION=-1.05;
+const lHandGrp=new THREE.Group();
+lHandGrp.name='left_hand_pronated';
+{
+  const keep=new Set([armBandGrp]);
+  const forearmPivot=lGrp.children.find(c=>c.name==='lForearmPivot');
+  if(forearmPivot)keep.add(forearmPivot);
+  for(const child of lGrp.children.slice()){
+    if(keep.has(child))continue;
+    lGrp.remove(child);
+    lHandGrp.add(child);
+  }
+  lHandGrp.rotation.z=LEFT_HAND_PRONATION;
+  lGrp.add(lHandGrp);
+}
+
 function _syncArmBandVisibility(){
   let show=true;
   try{show=!_isAuthoredHandRuntimeActive();}catch(_){show=true;}
