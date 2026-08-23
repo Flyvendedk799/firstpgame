@@ -18228,6 +18228,8 @@ function _syncHoloGhostPlane(mesh,mat,vis,now,signal=_holoSignal(),tone=1){
   return _syncHoloGhostPlaneCore(THREE,mesh,mat,vis,now,signal,tone);
 }
 const armBandGrp=new THREE.Group();
+// Wrist-device proportion for the physical band shell (see armBandShell below).
+const ARMBAND_SHELL_SCALE=.52;
 const _bandX=-.008,_bandY=.003,_bandZ=.040;
 const _bandM   =new THREE.MeshPhongMaterial({color:0x14181f,shininess:80,specular:0x303848});
 const _bandAcM =new THREE.MeshPhongMaterial({color:0x0c0f15,shininess:120,specular:0x4a5868,emissive:0x041220});
@@ -18258,6 +18260,19 @@ const armScreen=new THREE.Mesh(new THREE.PlaneGeometry(.066,.033),armScreenM);
 armScreen.position.set(_bandX,_bandY+.0512,_bandZ);
 armScreen.rotation.x=-Math.PI/2;
 armBandGrp.add(armScreen);
+// The physical band shell was authored at ~.08m and sits ~0.25m from the eye, so
+// it projected as a tablet strapped to the forearm (53% of screen height with the
+// pistol, 27% with the SMG). Reparent the shell into a scaled sub-group so it
+// reads as a wrist device; the deployable holo panels keep their own scale.
+const armBandShell=new THREE.Group();
+armBandShell.name='armband_shell';
+{
+  const shellMeshes=armBandGrp.children.filter(c=>c.isMesh);
+  for(const mesh of shellMeshes){armBandGrp.remove(mesh);armBandShell.add(mesh);}
+  armBandShell.scale.setScalar(ARMBAND_SHELL_SCALE);
+  armBandShell.position.set(_bandX*(1-ARMBAND_SHELL_SCALE),_bandY*(1-ARMBAND_SHELL_SCALE)-.004,_bandZ*(1-ARMBAND_SHELL_SCALE)+.010);
+  armBandGrp.add(armBandShell);
+}
 lGrp.add(armBandGrp);
 armBandGrp.visible=true;
 function _syncArmBandVisibility(){
