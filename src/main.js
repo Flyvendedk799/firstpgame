@@ -1997,6 +1997,23 @@ const AA_MATERIALS=createPbrMaterialLibrary(THREE,{
   ..._aaAuthoredTextures
 },()=>{try{return SETTINGS||_BOOT_SETTINGS;}catch(_){return _BOOT_SETTINGS;}});
 function _aaMat(name,overrides){return AA_MATERIALS.get(name,overrides);}
+// Enemy silhouette readability: raise a base color to a luminance floor while
+// preserving its hue, so dark uniforms still read as a body in unlit rooms
+// (they used to sit near 0.17 luma against a 0.68-luma head = floating head).
+// NOTE: THREE.Color works in LINEAR space, so these floors are linear luminance —
+// .15 linear is roughly sRGB #6d, i.e. still a dark tactical uniform.
+function _enemySilhouetteColor(hex,minLum=.15){
+  const c=new THREE.Color(hex);
+  const lum=c.r*.2126+c.g*.7152+c.b*.0722;
+  if(!(lum>0)||lum>=minLum)return c.getHex();
+  // Blend toward white rather than scaling, so near-black colors keep their tint
+  // instead of amplifying channel noise.
+  const t=THREE.MathUtils.clamp((minLum-lum)/Math.max(1e-4,1-lum),0,.85);
+  c.lerp(new THREE.Color(0xffffff),t*.55);
+  const lum2=c.r*.2126+c.g*.7152+c.b*.0722;
+  if(lum2<minLum&&lum2>0)c.multiplyScalar(Math.min(3,minLum/lum2));
+  return c.getHex();
+}
 const _LEVEL_REFLECTION_PROFILES=[
   {id:'dock-wet-concrete',env:.98,floorEnv:.92,floorRoughMul:.82,wallEnv:.70,pillarEnv:.95,poolOpacity:.115,poolScale:1.10,poolEnv:1.18,poolRough:.20,peripheral:.78,envRotationY:0,rays:.60,skyExposure:1.05,skyBlurriness:0.02},
   {id:'continental-polish',env:1.08,floorEnv:1.05,floorRoughMul:.72,wallEnv:.74,pillarEnv:1.08,poolOpacity:.090,poolScale:.96,poolEnv:1.12,poolRough:.22,peripheral:.66,envRotationY:0.35,rays:.50,skyExposure:1.10,skyBlurriness:0.018},
@@ -6326,6 +6343,7 @@ class Enemy{
     };
     const ts=TS[this.type]||TS.soldier;
     this.personality=_pickEnemyPersonality(this.type,diff);
+    this._silhouetteFloor={suit:.30,helm:.24};
     this.tactic=ENEMY_TACTICS[this.type]||ENEMY_TACTICS.soldier;
     this.motionProfile=_enemyMotionProfile(this.type);
     this.personaId=this.personality.id;
@@ -6416,9 +6434,9 @@ class Enemy{
     this.aimPitch=0;this.headLookY=0;this.patrolLookTimer=0;this.patrolLookAngle=0;
 
     const skins=[0xd4a882,0xc89065,0xb07850,0xe8c090];
-      this.bM=_aaMat('fabric',{color:ts.suit,roughness:.88,metalness:0});
+      this.bM=_aaMat('fabric',{color:_enemySilhouetteColor(ts.suit,.15),roughness:.88,metalness:0});
       this.hM=_aaMat('skin',{color:skins[Math.min(diff-1,3)],roughness:.66,metalness:0});
-      this.hlM=_aaMat('armor',{color:ts.helm,roughness:.48,metalness:.34});
+      this.hlM=_aaMat('armor',{color:_enemySilhouetteColor(ts.helm,.11),roughness:.48,metalness:.34});
 
     // Torso (hitbox) — slimmer, more proportionate
     this.bMesh=new THREE.Mesh(new THREE.BoxGeometry(.46,1.04,.26),this.bM);
@@ -7256,7 +7274,7 @@ class Enemy{
       armorPlateM.userData.modelPolishMaterial=true;
       const rubberM=clothDark.clone();if(rubberM.color)rubberM.color.multiplyScalar(.48);rubberM.userData.modelPolishMaterial=true;
       const packM=clothDark.clone();if(packM.color)packM.color.multiplyScalar(.70);packM.userData.modelPolishMaterial=true;
-      const trimM=new THREE.MeshStandardMaterial({color:accentColor,roughness:.42,metalness:.26,emissive:accentColor,emissiveIntensity:.035});
+      const trimM=new THREE.MeshStandardMaterial({color:accentColor,roughness:.42,metalness:.26,emissive:accentColor,emissiveIntensity:.11});
       trimM.userData.modelPolishMaterial=true;
       const _polish=(bucket,rigId,parent,geo,mat,pos=[0,0,0],scale=[1,1,1],rot=[0,0,0],name='modelPolish_part')=>{
         if(!parent)return null;
