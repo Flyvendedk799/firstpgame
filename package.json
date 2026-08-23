@@ -48,6 +48,7 @@
     "test:scoped-switch:viewmodel": "node scripts/with-preview.mjs node scripts/scoped-switch-viewmodel-regression.mjs",
     "test:gameplay:qol": "node scripts/with-preview.mjs node scripts/gameplay-qol-smoke.mjs",
     "test:high-class-feel": "node scripts/high-class-feel-static-probe.mjs",
+    "test:engine:core": "node scripts/engine-core-static-probe.mjs",
     "test:weapon:feel": "node scripts/with-preview.mjs node scripts/weapon-feel-acceptance.mjs",
     "test:level-editor:assets": "node scripts/level-editor-asset-compat-probe.mjs",
     "asset:preflight": "node scripts/asset-preflight.mjs public/assets/weapons/m4/m4_viewmodel.glb --type weapon --strict --summary",
@@ -71,6 +72,6 @@
     "gltf-validator": "^2.0.0-dev.3.10",
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0",
-    "vite": "^5.4.0"
+    "vite": "^5.4.21"
   }
 }

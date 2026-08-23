@@ -402,6 +402,8 @@ import {
   resolveVaultExitTraversalResponse,
   resolveSlideContactTraversalResponse,
 } from './game/traversalFeel.js';
+import { createFrameClock, FRAME_CLOCK_VERSION } from './engine/frameClock.js';
+import { createSystemScheduler, SYSTEM_SCHEDULER_VERSION } from './engine/systemScheduler.js';
 import { installDebugApi, installPerfDebug } from './debug/installDebugApi.js';
 import { byId as $e } from './ui/dom.js';
 
@@ -15679,6 +15681,16 @@ function renderSplitScreen(){
   G._useComposer=prevComposer;
   _frameProfileMark('renderSplit',performance.now()-t0);
   _frameProfileEnd('split');
+}
+let _viewmodelSystemsRegistered=false;
+function _ensureViewmodelSystemsRegistered(){
+  if(_viewmodelSystemsRegistered)return;
+  _viewmodelSystemsRegistered=true;
+  ENGINE_SYSTEMS.add({name:'hands',           phase:'viewmodel',order:10,fn:(c)=>updateHands(c.dtFocusViewmodel)});
+  ENGINE_SYSTEMS.add({name:'knife',           phase:'viewmodel',order:20,fn:(c)=>updateKnife(c.dtFocusMelee)});
+  ENGINE_SYSTEMS.add({name:'bodyPresenceLegs',phase:'viewmodel',order:30,fn:(c)=>updateBodyPresenceLegs(c.dtFocusLocomotion)});
+  ENGINE_SYSTEMS.add({name:'dropkickFeet',    phase:'viewmodel',order:40,fn:(c)=>updateDropkickFeet(c.dtFocusLocomotion)});
+  ENGINE_SYSTEMS.add({name:'slideLegs',       phase:'viewmodel',order:50,fn:(c)=>updateSlideLegs(c.dtFocusSlide)});
 }
 function _renderGameFrame(){
   if(G.splitScreenActive&&G.started)renderSplitScreen();
@@ -40085,6 +40097,12 @@ function _enforceFirstPersonViewmodelLayers(cam){
   for(const root of _FIRST_PERSON_WORLD_LAYER_ROOTS)_enforceViewmodelLayers(root,FIRST_PERSON_WORLD_LAYER);
 }
 const clock=new THREE.Clock();
+// ── ENGINE CORE ──────────────────────────────────────────────────────────────
+// Single time source for the frame (spike clamp / pause / time scale / fixed-step
+// accumulator) and a scheduler that owns per-system ordering + timing. Both are
+// pure modules under src/engine/ so they unit test outside the browser.
+const ENGINE_CLOCK=createFrameClock({maxFrameSeconds:.05,fixedStepSeconds:1/60,maxCatchUpSteps:5});
+const ENGINE_SYSTEMS=createSystemScheduler();
 const PERF={emaMs:16.7,emaFps:60,samples:new Float32Array(120),sampleIdx:0,lastHudUpdate:0,lastMemLog:0,hud:null,txtA:null,txtB:null,txtC:null,txtD:null,txtE:null,lastP95ms:0,lastP99ms:0,worstRecentFrameMs:0};
 const _perfEnabled=()=>SETTINGS.perfHud||new URLSearchParams(location.search).get('perf')==='1';
 function _ensurePerfHud(){
@@ -41148,8 +41166,12 @@ function _perfTriage(){
 renderer.setAnimationLoop(()=>{
   _frameProfileBegin();
   G._frame=(G._frame|0)+1;
-  let dt=Math.min(clock.getDelta(),.05);
-  if(VIS_DEBUG.freezeTime)dt=0;
+  // The frame clock owns spike clamping (.05) and freeze/pause; keep THREE's clock
+  // ticking so anything still reading it stays in step.
+  clock.getDelta();
+  ENGINE_CLOCK.setPaused(!!VIS_DEBUG.freezeTime);
+  const _engineFrame=ENGINE_CLOCK.tick(performance.now());
+  let dt=_engineFrame.delta;
   _syncCanvasPointerEventsForMainMenu();
   const frameMs=dt*1000;
   PERF.emaMs=PERF.emaMs*0.9+frameMs*0.1;
@@ -44023,7 +44045,10 @@ renderer.setAnimationLoop(()=>{
     const ez=G.levelData.exitZone;
     if(P.pos.x>ez.x0&&ez.x1>P.pos.x&&P.pos.z>ez.z0&&ez.z1>P.pos.z)advanceBuilding();
   }
-      updateHands(dtFocusViewmodel);updateKnife(dtFocusMelee);updateBodyPresenceLegs(dtFocusLocomotion);updateDropkickFeet(dtFocusLocomotion);updateSlideLegs(dtFocusSlide);
+      // Same call order as before, but registered as named systems so each one is
+      // individually timed, disable-able and fault-isolated (see engineSystems()).
+      _ensureViewmodelSystemsRegistered();
+      ENGINE_SYSTEMS.run('viewmodel',{dtFocusViewmodel,dtFocusMelee,dtFocusLocomotion,dtFocusSlide});
       _syncScopedViewmodelVisibility(_currentOpticProfile(),P.scopeSettle||0);
       _syncPracticalIronSightViewmodel();
       _forceCombatViewmodelVisible();
@@ -44832,6 +44857,12 @@ installDebugApi({
       longFrames:DEPLOY_LOAD.longFrames.slice(),
       longTasks:DEPLOY_LOAD.longTasks.slice()
     }),
+    // ── Engine core ───────────────────────────────────────────────────────
+    engineClock:()=>ENGINE_CLOCK.snapshot(),
+    engineSystems:()=>ENGINE_SYSTEMS.snapshot(),
+    engineSetTimeScale:(scale)=>({timeScale:ENGINE_CLOCK.setTimeScale(scale),clock:ENGINE_CLOCK.snapshot()}),
+    engineSetSystemEnabled:(name,enabled=true)=>({ok:ENGINE_SYSTEMS.setEnabled(name,enabled),systems:ENGINE_SYSTEMS.snapshot()}),
+    engineVersions:()=>({frameClock:FRAME_CLOCK_VERSION,systemScheduler:SYSTEM_SCHEDULER_VERSION}),
     diagnostics:()=>_aaDiagnosticsReport(),
     sampleDiagnostics:(ms)=>_aaDiagnosticsSample(ms),
     debugStartBuilding:async(bn=1)=>{

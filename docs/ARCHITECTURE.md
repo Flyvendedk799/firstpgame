@@ -49,6 +49,40 @@ modules with named exports.
 - Custom maps: keep changes in `src/customMaps/` unless boot orchestration needs
   to call into them.
 
+## Engine Core (`src/engine/`)
+
+`src/engine/` holds the engine-shaped pieces: pure, dependency-free modules
+(no THREE, no DOM, no globals) that unit test in plain node via
+`npm run test:engine:core` and could be lifted into a standalone engine as-is.
+
+- **`frameClock.js`** — the single source of time for a frame. It owns:
+  - *spike clamping* (`maxFrameSeconds`, .05): a GC hitch or alt-tab must not
+    teleport the simulation;
+  - *pause and time scale*: debug freeze, hit-stop and slow-mo are one knob
+    (`engineSetTimeScale`), not scattered `dt = 0` special cases;
+  - *fixed-step accumulation* with an interpolation `alpha`, so simulation can be
+    made deterministic independently of render rate;
+  - *catch-up clamping* (`maxCatchUpSteps`): after a stall, run at most N fixed
+    steps and drop the rest, which is what prevents the "spiral of death" where
+    each slow frame owes more steps than the last.
+  The main loop calls `ENGINE_CLOCK.tick(performance.now())` once per frame and
+  uses the returned `delta`; `VIS_DEBUG.freezeTime` maps onto `setPaused`.
+- **`systemScheduler.js`** — turns "call N update functions inline" into named
+  systems with explicit phases (`input, simulate, animate, viewmodel, render`)
+  and `order`. It gives per-system timing (EMA + last), runtime enable/disable,
+  and fault isolation: a system that throws cannot kill the frame, and one that
+  throws repeatedly is quarantined instead of spamming the console every frame.
+  The viewmodel/embodiment ticks (hands, knife, body presence, dropkick feet,
+  slide legs) run through it today — `engineSystems()` reports where that frame
+  time actually goes.
+
+Inspect both at runtime: `__game.debug.engineClock()`, `__game.debug.engineSystems()`,
+`__game.debug.engineSetTimeScale(x)`, `__game.debug.engineSetSystemEnabled(name, on)`.
+
+Migrating more of the loop into scheduler phases is the intended direction: each
+extracted system becomes independently measurable and disable-able without
+touching the loop body.
+
 ## First-Person Viewmodel Rendering
 
 - The world renders with the gameplay `camera` (layer 0; FOV changes with ADS /
