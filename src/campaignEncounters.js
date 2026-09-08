@@ -699,6 +699,14 @@ function _cloneNativeCampaignEncounterFromB01(bn) {
   raw.encounters = _remapB01IdsDeep(raw.encounters, bn);
   raw.authoredSpawns = _remapB01IdsDeep(raw.authoredSpawns, bn);
   if (raw.director) raw.director = _remapB01IdsDeep(raw.director, bn);
+  // Mid-route Hold-E gate must work without a live alarm on non-alarm setpieces
+  // (hostage/ambush/sniper/etc). Only B01/B08/B12 use containment-alarm timing.
+  const alarmSetpiece = bn === 8 || bn === 12;
+  if (raw.director && Array.isArray(raw.director.objectives)) {
+    for (const o of raw.director.objectives) {
+      if (o && o.id === 'disable_alarm_panel') o.requireAlarmSystem = alarmSetpiece;
+    }
+  }
   const narr = NATIVE_CAMPAIGN_ENCOUNTER_NARRATIVE[bn];
   if (narr && narr.rooms && raw.rooms) {
     for (const [rk, patch] of Object.entries(narr.rooms)) {

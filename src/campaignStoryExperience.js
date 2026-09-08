@@ -33,6 +33,36 @@ function campaignCuePack(bn, code, label, opts = {}) {
         trigger: cue('setpiece_trigger', 'REINFORCEMENTS', opts.triggerTitle || 'Side Route Active', opts.trigger || 'A response group is entering through a secondary lane.', 'danger', 3600),
         silenced: cue('setpiece_complete', 'PRESSURE BROKEN', opts.silencedTitle || `${label} Controlled`, opts.silenced || 'The setpiece pressure is down. Finish the route cleanly.', 'success', 3200),
       },
+      alarm: {
+        start: cue('setpiece', 'ALARM LIVE', opts.alarmTitle || `${label} Alarm`, opts.alarm || 'Containment timer is live. Clear the middle or cut the panel.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'REINFORCEMENTS', opts.alarmTriggerTitle || 'Backup Deployed', opts.alarmTrigger || 'Alarm response is entering from a side door.', 'danger', 3600),
+        silenced: cue('setpiece_complete', 'ALARM SAFE', opts.alarmSilencedTitle || 'Alarm Silenced', opts.alarmSilenced || 'Timer pressure is gone. Finish the route clean.', 'success', 3200),
+      },
+      sniper: {
+        start: cue('setpiece', 'LONG ANGLE', opts.sniperTitle || `${label} Precision Hunt`, opts.sniper || 'Own the long axis. Headshots feed the streak — body shots break it.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'STREAK LIVE', opts.sniperTriggerTitle || 'Precision Window', opts.sniperTrigger || 'Keep the headshot chain clean through the open lane.', 'danger', 3200),
+        silenced: cue('setpiece_complete', 'ANGLE OWNED', opts.sniperSilencedTitle || `${label} Angle Cleared`, opts.sniperSilenced || 'Long-axis pressure is down. Push the objective.', 'success', 3200),
+      },
+      ambush: {
+        start: cue('setpiece', 'AMBUSH RISK', opts.ambushTitle || `${label} Ambush`, opts.ambush || 'Clearing the middle will wake a flanking wave. Hold an exit angle.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'FLANK WAVE', opts.ambushTriggerTitle || 'Side Door Breach', opts.ambushTrigger || 'Hostiles are flooding in from the back route.', 'danger', 3600),
+        silenced: cue('setpiece_complete', 'AMBUSH BROKEN', opts.ambushSilencedTitle || `${label} Flank Held`, opts.ambushSilenced || 'The flanking wave is down. Resume the spine.', 'success', 3200),
+      },
+      survival: {
+        start: cue('setpiece', 'HOLD POSITION', opts.survivalTitle || `${label} Hold`, opts.survival || 'Survive the timed hold. Do not abandon cover early.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'WAVE PRESSURE', opts.survivalTriggerTitle || 'Hold Tightens', opts.survivalTrigger || 'Extra pressure is stacking on the hold zone.', 'danger', 3200),
+        silenced: cue('setpiece_complete', 'HOLD CLEAR', opts.survivalSilencedTitle || `${label} Hold Complete`, opts.survivalSilenced || 'The window is open. Push before they reset.', 'success', 3200),
+      },
+      hostage: {
+        start: cue('setpiece', 'HOSTAGE PROTOCOL', opts.hostageTitle || 'Civilians On Floor', opts.hostage || 'Friendly fire fails the setpiece. Check every silhouette.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'CIVILIAN HIT', opts.hostageTriggerTitle || 'Friendly Fire', opts.hostageTrigger || 'A civilian took damage. Recover the room carefully.', 'danger', 3200),
+        silenced: cue('setpiece_complete', 'CIVILIANS SAFE', opts.hostageSilencedTitle || 'Hostages Secured', opts.hostageSilenced || 'No friendly fire. Finish the route.', 'success', 3200),
+      },
+      dark: {
+        start: cue('setpiece', 'BLACKOUT', opts.darkTitle || `${label} Blackout`, opts.dark || 'Power cut. Use the flashlight cone and listen for footsteps.', 'danger', 3600),
+        trigger: cue('setpiece_trigger', 'DARK PUSH', opts.darkTriggerTitle || 'Night Pressure', opts.darkTrigger || 'Hostiles are using the blackout. Stay close to cover.', 'danger', 3200),
+        silenced: cue('setpiece_complete', 'POWER RESTORED', opts.darkSilencedTitle || 'Lights Back', opts.darkSilenced || 'Blackout pressure is broken. Reorient and push.', 'success', 3200),
+      },
     }),
     reinforcements: Object.freeze({
       [`${p}_alarm_pair`]: cue('reinforcement', 'REINFORCEMENT WARNING', opts.reinforcementTitle || `${label} Response`, opts.reinforcement || 'Two hostiles are entering from the flank.', 'danger', 3200),
@@ -182,6 +212,10 @@ export const STORY_EXPERIENCE_BUILDING_CUES = Object.freeze({
     signatureTitle: 'Border Office',
     bossTitle: 'Checkpoint Target Exposed',
     clearTitle: 'Border Route Secured',
+    sniperTitle: 'Open Desert Angle',
+    sniper: 'Own the long axis before the courier burns the ledger. Headshots keep the streak.',
+    sniperSilencedTitle: 'Ledger Window Held',
+    sniperSilenced: 'The desert angle is yours. Reach the customs office.',
   }),
   10: campaignCuePack(10, 'cathedral', 'Cathedral of San Marco', {
     deployTitle: 'Unseal The Nave',
@@ -189,6 +223,12 @@ export const STORY_EXPERIENCE_BUILDING_CUES = Object.freeze({
     signatureTitle: 'Bell-Tower Route',
     bossTitle: 'Cathedral Guard Exposed',
     clearTitle: 'Cathedral Secured',
+    ambushTitle: 'Midnight Mass',
+    ambush: 'Choir loft pressure wakes when the nave clears. Keep the aisle quiet if you can.',
+    ambushTriggerTitle: 'Choir Loft Breach',
+    ambushTrigger: 'Flankers drop from the loft. Break contact or punish the stairs.',
+    ambushSilencedTitle: 'Nave Held',
+    ambushSilenced: 'Mass pressure is broken. Climb for the bell tower.',
   }),
   11: campaignCuePack(11, 'freighter', 'Karelia Freighter', {
     deployTitle: 'Cross The Deck Spine',
@@ -196,6 +236,10 @@ export const STORY_EXPERIENCE_BUILDING_CUES = Object.freeze({
     signatureTitle: 'Bridge Spotlight',
     bossTitle: 'Captain Guard Exposed',
     clearTitle: 'Freighter Secured',
+    survivalTitle: 'Heavy Seas',
+    survival: 'Hold the container maze until the bridge window opens. Do not abandon the spine early.',
+    survivalSilencedTitle: 'Seas Settled',
+    survivalSilenced: 'The hold is clear. Push the bridge before engines spike.',
   }),
   12: campaignCuePack(12, 'spire', 'The Spire', {
     deployTitle: 'Ascend The Spire',
@@ -203,6 +247,12 @@ export const STORY_EXPERIENCE_BUILDING_CUES = Object.freeze({
     signatureTitle: 'Helipad Apex',
     bossTitle: 'Spire Target Exposed',
     clearTitle: 'Spire Secured',
+    alarmTitle: 'Helo Clock',
+    alarm: 'Reach the helipad before the bird lifts. Cutting the pad alarm buys time.',
+    alarmTriggerTitle: 'Pad Response',
+    alarmTrigger: 'Helo security is flooding the crown. Break or sprint.',
+    alarmSilencedTitle: 'Bird Held',
+    alarmSilenced: 'Pad lockdown cleared. Finish the ascent.',
   }),
 });
 

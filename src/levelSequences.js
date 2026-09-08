@@ -1393,7 +1393,15 @@ const ELEMENT_BUILDERS = {
     b.position.set(e.x + 0.1, WT + h*1.45, e.z - 0.05); scene.add(b); ob.push(b);
     b.userData.coverHP = e.coverHP != null ? e.coverHP : 4;
     b.userData.breakSound = 'wood';
-    b.userData.noBlock = true;  // top crate breaks independently; bottom box owns the wall/vault AABB
+    // Own collider so the top crate does not float after the bottom breaks.
+    const aabbTop = { x0: e.x + 0.1 - w*0.46, x1: e.x + 0.1 + w*0.46, z0: e.z - 0.05 - d*0.46, z1: e.z - 0.05 + d*0.46 };
+    const vaultTop = { x0: aabbTop.x0, x1: aabbTop.x1, z0: aabbTop.z0, z1: aabbTop.z1, height: WT + h*1.9 };
+    wl.push(aabbTop);
+    vl.push(vaultTop);
+    b.userData.linkedAABB = aabbTop;
+    b.userData.linkedVault = vaultTop;
+    a.userData.stackTop = b;
+    b.userData.stackBaseY = WT + (h * 0.9) / 2;
   },
 
   // Cooling unit (B8) — wide, short, blocking with vent fan visual.
@@ -2271,6 +2279,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Library Wing', elements: [
         { t: 'shelfrow', x: -14, z: 0, col: 0x3a2412 },
         { t: 'bench', x: -16, z: -4, w: 1.8, d: 0.5, h: 0.5, col: 0x4a2a1c, back: true, rotY: Math.PI/2 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x282018, glow: 0xffd070,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -12.5, z: -3.2, w: 1.5, h: 0.9, d: 0.82, col: 0x3a3428, top: 0xffe8c8 },
         { t: 'cov', x: -12.5, z: 3.2, w: 1.5, h: 0.9, d: 0.82, col: 0x3a3428, top: 0xffe8c8 },
         { t: 'drum', x: -15.2, z: 0, n: 2, col: 0x8a6040, stripe: 0xffd070 },
@@ -2369,6 +2380,9 @@ const SEQUENCE_DEFS = {
         { t: 'dancefloor', x: -14, z: 0, w: 5.0, d: 8.0 },
         { t: 'speaker', x: -16.5, z: -3, col: 0xff40c8 },
         { t: 'speaker', x: -16.5, z: 3, col: 0x40e0ff },
+        { t: 'console', x: -14, z: 4.2, w: 1.6, h: 0.95, d: 0.7, col: 0x100018, glow: 0xff40c8,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -11.5, z: -2.8, w: 1.35, h: 0.82, d: 0.78, col: 0x1a1020, top: 0xff60c8, rotY: 0.15 },
         { t: 'cov', x: -11.5, z: 2.8, w: 1.35, h: 0.82, d: 0.78, col: 0x1a1020, top: 0x40e0ff, rotY: -0.15 },
         { t: 'cov', x: -13.5, z: 0, w: 1.2, h: 0.8, d: 0.72, col: 0x201028, top: 0xff80e8 },
@@ -2465,6 +2479,9 @@ const SEQUENCE_DEFS = {
         { t: 'plinthrow', x: -14.5, z: 0 },
         { t: 'banner', x: -17.8, z: -3, w: 1.0, h: 2.6, col: 0x081830, trim: 0xc8a040, rotY: Math.PI/2 },
         { t: 'banner', x: -17.8, z: 3, w: 1.0, h: 2.6, col: 0x081830, trim: 0xc8a040, rotY: Math.PI/2 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x080812, glow: 0xffd060,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -12.8, z: -2.5, w: 1.45, h: 0.88, d: 0.82, col: 0x2a2c38, top: 0xffd060 },
         { t: 'cov', x: -12.8, z: 2.5, w: 1.45, h: 0.88, d: 0.82, col: 0x2a2c38, top: 0xa0c8ff },
         { t: 'pend', x: -14, z: 0, col: 0xffd060 },
@@ -2558,6 +2575,9 @@ const SEQUENCE_DEFS = {
         { t: 'bed', x: -14, z: 2, rotY: 0 },
         { t: 'curtain', x: -16, z: 0, w: 1.4, h: 2.0, rotY: Math.PI/2, col: 0xc8d0d8 },
         { t: 'cart', x: -17, z: -4, col: 0xb83020 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x282c34, glow: 0x40c8e0,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -12.5, z: -2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a4248, top: 0xc8e0e8 },
         { t: 'cov', x: -12.5, z: 2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a4248, top: 0x40c8e0 },
         { t: 'pend', x: -14, z: 0, col: 0xc8d0d8, int: 1.0, flicker: true },
@@ -2643,6 +2663,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Track Bed Bypass', elements: [
         { t: 'track', x: -14, z: 0, len: 12, rotY: Math.PI/2, live: true },
         { t: 'pipes', x: -14, z: -5, len: 7 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14161c, glow: 0xff5040,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -12.8, z: -2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a3c44, top: 0xfff060 },
         { t: 'cov', x: -12.8, z: 2.5, w: 1.4, h: 0.88, d: 0.8, col: 0x3a3c44, top: 0xff5040 },
         { t: 'crate2', x: -16, z: -4, col: 0x383c44 },
@@ -2730,6 +2753,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Crew Hatch Bypass', elements: [
         { t: 'tall', x: -16, z: -3, w: 0.9, h: 2.0, d: 0.55, col: 0x282028, stripes: 4, stripe: 0xa0c8ff },
         { t: 'tall', x: -16, z: 3, w: 0.9, h: 2.0, d: 0.55, col: 0x282028, stripes: 4, stripe: 0xa0c8ff },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14161c, glow: 0xa0c8ff,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'crate2', x: -13, z: -4, col: 0x4a3a20 },
         { t: 'crate2', x: -13, z: 4, col: 0x4a3a20 },
         { t: 'pipes', x: -14, z: 0, len: 5 },
@@ -2816,7 +2842,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Patch Panel Crawl', elements: [
         { t: 'tall', x: -16, z: -3, w: 0.9, h: 2.4, d: 0.45, col: 0x080a14, stripes: 5, stripe: 0x60a0ff, rotY: Math.PI/2 },
         { t: 'tall', x: -16, z: 3, w: 0.9, h: 2.4, d: 0.45, col: 0x080a14, stripes: 5, stripe: 0x60a0ff, rotY: Math.PI/2 },
-        { t: 'console', x: -13, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x080a14, glow: 0x40e0ff },
+        { t: 'console', x: -13, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x080a14, glow: 0x40e0ff,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'pipes', x: -13, z: 4, len: 5, col: 0x282830 },
         { t: 'cov', x: -12.5, z: -5, w: 1.26, h: 0.83, d: 0.74, col: 0x101820, top: 0x60a0ff },
         { t: 'cov', x: -12.5, z: 5, w: 1.26, h: 0.83, d: 0.74, col: 0x101820, top: 0x40e0ff },
@@ -2909,7 +2937,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Border Office', elements: [
         { t: 'desk', x: -14, z: 0, lx: 1.55, lz: 1.20 },
         { t: 'tall', x: -16, z: -4, w: 0.85, h: 2.0, d: 0.55, col: 0x282018, stripes: 3, stripe: 0xffb060 },
-        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14100a, glow: 0xffd090 },
+        { t: 'console', x: -14, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x14100a, glow: 0xffd090,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'bench', x: -16, z: 2, w: 0.6, d: 2.0, h: 0.55, col: 0x4a3820, rotY: Math.PI/2 },
         { t: 'cov', x: -12.5, z: -2.2, w: 1.4, h: 0.88, d: 0.8, col: 0x4a3820, top: 0xffd090 },
         { t: 'cov', x: -12.5, z: 2.2, w: 1.4, h: 0.88, d: 0.8, col: 0x4a3820, top: 0xffb060 },
@@ -2996,6 +3026,9 @@ const SEQUENCE_DEFS = {
       MW: { name: 'Confessionals', elements: [
         { t: 'tall', x: -15, z: -2, w: 1.6, h: 2.4, d: 1.2, col: 0x281810, stripes: 2, stripe: 0xffe8b0 },
         { t: 'tall', x: -15, z: 3, w: 1.6, h: 2.4, d: 1.2, col: 0x281810, stripes: 2, stripe: 0xffe8b0 },
+        { t: 'console', x: -13, z: 4.5, w: 1.6, h: 0.95, d: 0.7, col: 0x18140c, glow: 0xffe8b0,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'lamp', x: -13, z: 0, col: 0xffe8b0 },
         { t: 'cov', x: -12, z: 4, w: 1.6, h: 0.9, d: 0.7, col: 0x281810, top: 0xffe8b0 },
         { t: 'cov', x: -12, z: -4, w: 1.5, h: 0.88, d: 0.72, col: 0x281810, top: 0xffd090 },
@@ -3087,7 +3120,9 @@ const SEQUENCE_DEFS = {
         { t: 'pipes', x: -13, z: 0, len: 7 },
         { t: 'cov', x: -13, z: 4, w: 2.0, h: 0.85, d: 0.8, col: 0x2a323a, top: 0x80b0d0 },
         { t: 'cov', x: -12.5, z: -4.5, w: 1.28, h: 0.84, d: 0.75, col: 0x2a323a, top: 0xff8040 },
-        { t: 'console', x: -14, z: -4, w: 1.6, h: 0.95, d: 0.7, col: 0x10141c, glow: 0xff8040 },
+        { t: 'console', x: -14, z: -4, w: 1.6, h: 0.95, d: 0.7, col: 0x10141c, glow: 0xff8040,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'pend', x: -14, z: -2, col: 0xff8040, int: 1.6 },
       ]},
       ME: { name: 'Deck Lift', elements: [
@@ -3171,7 +3206,9 @@ const SEQUENCE_DEFS = {
         { t: 'desk', x: -14, z: 0, lx: 1.6, lz: 4.0 },
         { t: 'bench', x: -16, z: -3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
         { t: 'bench', x: -16, z: 3, w: 0.7, d: 2.4, h: 0.55, col: 0x10141c, back: true, rotY: Math.PI/2 },
-        { t: 'console', x: -12, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x06070a, glow: 0xffd060 },
+        { t: 'console', x: -12, z: 0, w: 1.6, h: 0.95, d: 0.7, col: 0x06070a, glow: 0xffd060,
+          geometryId: 'relay_panel_anchor', roomId: 'alarm_relay_room', floorplanRole: 'objective_anchor',
+          objectiveId: 'alarm_panel' },
         { t: 'cov', x: -12.8, z: -2.5, w: 1.25, h: 0.85, d: 0.74, col: 0x10141c, top: 0xc8e0ff },
         { t: 'cov', x: -12.8, z: 2.5, w: 1.25, h: 0.85, d: 0.74, col: 0x10141c, top: 0xffd060 },
         { t: 'pend', x: -14, z: 0, col: 0xffd060, int: 1.8, r: 9 },

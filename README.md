@@ -109,9 +109,9 @@ Same caveat for `attachDeagleGlbModel()`.
 
 ## Campaign Runtime
 
-The shipped campaign is the 8-building runtime in `src/main.js`, with spatial identity and encounter metadata in `src/levelSequences.js`.
+The shipped campaign is the **12-building** runtime in `src/main.js`, with spatial identity and encounter metadata in `src/levelSequences.js`.
 
-The old standalone 12-level story prototype was removed so deploy, level select, range, endless, and tests all point at the same production campaign path. Keep future level work focused on:
+Deploy, level select, range, endless, and tests all point at the same production campaign path. Keep future level work focused on:
 - `CAMPAIGN_LEVELS` in `src/main.js`
 - `BUILDING_INFO` compatibility data in `src/main.js`
 - `SEQUENCE_DEFS` and `getSequenceGameplayProfile()` in `src/levelSequences.js`

@@ -19,6 +19,7 @@
     "test:visual:regression": "node scripts/with-preview.mjs node scripts/visual-regression.mjs",
     "test:assets:budget": "node scripts/with-preview.mjs node scripts/asset-budget.mjs",
     "test:campaign": "node scripts/with-preview.mjs node scripts/campaign-regression.mjs",
+    "test:campaign:playthrough": "node scripts/with-preview.mjs node scripts/campaign-playthrough-smoke.mjs",
     "test:ai": "node scripts/with-preview.mjs node scripts/ai-tactical-probe.mjs",
     "test:perf": "node scripts/with-preview.mjs node scripts/perf-snapshot.mjs",
     "test:perf:stress": "node scripts/with-preview.mjs node scripts/perf-stress.mjs",

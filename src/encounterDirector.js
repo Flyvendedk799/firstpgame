@@ -228,7 +228,7 @@ export class EncounterDirector {
       for (const e of enemyMgr._list) {
         if (!e || e.encounterId !== enc.id) continue;
         tagged++;
-        if (!e.dead) alive++;
+        if (!e.dead && !e._roomFlowDormant) alive++;
       }
       const spawned = !!this._encounterSpawned[enc.id];
       if (!spawned && tagged === 0 && !this._isEncounterClearGateReachable(enc.id)) continue;
@@ -264,6 +264,63 @@ export class EncounterDirector {
     }
     this._zoneDoorBlockReason[`z${zi}`] = null;
     return true;
+  }
+
+  /**
+   * Softlock escape: when a zone is combat-empty, force-complete any required
+   * door encounters that no longer have living tagged enemies (never spawned,
+   * or wiped without completing). Prevents stuck zone doors on B01+.
+   * @param {number} zoneId
+   * @param {{_list?: object[]}|null} enemyMgr
+   * @returns {boolean} true if door requirements are now satisfied
+   */
+  reconcileStaleZoneDoorEncounters(zoneId, enemyMgr) {
+    if (this.encountersSatisfiedForZoneDoorOpen(zoneId)) return true;
+    const zi = Number(zoneId) | 0;
+    const raw =
+      this.encounterDef && this.encounterDef.director && this.encounterDef.director.zoneDoorRequires;
+    if (!raw || typeof raw !== 'object') return true;
+    const req = raw[zi] !== undefined ? raw[zi] : raw[String(zi)];
+    if (!req || !Array.isArray(req.encounterIds) || req.encounterIds.length === 0) return true;
+    const list = enemyMgr && Array.isArray(enemyMgr._list) ? enemyMgr._list : [];
+    for (const id of req.encounterIds) {
+      if (!id || this.completedEncounterIds[id]) continue;
+      let aliveTagged = 0;
+      for (const e of list) {
+        if (!e || e.encounterId !== id || e.dead || e._roomFlowDormant) continue;
+        aliveTagged++;
+      }
+      if (aliveTagged === 0) this.completeEncounter(id);
+    }
+    return this.encountersSatisfiedForZoneDoorOpen(zoneId);
+  }
+
+  /**
+   * Softlock escape for exit throat: when zone 2 is combat-empty, complete any
+   * unfinished room_clear encounters that gate signature→exit.
+   * @param {{_list?: object[]}|null} enemyMgr
+   * @returns {boolean}
+   */
+  reconcileStaleExitEncounters(enemyMgr) {
+    if (!this.encountersCatalog || !enemyMgr) return false;
+    let changed = false;
+    const list = Array.isArray(enemyMgr._list) ? enemyMgr._list : [];
+    for (const enc of this.encountersCatalog) {
+      if (!enc || !enc.id || this.completedEncounterIds[enc.id]) continue;
+      const ct = enc.completion && enc.completion.type;
+      if (ct !== 'room_clear' && ct !== 'objective_and_room_safe') continue;
+      if (!/relay_cage_clear|signature|exit/i.test(String(enc.id))) continue;
+      let alive = 0;
+      for (const e of list) {
+        if (!e || e.encounterId !== enc.id || e.dead || e._roomFlowDormant) continue;
+        alive++;
+      }
+      if (alive === 0) {
+        this.completeEncounter(enc.id);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   /** Debug: mark all zoneDoorRequires encounters for `zoneId` complete (dev only). */

@@ -2316,9 +2316,12 @@ function _makeLevelLightingController({scene,bn,lightProfile,reflProfile,zoneBou
     {id:'mid',prof:lightProfile.zoneB},
     {id:'back',prof:lightProfile.zoneC}
   ];
-  const state={id:'adaptive-zone-lighting',zone:'mid',near:0,exposure:base.exposure,env:base.envIntensity};
+  const state={id:'adaptive-zone-lighting',zone:'mid',near:0,exposure:base.exposure,env:base.envIntensity,moodScale:1};
   const bounceTarget=new THREE.Vector3();
   const zoneForZ=z=>z>zSplit?zones[0]:(z>=-zSplit?zones[1]:zones[2]);
+  function setMoodScale(scale){
+    state.moodScale=THREE.MathUtils.clamp(Number(scale)||1,.12,1.35);
+  }
   function nearestLamp(pos){
     if(!pos)return null;
     let best=null,bestD2=Infinity;
@@ -2357,29 +2360,30 @@ function _makeLevelLightingController({scene,bn,lightProfile,reflProfile,zoneBou
     const lampColor=colors.lamp.copy(lampChrom).lerp(poolColor,.35);
     const ads=player?player.ads||0:0;
     const running=player&&player.running ? .045 : 0;
+    const mood=Number.isFinite(state.moodScale)?state.moodScale:1;
     state.zone=zone.id;
     state.near=lampNear;
     if(ambient){
       colors.targetA.copy(colors.ambientBase).lerp(poolColor,.13+lampNear*.18);
       ambient.color.lerp(colors.targetA,step);
-      ambient.intensity+=(base.ambientIntensity*(.94+lampNear*.08+running)-ambient.intensity)*step;
+      ambient.intensity+=(base.ambientIntensity*(.94+lampNear*.08+running)*mood-ambient.intensity)*step;
     }
     if(hemisphere){
       colors.targetA.copy(colors.hemiSkyBase).lerp(lampColor,.16+lampNear*.22);
       colors.targetB.copy(colors.hemiGroundBase).lerp(poolColor,.12+lampNear*.16);
       hemisphere.color.lerp(colors.targetA,step);
       hemisphere.groundColor.lerp(colors.targetB,step);
-      hemisphere.intensity+=(base.hemiIntensity*(.96+lampNear*.12)-hemisphere.intensity)*step;
+      hemisphere.intensity+=(base.hemiIntensity*(.96+lampNear*.12)*mood-hemisphere.intensity)*step;
     }
     if(rim){
       colors.targetA.copy(colors.rimBase).lerp(zoneColor,.18+lampNear*.16);
       rim.color.lerp(colors.targetA,step);
-      rim.intensity+=(base.rimIntensity*(.92+lampNear*.18+ads*.04)-rim.intensity)*step;
+      rim.intensity+=(base.rimIntensity*(.92+lampNear*.18+ads*.04)*Math.max(.55,mood)-rim.intensity)*step;
     }
     if(key){
       colors.targetA.copy(colors.keyBase).lerp(lampColor,.08+lampNear*.10);
       key.color.lerp(colors.targetA,step*.7);
-      let keyAmp=base.keyIntensity*(.98+lampNear*.08);
+      let keyAmp=base.keyIntensity*(.98+lampNear*.08)*mood;
       if(csManager&&csManager.lights&&csManager.lights.length){
         key.intensity=0;
         for(const L of csManager.lights){
@@ -2409,16 +2413,17 @@ function _makeLevelLightingController({scene,bn,lightProfile,reflProfile,zoneBou
     if(scene&&scene.fog){
       colors.targetA.copy(colors.fogBase).lerp(poolColor,.08+lampNear*.10);
       scene.fog.color.lerp(colors.targetA,step*.45);
-      const fogTarget=base.fogDensity*(.96-lampNear*.10+ads*.025);
+      const fogTarget=base.fogDensity*(.96-lampNear*.10+ads*.025)*(mood<.85?1+(1-mood)*.35:1);
       scene.fog.density+=(fogTarget-scene.fog.density)*step*.45;
     }
     if(scene&&'environmentIntensity' in scene){
-      const envTarget=base.envIntensity*(.97+lampNear*.085+ads*.015);
+      const envTarget=base.envIntensity*(.97+lampNear*.085+ads*.015)*Math.max(.45,mood);
       scene.environmentIntensity+=(envTarget-scene.environmentIntensity)*step*.55;
       state.env=scene.environmentIntensity;
     }
     if(typeof renderer!=='undefined'&&renderer){
-      const exposureTarget=base.exposure*(1+lampNear*.035-ads*.014);
+      // Under STABLE mode exposure is locked elsewhere; still track the target for snapshots.
+      const exposureTarget=base.exposure*(1+lampNear*.035-ads*.014)*(mood<.9?1+(1-mood)*.12:1);
       renderer.toneMappingExposure+=(exposureTarget-renderer.toneMappingExposure)*step*.50;
       state.exposure=renderer.toneMappingExposure;
     }
@@ -2426,6 +2431,7 @@ function _makeLevelLightingController({scene,bn,lightProfile,reflProfile,zoneBou
   return {
     id:state.id,
     tick,
+    setMoodScale,
     snapshot:()=>{
       let budgetedWorldPts=Array.isArray(ceilingLights)?ceilingLights.filter(L=>L&&L.isPointLight).length:0;
       const fakePts=Array.isArray(fakeCeilingLamps)?fakeCeilingLamps.length:0;
@@ -2486,7 +2492,8 @@ function buildLevel(scene,bn){
   function box(x,y,z,w,h,d,mat){
     const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     m.receiveShadow=true;
-    m.castShadow=h>.16&&w*d<18;
+    // Cast on furniture-scale props; skip thin floors and huge slabs.
+    m.castShadow=h>.12&&w*d<42;
     m.position.set(x,y,z);scene.add(m);ob.push(m);return m;
   }
   // _addBox helper used by per-building decorations and Sifu density pass
@@ -2494,7 +2501,7 @@ function buildLevel(scene,bn){
   const _addBox=(x,y,z,w,h,d,mat,blocking)=>{
     const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     m.receiveShadow=true;
-    m.castShadow=h>.16&&w*d<18;
+    m.castShadow=h>.12&&w*d<42;
     m.position.set(x,y,z);scene.add(m);ob.push(m);
     if(blocking)wl.push({x0:x-w/2,x1:x+w/2,z0:z-d/2,z1:z+d/2});
     return m;
@@ -3102,13 +3109,13 @@ function buildLevel(scene,bn){
      zoneB:{col:0xa0c8ff,int:2.6,pool:0xb0d0ff},
      zoneC:{col:0x80a0e8,int:2.2,pool:0x90b0e8},
      fog:0x06090e,fogD:.018},
-    // 5: HOSPITAL — abandoned ward, failing fluorescents (dim & moody)
-    {ambCol:0x3a4650,ambInt:1.15,hemiSky:0x6f7c86,hemiGround:0x20262c,hemiInt:0.55,
-     keyCol:0xc8d4d8,keyInt:0.58,keyPos:[10,14,8],rimCol:0x7da0aa,rimInt:0.42,rimPos:[-8,10,-12],
-     zoneA:{col:0xb8c4c8,int:1.9,pool:0xa0b0b4},
-     zoneB:{col:0xa8b4ba,int:1.65,pool:0x8f9ca2},
-     zoneC:{col:0x90a0a8,int:1.45,pool:0x74848c},
-     fog:0x141820,fogD:.028},
+    // 5: HOSPITAL — abandoned ward, failing fluorescents (readable base; BLACKOUT setpiece dims further)
+    {ambCol:0x3a4650,ambInt:1.45,hemiSky:0x6f7c86,hemiGround:0x20262c,hemiInt:0.68,
+     keyCol:0xc8d4d8,keyInt:0.72,keyPos:[10,14,8],rimCol:0x7da0aa,rimInt:0.48,rimPos:[-8,10,-12],
+     zoneA:{col:0xb8c4c8,int:2.15,pool:0xa0b0b4},
+     zoneB:{col:0xa8b4ba,int:1.90,pool:0x8f9ca2},
+     zoneC:{col:0x90a0a8,int:1.70,pool:0x74848c},
+     fog:0x141820,fogD:.022},
     // 6: SUBWAY — dim with red emergency, harsh shadows
     {ambCol:0x1a1820,ambInt:1.2,hemiSky:0x303040,hemiGround:0x080a0c,hemiInt:0.45,
      keyCol:0xff5040,keyInt:0.55,keyPos:[8,11,12],rimCol:0xfff060,rimInt:0.45,rimPos:[-8,8,-12],
@@ -3137,20 +3144,20 @@ function buildLevel(scene,bn){
      zoneB:{col:0xffd090,int:2.4,pool:0xffc070},
      zoneC:{col:0x8090c0,int:2.0,pool:0x6878a8},
      fog:0x180c08,fogD:.020},
-    // 10: CATHEDRAL — votive candle pools in deep gothic shadow
-    {ambCol:0x0c0a08,ambInt:0.85,hemiSky:0x8a4020,hemiGround:0x040402,hemiInt:0.35,
-     keyCol:0xffe8b0,keyInt:0.60,keyPos:[8,12,10],rimCol:0x603018,rimInt:0.35,rimPos:[-10,8,-12],
-     zoneA:{col:0xffe8b0,int:2.4,pool:0xffd090},
-     zoneB:{col:0xffc070,int:2.0,pool:0xffb060},
-     zoneC:{col:0xfff0d0,int:2.6,pool:0xffe0b0},
-     fog:0x080604,fogD:.038},
-    // 11: KARELIA — open-ocean fog at night, harsh deck floods
-    {ambCol:0x1c2430,ambInt:1.2,hemiSky:0x506880,hemiGround:0x080a10,hemiInt:0.55,
-     keyCol:0xb0c8e0,keyInt:0.55,keyPos:[10,13,12],rimCol:0xffa040,rimInt:0.55,rimPos:[-8,8,-12],
-     zoneA:{col:0xa0c0e0,int:2.4,pool:0x80a8d0},
-     zoneB:{col:0xc0d0e8,int:2.2,pool:0xa0b8d8},
-     zoneC:{col:0xff8040,int:2.6,pool:0xff6020},
-     fog:0x101820,fogD:.045},
+    // 10: CATHEDRAL — votive candle pools in deep gothic shadow (readable under STABLE)
+    {ambCol:0x1a1410,ambInt:1.45,hemiSky:0x9a5030,hemiGround:0x080604,hemiInt:0.62,
+     keyCol:0xffe8b0,keyInt:0.92,keyPos:[8,12,10],rimCol:0x704028,rimInt:0.52,rimPos:[-10,8,-12],
+     zoneA:{col:0xffe8b0,int:3.0,pool:0xffd090},
+     zoneB:{col:0xffc070,int:2.6,pool:0xffb060},
+     zoneC:{col:0xfff0d0,int:3.2,pool:0xffe0b0},
+     fog:0x080604,fogD:.024},
+    // 11: KARELIA — night deck fog (readable lanes, not milk-soup)
+    {ambCol:0x222a38,ambInt:1.45,hemiSky:0x506880,hemiGround:0x080a10,hemiInt:0.68,
+     keyCol:0xb0c8e0,keyInt:0.72,keyPos:[10,13,12],rimCol:0xffa040,rimInt:0.60,rimPos:[-8,8,-12],
+     zoneA:{col:0xa0c0e0,int:2.7,pool:0x80a8d0},
+     zoneB:{col:0xc0d0e8,int:2.5,pool:0xa0b8d8},
+     zoneC:{col:0xff8040,int:2.8,pool:0xff6020},
+     fog:0x101820,fogD:.030},
     // 12: THE SPIRE — pre-dawn city panorama, executive chrome
     {ambCol:0x10141c,ambInt:1.3,hemiSky:0x6a90c8,hemiGround:0x040608,hemiInt:0.95,
      keyCol:0xc8e0ff,keyInt:0.95,keyPos:[12,14,10],rimCol:0xffe060,rimInt:0.55,rimPos:[-10,9,-14],
@@ -5160,7 +5167,11 @@ function buildLevel(scene,bn){
     5:{name:'medcab',colors:[0xeeeae0,0xc8d0d8],sound:'glass'},
     6:{name:'pillar',colors:[0x303038,0x404048],sound:'wood'},
     7:{name:'chest',colors:[0x281408,0x4a3018],sound:'wood'},
-    8:{name:'rack',colors:[0x14181f,0x080808],sound:'glass'}
+    8:{name:'rack',colors:[0x14181f,0x080808],sound:'glass'},
+    9:{name:'sandbag',colors:[0x8a6840,0x6a4828],sound:'wood'},
+    10:{name:'pew',colors:[0x3a2818,0x281810],sound:'wood'},
+    11:{name:'container',colors:[0x405060,0x2a323a],sound:'glass'},
+    12:{name:'glassdesk',colors:[0x10141c,0x06070a],sound:'glass'}
   };
   const cset=_coverSets[bn]||_coverSets[1];
   // Spawn cover at varied positions, avoiding doorway lines and spawn area
@@ -5239,7 +5250,7 @@ function buildLevel(scene,bn){
   // ─── MOOD LIGHT ACCENT — building-specific small floor/wall lamps ──────
   // Adds ~6 small, mood-tinted PointLight stand-ins (rendered as glowing meshes
   // not actual lights to keep light count low) for atmosphere.
-  const moodCol=({1:0xff8040,2:0xffd060,3:0xff40c8,4:0xa0c8ff,5:0x40c8ff,6:0xff5040,7:0xa0c8ff,8:0x40c8ff})[bn]||0xffd060;
+  const moodCol=({1:0xff8040,2:0xffd060,3:0xff40c8,4:0xa0c8ff,5:0x40c8ff,6:0xff5040,7:0xa0c8ff,8:0x40c8ff,9:0xffb060,10:0xffe8b0,11:0x6890b8,12:0xc8e0ff})[bn]||0xffd060;
   const moodM=new THREE.MeshBasicMaterial({color:moodCol,transparent:true,opacity:.78,blending:THREE.AdditiveBlending});
   const fixedMood=bn===1?[[0,18.2],[-4.5,14.2],[5.0,5.4],[-14.2,1.0],[14.2,-2.2],[-5.0,-9.6],[0,-20.4]]:null;
   if(fixedMood){
@@ -7435,10 +7446,11 @@ class Enemy{
       const dx=(pp&&pp.x!=null?pp.x:this.group.position.x)-this.group.position.x;
       const dz=(pp&&pp.z!=null?pp.z:this.group.position.z)-this.group.position.z;
       const d2=dx*dx+dz*dz;
-	      if(q==='low')lod=d2<10*10?'medium':'low';
-	      else if(q==='medium')lod=d2<16*16?'high':d2<28*28?'medium':'low';
-	      else if(q==='high')lod=d2<22*22?'high':d2<38*38?'medium':'low';
-	      else lod=d2<32*32?'high':d2<52*52?'medium':'low';
+	      // Push low/impostor farther out so mid-range fights keep a solid silhouette.
+	      if(q==='low')lod=d2<12*12?'medium':'low';
+	      else if(q==='medium')lod=d2<20*20?'high':d2<36*36?'medium':'low';
+	      else if(q==='high')lod=d2<30*30?'high':d2<52*52?'medium':'low';
+	      else lod=d2<40*40?'high':d2<68*68?'medium':'low';
 	      const useMeshyRig=!!(this.meshyRig&&lod==='high'&&d2<20*20);
 	      if(lod===this.characterLod&&(!this.meshyRig||this.meshyRig.visible===useMeshyRig))return;
 	      const set=(arr,visible)=>{if(!arr)return;for(const m of arr)if(m)m.visible=visible;};
@@ -7446,7 +7458,8 @@ class Enemy{
 	      set(this.humanLodBuckets.core,!useMeshyRig);
 	      set(this.humanLodBuckets.medium,!useMeshyRig&&lod!=='low');
 	      set(this.humanLodBuckets.high,!useMeshyRig&&lod==='high');
-	      set(this.humanLodBuckets.impostor,!useMeshyRig&&lod==='low');
+	      // Impostor card only on low quality — otherwise far enemies keep core mesh.
+	      set(this.humanLodBuckets.impostor,!useMeshyRig&&lod==='low'&&q==='low');
 	      if(Array.isArray(this.characterDetailMeshes)){
 	        const showDetail=!useMeshyRig&&lod==='high';
 	        for(const m of this.characterDetailMeshes)if(m)m.visible=showDetail;
@@ -12877,7 +12890,9 @@ class EnemyManager{
   aliveInZone(z){
     let n=0;
     for (const e of this._list) {
-      if (!e || e.dead || !e.group || !e.group.position) continue;
+      // Dormant flow-room enemies are not in play — counting them softlocks
+      // mid/back doors when alarm-gated flank rooms never wake.
+      if (!e || e.dead || e._roomFlowDormant || !e.group || !e.group.position) continue;
       if (getZoneOf(e.group.position) === z) n++;
     }
     return n;
@@ -23203,9 +23218,13 @@ function hudUpdate(){
   const beat=G.currentBeat&&G.currentBeat.meta;
   const flowProgress=G.encounterDirector&&typeof G.encounterDirector.getRoomProgress==='function'?G.encounterDirector.getRoomProgress():null;
   const roomCount=G.zoneClears?G.zoneClears.filter(c=>c).length:0;
-  const megaRoomTotal=G.levelData&&G.levelData.isMegaplexB01&&Array.isArray(G.levelData.roomAnchors)?G.levelData.roomAnchors.length:0;
-  const megaRoomCount=megaRoomTotal?Math.min(megaRoomTotal,roomCount*5):roomCount;
-  const roomLabel=demoHud?'NO ENEMIES':(flowProgress?('ROOM '+flowProgress.current+' / '+flowProgress.total):(megaRoomTotal?('ROOMS '+megaRoomCount+' / '+megaRoomTotal):('ROOMS '+roomCount+' / 3')));
+  // Prefer authored encounter-room progress; fall back to the 3-zone clear spine.
+  // Do not surface megaplex roomAnchor counts (often 15) — that reads as a broken HUD.
+  const roomLabel=demoHud?'NO ENEMIES':(
+    flowProgress&&flowProgress.total
+      ?('ROOM '+Math.min(flowProgress.current|0,flowProgress.total)+' / '+flowProgress.total)
+      :('ROOMS '+roomCount+' / 3')
+  );
   _hudSetText('wave-num',demoHud?'DEMO MAP · NO ENEMIES':((beat?beat.label+' · ':'')+roomLabel));
   _hudSetText('building-num',demoHud?'DEMO · AIM DUEL BOX':('B'+G.building+' · '+(level?level.callsign:'BUILDING')));
   if(G.enemyMgr)_hudSetText('enemy-count',G.enemyMgr.aliveCount);
@@ -23498,7 +23517,8 @@ function moneyPopup(amount,label){
 function awardKillMoney(enemy,isHead){
   const base=KILL_REWARD[enemy&&enemy.type]||25;
   const hs=isHead?15:0;
-  const total=base+hs;
+  let total=base+hs;
+  if(typeof hasActivePowerup==='function'&&hasActivePowerup('doubleScore'))total*=2;
   P.money+=total;
   moneyPopup(total,isHead?'HS':'');
   sfxMoney();
@@ -23526,7 +23546,8 @@ function useHealPack(){
   const cap=P.maxHp||100;
   if(P.dead||P.healPacks<=0||P.hp>=cap)return;
   P.healPacks--;P.hp=cap;sfxHeal();
-  if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+  // Only fail mastery objectives that require no healing (not every building).
+  if(typeof failMasteryIfMatch==='function')failMasteryIfMatch(/no_heal|platform_hold|subway_platform/, 'heal');
   // Quick green flash on the dmg-flash element repurposed
   const f=$e('dmg-flash');f.style.background='rgba(80,220,120,.30)';f.style.opacity='.9';
   setTimeout(()=>{f.style.opacity='0';setTimeout(()=>{f.style.background='rgba(255,0,0,.25)';},220);},120);
@@ -23760,8 +23781,9 @@ function spawnEnemyGrenade(fromPos,toPos,thrower){
 }
 function explodeGrenade(pos,fromEnemy){
   const RADIUS=5.2;
-  // Damage enemies — falloff with distance
-  if(G.enemyMgr){
+  // Player grenades damage enemies. Enemy (demolitions) frags must NOT
+  // friendly-fire allies — that collapses authored encounter counts.
+  if(G.enemyMgr&&!fromEnemy){
     for(const e of G.enemyMgr._list){
       if(e.dead)continue;
       const dx=e.group.position.x-pos.x;
@@ -23770,30 +23792,23 @@ function explodeGrenade(pos,fromEnemy){
       const d=Math.sqrt(dx*dx+dz*dz+dy*dy*.4);
       if(d<RADIUS){
         const dmg=Math.max(40,300-d*55);
-        // Direction: knock enemy outward from blast
         e.lastPlayerDir.set(-dx/Math.max(d,.01),0,-dz/Math.max(d,.01));
         _primeEnemyHitZone('torso');
         const killed=e.takeDamage(dmg,false);
         if(killed){
           addBlood(e.group.position.clone(),false);
           cinematicKill(e.group.position.clone());
-          // Only the PLAYER's own grenade should credit the player with the
-          // kill, money, combo, and story momentum. Enemy (demolitions)
-          // grenades can friendly-fire other enemies but must not pad the
-          // player's score.
-          if(!fromEnemy){
-            P.kills++;
-            killFeed(false,{dist:d});
-            awardKillMoney(e,false);
-            comboKill(false,{source:'grenade-kill',closeRange:THREE.MathUtils.clamp(1-d/5,0,1)});
-            applyStoryMomentumShock(e,pos,{source:'grenade-kill'});
-          }
+          P.kills++;
+          killFeed(false,{dist:d});
+          awardKillMoney(e,false);
+          comboKill(false,{source:'grenade-kill',closeRange:THREE.MathUtils.clamp(1-d/5,0,1)});
+          applyStoryMomentumShock(e,pos,{source:'grenade-kill'});
           setTimeout(()=>checkZoneClears(),60);
         }
       }
     }
   }
-  // Self-damage if too close
+  // Self-damage if too close (player and enemy frags both hurt the operator)
   const pdx=P.pos.x-pos.x,pdz=P.pos.z-pos.z;
   const pd=Math.sqrt(pdx*pdx+pdz*pdz);
   if(pd<3.5)takeDamage(Math.max(10,75-pd*22));
@@ -24268,7 +24283,8 @@ function _applyScreenPostProfile(ctx){
     if(cg)cg.style.opacity='0';
     if(grain)grain.style.opacity='0';
     const chrom=$e('chrom');if(chrom)chrom.classList.remove('show');
-    const lowHp=$e('low-hp');if(lowHp)lowHp.style.opacity='0';
+    // Keep #low-hp under the main-loop writer — it is the only danger vignette
+    // while the composer/post stack is locked off.
     const scopeVig=$e('scope-vignette');if(scopeVig)_uiSetStyle(scopeVig,'scope-vignette','opacity','0');
     const leanVig=$e('lean-vignette');if(leanVig){leanVig.style.opacity='0';leanVig.className='';}
     G._screenPost={enabled:false,stable:true,coreVisualPostCameraVersion:_CORE_VISUAL_POST_CAMERA_VERSION};
@@ -24357,7 +24373,11 @@ function _syncEditorPlaytestUi(){
   const esQuit=$e('es-quit');
   if(esQuit)esQuit.textContent=canReturn?'RETURN TO EDITOR':'MAIN MENU';
   const esRestart=$e('es-restart');
-  if(esRestart)esRestart.textContent=G.playMode==='editor-test'?'PLAYTEST AGAIN':'PLAY AGAIN';
+  if(esRestart){
+    if(G.playMode==='editor-test')esRestart.textContent='PLAYTEST AGAIN';
+    else if(P.dead&&(G.building|0)>0)esRestart.textContent='RETRY BUILDING '+(G.building|0);
+    else esRestart.textContent='PLAY AGAIN';
+  }
 }
 function openMenu(){G.menuOpen=true;_syncEditorPlaytestUi();$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}}
 function closeMenu(relockPointer=true){
@@ -26661,6 +26681,10 @@ function shoot(){
   _clearTriggerBuffer(pl);
   pl.lastShot=now;pl.ammo--;sfxShoot(pl.weaponIdx);if(typeof incrementMagShot==='function')incrementMagShot();
   _markRoundSpentFeedback(pl,_slot,W);
+  // Silent Choir (B10): firing while still in the nave (front zone) fails mastery.
+  if(_slot===0&&typeof failMasteryIfMatch==='function'&&typeof getZoneOf==='function'&&getZoneOf(pl.pos)===0){
+    failMasteryIfMatch(/silent_choir/, 'fired_in_nave');
+  }
   // Phase 6 telemetry — count lean-fire ratio
   if(G&&G._playerTotalShots!=null){
     G._playerTotalShots++;
@@ -27680,7 +27704,8 @@ function tickFocus(dt){
   const nowS=_focusNow();
   const wasActive=!!P.focusActive;
   if(P.focusActive){
-    P.focus=Math.max(0,P.focus-dt*FOCUS_FEEL.drain);
+    const drainMul=P._extraFocus?.82:1;
+    P.focus=Math.max(0,P.focus-dt*FOCUS_FEEL.drain*drainMul);
     if(P.focus<=0)_setFocusActive(false,'empty');
   } else {
     const regenMul=Number.isFinite(P._focusRegen)?P._focusRegen:(hasPerk('autoFocus')?1.35:1.0);
@@ -27756,8 +27781,8 @@ function startReload(){
   if(P.reloading||P.ammoRes<=0)return;
   _clearTriggerBuffer(P);
   const W=WEAPONS[P.weaponIdx];
-  // Quick Hands perk reduces reload time by 30%
-  const reloadMul=hasPerk('fastReload')?.70:1.0;
+  // Quick Hands perk reduces reload time by 30%; AGILITY powerup halves it.
+  const reloadMul=(hasPerk('fastReload')?.70:1.0)*(hasActivePowerup('fastReload')?.50:1.0);
   // Speedy mag attachment (if equipped) further reduces reload time
   const magAttMul=(P.attachments&&P.attachments.mag&&P.attachments.mag.reloadMul)||1.0;
   // TACTICAL RELOAD: faster if a round is in the chamber (ammo > 0)
@@ -27790,7 +27815,7 @@ function _startReloadP2(){
   if(P2.reloading||P2.ammoRes<=0)return;
   _clearTriggerBuffer(P2);
   const W=WEAPONS[P2.weaponIdx];
-  const reloadMul=hasPerk('fastReload')?.70:1.0;
+  const reloadMul=(hasPerk('fastReload')?.70:1.0)*(hasActivePowerup('fastReload')?.50:1.0);
   const magAttMul=(P2.attachments&&P2.attachments.mag&&P2.attachments.mag.reloadMul)||1.0;
   const tacticalMul=P2.ammo>0?.75:1.0;
   const finalReload=W.reloadTime*reloadMul*magAttMul*tacticalMul;
@@ -30654,8 +30679,13 @@ const PERK_EFFECTS={
 function applyPerks2(){
   // doubleJump in doJump path — hooked separately
   if(hasPerk('doubleJump'))P._canDoubleJump=true;
-  // autoFocus in tickFocus
-  if(hasPerk('autoFocus'))P._focusRegen=1.35;else P._focusRegen=1.0;
+  // autoFocus in tickFocus; Enhanced Focus unlock stacks above the perk floor.
+  let focusRegen=hasPerk('autoFocus')?1.35:1.0;
+  if(P._extraFocus||(PROGRESS.unlocks&&PROGRESS.unlocks.extraFocus)){
+    P._extraFocus=true;
+    focusRegen=Math.max(focusRegen,1.45);
+  }
+  P._focusRegen=focusRegen;
   // phantom enables sprint i-frames
   if(hasPerk('phantom'))P._phantomDodge=true;
 }
@@ -31028,7 +31058,7 @@ const CREDITS_TEXT=[
   'A first-person tactical room-clearer',
   'in the spirit of John Wick and Sifu.',
   '',
-  '★ EIGHT BUILDINGS ★',
+  '★ TWELVE BUILDINGS ★',
   '',
   'BUILDING I — LOADING DOCK',
   '"Eugene Prado"',
@@ -31058,9 +31088,27 @@ const CREDITS_TEXT=[
   '"Lucia Vasari"',
   'Consigliera · Eliminated',
   '',
-  'BUILDING VIII — SECTOR Δ',
+  'BUILDING VIII — SERVER FARM DELTA',
   '"Il Patriarca"',
-  'Syndicate Head · ELIMINATED',
+  'Syndicate Head · Eliminated',
+  '',
+  '— ACT III · THE APPARATUS —',
+  '',
+  'BUILDING IX — BORDER CROSSING',
+  '"Saito Murano"',
+  'Pipeline Operator · Eliminated',
+  '',
+  'BUILDING X — CATHEDRAL OF SAN MARCO',
+  '"Cardinal Vittorio Lazaretti"',
+  'Sacred Launderer · Eliminated',
+  '',
+  'BUILDING XI — KARELIA FREIGHTER',
+  '"Capt. Renko Stannis"',
+  'Route Master · Eliminated',
+  '',
+  'BUILDING XII — THE SPIRE',
+  '"Eldritch Asteria"',
+  'The Director · ELIMINATED',
   '',
   '— END OF DOSSIER —',
   '',
@@ -31073,9 +31121,9 @@ const CREDITS_TEXT=[
   '',
   '— RETURN HOME —',
   '',
-  'Built with vanilla three.js',
-  'No external assets',
-  'Procedural everything',
+  'Built with Three.js',
+  'Authored weapons · procedural worlds',
+  'Clearance complete',
   '',
   '★ THE END ★'
 ];
@@ -31088,7 +31136,11 @@ const DEBRIS_DENSITY={
   5:0.9, // hospital
   6:1.6, // subway dirty
   7:0.5, // yacht clean
-  8:1.0  // server farm
+  8:1.0, // server farm
+  9:1.3, // border crossing — sand grit
+  10:0.55, // cathedral — sparse votive clutter
+  11:1.5, // freighter — salt rust debris
+  12:0.7  // spire — executive polish with shattered glass
 };
 // ── COMBAT MUSIC LAYERS — bass / lead patterns by building
 const COMBAT_MUSIC={
@@ -31099,7 +31151,11 @@ const COMBAT_MUSIC={
   5:{bass:[0,4,7,11,7,4,0,4],lead:[11,7,4,7,9,11,12,11]},
   6:{bass:[0,1,5,7,5,1,0,1],lead:[5,7,8,7,5,1,3,5]},
   7:{bass:[0,2,4,7,9,7,4,2],lead:[7,9,11,9,7,4,2,4]},
-  8:{bass:[0,5,3,7,5,3,7,5],lead:[10,7,5,3,5,7,10,7]}
+  8:{bass:[0,5,3,7,5,3,7,5],lead:[10,7,5,3,5,7,10,7]},
+  9:{bass:[0,2,3,5,7,5,3,2],lead:[7,5,3,5,8,10,8,7]},
+  10:{bass:[0,3,5,8,11,8,5,3],lead:[12,11,8,7,5,7,8,11]},
+  11:{bass:[0,1,5,8,5,1,0,5],lead:[8,5,1,5,7,8,10,8]},
+  12:{bass:[0,3,6,7,10,7,6,3],lead:[10,7,6,3,5,7,10,12]}
 };
 // ── SUBWEAPON DRAW POSITIONS — held weapon offsets per type
 const ENEMY_WEAPON_OFFSETS={
@@ -31124,7 +31180,11 @@ const ZONE_NAMES={
   5:['ER WAITING','ICU CORRIDOR','OPERATING THEATER'],
   6:['STATION MEZZ','PLATFORM EAST','TRACK 7B'],
   7:['DECK BOW','SALON','HELIPAD STERN'],
-  8:['SECURITY POST','RACK ROW A','MAINFRAME ROOM']
+  8:['SECURITY POST','RACK ROW A','MAINFRAME ROOM'],
+  9:['CHECKPOINT LANE','CUSTOMS YARD','BORDER OFFICE'],
+  10:['NAVE ENTRY','CHOIR AISLE','BELL TOWER'],
+  11:['CARGO DECK','CONTAINER MAZE','BRIDGE'],
+  12:['LOWER SPIRE','CROWN GALLERY','HELIPAD']
 };
 function getZoneName(bn,zid){
   const list=ZONE_NAMES[bn]||['ZONE','ZONE','ZONE'];
@@ -31248,7 +31308,11 @@ const LIEU_INTROS={
   5:['"Welcome to the morgue. You\'ll fit in."','"I\'ve operated on tougher men."','"This is a hospital. Try to bleed quietly."'],
   6:['"The next train\'s for you. One way."','"This tunnel — your grave."','"You came down here? Brave. Stupid."'],
   7:['"You\'ll swim home. In pieces."','"My yacht. My rules. My waters."','"Throw him to the sharks."'],
-  8:['"Welcome to my server. Welcome to your end."','"I\'ll memory-wipe you myself."','"Compute this, operator."']
+  8:['"Welcome to my server. Welcome to your end."','"I\'ll memory-wipe you myself."','"Compute this, operator."'],
+  9:['"The ledger burns at dawn."','"Sand takes everything. Including you."','"Customs is closed. Permanently."'],
+  10:['"Blessed are the silent."','"This nave is consecrated ground — leave it."','"Midnight mass has begun."'],
+  11:['"No coast guard out here."','"The bridge is mine. The sea is mine."','"Containers hide more than cargo."'],
+  12:['"The helicopter is fueled. You are not."','"I built the family. I end the family."','"Apex. Nowhere left to climb."']
 };
 function showLieutenantIntro(bn){
   const lines=LIEU_INTROS[bn];if(!lines)return;
@@ -31271,7 +31335,11 @@ const LIEU_DEATH_QUOTES={
   5:['"...do no harm... they said..."','"I\'ve... seen worse..."','"...should\'ve... stayed retired..."'],
   6:['"...this tunnel... is mine..."','"I\'ll see you... in hell..."','"...next train... the last train..."'],
   7:['"Throw me overboard... fine..."','"Father... I tried..."','"...the sea claims us all..."'],
-  8:['"I... compute... my regrets..."','"Memory leak..."','"...end of process..."']
+  8:['"I... compute... my regrets..."','"Memory leak..."','"...end of process..."'],
+  9:['"...the pipeline... never stops..."','"...burn... the names..."','"...sand... takes me..."'],
+  10:['"...forgive... me..."','"...the vault... is sealed..."','"...choir... goes quiet..."'],
+  11:['"...abandon... ship..."','"...engines... cold..."','"...manifest... incomplete..."'],
+  12:['"...bird... is gone..."','"...I was... the apparatus..."','"...no... helipad... left..."']
 };
 function showLieutenantDeath(bn){
   const lines=LIEU_DEATH_QUOTES[bn];if(!lines)return;
@@ -31352,10 +31420,16 @@ const TUTORIAL_STEPS=[
 const OBJECTIVE_DEFS={
   5: {kind:'stations',stations:[{x:-13,z:-16},{x:0,z:-18},{x:13,z:-15}],radius:2.0,dwellMs:500,total:3,
       labelFn:o=>'EXPOSE SURGERY RECORDS — '+(o.visited||0)+' / '+o.total},
-  7: {kind:'stealth',label:'QUIET THE DECK — NO ALARM',
-      labelFn:o=>o.alarmed?'ALARM RAISED — REINFORCEMENTS DOUBLED':'QUIET THE DECK — NO ALARM'},
+  7: {kind:'holdout',label:'NO-HEAL BOARDING — HOLD YOUR PACKS',
+      labelFn:()=>'NO-HEAL BOARDING — HOLD YOUR PACKS'},
+  9: {kind:'timer',timerS:80,label:'SECURE THE LEDGER',
+      labelFn:o=>'LEDGER WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
   10:{kind:'timer',timerS:90,label:'REACH THE BELL TOWER',
       labelFn:o=>'BELL TOWER — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
+  11:{kind:'timer',timerS:75,label:'REACH THE BRIDGE',
+      labelFn:o=>'BRIDGE WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
+  12:{kind:'timer',timerS:60,label:'REACH THE HELIPAD',
+      labelFn:o=>'HELO CLOCK — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
 };
 function _objectiveCloseEnemyCount(radius=9){
   if(!G.enemyMgr||!Array.isArray(G.enemyMgr._list)||!P.pos)return 0;
@@ -31679,9 +31753,14 @@ function tickObjective(dt){
     }
     if(G.exitUnlocked&&!o.alarmed)o.completed=true;
     feelExtra={alarmed:o.alarmed,holding:false,roomsCleared:Array.isArray(G.zoneClears)?G.zoneClears.filter(Boolean).length:0,roomsTotal:3,exitUnlocked:!!G.exitUnlocked};
+  } else if(!o.completed&&!o.failed&&def.kind==='holdout'){
+    // Soft objective banner (e.g. B07 no-heal). Completion tracks clear; fail is handled by useHealPack mastery.
+    if(G.exitUnlocked)o.completed=true;
+    feelExtra={holding:false,roomsCleared:Array.isArray(G.zoneClears)?G.zoneClears.filter(Boolean).length:0,roomsTotal:3,exitUnlocked:!!G.exitUnlocked};
   } else if(!o.completed&&!o.failed&&def.kind==='timer'){
     const reachedBack=typeof playerZone==='function'&&playerZone()===2;
-    if(reachedBack||G.exitUnlocked||(Array.isArray(G.zoneClears)&&G.zoneClears[1])){
+    // Act III timers are destination windows (ledger/bridge/helipad) — mid clear alone is not enough.
+    if(reachedBack||G.exitUnlocked){
       o.completed=true;
     }else{
       o.remainingS=Math.max(0,o.remainingS-dt);
@@ -31690,8 +31769,8 @@ function tickObjective(dt){
         // Only fail mastery if THIS building's mastery is genuinely a "reach in time" condition.
         // The timer objective is authored for buildings (e.g. B10 silent-choir) whose mastery is
         // unrelated to a countdown, so we must not blanket-fail mastery on timeout. (decoupled)
-        if(G.mastery&&/no_helo|no_engine_alarm|fastline|intact|grounded|cold_engines|timer|time/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
-        if(typeof attachToast==='function')attachToast('<div style="color:#ff5040;letter-spacing:.20em">BELL TOWER TIMED OUT</div>',2200);
+        if(G.mastery&&/no_helo|no_engine_alarm|pipeline_intact|intact|grounded|cold_engines|timer|time_limit/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+        if(typeof attachToast==='function')attachToast('<div style="color:#ff5040;letter-spacing:.20em">'+(def.label||'OBJECTIVE')+' TIMED OUT</div>',2200);
       }
     }
     feelExtra={timerS:def.timerS,remainingS:o.remainingS,holding:false};
@@ -31743,7 +31822,7 @@ function startInteractiveTutorial(){
   if(!el){
     el=document.createElement('div');
     el.id=G._tutState.elementId;
-    el.style.cssText='position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:42;font:600 16px Rajdhani,sans-serif;color:#ffd060;letter-spacing:.18em;background:rgba(8,10,14,.75);padding:10px 18px;border:1px solid rgba(255,200,80,.45);box-shadow:0 4px 22px rgba(255,180,40,.15);opacity:0;pointer-events:none;transition:opacity .35s';
+    el.style.cssText='position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:42;font:600 13px Rajdhani,sans-serif;color:rgba(255,220,140,.92);letter-spacing:.16em;background:rgba(8,10,14,.62);padding:7px 14px;border-left:2px solid rgba(255,200,80,.55);opacity:0;pointer-events:none;transition:opacity .35s;text-transform:uppercase';
     document.body.appendChild(el);
   }
 }
@@ -31832,8 +31911,31 @@ const LIEU_BEHAVIOR={
   4:{move:'fortified',style:'rifle-anchor', meta:{fireRate:.18,burst:4}},
   5:{move:'flank',    style:'silent-pistol',meta:{fireRate:.32,burst:2}},
   6:{move:'pace',     style:'shotgun',      meta:{fireRate:.65,burst:1,pellets:6}},
-  7:{move:'flank',    style:'dual-smg',     meta:{fireRate:.08,burst:6}}
+  7:{move:'flank',    style:'dual-smg',     meta:{fireRate:.08,burst:6}},
+  8:{move:'fortified',style:'sys-burst',    meta:{fireRate:.16,burst:5}},
+  9:{move:'pace',     style:'desert-rifle', meta:{fireRate:.22,burst:4}},
+  10:{move:'fortified',style:'choir-anchor',meta:{fireRate:.28,burst:3}},
+  11:{move:'rush',    style:'deck-smg',     meta:{fireRate:.09,burst:7}},
+  12:{move:'flank',   style:'apex-pair',    meta:{fireRate:.14,burst:6}}
 };
+function applyLieutenantBehavior(lt,building){
+  if(!lt)return;
+  const lb=LIEU_BEHAVIOR[building|0];
+  if(!lb)return;
+  lt._lieuBehavior=lb;
+  if(lb.meta){
+    if(Number.isFinite(lb.meta.burst))lt.burstMax=lb.meta.burst;
+    if(Number.isFinite(lb.meta.fireRate))lt._sit=lb.meta.fireRate;
+    if(Number.isFinite(lb.meta.pellets))lt._lieuPellets=lb.meta.pellets;
+  }
+  const base=lt.tactic||ENEMY_TACTICS.lieutenant||{};
+  const next={...base};
+  if(lb.move==='rush'){lt.speed*=1.12;next.advance=.95;next.flank=.82;next.coverSeek=.28;next.juke=.55;}
+  else if(lb.move==='fortified'){next.coverSeek=.92;next.advance=.22;next.flank=.12;next.juke=.05;next.hold=.85;}
+  else if(lb.move==='flank'){next.flank=.92;next.advance=.74;next.coverSeek=.34;next.juke=.48;}
+  else if(lb.move==='pace'){next.coverSeek=.58;next.flank=.48;next.advance=.55;next.juke=.22;}
+  lt.tactic=next;
+}
 // ── REINFORCEMENT WAVES — mid-zone enemy drop-ins on harder difficulty
 function spawnReinforcementWave(zoneId,count){
   const sd=G.levelData&&G.levelData.spawnDoors||[];
@@ -31942,13 +32044,13 @@ function _showEnemyBark(enemy,kind){
   const sx=(v.x*.5+.5)*vp.w;
   const sy=(-v.y*.5+.5)*vp.h;
   const el=document.createElement('div');
-  el.className='dmg-num';
-  el.style.color='#ffd060';
-  el.style.fontSize='13px';
+  el.className='enemy-bark';
+  el.style.cssText='position:absolute;pointer-events:none;z-index:12;font:700 11px Rajdhani,sans-serif;letter-spacing:.10em;color:rgba(255,220,160,.88);text-shadow:0 1px 6px rgba(0,0,0,.85);white-space:nowrap;opacity:.92';
   el.style.left=sx+'px';el.style.top=sy+'px';
-  el.style.transform=`translate(-50%,${Math.random()*-12}px)`;
-  el.textContent='"'+line+'"';
+  el.style.transform='translate(-50%,-8px)';
+  el.textContent=line;
   c.appendChild(el);
+  setTimeout(()=>{if(el.parentNode){el.style.opacity='0';el.style.transition='opacity .25s';}},780);
   setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1100);
   // Bark voice (if enabled)
   if(typeof sfxVoiceBark==='function'){
@@ -32681,6 +32783,19 @@ function _shatterMesh(mesh,hitPt){
     if(vlEntry){vlEntry.broken=true;}
     const sib=mesh.userData.linkedSibling;
     if(sib){scene.remove(sib);if(sib.geometry)sib.geometry.dispose();if(sib.material&&sib.material.dispose)sib.material.dispose();}
+    // Drop stacked crates onto the floor when their support shatters.
+    const top=mesh.userData.stackTop;
+    if(top&&!top.userData._broken&&top.position){
+      const dropY=Number.isFinite(top.userData.stackBaseY)?top.userData.stackBaseY:(typeof WT==='number'?WT+.45:top.position.y);
+      top.position.y=dropY;
+      const topAabb=top.userData.linkedAABB;
+      if(topAabb&&topAabb.broken)topAabb.broken=false;
+      const topVault=top.userData.linkedVault;
+      if(topVault){
+        topVault.broken=false;
+        topVault.height=dropY+(top.geometry&&top.geometry.parameters?top.geometry.parameters.height*0.5:0.45);
+      }
+    }
   }
   if(mesh.userData.glassPane){
     // Phase D: rebuild navGrid so AI can path through the new opening.
@@ -33375,9 +33490,13 @@ function _registerHsKill(){
   if(now-HS_CHAIN.lastT>HS_CHAIN.resetMs)HS_CHAIN.count=0;
   HS_CHAIN.lastT=now;
   HS_CHAIN.count+=1;
+  if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='sniper'){
+    SETPIECE.progress=Math.max(SETPIECE.progress|0,HS_CHAIN.count);
+  }
   // 3+ in a row → bonus
   if(HS_CHAIN.count>=3){
-    const bonus=50*HS_CHAIN.count;
+    let bonus=50*HS_CHAIN.count;
+    if(typeof hasActivePowerup==='function'&&hasActivePowerup('doubleScore'))bonus*=2;
     P.money+=bonus;
     moneyPopup(bonus,'HS×'+HS_CHAIN.count);
     if(HS_CHAIN.count===3)attachToast('<div style="color:#ffd060;letter-spacing:.30em">▲ TRIPLE HEADSHOT</div>',2000);
@@ -33385,7 +33504,14 @@ function _registerHsKill(){
     if(HS_CHAIN.count===8)attachToast('<div style="color:#ff2030;letter-spacing:.30em">★ DEATH KISS</div>',2800);
   }
 }
-function _registerNonHsKill(){HS_CHAIN.count=0;}
+function _registerNonHsKill(){
+  HS_CHAIN.count=0;
+  // Precision-hunt mastery fails when the headshot streak is broken by a body kill.
+  if(typeof failMasteryIfMatch==='function')failMasteryIfMatch(/precision/, 'body_kill');
+  if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='sniper'&&(SETPIECE.progress|0)<(SETPIECE.goal|0)){
+    SETPIECE.progress=0;
+  }
+}
 // ── DISTANCE-BASED GUNSHOT TAIL — quick echo trail for distant enemy shots
 function sfxGunshotEcho(distance){
   if(distance<8)return;
@@ -34476,10 +34602,18 @@ function checkZoneClears(){
       return getZoneOf(e.group.position) === z;
     });
     if(G.enemyMgr.aliveInZone(z)===0&&(hadPop||legacyStillListed)){
-      const mesoOk=!authCE||!dir||typeof dir.encountersSatisfiedForZoneDoorOpen!=='function'||dir.encountersSatisfiedForZoneDoorOpen(z);
+      let mesoOk=!authCE||!dir||typeof dir.encountersSatisfiedForZoneDoorOpen!=='function'||dir.encountersSatisfiedForZoneDoorOpen(z);
+      // Softlock escape: combat-empty zones with stale/unspawned meso gates still open.
+      if(!mesoOk&&dir&&typeof dir.reconcileStaleZoneDoorEncounters==='function'){
+        mesoOk=!!dir.reconcileStaleZoneDoorEncounters(z,G.enemyMgr);
+      }
       if(!mesoOk)continue;
       G.zoneClears[z]=true;
       if(G.encounterDirector)G.encounterDirector.markZoneClearHandled(z);
+      // Exit throat softlock: zone 2 empty must complete cage-clear encounter bookkeeping.
+      if(z===2&&G.encounterDirector&&typeof G.encounterDirector.reconcileStaleExitEncounters==='function'){
+        G.encounterDirector.reconcileStaleExitEncounters(G.enemyMgr);
+      }
       onZoneCleared(z);
     }
   }
@@ -34506,7 +34640,11 @@ function onZoneCleared(zoneId){
   P.money+=reward;moneyPopup(reward,'ROOM');hudUpdate();
   sfxWaveClear();
   const cleared=G.zoneClears.filter(c=>c).length;
-  announce('ROOM CLEAR · '+ROOM_NAMES[zoneId],cleared+' / 3 ROOMS',1800);
+  const flowProgress=G.encounterDirector&&typeof G.encounterDirector.getRoomProgress==='function'?G.encounterDirector.getRoomProgress():null;
+  const roomToast=(flowProgress&&flowProgress.total)
+    ?(`ROOM ${Math.min(flowProgress.current|0,flowProgress.total)} / ${flowProgress.total}`)
+    :(cleared+' / 3 ROOMS');
+  announce('ROOM CLEAR · '+ROOM_NAMES[zoneId],roomToast,1800);
   if(G.levelData&&typeof G.levelData.openZoneDoor==='function'){
     const zi=Number(zoneId)|0;
     const dir=G.encounterDirector;
@@ -34514,11 +34652,35 @@ function onZoneCleared(zoneId){
     const policyPass=!hasPol||!!dir.shouldOpenZoneDoorOnClear(zi);
     const authCE=!!SETTINGS.authoredCampaignEncounters;
     const mesoPass=!authCE||!dir||typeof dir.encountersSatisfiedForZoneDoorOpen!=='function'||dir.encountersSatisfiedForZoneDoorOpen(zi);
-    if((zi===0||zi===1)&&policyPass&&mesoPass)G.levelData.openZoneDoor(zi);
+    if((zi===0||zi===1)&&policyPass&&mesoPass){
+      if(zi===1&&SETPIECE.active&&SETPIECE.kind==='survival'&&!SETPIECE.rewardGiven){
+        SETPIECE._pendingMidDoor=true;
+        attachToast('<div style="color:#ffd060;letter-spacing:.28em">HOLD THE LINE</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door sealed until the hold completes</div>',2600);
+      }else{
+        G.levelData.openZoneDoor(zi);
+      }
+    }
   }
   if(G.levelState){
     if(zoneId===0)G.levelState.alarm=true;
-    else if(zoneId===1)G.levelState.powerDown=true;
+    else if(zoneId===1){
+      G.levelState.powerDown=true;
+      // Hospital mid-clear: deepen the blackout once the ward loses power.
+      if(G.building===5&&G.levelData){
+        if(G.levelData.lightingController&&typeof G.levelData.lightingController.setMoodScale==='function'){
+          G.levelData.lightingController.setMoodScale(.18);
+        }
+        if(Array.isArray(G.levelData.ceilingLights)){
+          for(const L of G.levelData.ceilingLights){
+            if(!L||!L.isLight)continue;
+            const base=L.userData._setpieceBaseInt!=null?L.userData._setpieceBaseInt:(L.userData.baseIntensity!=null?L.userData.baseIntensity:L.intensity);
+            L.userData._setpieceBaseInt=base;
+            L.userData.baseIntensity=base*.12;
+            L.intensity=L.userData.baseIntensity;
+          }
+        }
+      }
+    }
     else if(zoneId===2)G.levelState.hazardPrimed=true;
   }
   if(G.levelData&&G.levelData.isMegaplexB01){
@@ -34755,6 +34917,7 @@ function populateBuilding(){
       if(lt.lieuTie)lt.lieuTie.material.color.setHex(lvariant.accent);
       if(lt.suit)lt.suit.material.color.setHex(lvariant.color);
       if(lt.visorM)lt.visorM.emissive.setHex(lvariant.accent);
+      applyLieutenantBehavior(lt,G.building);
       const badgeM=new THREE.MeshBasicMaterial({color:lvariant.accent});
       const badge=new THREE.Mesh(new THREE.PlaneGeometry(.090,.090),badgeM);
       badge.position.set(.30,1.30,.04);
@@ -34857,6 +35020,7 @@ async function startBuilding(){
     G.exitUnlocked=false;G.advancePending=false;
     G.zoneClears=[false,false,false];
     // Must reset before populateBuilding — stale [true,…] from a prior run makes
+    G._lieuIntroShown=false;
     // checkZoneClears think zone 0 cleared on an empty enemy list, runs
     // openZoneDoor(0) early (d.opened=true), then the real clear no-ops.
     G.zoneEverPopulated=[false,false,false];
@@ -35229,7 +35393,10 @@ async function _deploySpan(label,progress,fn){
     DEPLOY_LOAD.rows.push(row);
     if(ms>120){
       const slow=$e('deploy-loading-slow');
-      if(slow)slow.textContent=`SLOW: ${label.toUpperCase()} ${ms.toFixed(0)}MS`;
+      // Keep the slow-stage toast behind debug — players should not see profiler
+      // chatter on a Steam/playthrough load screen.
+      const showSlow=!!(typeof window!=='undefined'&&window.__game&&window.__game.debug)||!!(typeof G!=='undefined'&&G&&G.debug);
+      if(slow)slow.textContent=showSlow?`SLOW: ${label.toUpperCase()} ${ms.toFixed(0)}MS`:'';
       console.warn('[deploy.slow]',row);
     }else{
       console.info('[deploy.stage]',row);
@@ -35337,6 +35504,44 @@ function saveRunState(){
   saveProgressFile();
 }
 function clearRunState(){PROGRESS.runSave=null;saveProgressFile();}
+/** Keep Continue / Play Again on the building where the player died. */
+function ensureRetryCheckpoint(){
+  if(G.playMode!=='solo'&&G.playMode!=='custom')return;
+  const mode=G.playMode||'solo';
+  const building=Math.max(1,Math.min(campaignLength(),G.building|0||1));
+  const existing=PROGRESS.runSave;
+  if(existing&&existing.mode===mode&&(existing.building|0)===building){
+    // Preserve the entry checkpoint (loadout at building start); just refresh timestamp.
+    existing.timestamp=Date.now();
+    saveProgressFile();
+    return;
+  }
+  normalizePlayerRuntime();
+  const maxHp=Number.isFinite(P.maxHp)&&P.maxHp>0?P.maxHp:100;
+  PROGRESS.runSave={
+    mode,
+    building,
+    packId:(mode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.pack?CUSTOM_MAP_RUNTIME.pack.id:null,
+    mapId:(mode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.map?CUSTOM_MAP_RUNTIME.map.id:null,
+    mapIndex:(mode==='custom'||G.playMode==='editor-test')?CUSTOM_MAP_RUNTIME.mapIndex:0,
+    money:P.money|0,
+    hp:maxHp,
+    healPacks:P.healPacks||0,grenades:P.grenades||0,smokes:P.smokes||0,flashes:P.flashes||0,
+    weaponIdx:normalizeWeaponIdx(P.weaponIdx||START_WEAPON_IDX),
+    weaponAmmo:Array.isArray(P.weaponAmmo)?P.weaponAmmo.slice(0,WEAPONS.length):null,
+    weaponRes:Array.isArray(P.weaponRes)?P.weaponRes.slice(0,WEAPONS.length):null,
+    attachments:P.attachments?{
+      scope:P.attachments.scope?{...P.attachments.scope}:null,
+      mag:P.attachments.mag?{...P.attachments.mag}:null,
+      muzzle:P.attachments.muzzle?{...P.attachments.muzzle}:null,
+      foregrip:P.attachments.foregrip?{...P.attachments.foregrip}:null
+    }:null,
+    difficulty:G.difficulty||'normal',
+    kills:P.kills||0,headshots:P.headshots||0,shotsFired:P.shotsFired||0,shotsHit:P.shotsHit||0,
+    runStart:P.runStart||performance.now(),timestamp:Date.now()
+  };
+  saveProgressFile();
+}
 function resumeRunState(){
   const r=PROGRESS.runSave;if(!r)return false;
   if(r.mode==='custom'){
@@ -35397,8 +35602,14 @@ function saveProgress(score,grade){
   if(PROGRESS.level>=3)PROGRESS.unlocks.startHeal=true;
   if(PROGRESS.level>=4)PROGRESS.unlocks.startGrenade=true;
   if(PROGRESS.level>=5)PROGRESS.unlocks.extraFocus=true;
-  // Run cleared — wipe save state (run is over)
-  if(grade==='-'||grade){clearRunState();}
+  // Run cleared on win grades; death keeps a Continue/retry checkpoint instead.
+  if(grade==='-'){
+    if(typeof ensureRetryCheckpoint==='function')ensureRetryCheckpoint();
+    if(typeof refreshMenuContinue==='function')refreshMenuContinue();
+  }else if(grade){
+    clearRunState();
+    if(typeof refreshMenuContinue==='function')refreshMenuContinue();
+  }
   checkAchievements();
   saveProgressFile();
   // Toast for unlocks
@@ -35409,7 +35620,14 @@ function applyUnlocks(){
   if(u.startCredits)P.money=(P.money||0)+150;
   if(u.startHeal)P.healPacks=(P.healPacks||0)+1;
   if(u.startGrenade)P.grenades=(P.grenades||0)+1;
-  if(u.extraFocus)P.focus=Math.min(1,(P.focus||1)+0.0);
+  // Enhanced focus (Lv 5): start full + slower drain + faster passive refill.
+  if(u.extraFocus){
+    P.focus=1;
+    P._extraFocus=true;
+    P._focusRegen=Math.max(Number.isFinite(P._focusRegen)?P._focusRegen:1,1.45);
+  }else{
+    P._extraFocus=false;
+  }
 }
 // Per-perk runtime effect application (called at startBuilding + on attachment swap)
 function applyPerks(){
@@ -35482,7 +35700,8 @@ function comboKill(isHead,opts={}){
 }
 function comboBreak(reason){
   if(!P.combo||P.combo.count===0)return;
-  
+  // VIP Fastline mastery: survive the ambush without dropping the combo.
+  if(P.combo.count>=3&&typeof failMasteryIfMatch==='function')failMasteryIfMatch(/fastline|combo/, reason||'combo_break');
   P.combo.count=0;P.combo.multiplier=1.0;P.combo.timer=0;P.combo.window=4.8;
   const el=$e('combo-hud');if(el)el.classList.remove('show');
 }
@@ -35502,9 +35721,14 @@ const SETPIECE_DEFS={
   3:{type:'ambush', delayPct:.30,wave:4,reward:550,name:'CLUB AMBUSH',desc:'Hostiles flanking from the back rooms.'},
   4:{type:'sniper', streak:5,reward:600,name:'PRECISION HUNT',desc:'Reward streak of headshots before missing.'},
   5:{type:'dark',   reward:550,name:'BLACKOUT WARD',desc:'Power cut. Flashlight only. Stay aware.'},
-  6:{type:'survival',duration:30,reward:700,name:'PLATFORM HOLD',desc:'Hold the platform until the train clears.'},
+  6:{type:'survival',duration:30,reward:700,name:'PLATFORM HOLD',desc:'Hold the platform — the mid door stays sealed until the train clears.'},
   7:{type:'ambush', delayPct:.25,wave:5,reward:650,name:'DECK BOARDED',desc:'Crew breaching from below-deck.'},
-  8:{type:'alarm',  duration:55,reward:800,name:'INTRUSION DETECTED',desc:'Lockdown imminent. Move fast.'}
+  8:{type:'alarm',  duration:55,reward:800,name:'INTRUSION DETECTED',desc:'Lockdown imminent. Move fast.'},
+  // Act III — mirror each building's campaign setpiece identity
+  9:{type:'sniper', streak:4,reward:650,name:'OPEN DESERT ANGLE',desc:'Own the long axis before the courier burns the ledger.'},
+  10:{type:'ambush',delayPct:.28,wave:4,reward:700,name:'MIDNIGHT MASS',desc:'Choir loft pressure — keep the nave quiet if you can.'},
+  11:{type:'survival',duration:35,reward:750,name:'HEAVY SEAS',desc:'Hold the maze — the bridge door opens when the window clears.'},
+  12:{type:'alarm', duration:50,reward:900,name:'HELO CLOCK',desc:'Reach the helipad before the bird lifts off.'}
 };
 const SETPIECE={active:false,kind:null,timer:0,goal:0,progress:0,rewardGiven:false,_lastFlash:0};
 // Spawn a rotating red alarm light visual (used by alarm setpieces)
@@ -35545,6 +35769,77 @@ function _despawnAlarmLight(){
   SETPIECE._alarm.grp.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose&&o.material.dispose();});
   SETPIECE._alarm=null;
 }
+/** Lightweight Act III atmosphere cues promised by visualProfiles (beacon/bell/hull/helipad). */
+function _spawnActIiiSetpieceFx(bn,type){
+  _despawnActIiiSetpieceFx();
+  const profile=typeof getVisualProfile==='function'?getVisualProfile(bn):null;
+  const accent=(profile&&profile.atmosphere&&profile.atmosphere.accent)||0xffc060;
+  const col=new THREE.Color(accent);
+  const fx={lights:[],meshes:[],phase:0,kind:type,accent:col};
+  const addPulse=(color,intensity,dist,y=RH+WT-.4)=>{
+    const L=new THREE.PointLight(color,intensity,dist,2);
+    L.position.set(0,y,0);
+    if(typeof _tagAaPointLight==='function')_tagAaPointLight(L,AA_POINTLIGHT_TEMP_VFX,{aaTemporary:true,setpieceFx:true});
+    scene.add(L);fx.lights.push({l:L,base:intensity});
+    return L;
+  };
+  if(bn===9||type==='sniper'){
+    // beaconFlash — intermittent warm strobe over the long axis
+    addPulse(col.getHex(),3.2,28,RH+WT-.5);
+    const sheet=new THREE.Mesh(new THREE.PlaneGeometry(18,8),new THREE.MeshBasicMaterial({
+      color:col,transparent:true,opacity:.0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide
+    }));
+    sheet.position.set(0,WT+3.2,-6);sheet.rotation.y=Math.PI*.08;
+    scene.add(sheet);fx.meshes.push(sheet);
+  }else if(bn===10||type==='ambush'){
+    // bellTremor — cool nave wash that pulses
+    addPulse(0xc8b890,2.4,22,RH+WT-.6);
+    addPulse(0xffe8a0,.9,12,WT+2.2);
+  }else if(bn===11||type==='survival'){
+    // hullGroan — cold deck fill + low amber stress light
+    addPulse(0x6a90b8,2.1,26,RH+WT-.55);
+    addPulse(0xff8040,1.4,16,WT+1.8);
+  }else if(bn===12||type==='alarm'){
+    // helipadStrobe — sharp cyan/white pad flashes
+    addPulse(0xd0f0ff,3.6,24,RH+WT-.45);
+    const pad=new THREE.Mesh(new THREE.CircleGeometry(4.5,24),new THREE.MeshBasicMaterial({
+      color:0xa8e8ff,transparent:true,opacity:.0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide
+    }));
+    pad.rotation.x=-Math.PI/2;pad.position.set(0,WT+.04,-18);
+    scene.add(pad);fx.meshes.push(pad);
+  }else return;
+  SETPIECE._actIiiFx=fx;
+}
+function _tickActIiiSetpieceFx(dt){
+  const fx=SETPIECE._actIiiFx;if(!fx)return;
+  fx.phase=(fx.phase||0)+dt;
+  const t=fx.phase;
+  for(const entry of fx.lights){
+    if(!entry||!entry.l)continue;
+    const pulse=.55+.45*Math.abs(Math.sin(t*(fx.kind==='alarm'?7.2:fx.kind==='sniper'?5.4:2.6)));
+    entry.l.intensity=entry.base*pulse;
+  }
+  for(const m of fx.meshes){
+    if(!m||!m.material)continue;
+    const flash=fx.kind==='alarm'||fx.kind==='sniper'
+      ?(Math.sin(t*8.5)>.72?(.22+.18*Math.random()):.02)
+      :(.04+.08*Math.abs(Math.sin(t*1.8)));
+    m.material.opacity=flash;
+  }
+}
+function _despawnActIiiSetpieceFx(){
+  const fx=SETPIECE._actIiiFx;if(!fx)return;
+  for(const entry of fx.lights||[]){
+    if(entry&&entry.l){scene.remove(entry.l);if(entry.l.dispose)entry.l.dispose();}
+  }
+  for(const m of fx.meshes||[]){
+    if(!m)continue;
+    scene.remove(m);
+    if(m.geometry)m.geometry.dispose();
+    if(m.material&&m.material.dispose)m.material.dispose();
+  }
+  SETPIECE._actIiiFx=null;
+}
 function setpieceStart(bn){
   const def=SETPIECE_DEFS[bn];if(!def)return;
   SETPIECE.active=true;SETPIECE.kind=def.type;SETPIECE.def=def;
@@ -35555,17 +35850,24 @@ function setpieceStart(bn){
   attachToast(`<div style="color:#ffd060;letter-spacing:.30em">▣ ${def.name}</div><div style="font-size:11px;opacity:.78;margin-top:4px">${def.desc}</div>`,3500);
   // Apply modifiers
   if(def.type==='alarm'){_spawnAlarmLightProp();}
+  if(bn>=9){_spawnActIiiSetpieceFx(bn,def.type);}
   if(def.type==='dark'){
-    // Dim all ceiling lights to 30% intensity, give flashlight on gun
+    // Dim ceiling lamps to emergency levels + drop global mood so adaptive lighting
+    // cannot fight the blackout (it was restoring full ambient/key every frame).
     if(G.levelData&&G.levelData.ceilingLights){
       for(const L of G.levelData.ceilingLights){
-        if(L.userData._setpieceBaseInt==null)L.userData._setpieceBaseInt=L.intensity;
-        L.intensity*=.25;
+        if(!L||!L.isLight)continue;
+        if(L.userData._setpieceBaseInt==null)L.userData._setpieceBaseInt=L.userData.baseIntensity!=null?L.userData.baseIntensity:L.intensity;
+        L.intensity=L.userData._setpieceBaseInt*.22;
+        L.userData.baseIntensity=L.userData._setpieceBaseInt*.22;
       }
+    }
+    if(G.levelData&&G.levelData.lightingController&&typeof G.levelData.lightingController.setMoodScale==='function'){
+      G.levelData.lightingController.setMoodScale(.28);
     }
     // Spawn flashlight cone (a SpotLight on camera)
     if(!P.flashlight){
-      const fl=new THREE.SpotLight(0xfff8e0,4.5,18,Math.PI*.18,.40,1.2);
+      const fl=new THREE.SpotLight(0xfff8e0,5.8,20,Math.PI*.17,.38,1.15);
       fl.position.set(0,0,0);
       const tgt=new THREE.Object3D();tgt.position.set(0,0,-1);
       camera.add(fl);camera.add(tgt);fl.target=tgt;
@@ -35634,6 +35936,7 @@ function setpieceTickProgress(){
 function setpieceTick(dt){
   if(!SETPIECE.active)return;
   _alarmTick(dt);
+  _tickActIiiSetpieceFx(dt);
   // Hostage idle wave / cower animation
   if(SETPIECE._hostages){
     for(const h of SETPIECE._hostages){
@@ -35648,7 +35951,7 @@ function setpieceTick(dt){
     if(!SETPIECE._relaySilenced)SETPIECE.timer-=dt;
     if(SETPIECE.timer<=0&&!SETPIECE.triggered&&!SETPIECE._relaySilenced){
       SETPIECE.triggered=true;
-      if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+      failMasteryIfMatch(/no_alarm|lockdown|no_helo|no_engine_alarm|grounded|cold_engines/, 'alarm');
       attachToast('<div style="color:#ff5048;letter-spacing:.30em">! REINFORCEMENTS</div>',2200);
       // Spawn extra wave
       const sd=G.levelData&&G.levelData.spawnDoors||[];
@@ -35694,7 +35997,11 @@ function setpieceTick(dt){
       SETPIECE.rewardGiven=true;
       P.money+=SETPIECE.def.reward;
       moneyPopup(SETPIECE.def.reward,'HELD');
-      attachToast('<div style="color:#5fcb52;letter-spacing:.30em">✓ HELD</div>',1800);
+      attachToast('<div style="color:#5fcb52;letter-spacing:.30em">✓ HELD</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door unlocked</div>',2200);
+      if(SETPIECE._pendingMidDoor&&G.levelData&&typeof G.levelData.openZoneDoor==='function'){
+        G.levelData.openZoneDoor(1);
+        SETPIECE._pendingMidDoor=false;
+      }
     }
   }
   if(SETPIECE.kind==='ambush'){
@@ -35705,7 +36012,7 @@ function setpieceCheckHostageHit(target){
   // Called from any damage path that could hit a hostage
   if(SETPIECE.active&&SETPIECE.kind==='hostage'&&target&&target.userData&&target.userData.isHostage){
     SETPIECE.progress+=1;
-    if(G.mastery){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+    failMasteryIfMatch(/civilians|hostage|friendly/, 'hostage_hit');
     attachToast('<div style="color:#ff5048;letter-spacing:.30em">! HOSTAGE HIT</div>',1500);
   }
 }
@@ -35718,8 +36025,14 @@ function setpieceOnZoneCleared(zid){
     let label='OBJECTIVE';
     if(SETPIECE.kind==='alarm'&&SETPIECE.timer>0){label='ALARM SILENCED';}
     if(SETPIECE.kind==='hostage'){
-      if(SETPIECE.progress===0){label='CIVILIANS SAFE';reward=Math.round(reward*1.3);}
+      if(SETPIECE.progress===0){
+        label='CIVILIANS SAFE';reward=Math.round(reward*1.3);
+        if(G.building===2)PROGRESS._continentalClean=true;
+      }
       else{reward=Math.max(0,reward-200*SETPIECE.progress);label='OBJECTIVE';}
+    }
+    if(SETPIECE.kind==='alarm'&&SETPIECE.timer>0&&!SETPIECE.triggered){
+      if(G.building===8)PROGRESS._serverAlarmStopped=true;
     }
     if(SETPIECE.kind==='dark'){label='BLACKOUT';}
     if(SETPIECE.kind==='sniper'&&SETPIECE.progress>=SETPIECE.goal){label='PRECISION';reward=Math.round(reward*1.5);}
@@ -35731,12 +36044,20 @@ function setpieceEnd(){
   const wasDark=SETPIECE.kind==='dark';
   SETPIECE.active=false;SETPIECE.kind=null;
   _despawnAlarmLight();
+  _despawnActIiiSetpieceFx();
   const sb=$e('setpiece-bar');if(sb)sb.classList.remove('show');
   // Restore lights if dark mode was active
   if(wasDark&&G.levelData&&G.levelData.ceilingLights){
     for(const L of G.levelData.ceilingLights){
-      if(L.userData&&L.userData._setpieceBaseInt!=null){L.intensity=L.userData._setpieceBaseInt;delete L.userData._setpieceBaseInt;}
+      if(L.userData&&L.userData._setpieceBaseInt!=null){
+        L.intensity=L.userData._setpieceBaseInt;
+        L.userData.baseIntensity=L.userData._setpieceBaseInt;
+        delete L.userData._setpieceBaseInt;
+      }
     }
+  }
+  if(wasDark&&G.levelData&&G.levelData.lightingController&&typeof G.levelData.lightingController.setMoodScale==='function'){
+    G.levelData.lightingController.setMoodScale(1);
   }
   if(P.flashlight){
     camera.remove(P.flashlight);
@@ -36431,6 +36752,8 @@ function hideAchievements(){
 }
 // ── ENDING CINEMATIC ────────────────────────────────────────────
 function showEndingCinematic(){
+  // Boss-death path never walks the exit — still count the final clear.
+  if(typeof recordBuildingClear==='function')recordBuildingClear(campaignLength());
   PROGRESS._finalKill=true;saveProgressFile();
   // Story epilogue first
   showStoryBeat(campaignLength(),()=>{_actuallyShowEndingCinematic();});
@@ -36486,6 +36809,10 @@ function showVictoryScreen(){
   else if(score>=4000){grade='B';gColor='#3aa6ff';}
   else if(score>=2500){grade='C';gColor='#bbb';}
   else{grade='D';gColor='#ff8060';}
+  // Persist campaign meta flags before score write
+  if(!P._diedThisRun)PROGRESS._winNoDeath=true;
+  if((G.difficulty||'')==='lethal')PROGRESS._winLethal=true;
+  if(acc>=80)PROGRESS._cleanerWin=true;
   // Persist progression + leaderboard
   saveProgress(score,grade);
   saveLeaderboard(score,grade,P.kills,P.headshots,acc,time,(G.difficulty||'normal').toUpperCase());
@@ -36523,6 +36850,8 @@ function showDefeatScreen(){
     '<div class="es-lbl">Building Reached</div><div class="es-val">'+G.building+' / '+campaignLength()+'</div>';
   $e('es-grade').textContent='—';
   $e('es-grade').style.color='#666';
+  const retryBtn=$e('es-restart');
+  if(retryBtn)retryBtn.textContent='RETRY BUILDING '+G.building;
   _syncEditorPlaytestUi();
   es.classList.add('show');
 }
@@ -36531,6 +36860,8 @@ function hideEndScreen(){
   $e('es-title').textContent='MISSION COMPLETE';
   $e('es-title').style.color='#ffd060';
   $e('es-sub').textContent='TARGET ELIMINATED';
+  const retryBtn=$e('es-restart');
+  if(retryBtn)retryBtn.textContent='PLAY AGAIN';
   _syncEditorPlaytestUi();
 }
 function advanceBuilding(){
@@ -36542,10 +36873,13 @@ function advanceBuilding(){
   $e('exit-prompt').style.opacity='0';
   // Save run progress on each advance (resumable later)
   saveRunState();
-  // Beyond the final building → end-of-run
+  // Beyond the final building → end-of-run (single path: cinematic → victory)
   if(G.building>campaignLength()){
     showBriefingCard(campaignLength(),1400);
-    setTimeout(()=>showVictoryScreen(),1400);
+    setTimeout(()=>{
+      if(PROGRESS&&PROGRESS._finalKill)showVictoryScreen();
+      else showEndingCinematic();
+    },1400);
     return;
   }
   // Story act-pivot story beats. Each beat plays before the listed building:
@@ -36645,7 +36979,14 @@ function takeDamage(amt,slot=0){
   if(DODGE.active&&now<DODGE.iframeUntil)return;
   comboBreak('damage');
   if(_execActive&&performance.now()<_execIFrameUntil)return;
-  if(G.mastery&&amt>0){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+  // Mastery is condition-specific — taking a hit must not fail unrelated objectives
+  // (no-alarm / no-heal / precision / civilians). Blackout Clean tracks cumulative damage.
+  if(G.mastery&&amt>0&&slot===0){
+    G.mastery.damageTaken=(G.mastery.damageTaken||0)+amt;
+    if(/blackout_clean|low.?dmg|clean_clear/i.test(_masteryObjectiveId())&&G.mastery.damageTaken>40){
+      failMastery('damage_budget');
+    }
+  }
   const hpBefore=pl.hp;
   pl.hp-=amt;pl.dmgFlash=.2;if(slot===0){const _df=$e('dmg-flash');_df.style.background='rgba(255,0,0,.25)';_df.style.opacity='.9';}sfxDamage();
   const damageSide=Math.random()<.5?-1:1;
@@ -36670,6 +37011,7 @@ function takeDamage(amt,slot=0){
     playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'damageFlinch',{amt,response:damageResponse.label});
   }
   if(pl.hp<=0){
+    P._diedThisRun=true;
     if(G.playMode==='coop'){
       pl.hp=0;pl.dead=true;
       P.dead=P2.dead=true;
@@ -36725,7 +37067,7 @@ const BUILDING_INFO=[
   {name:'STERLING MEDICAL', time:'0612 HRS', sub:'STAFF EVAC IN PROGRESS',       threat:'HIGH',target:'DR. MARCUS HUYNH',role:'ASSET LAUNDERER',intel:['Hospital wing under syndicate control','Stores cartel surgery records','Heavy security in ICU']},
   {name:'SUBWAY LINE 7',    time:'0743 HRS', sub:'TUNNEL CONTROL — RAILS COLD',  threat:'HIGH',target:'PYOTR DEMIDOV',role:'WEAPONS RUNNER',   intel:['Routes contraband through the tunnels','Keeps a personal commando team','Knows the maintenance shafts']},
   {name:'AZURE YACHT',      time:'0901 HRS', sub:'SHIP UNDERWAY · NO WITNESSES', threat:'CRITICAL',target:'LUCIA VASARI',role:'CONSIGLIERA',  intel:['Daughter of the Patriarch','Holds family ledger','Crew is loyal personal guard']},
-  {name:'SERVER FARM Δ',    time:'1014 HRS', sub:'PRIMARY OBJECTIVE — END IT',   threat:'EXTREME',target:'IL PATRIARCA',role:'SYNDICATE HEAD',intel:['Final target — the man at the top','Hardened operation room','3-phase security protocol']},
+  {name:'SERVER FARM Δ',    time:'1014 HRS', sub:'END THE FAMILY ARC',          threat:'EXTREME',target:'IL PATRIARCA',role:'SYNDICATE HEAD',intel:['Act II finale — the Patriarch falls here','Hardened operation room','Lockdown seals the family ledger']},
   // ── ACT III — The Apparatus ───────────────────────────────────────────
   {name:'BORDER CROSSING',  time:'0510 HRS', sub:'INTERCEPT THE PIPELINE HANDOFF', threat:'HIGH',target:'SAITO MURANO',role:'PIPELINE OPERATOR',intel:['Cartel was a front — the pipeline still moves','Watchtower marksman holds the long lane','Customs ledger names the next ring up']},
   {name:'CATHEDRAL SAN MARCO',time:'0035 HRS', sub:'BLACK MONEY SANCTUARY · MIDNIGHT MASS', threat:'HIGH',target:'CARDINAL LAZARETTI',role:'SACRED LAUNDERER',intel:['Funnels syndicate cash through votive accounts','Choir loft hides a sniper hide','Vault is in the bell tower']},
@@ -36772,6 +37114,21 @@ function getCampaignLevel(bn=G.building){
 function campaignLength(){
   return CAMPAIGN_LEVELS.length;
 }
+function _masteryObjectiveId(){
+  return String((G.mastery&&G.mastery.objective&&G.mastery.objective.id)||'');
+}
+function failMastery(reason){
+  if(!G.mastery||G.mastery.failed)return false;
+  G.mastery.failed=true;
+  if(G.levelState)G.levelState.masteryFailed=true;
+  G.mastery.failReason=reason||true;
+  return true;
+}
+function failMasteryIfMatch(re,reason){
+  if(!G.mastery||G.mastery.failed)return false;
+  if(!re||!re.test(_masteryObjectiveId()))return false;
+  return failMastery(reason);
+}
 function syncCampaignRuntime(){
   const level=getCampaignLevel(G.building);
   G.campaignLevel=level;
@@ -36781,7 +37138,8 @@ function syncCampaignRuntime(){
     objective:level.mastery,
     failed:false,
     zoneTimes:[0,0,0],
-    startTime:performance.now()
+    startTime:performance.now(),
+    damageTaken:0
   };
   // Phase W: re-arm bossPhases so each visit fires them fresh. The .fired
   // flag is a runtime marker on the same object the campaign reads, so we
@@ -37071,7 +37429,7 @@ function _clearDamageVisuals(){
 function _resetRunStats(){
   P.kills=0;P.headshots=0;P.shotsFired=0;P.shotsHit=0;P.runStart=performance.now();P.score=0;
   P.focus=1.0;P.focusActive=false;P.timeScale=1.0;
-  P.maxHp=P.maxHp||100;P.hp=P.maxHp;P.dead=false;P.reloading=false;
+  P.maxHp=P.maxHp||100;P.hp=P.maxHp;P.dead=false;P.reloading=false;P._diedThisRun=false;
   _resetFocusSequencer();
   _clearDamageVisuals();
   G.boss=null;P._lastStandUsed=false;P._inLastStand=false;P._spawnVisualGraceUntil=performance.now()+5200;P._spawnPerfGraceUntil=performance.now()+6500;
@@ -37361,17 +37719,20 @@ async function buildMegaplexB01Map(scene){
       ceilingLights.push(object);
       if(object.castShadow!==undefined)object.castShadow=false;
       if(object.isPointLight){
-        const tuned=Math.min(1.55,Math.max(.18,(object.intensity||1)*.006));
+        // Preserve authored relative brightness; convert GLTF lux-scale into
+        // WebGL point ranges without crushing rooms into unlit pockets.
+        const raw=Number(object.intensity)||1;
+        const tuned=Math.min(2.35,Math.max(.42,raw>20?raw*.008:raw*.55));
         object.intensity=tuned;
-        object.distance=Math.min(object.distance||34,34);
-        object.decay=Math.max(object.decay||2,2);
+        object.distance=Math.min(Math.max(object.distance||28,22),42);
+        object.decay=Math.max(object.decay||2,1.6);
         object.visible=false;
         object.userData.megaplexRoomLight=true;
         object.userData.baseIntensity=tuned;
         if(typeof _tagAaPointLight==='function')_tagAaPointLight(object,AA_POINTLIGHT_WORLD_BUDGETED,{megaplexRoomLight:true});
         managedRoomLights.push(object);
       }else if(typeof object.intensity==='number'){
-        object.intensity=Math.min(.9,Math.max(.18,object.intensity*.55));
+        object.intensity=Math.min(1.15,Math.max(.28,object.intensity*.72));
       }
       return;
     }
@@ -37467,13 +37828,13 @@ async function buildMegaplexB01Map(scene){
     {x:42,y:cfg.floorY,z:-38},{x:-35,y:cfg.floorY,z:-82},{x:0,y:cfg.floorY,z:-82},{x:35,y:cfg.floorY,z:-90}
   ];
 
-  const hemi=new THREE.HemisphereLight(0x9fb8d4,0x17130f,.462);
+  const hemi=new THREE.HemisphereLight(0x9fb8d4,0x17130f,.58);
   hemi.name='b01-megaplex-runtime-hemi';
   scene.add(hemi);localObjects.push(hemi);ceilingLights.push(hemi);
-  const ambient=new THREE.AmbientLight(0x8190a0,.18);
+  const ambient=new THREE.AmbientLight(0x8190a0,.26);
   ambient.name='b01-megaplex-runtime-ambient-fill';
   scene.add(ambient);localObjects.push(ambient);ceilingLights.push(ambient);
-  const key=new THREE.DirectionalLight(0xffd49a,1.14);
+  const key=new THREE.DirectionalLight(0xffd49a,1.22);
   key.name='b01-megaplex-runtime-key';
   key.position.set(-32,34,58);
   key.castShadow=true;
@@ -37584,6 +37945,7 @@ async function buildMegaplexB01Map(scene){
     }
     refreshMegaplexReflectionCandidates();
   }
+  const _megaplexLightWorld=new THREE.Vector3();
   function updateManagedLights(nowMs){
     if(!managedRoomLights.length||typeof P==='undefined'||!P||!P.pos)return;
     if(nowMs-lightCullLastMs<180)return;
@@ -37596,17 +37958,25 @@ async function buildMegaplexB01Map(scene){
         ranked.push({l,d2:Infinity});
         continue;
       }
-      const dx=l.position.x-P.pos.x,dz=l.position.z-P.pos.z;
+      // Nested GLB lights need world space vs player (local .position is wrong).
+      l.getWorldPosition(_megaplexLightWorld);
+      const dx=_megaplexLightWorld.x-P.pos.x,dz=_megaplexLightWorld.z-P.pos.z;
       ranked.push({l,d2:dx*dx+dz*dz});
     }
     ranked.sort((a,b)=>a.d2-b.d2);
-    const cap=3,hard=52*52;
+    // Keep enough nearby fixtures lit so side rooms read; still budgeted for WebGL.
+    const cap=8,hard=68*68;
     let visibleLights=0;
     for(let i=0;i<ranked.length;i++){
       const on=i<cap&&ranked[i].d2<hard;
-      ranked[i].l.visible=on;
-      if(!on)ranked[i].l.intensity=0;
-      else visibleLights++;
+      const L=ranked[i].l;
+      L.visible=on;
+      if(!on)L.intensity=0;
+      else{
+        const base=Number.isFinite(L.userData&&L.userData.baseIntensity)?L.userData.baseIntensity:(L.intensity||.8);
+        if(!(L.intensity>0.01))L.intensity=base;
+        visibleLights++;
+      }
     }
     if(typeof G!=='undefined'&&G&&G.levelData&&G.levelData.isMegaplexB01){
       G.levelData.megaplexVisiblePointLights=visibleLights;
@@ -38260,7 +38630,34 @@ function startGame(){
     if(typeof startOnboard==='function')startOnboard();
   });
 }
-function restartGame(){$e('overlay').classList.add('hidden');hideEndScreen();$e('dmg-flash').style.opacity='0';G.playMode='solo';G.splitScreenActive=false;DUEL.active=false;G.building=1;P.money=0;P.healPacks=0;P.grenades=0;P.smokes=1;P.flashes=1;P.attachments=_defaultAttachments();DEATHCAM.active=false;G.started=true;gameFocused=true;_resetRunStats();applyUnlocks();tryLock();musicInit();showBriefingCard(1,2200);startBuilding();}
+function restartGame(){
+  $e('overlay').classList.add('hidden');hideEndScreen();$e('dmg-flash').style.opacity='0';
+  G.playMode='solo';G.splitScreenActive=false;DUEL.active=false;
+  DEATHCAM.active=false;P.dead=false;G.started=true;gameFocused=true;G.menuOpen=false;
+  const r=PROGRESS.runSave;
+  if(r&&(r.mode==='solo'||!r.mode)){
+    G.building=Math.max(1,Math.min(campaignLength(),r.building|0||1));
+    P.money=r.money||0;
+    P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
+    P.attachments=_normalizeAttachments(r.attachments);
+    P.weaponIdx=normalizeWeaponIdx(r.weaponIdx||START_WEAPON_IDX);
+    if(Array.isArray(r.weaponAmmo))P.weaponAmmo=r.weaponAmmo.slice(0,WEAPONS.length);
+    if(Array.isArray(r.weaponRes))P.weaponRes=r.weaponRes.slice(0,WEAPONS.length);
+    normalizePlayerRuntime();
+    G._resumeState={hp:r.hp||100,weaponIdx:P.weaponIdx,weaponAmmo:P.weaponAmmo.slice(),weaponRes:P.weaponRes.slice()};
+    G.difficulty=r.difficulty||G.difficulty||'normal';
+    P.kills=r.kills||0;P.headshots=r.headshots||0;
+    P.shotsFired=r.shotsFired||0;P.shotsHit=r.shotsHit||0;
+    P.runStart=r.runStart||performance.now();
+    applyUnlocks();
+    tryLock();musicInit();showBriefingCard(G.building,2200);startBuilding();
+    return;
+  }
+  // Fallback: retry the building where the player died (never force B01).
+  G.building=Math.max(1,Math.min(campaignLength(),G.building|0||1));
+  P.attachments=P.attachments||_defaultAttachments();
+  applyUnlocks();tryLock();musicInit();showBriefingCard(G.building,2200);startBuilding();
+}
 // Update menu stats display from PROGRESS
 function updateMenuStats(){
   const ms=$e('menu-stats');
@@ -41301,16 +41698,17 @@ renderer.setAnimationLoop(()=>{
   if(typeof tickMissionHud==='function'&&G.started)tickMissionHud();
   if(typeof tickGamepad==='function')tickGamepad(dt);
   if(typeof ambientEventTick==='function')ambientEventTick(dt);
-  // Low-HP visual: red vignette + chromatic aberration when below 30% HP (DOM throttle)
+  // Low-HP visual: red vignette when below 30% HP. Keep the DOM vignette even in
+  // STABLE_RENDERING_MODE (post FX are locked off) so the player still gets a
+  // readable danger signal; only the chromatic overlay stays post-gated.
   const hpRatio=P.hp/(P.maxHp||100);
   const spawnVisualGrace=performance.now()<(P._spawnVisualGraceUntil||0);
   const criticalVisual=THREE.MathUtils.clamp(P._criticalHitPulse||0,0,1);
+  const lowHpOpacity=hpRatio<.30?.85*(1-hpRatio/.30):0;
+  $e('low-hp').style.opacity=(!P.dead&&!spawnVisualGrace)?String(Math.max(lowHpOpacity,criticalVisual*.26)):'0';
   if(STABLE_RENDERING_MODE){
-    $e('low-hp').style.opacity='0';
     $e('chrom').classList.remove('show');
   }else{
-    const lowHpOpacity=hpRatio<.30?.85*(1-hpRatio/.30):0;
-    $e('low-hp').style.opacity=!spawnVisualGrace?String(Math.max(lowHpOpacity,criticalVisual*.26)):'0';
     $e('chrom').classList.toggle('show',!spawnVisualGrace&&SETTINGS.chromaticAberration!==false&&(hpRatio<.30||criticalVisual>.22)&&!P.dead);
   }
   _updatePostProfile(hpRatio);
@@ -43626,6 +44024,7 @@ renderer.setAnimationLoop(()=>{
       G.encounterDirector.checkRoomClearEncounters(G.enemyMgr);
     checkZoneClears();
   }
+  if(typeof _checkLieuIntro==='function')_checkLieuIntro();
   // ── Animated wall monitors (shared canvas texture) ───────────────────────
   if((G._mFrame=(G._mFrame|0)+1)%3===0)_drawMonitorCanvas(now);
   // ── Tick zone doors (slide open animations)
@@ -43687,6 +44086,7 @@ renderer.setAnimationLoop(()=>{
     if(G.boss.dead){
       $e('boss-bar').classList.remove('show');
       const wasBoss=G.boss;G.boss=null;
+      if(wasBoss&&!wasBoss.isBoss&&typeof showLieutenantDeath==='function')showLieutenantDeath(G.building);
       if(G.building>=campaignLength()){
         // FINAL boss — ending cinematic
         triggerKillCamSlowMo(.20,3.0);
@@ -43698,8 +44098,19 @@ renderer.setAnimationLoop(()=>{
     } else {
       const ratio=Math.max(0,G.boss.hp/G.boss.maxHp);
       $e('boss-fill').style.width=(ratio*100).toFixed(1)+'%';
-      // Boss phase transitions for the final boss only
+      // Boss phase transitions for the final boss only.
+      // Prefer authored CAMPAIGN_LEVELS.bossPhases (EnemyManager) — do not double-spawn.
       if(G.boss.isBoss&&G.building>=campaignLength()){
+        const authored=G.campaignLevel&&Array.isArray(G.campaignLevel.bossPhases)?G.campaignLevel.bossPhases:null;
+        if(authored&&authored.length){
+          const fired=authored.filter(ph=>ph&&ph.fired).length;
+          const phase=Math.min(authored.length+1,1+fired);
+          const total=authored.length+1;
+          if(G.boss.bossPhase!==phase){
+            G.boss.bossPhase=phase;
+            $e('boss-phase').textContent='PHASE '+phase+' / '+total;
+          }
+        }else{
         let phase=ratio>.66?1:ratio>.33?2:3;
         if(G.boss.bossPhase!==phase){
           G.boss.bossPhase=phase;
@@ -43778,6 +44189,7 @@ renderer.setAnimationLoop(()=>{
             }
           }
         }
+        } // end legacy hardcoded Spire phases
       } else {
         // Lieutenant — single phase indicator
         $e('boss-phase').textContent='LIEUTENANT';
@@ -43796,7 +44208,8 @@ renderer.setAnimationLoop(()=>{
           const p=L.userData.flickerPhase;
           const depth=L.userData.flickerDepth||.012;
           const f=.985+Math.sin(p)*depth+Math.sin(p*.41+1.7)*depth*.50;
-          L.intensity=L.userData.baseIntensity*f;
+          const base=L.userData.baseIntensity!=null?L.userData.baseIntensity:(L.userData._setpieceBaseInt!=null?L.userData._setpieceBaseInt:L.intensity);
+          L.intensity=base*f;
         }
       }
     }
@@ -44875,6 +45288,156 @@ installDebugApi({
       $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyOperator();
       await startBuilding();
       return window.__game.debug.deployLog();
+    },
+    /** Dev/smoke: wipe combat, complete meso/exit encounters, unlock exit. */
+    debugForceClearBuilding:()=>{
+      const dir=G.encounterDirector;
+      if(dir&&Array.isArray(dir.encountersCatalog)){
+        for(const enc of dir.encountersCatalog){
+          if(enc&&enc.id)dir.completeEncounter(enc.id);
+        }
+      }
+      if(dir&&dir.objectiveState){
+        dir.objectiveState.completedObjectiveIds=dir.objectiveState.completedObjectiveIds||{};
+        dir.objectiveState.completedObjectiveIds.disable_alarm_panel=true;
+        dir.objectiveState.alarmPanelHold=1;
+      }
+      if(dir&&typeof dir.reconcileStaleZoneDoorEncounters==='function'){
+        dir.reconcileStaleZoneDoorEncounters(0,G.enemyMgr);
+        dir.reconcileStaleZoneDoorEncounters(1,G.enemyMgr);
+      }
+      if(dir&&typeof dir.reconcileStaleExitEncounters==='function'){
+        dir.reconcileStaleExitEncounters(G.enemyMgr);
+      }
+      if(G.enemyMgr&&Array.isArray(G.enemyMgr._list)){
+        for(const e of G.enemyMgr._list){
+          if(!e||e.dead)continue;
+          e.dead=true;e.hp=0;e._roomFlowDormant=false;
+          if(e.group)e.group.visible=false;
+        }
+      }
+      if(G.boss&&!G.boss.dead){G.boss.dead=true;G.boss.hp=0;}
+      G.zoneEverPopulated=[true,true,true];
+      if(typeof checkZoneClears==='function')checkZoneClears();
+      if(!G.zoneClears||!G.zoneClears.every(Boolean)){
+        G.zoneClears=[true,true,true];
+        G.exitUnlocked=true;
+        if(G.levelData&&typeof G.levelData.unlockExit==='function')G.levelData.unlockExit();
+      }
+      if(G.levelData&&typeof G.levelData.openZoneDoor==='function'){
+        G.levelData.openZoneDoor(0);G.levelData.openZoneDoor(1);
+      }
+      return{
+        ok:true,
+        building:G.building|0,
+        zoneClears:G.zoneClears?G.zoneClears.slice():null,
+        exitUnlocked:!!G.exitUnlocked,
+        alive:G.enemyMgr?G.enemyMgr.aliveCount:0,
+        maxCleared:PROGRESS._maxBuildingCleared|0
+      };
+    },
+    /** Dev/smoke: death keeps Continue; Play Again retries the died-on building. */
+    runSave:()=>PROGRESS.runSave?JSON.parse(JSON.stringify(PROGRESS.runSave)):null,
+    ensureRetryCheckpoint:()=>{if(typeof ensureRetryCheckpoint==='function')ensureRetryCheckpoint();return PROGRESS.runSave?{building:PROGRESS.runSave.building,mode:PROGRESS.runSave.mode}:null;},
+    simulateMissionFail:()=>{
+      G.playMode='solo';
+      P.dead=true;
+      if(typeof saveProgress==='function')saveProgress(0,'-');
+      if(typeof showDefeatScreen==='function')showDefeatScreen();
+      const btn=$e('es-restart');
+      return{
+        building:G.building|0,
+        runSaveBuilding:PROGRESS.runSave?PROGRESS.runSave.building:null,
+        restartLabel:btn?btn.textContent:'',
+        continueVisible:!!(PROGRESS.runSave&&PROGRESS.runSave.building)
+      };
+    },
+    restartCurrentRun:()=>{if(typeof restartGame==='function')restartGame();return{building:G.building|0,dead:!!P.dead,started:!!G.started};},
+    lightingMoodScale:()=>{
+      const lc=G.levelData&&G.levelData.lightingController;
+      if(!lc)return null;
+      return{hasSetMood:typeof lc.setMoodScale==='function',id:lc.id||null};
+    },
+    /** Dev/smoke: clear current building bookkeeping and load next (skips dossier/story UI). */
+    debugAdvanceSilent:async()=>{
+      const from=G.building|0;
+      if(typeof recordBuildingClear==='function')recordBuildingClear(from);
+      G.advancePending=false;
+      G.building=from+1;
+      $e('exit-prompt').style.opacity='0';
+      if(typeof saveRunState==='function')saveRunState();
+      if(G.building>campaignLength()){
+        if(typeof recordBuildingClear==='function')recordBuildingClear(campaignLength());
+        PROGRESS._finalKill=true;saveProgressFile();
+        return{ok:true,from,to:G.building,ending:true,maxCleared:PROGRESS._maxBuildingCleared|0,finalKill:!!PROGRESS._finalKill};
+      }
+      G.started=true;gameFocused=true;P.dead=false;G.menuOpen=false;
+      hideEndScreen();
+      const endingEl=$e('ending-overlay');if(endingEl)endingEl.classList.remove('show');
+      const storyEl=$e('story-card');if(storyEl)storyEl.classList.remove('show');
+      const dos=$e('dossier-card');if(dos)dos.classList.remove('show');
+      await startBuilding();
+      return{ok:true,from,to:G.building|0,ending:false,campaignId:G.campaignLevel&&G.campaignLevel.id,maxCleared:PROGRESS._maxBuildingCleared|0};
+    },
+    campaignLength:()=>campaignLength(),
+    campaignIds:()=>CAMPAIGN_LEVELS.map(l=>({building:l.building,id:l.id,setpiece:l.setpiece,mastery:l.mastery&&l.mastery.id})),
+    setpieceDef:(bn)=>SETPIECE_DEFS[bn]||null,
+    objectiveDef:(bn)=>OBJECTIVE_DEFS[bn]||null,
+    /** Count meshes tagged for hold-E alarm panel (B02–B12 softlock probe). */
+    alarmPanelMeshes:()=>{
+      const solids=G.levelData&&Array.isArray(G.levelData.solids)?G.levelData.solids:[];
+      let n=0;const samples=[];
+      for(const o of solids){
+        if(!o||!o.isMesh||!o.userData||o.userData.objectiveId!=='alarm_panel')continue;
+        n++;
+        if(samples.length<4){
+          const p=o.getWorldPosition(new THREE.Vector3());
+          samples.push({name:o.name||null,x:+p.x.toFixed(2),z:+p.z.toFixed(2)});
+        }
+      }
+      return{building:G.building|0,count:n,samples};
+    },
+    /** Teleport to alarm panel + hold KeyE; returns progress after `frames` sim ticks. */
+    debugHoldAlarmPanel:(opts={})=>{
+      const solids=G.levelData&&Array.isArray(G.levelData.solids)?G.levelData.solids:[];
+      let mesh=null;
+      for(const o of solids){
+        if(o&&o.isMesh&&o.userData&&o.userData.objectiveId==='alarm_panel'){mesh=o;break;}
+      }
+      if(!mesh)return{ok:false,reason:'no_alarm_panel_mesh'};
+      mesh.updateMatrixWorld(true);
+      const p=mesh.getWorldPosition(new THREE.Vector3());
+      const floorY=typeof WT==='number'?WT:0;
+      P.pos.set(p.x,floorY,p.z+0.9);
+      P.dead=false;G.menuOpen=false;
+      // Non-alarm buildings no longer require live alarm; still arm it for alarm setpieces.
+      if(G.levelState)G.levelState.alarm=true;
+      K['KeyE']=true;
+      const frames=Math.max(1,Number(opts.frames)|0||40);
+      const dt=Number.isFinite(opts.dt)?opts.dt:1/30;
+      let lastEv=null;
+      for(let i=0;i<frames;i++){
+        if(G.encounterDirector&&G.levelData){
+          lastEv=G.encounterDirector.tickObjectives(dt,P,{
+            keyE:true,
+            levelSolids:G.levelData.solids,
+            levelData:G.levelData,
+            alarmSystem:!!(G.levelState&&G.levelState.alarm),
+          });
+          if(G.encounterDirector.objectiveState&&G.encounterDirector.objectiveState.completedObjectiveIds&&G.encounterDirector.objectiveState.completedObjectiveIds.disable_alarm_panel)break;
+        }
+      }
+      delete K['KeyE'];
+      const flow=G.encounterDirector&&typeof G.encounterDirector.debugRoomFlow==='function'?G.encounterDirector.debugRoomFlow(G.enemyMgr):null;
+      const done=!!(G.encounterDirector&&G.encounterDirector.objectiveState&&G.encounterDirector.objectiveState.completedObjectiveIds&&G.encounterDirector.objectiveState.completedObjectiveIds.disable_alarm_panel);
+      return{
+        ok:done,
+        event:lastEv,
+        hold:G.encounterDirector&&G.encounterDirector.objectiveState?G.encounterDirector.objectiveState.alarmPanelHold:null,
+        completed:done,
+        roomFlow:flow,
+        player:{x:+P.pos.x.toFixed(2),z:+P.pos.z.toFixed(2)}
+      };
     },
     cornerEdges:()=>(G.levelData&&G.levelData.cornerEdges)||[],
     coverSlots:()=>(G.levelData&&G.levelData.coverSlots)||[],

@@ -208,8 +208,7 @@ body.pistol-rds-active.ads-settled #xhair{opacity:.18}
 body.stable-render #lean-vignette,
 body.stable-render #color-grade,
 body.stable-render #post-grain,
-body.stable-render #chrom,
-body.stable-render #low-hp{
+body.stable-render #chrom{
   display:none!important;
   opacity:0!important;
   animation:none!important;
