@@ -54,6 +54,55 @@ function addAccentGlowOrb(ctx, x, y, z, color, radius = 0.12) {
   ob.push(mesh);
 }
 
+/** Housing + bulb under a sequence accent so STABLE doesn't read floating orbs. */
+function addAccentPractical(ctx, x, y, z, color) {
+  const { THREE, scene, ob, dims } = ctx;
+  const RH = (dims && dims.RH) || 4.2;
+  const nearCeiling = y > RH - 1.2;
+  const housingM = new THREE.MeshPhongMaterial({ color: 0x161820, shininess: 40 });
+  if (nearCeiling) {
+    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.07, 0.36), housingM);
+    housing.position.set(x, y + 0.10, z);
+    housing.userData.noBlock = true;
+    scene.add(housing); ob.push(housing);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 8, 6),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    bulb.position.set(x, y, z);
+    bulb.userData.noBlock = true;
+    scene.add(bulb); ob.push(bulb);
+  } else {
+    // Floor / mid accent — short post + glowing head.
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.55, 6), housingM);
+    post.position.set(x, y - 0.18, z);
+    post.userData.noBlock = true;
+    scene.add(post); ob.push(post);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 8, 6),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    head.position.set(x, y + 0.12, z);
+    head.userData.noBlock = true;
+    scene.add(head); ob.push(head);
+  }
+  // Soft floor pool under the accent.
+  const pool = new THREE.Mesh(
+    new THREE.CircleGeometry(0.55, 16),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(x, (dims && dims.WT != null ? dims.WT : 0) + 0.03, z);
+  pool.userData.noBlock = true;
+  scene.add(pool); ob.push(pool);
+}
+
 export function applySequenceLayout(ctx) {
   const { THREE, scene, ob, wl, vl, helpers, dims, materials, accent, bn, layout } = ctx;
   const def = SEQUENCE_DEFS[bn];
@@ -111,7 +160,7 @@ export function applySequenceLayout(ctx) {
     if (builder) builder(ctx, el);
   }
 
-  // Per-building extra accent lights tuned to the theme (fake pool + glow — no scene PointLights).
+  // Per-building extra accent lights (fake pool + practical fixture — no scene PointLights).
   if (def.lights) for (const L of def.lights) {
     const baseIntensity = (L.int || 1.4) * 0.72;
     const x = L.x || 0;
@@ -120,7 +169,8 @@ export function applySequenceLayout(ctx) {
     const col = L.col || def.accent;
     const flick = L.flicker ? { flicker: true, flickerPhase: Math.random() * 10, sequenceDefLight: true } : { sequenceDefLight: true };
     pushFakeAccent(ctx, x, y, z, col, baseIntensity, flick);
-    addAccentGlowOrb(ctx, x, y, z, col, 0.14);
+    addAccentPractical(ctx, x, y, z, col);
+    addAccentGlowOrb(ctx, x, y, z, col, 0.10);
   }
 }
 
@@ -559,7 +609,7 @@ function addSequencePlacard(ctx) {
   // Floor plate placard near the cell's mid — small, glowing, low.
   const plate = new THREE.Mesh(
     new THREE.BoxGeometry(2.4, 0.04, 0.7),
-    new THREE.MeshLambertMaterial({ color: 0x101216, emissive: themeAccent || 0xffd060, emissiveIntensity: 0.55 })
+    new THREE.MeshLambertMaterial({ color: 0x101216, emissive: themeAccent || 0xffd060, emissiveIntensity: 1.15 })
   );
   plate.position.set(region.midX, WT + 0.022, region.midZ);
   plate.userData.noBlock = true;
@@ -596,7 +646,7 @@ function addSequenceIdentityLayer(ctx, def) {
   sight.userData.noBlock = true;
   scene.add(sight); ob.push(sight);
 
-  const railM = new THREE.MeshLambertMaterial({ color: 0x11151c, emissive: accent, emissiveIntensity: 0.25 });
+  const railM = new THREE.MeshLambertMaterial({ color: 0x11151c, emissive: accent, emissiveIntensity: 0.70 });
   for (const x of [-4.8, 4.8]) {
     const rail = new THREE.Mesh(new THREE.BoxGeometry(8.0, 0.08, 0.16), railM);
     rail.position.set(x, WT + RH - 0.70, id.railZ);
@@ -610,9 +660,28 @@ function addSequenceIdentityLayer(ctx, def) {
   beacon.userData.noBlock = true;
   scene.add(beacon); ob.push(beacon);
 
-  const heroM = new THREE.MeshLambertMaterial({ color: 0x0f1218, emissive: accent, emissiveIntensity: 0.55 });
-  const hero = new THREE.Mesh(new THREE.BoxGeometry(0.58, 2.2, 0.58), heroM);
-  hero.position.set(heroX, WT + 1.1, id.heroZ);
+  // Landmark hero — per-building silhouette so accents don't only live on materials.
+  const heroM = new THREE.MeshLambertMaterial({ color: 0x0f1218, emissive: accent, emissiveIntensity: 1.05 });
+  let hero;
+  if (bn === 3) {
+    hero = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.08, 8, 16), heroM);
+    hero.rotation.x = Math.PI / 2;
+    hero.position.set(heroX, WT + 1.35, id.heroZ);
+  } else if (bn === 8 || bn === 11) {
+    hero = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const rack = new THREE.Mesh(new THREE.BoxGeometry(0.42, 2.0, 0.18), heroM);
+      rack.position.set((i - 1) * 0.28, 1.0, 0);
+      hero.add(rack);
+    }
+    hero.position.set(heroX, WT, id.heroZ);
+  } else if (bn === 10) {
+    hero = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 2.4, 8), heroM);
+    hero.position.set(heroX, WT + 1.2, id.heroZ);
+  } else {
+    hero = new THREE.Mesh(new THREE.BoxGeometry(0.58, 2.2, 0.58), heroM);
+    hero.position.set(heroX, WT + 1.1, id.heroZ);
+  }
   hero.userData.noBlock = true;
   scene.add(hero); ob.push(hero);
 }

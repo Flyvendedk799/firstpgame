@@ -8,17 +8,26 @@
 
 let AC = null;
 
+function masterDest(c) {
+  return c._masterBus || c.destination;
+}
+
 export function getAC() {
   if (!AC) AC = new AudioContext();
   if (AC.state === 'suspended') AC.resume();
   if (!AC._masterBus) {
     const comp = AC.createDynamicsCompressor();
-    comp.threshold.value = -8;
-    comp.ratio.value = 12;
-    comp.attack.value = 0.002;
-    comp.release.value = 0.18;
-    comp.connect(AC.destination);
-    AC._masterBus = comp;
+    comp.threshold.value = -12;
+    comp.knee.value = 18;
+    comp.ratio.value = 8;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.22;
+    const makeup = AC.createGain();
+    makeup.gain.value = 1.08;
+    comp.connect(makeup);
+    makeup.connect(AC.destination);
+    AC._masterBus = makeup;
+    AC._masterCompressor = comp;
   }
   return AC;
 }
@@ -29,7 +38,7 @@ export function sfxHit(hs) {
   o.type = 'sine';
   g.gain.setValueAtTime(hs ? .45 : .3, c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001, c.currentTime + (hs ? .11 : .07));
-  o.connect(g); g.connect(c.destination);
+  o.connect(g); g.connect(masterDest(c));
   o.start(); o.stop(c.currentTime + .15);
 }
 
@@ -40,7 +49,7 @@ export function sfxReload() {
     o.frequency.value = f;
     g.gain.setValueAtTime(.25, c.currentTime + t);
     g.gain.exponentialRampToValueAtTime(.001, c.currentTime + t + .035);
-    o.connect(g); g.connect(c.destination);
+    o.connect(g); g.connect(masterDest(c));
     o.start(c.currentTime + t); o.stop(c.currentTime + t + .05);
   });
 }
@@ -50,7 +59,7 @@ export function sfxDamage() {
   o.type = 'sawtooth'; o.frequency.value = 110;
   g.gain.setValueAtTime(.35, c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001, c.currentTime + .18);
-  o.connect(g); g.connect(c.destination);
+  o.connect(g); g.connect(masterDest(c));
   o.start(); o.stop(c.currentTime + .22);
 }
 
@@ -61,7 +70,7 @@ export function sfxWaveClear() {
     o.frequency.value = f;
     g.gain.setValueAtTime(.2, c.currentTime + i * .1);
     g.gain.exponentialRampToValueAtTime(.001, c.currentTime + i * .1 + .35);
-    o.connect(g); g.connect(c.destination);
+    o.connect(g); g.connect(masterDest(c));
     o.start(c.currentTime + i * .1); o.stop(c.currentTime + i * .1 + .4);
   });
 }

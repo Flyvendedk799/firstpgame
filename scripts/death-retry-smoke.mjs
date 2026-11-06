@@ -32,15 +32,38 @@ try {
     G.playMode = 'solo';
     G.building = 9;
     P.money = 777;
+    P.hp = 100;
+    P.maxHp = 100;
     P.dead = false;
     // Entry checkpoint as if player just arrived at B09.
-    dbg.ensureRetryCheckpoint();
+    if (typeof dbg.saveEntryRunState === 'function') dbg.saveEntryRunState();
+    else dbg.ensureRetryCheckpoint();
+    // Mid-fight pause save must not clobber death-retry entry HP.
+    P.hp = 17;
+    P.money = 111;
+    if (typeof dbg.saveRunState === 'function') dbg.saveRunState();
+    else {
+      // fallback: mutate live save only
+      const live = dbg.runSave();
+      if (live) {
+        live.hp = 17;
+        live.money = 111;
+      }
+    }
     const beforeFail = dbg.runSave();
+    const entryBefore = typeof dbg.runEntrySave === 'function' ? dbg.runEntrySave() : null;
     const fail = dbg.simulateMissionFail();
     const afterFail = dbg.runSave();
     const restart = dbg.restartCurrentRun();
     await wait(400);
-    const afterRestart = { building: dbg.G().building, money: dbg.P().money, dead: !!dbg.P().dead };
+    const afterRestart = {
+      building: dbg.G().building,
+      money: dbg.P().money,
+      hp: dbg.P().hp,
+      dead: !!dbg.P().dead,
+      entryHp: entryBefore && entryBefore.hp,
+      liveHpBeforeFail: beforeFail && beforeFail.hp,
+    };
     dbg.buildLevel(5);
     await wait(200);
     const mood = dbg.lightingMoodScale();
@@ -56,6 +79,12 @@ try {
   assert(result.afterFail && result.afterFail.building === 9, 'post-fail runSave wiped');
   assert(result.afterRestart.building === 9, `retry must stay on B09, got ${result.afterRestart.building}`);
   assert(result.afterRestart.dead === false, 'retry should clear dead');
+  if (result.afterRestart.liveHpBeforeFail === 17 && result.afterRestart.entryHp === 100) {
+    assert(
+      result.afterRestart.hp >= 90,
+      `death retry must restore entry HP, got ${JSON.stringify(result.afterRestart)}`,
+    );
+  }
   assert(result.mood && result.mood.hasSetMood === true, 'B05 lighting controller needs setMoodScale');
   assert(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 

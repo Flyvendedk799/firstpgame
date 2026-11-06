@@ -235,6 +235,7 @@ import {
 } from './weaponViewmodelLoader.js';
 // Phase G: small audio module — first piece of main.js modularization.
 import { getAC, sfxHit as _sfxHit, sfxReload as _sfxReload, sfxDamage as _sfxDamage, sfxWaveClear as _sfxWaveClear } from './audio.js';
+function _sfxOut(c){return (c&&c._masterBus)||(c&&c.destination);}
 import { createCustomMapStore } from './customMaps/customMapStore.js';
 import { createLevelKitRegistry } from './customMaps/levelKitRegistry.js';
 import { compileCustomMapToLevelData } from './customMaps/customMapCompiler.js';
@@ -2215,6 +2216,12 @@ function _aaPhysicalCloth({color,sheenColor}={}){
 function _aaPhysicalIridescent({color}={}){
   let q='high';try{q=(SETTINGS&&SETTINGS.quality)||'high';}catch(_){q='high';}
   const c=color!=null?color:0x88ddff;
+  if(typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE){
+    return new THREE.MeshPhongMaterial({
+      color:c,shininess:180,specular:0xc0f0ff,transparent:true,opacity:.72,
+      emissive:c,emissiveIntensity:.28,depthWrite:false
+    });
+  }
   if(q==='ultra'||q==='high'){
     return new THREE.MeshPhysicalMaterial({
       color:c,
@@ -2281,7 +2288,9 @@ function _applyLevelEnvironmentProfile(scene,bn,lightProfile,reflProfile){
     applySkyBackgroundFromEquirect(scene,THREE,eq,skyExp,skyBlur);
   }else if(scene&&scene.background&&scene.background.isColor&&lightProfile){
     const fogCol=new THREE.Color(lightProfile.fog||0x070a12);
-    scene.background.copy(fogCol).lerp(new THREE.Color(0x070a12),.48);
+    // Keep authored fog hue — avoid collapsing every building into the same cool gray.
+    const grayMix=typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?.18:.48;
+    scene.background.copy(fogCol).lerp(new THREE.Color(0x070a12),grayMix);
   }
   return rp;
 }
@@ -2464,6 +2473,23 @@ function buildLevel(scene,bn){
   const visualStats={dressingObjects:0,trimObjects:0,grimeDecals:0,contactShadows:0,atmosphereSheets:0,wetSurfaces:0,transparentSurfaces:0,csmSplits:0,atmospherePolish:atmospherePolish.id,atmospherePolishVersion:'sequence-3',combatVfxPolishVersion:_CORE_VISUAL_COMBAT_VFX_POLISH_VERSION,environmentCohesionVersion:_CORE_VISUAL_ENV_COHESION_VERSION,environmentCohesionProfile:envCohesion.id,lightPools:0};
   function _aaPhysicalGlass(phongParams,phys={}){
     let q='high';try{q=(SETTINGS&&SETTINGS.quality)||'high';}catch(_){q='high';}
+    // STABLE has no transmission composer path — prefer readable alpha glass over murky slabs.
+    if(typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE){
+      const authored=phongParams.opacity??.36;
+      // Bloom-era alphas (.22–.30) go invisible without transmission — floor readability.
+      const op=Math.max(.36,Math.min(.48,authored));
+      const tint=phongParams.emissive||phongParams.color||0x80c8ff;
+      return new THREE.MeshPhongMaterial({
+        color:phongParams.color,
+        shininess:phongParams.shininess??180,
+        specular:phongParams.specular??0xa0c8ff,
+        transparent:true,
+        opacity:op,
+        emissive:tint,
+        emissiveIntensity:phongParams.emissiveIntensity??0.22,
+        depthWrite:false
+      });
+    }
     if(q==='ultra'||q==='high'){
       return new THREE.MeshPhysicalMaterial({
         color:phongParams.color,
@@ -2510,7 +2536,8 @@ function buildLevel(scene,bn){
   function addAAVisualDressing(){
     const startCount=ob.length;
     const profile=getVisualProfile(bn);
-    const atmosphereMul=_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.atmosphereQuality)||'high',{low:.28,medium:.50,high:.86,ultra:1.08});
+    const atmosphereMul=_qualityScale((typeof SETTINGS!=='undefined'&&SETTINGS.atmosphereQuality)||'high',{low:.28,medium:.50,high:.86,ultra:1.08})
+      *(typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?1.18:1);
     const accent=profile.atmosphere.accent;
     const odMul=_overdrawDressingMul();
     const accentC=new THREE.Color(accent);
@@ -2916,7 +2943,7 @@ function buildLevel(scene,bn){
   const zoneDoors=[];
   function makeZoneDoor(x,z,w){
     const doorM=new THREE.MeshPhongMaterial({color:0x1c1e22,shininess:60,specular:0x303840});
-    const stripeM=new THREE.MeshLambertMaterial({color:0xff4040,emissive:0x4a0808});
+    const stripeM=new THREE.MeshBasicMaterial({color:0xff5040});
     const handleM=new THREE.MeshPhongMaterial({color:0x60646a,shininess:120,specular:0x808890});
     const door=new THREE.Mesh(new THREE.BoxGeometry(w,RH-.08,WT*.6),doorM);
     door.position.set(x,RH/2+WT/2,z);
@@ -2988,7 +3015,7 @@ function buildLevel(scene,bn){
       o.frequency.exponentialRampToValueAtTime(60,c.currentTime+1.2);
       g.gain.setValueAtTime(.20,c.currentTime);
       g.gain.exponentialRampToValueAtTime(.001,c.currentTime+1.4);
-      o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+1.5);
+      o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+1.5);
     }catch(_){}
   }
   function tickZoneDoors(dt){
@@ -3073,7 +3100,11 @@ function buildLevel(scene,bn){
     }
   }
   for(let z=-20;z<=20;z+=10){
-    const lg=new THREE.Mesh(new THREE.PlaneGeometry(1.5,.4),new THREE.MeshBasicMaterial({color:0xffeedd,side:THREE.DoubleSide}));
+    const planeAccent=(typeof getVisualProfile==='function'&&getVisualProfile(bn)&&getVisualProfile(bn).atmosphere)
+      ?getVisualProfile(bn).atmosphere.accent
+      :0xffeedd;
+    const planeCol=new THREE.Color(0xffeedd).lerp(new THREE.Color(planeAccent),.42);
+    const lg=new THREE.Mesh(new THREE.PlaneGeometry(1.5,.4),new THREE.MeshBasicMaterial({color:planeCol.getHex(),side:THREE.DoubleSide}));
     lg.rotation.x=Math.PI/2;lg.position.set(0,RH+WT-.01,z);scene.add(lg);ob.push(lg);
   }
   // ── PER-BUILDING DRAMATIC LIGHTING PROFILE ───────────────────────────────
@@ -3168,8 +3199,11 @@ function buildLevel(scene,bn){
   ][Math.min(bn-1,11)];
   _applyLevelEnvironmentProfile(scene,bn,lightProfile,reflProfile);
   visualStats.reflectionProfile=reflProfile.id;
-  // Apply fog to the scene
-  scene.fog=new THREE.FogExp2(lightProfile.fog,THREE.MathUtils.clamp(lightProfile.fogD*.72,.008,.032));
+  // Apply fog to the scene — preserve per-building depth under STABLE (no composer haze).
+  const fogMul=typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?.92:.72;
+  const fogMin=typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?.006:.008;
+  const fogMax=typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?.045:.032;
+  scene.fog=new THREE.FogExp2(lightProfile.fog,THREE.MathUtils.clamp(lightProfile.fogD*fogMul,fogMin,fogMax));
   // Ambient + hemisphere (sky/ground bounce)
   const amb=new THREE.AmbientLight(lightProfile.ambCol,lightProfile.ambInt);scene.add(amb);ob.push(amb);
   const hemi=new THREE.HemisphereLight(lightProfile.hemiSky,lightProfile.hemiGround,lightProfile.hemiInt);
@@ -3325,11 +3359,13 @@ function buildLevel(scene,bn){
       const bulbM=new THREE.MeshBasicMaterial({color:prof.col});
       const bulb=new THREE.Mesh(new THREE.SphereGeometry(.10,8,6),bulbM);bulb.position.set(0,RH+WT-.32,z);scene.add(bulb);ob.push(bulb);
     } else if(bn===2){
-      // Brass pendant
+      // Brass pendant + hot bulb (STABLE needs a visible source under the shade)
       const fixM=new THREE.MeshPhongMaterial({color:0xc8a040,shininess:200,specular:0xffd060,emissive:0x281808});
       const fix=new THREE.Mesh(new THREE.ConeGeometry(.35,.30,12,1,true),fixM);fix.position.set(0,RH+WT-.30,z);scene.add(fix);ob.push(fix);
       const cord=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,.20,5),new THREE.MeshLambertMaterial({color:0x1a1a1e}));
       cord.position.set(0,RH+WT-.05,z);scene.add(cord);ob.push(cord);
+      const bulbM=new THREE.MeshBasicMaterial({color:prof.col});
+      const bulb=new THREE.Mesh(new THREE.SphereGeometry(.08,8,6),bulbM);bulb.position.set(0,RH+WT-.42,z);scene.add(bulb);ob.push(bulb);
     } else if(bn===3){
       // Ring light
       const fixM=new THREE.MeshBasicMaterial({color:prof.col});
@@ -3340,6 +3376,18 @@ function buildLevel(scene,bn){
       const fix=new THREE.Mesh(new THREE.CylinderGeometry(.18,.30,.10,12),fixM);fix.position.set(0,RH+WT-.10,z);scene.add(fix);ob.push(fix);
       const bulbM=new THREE.MeshBasicMaterial({color:prof.col});
       const bulb=new THREE.Mesh(new THREE.CircleGeometry(.18,12),bulbM);bulb.position.set(0,RH+WT-.18,z);bulb.rotation.x=-Math.PI/2;scene.add(bulb);ob.push(bulb);
+    } else {
+      // B05–B12: shared practical housing + hot bulb so pools aren't floating discs.
+      const housing=new THREE.Mesh(new THREE.BoxGeometry(bn===8||bn===11?.70:.50,.08,bn===5||bn===6?.90:.42),new THREE.MeshPhongMaterial({color:0x161820,shininess:40}));
+      housing.position.set(0,RH+WT-.16,z);scene.add(housing);ob.push(housing);
+      const bulbM=new THREE.MeshBasicMaterial({color:prof.col});
+      if(bn===5||bn===6){
+        const tube=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,.72,8),bulbM);
+        tube.rotation.z=Math.PI/2;tube.position.set(0,RH+WT-.24,z);scene.add(tube);ob.push(tube);
+      }else{
+        const bulb=new THREE.Mesh(new THREE.SphereGeometry(.09,8,6),bulbM);
+        bulb.position.set(0,RH+WT-.26,z);scene.add(bulb);ob.push(bulb);
+      }
     }
     // ── Faked volumetric god-ray cone — low/medium fallback only.
     // When Phase 2 volumetrics are off, keep both the post pass and cone
@@ -3430,17 +3478,20 @@ function buildLevel(scene,bn){
   // Accent wall sconces and fill lights removed for perf — the hemisphere
   // + 5 zone ceiling lights already cover the room, and keeping total
   // PointLight count low avoids shader recompilation hitches during play.
-  // Door — visible warm wood color + amber emissive glow so it reads from across the room
-  const eM=new THREE.MeshLambertMaterial({color:0x7a4820,emissive:0x3a1800});
+  // Door — warm wood + brighter emissive so the exit reads before unlock lights.
+  const eM=new THREE.MeshLambertMaterial({color:0x7a4820,emissive:0x3a1800,emissiveIntensity:STABLE_RENDERING_MODE?1.55:1});
   const ed=box(0,WT+1.5,-hd+WT*.5,2,3,.15,eM);ed.userData.isExit=true;
   // Door frame (bright cream trim)
-  const efM=new THREE.MeshLambertMaterial({color:0xc8a870,emissive:0x241800});
+  const efM=new THREE.MeshLambertMaterial({color:0xc8a870,emissive:0x241800,emissiveIntensity:STABLE_RENDERING_MODE?1.25:1});
   box(0,WT+3.15,-hd+WT*.5,2.3,.18,.18,efM);   // top bar
   box(-1.05,WT+1.5,-hd+WT*.5,.18,3,.18,efM); // left post
   box( 1.05,WT+1.5,-hd+WT*.5,.18,3,.18,efM); // right post
-  // EXIT sign above door
-  const signM=new THREE.MeshLambertMaterial({color:0x00cc44,emissive:0x00aa33});
+  // EXIT sign above door — MeshBasic so it stays readable without bloom.
+  const signM=new THREE.MeshBasicMaterial({color:0x40ff80});
   box(0,WT+3.7,-hd+WT*.6,1.4,.32,.08,signM);
+  // Soft green pad under the exit threshold for landmark read under STABLE.
+  const exitPad=new THREE.Mesh(new THREE.PlaneGeometry(2.2,1.1),new THREE.MeshBasicMaterial({color:0x30ff70,transparent:true,opacity:.18,depthWrite:false,blending:THREE.AdditiveBlending}));
+  exitPad.rotation.x=-Math.PI/2;exitPad.position.set(0,WT+.03,-hd+1.1);exitPad.userData.noBlock=true;scene.add(exitPad);ob.push(exitPad);
   // ── WINDOWS — HDR slice or legacy skyline panes ────────────────────────────
   const eqWin=getBuildingEquirectTexture(bn);
   let windowM;
@@ -3533,11 +3584,14 @@ function buildLevel(scene,bn){
     else zoneSpawns[2].push(v);
   }
   // ── PROPS & DECOR ───────────────────────────────────────────────────────────
-  // Per-building variation tints for prop accents
-  const propAccent=[0xff6040,0x40ff80,0xffd040,0x60a0ff,0x80ffe0,0xff5040,0xa0c8ff,0x40e0ff,
-                     /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x80b0d0, /* 12 */ 0xc8e0ff][Math.min(bn-1,11)];
-  const sigM   =new THREE.MeshLambertMaterial({color:0xff4030,emissive:0x4a0e08});       // red signage
-  const cautionM=new THREE.MeshLambertMaterial({color:0xffd040,emissive:0x4a3808});      // amber caution
+  // Per-building variation tints for prop accents — keep in sync with visualProfiles.atmosphere.accent
+  const propAccent=(typeof getVisualProfile==='function'&&getVisualProfile(bn)&&getVisualProfile(bn).atmosphere)
+    ?getVisualProfile(bn).atmosphere.accent
+    :[0xff8040,0xd4b06a,0xff40c8,0xffd060,0x40ff80,0xff5040,0xa0c8ff,0x40e0ff,
+                     /* 9 */ 0xffb060, /* 10 */ 0xffe8b0, /* 11 */ 0x6890b8, /* 12 */ 0xc8e0ff][Math.min(bn-1,11)];
+  // MeshBasic so STABLE (no bloom) still reads critical nav colors.
+  const sigM   =new THREE.MeshBasicMaterial({color:0xff5040});
+  const cautionM=new THREE.MeshBasicMaterial({color:0xffd040});
   const monitorBezelM=new THREE.MeshPhongMaterial({color:0x14161c,shininess:90,specular:0x303838});
   // Animated CRT-feel screen — emissive map driven by _drawMonitorCanvas each frame
   const monitorScreenM=new THREE.MeshPhongMaterial({color:0x000000,emissive:0xffffff,emissiveMap:_monitorTex,emissiveIntensity:1.10,shininess:0});
@@ -3552,7 +3606,7 @@ function buildLevel(scene,bn){
   const pipeM=new THREE.MeshPhongMaterial({color:0x6a6e74,shininess:80,specular:0x808890});
   const cableM=new THREE.MeshLambertMaterial({color:0x0a0c10});
   const lampShadeM=new THREE.MeshPhongMaterial({color:0x1c1c20,shininess:40,specular:0x2a2c34,side:THREE.DoubleSide});
-  const stripeM=new THREE.MeshLambertMaterial({color:0xffd040,emissive:0x2a2208});
+  const stripeM=new THREE.MeshBasicMaterial({color:0xffd040});
   const stripeDarkM=new THREE.MeshLambertMaterial({color:0x141414});
   // Helper: AABB-add to walls list (for cover that should block movement)
   function blockingBox(x,y,z,w,h,d,mat){
@@ -3729,7 +3783,7 @@ function buildLevel(scene,bn){
     else{cautionSign(-8,WT+1.5,8.5, 0,1);cautionSign(8,WT+1.5,-8.5, 0,-1);}
   }
   // Building number sign on the back wall (always visible behind player at spawn)
-  const bnumM=new THREE.MeshLambertMaterial({color:0xffd060,emissive:0x4a3808});
+  const bnumM=new THREE.MeshBasicMaterial({color:0xffd060});
   box(0,RH-1.3, hd-.06, .60,.40,.05, bnumM);
   // ── ACCENT FLOOR-LEVEL STRIP LIGHTS ──────────────────────────────────────
   const accentColors=[0xff4040,0x40ff80,0xff8040,0x4080ff,0x80f0c8,0xff5040,0xa0c8ff,0x40e0ff,
@@ -3759,7 +3813,7 @@ function buildLevel(scene,bn){
   box(-hw+.06, 1.10, 0, .04, .42, .14, extM);
   box(-hw+.10, 1.36, 0, .04, .08, .12, extHandleM);
   // "FIRE" wall sign next to it
-  const fireSignM=new THREE.MeshLambertMaterial({color:0xff4040,emissive:0x4a0808});
+  const fireSignM=new THREE.MeshBasicMaterial({color:0xff5040});
   box(-hw+.04, 1.85, 0, .03, .14, .26, fireSignM);
   // Back zone — pallet stack near the corner
   if(bn!==1){
@@ -5042,7 +5096,10 @@ function buildLevel(scene,bn){
   }
   // ─── PHASE B6: SIGNAGE / WALL ATMOSPHERE ─────────────────────────
   function _wallSign(x,y,z,faceDir,w,h,col,emCol){
-    const m=new THREE.MeshLambertMaterial({color:col,emissive:emCol||0});
+    // Prefer Basic for hot colors; keep Lambert only when no emissive cue (frames/photos).
+    const m=emCol
+      ?new THREE.MeshBasicMaterial({color:col})
+      :new THREE.MeshLambertMaterial({color:col});
     let dx=.04,dz=.04;
     if(faceDir==='+x'||faceDir==='-x')dz=h>0.3?h*1.1:.04;
     let geom;
@@ -5248,20 +5305,33 @@ function buildLevel(scene,bn){
     }
   }
   // ─── MOOD LIGHT ACCENT — building-specific small floor/wall lamps ──────
-  // Adds ~6 small, mood-tinted PointLight stand-ins (rendered as glowing meshes
-  // not actual lights to keep light count low) for atmosphere.
-  const moodCol=({1:0xff8040,2:0xffd060,3:0xff40c8,4:0xa0c8ff,5:0x40c8ff,6:0xff5040,7:0xa0c8ff,8:0x40c8ff,9:0xffb060,10:0xffe8b0,11:0x6890b8,12:0xc8e0ff})[bn]||0xffd060;
-  const moodM=new THREE.MeshBasicMaterial({color:moodCol,transparent:true,opacity:.78,blending:THREE.AdditiveBlending});
-  const fixedMood=bn===1?[[0,18.2],[-4.5,14.2],[5.0,5.4],[-14.2,1.0],[14.2,-2.2],[-5.0,-9.6],[0,-20.4]]:null;
-  if(fixedMood){
-    for(const [x,z] of fixedMood)_addBox(x,WT+.05,z, .15,.04,.15, moodM);
-  }else{
-    for(let i=0;i<6;i++){
-      const x=(Math.random()-.5)*RW*.85;
-      const z=(Math.random()-.5)*RD*.85;
-      if(Math.abs(x)<2&&Math.abs(z)<2)continue;
-      _addBox(x,WT+.05,z, .15,.04,.15, moodM);
-    }
+  // Tiny practical housings + glow heads (not orphan additive pads).
+  const moodCol=(typeof getVisualProfile==='function'&&getVisualProfile(bn)&&getVisualProfile(bn).atmosphere)
+    ?getVisualProfile(bn).atmosphere.accent
+    :({1:0xff8040,2:0xd4b06a,3:0xff40c8,4:0xffd060,5:0x40ff80,6:0xff5040,7:0xa0c8ff,8:0x40e0ff,9:0xffb060,10:0xffe8b0,11:0x6890b8,12:0xc8e0ff})[bn]||0xffd060;
+  const moodGlowM=new THREE.MeshBasicMaterial({color:moodCol,transparent:true,opacity:.85,blending:THREE.AdditiveBlending,depthWrite:false});
+  const moodHousingM=new THREE.MeshPhongMaterial({color:0x14161c,shininess:50});
+  const fixedMood=({
+    1:[[0,18.2],[-4.5,14.2],[5.0,5.4],[-14.2,1.0],[14.2,-2.2],[-5.0,-9.6],[0,-20.4]],
+    2:[[-6,12],[6,8],[-8,-6],[8,-10],[0,16],[0,-16]],
+    3:[[-7,10],[7,10],[-7,-8],[7,-8],[0,14],[0,-14]],
+    4:[[-5,12],[5,12],[-6,-10],[6,-10],[0,16],[0,-16]],
+    5:[[-8,10],[8,10],[-8,-12],[8,-12],[0,14],[0,-16]],
+    6:[[-6,12],[6,8],[-7,-10],[7,-8],[0,16],[0,-14]],
+    7:[[-5,10],[5,10],[-6,-12],[6,-10],[0,14],[0,-16]],
+    8:[[-7,8],[7,8],[-7,-10],[7,-10],[0,14],[0,-14]],
+    9:[[-6,12],[6,10],[-8,-8],[8,-10],[0,16],[0,-16]],
+    10:[[-5,12],[5,10],[-6,-12],[6,-10],[0,14],[0,-16]],
+    11:[[-7,10],[7,8],[-7,-10],[7,-12],[0,14],[0,-16]],
+    12:[[-6,12],[6,10],[-6,-12],[6,-10],[0,16],[0,-16]]
+  })[bn]||[[-6,10],[6,10],[-6,-10],[6,-10],[0,14],[0,-14]];
+  for(const [x,z] of fixedMood){
+    const housing=new THREE.Mesh(new THREE.BoxGeometry(.12,.10,.12),moodHousingM);
+    housing.position.set(x,WT+.08,z);scene.add(housing);ob.push(housing);
+    const head=new THREE.Mesh(new THREE.SphereGeometry(.06,8,6),moodGlowM);
+    head.position.set(x,WT+.18,z);head.userData.noBlock=true;scene.add(head);ob.push(head);
+    const pad=new THREE.Mesh(new THREE.CircleGeometry(.35,12),new THREE.MeshBasicMaterial({color:moodCol,transparent:true,opacity:.14,depthWrite:false,blending:THREE.AdditiveBlending}));
+    pad.rotation.x=-Math.PI/2;pad.position.set(x,WT+.025,z);pad.userData.noBlock=true;scene.add(pad);ob.push(pad);
   }
   function unlockExit(){
     eM.color.set(0x00ff44);eM.emissive.set(0x00ee22);
@@ -5438,7 +5508,7 @@ function buildLevel(scene,bn){
       o.frequency.exponentialRampToValueAtTime(72, c.currentTime + 0.85);
       g.gain.setValueAtTime(0.12, c.currentTime);
       g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.95);
-      o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + 1.0);
+      o.connect(g); g.connect(_sfxOut(c)); o.start(); o.stop(c.currentTime + 1.0);
     } catch (_) {}
     return true;
   }
@@ -5759,11 +5829,16 @@ function buildLevel(scene,bn){
       post.position.set(x,chY+0.55,-19);
       scene.add(post);ob.push(post);
     }
-    // Candle pickups (visual lamps)
+    // Candle practicals — housing + hot bulb + soft pool (STABLE has no bloom).
     for(const cx of [-5,-2,2,5]){
-      const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,0.30,8),new THREE.MeshBasicMaterial({color:0xffe8b0}));
-      candle.position.set(cx,chY+0.40,-22);
-      scene.add(candle);ob.push(candle);
+      const base=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.09,0.08,8),new THREE.MeshPhongMaterial({color:0x2a2018,shininess:40}));
+      base.position.set(cx,chY+0.28,-22);scene.add(base);ob.push(base);
+      const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.06,0.22,8),new THREE.MeshBasicMaterial({color:0xffe8b0}));
+      candle.position.set(cx,chY+0.42,-22);scene.add(candle);ob.push(candle);
+      const flame=new THREE.Mesh(new THREE.SphereGeometry(0.045,6,5),new THREE.MeshBasicMaterial({color:0xffaa40}));
+      flame.position.set(cx,chY+0.56,-22);scene.add(flame);ob.push(flame);
+      const pool=new THREE.Mesh(new THREE.CircleGeometry(0.55,12),new THREE.MeshBasicMaterial({color:0xffc060,transparent:true,opacity:0.16,depthWrite:false,blending:THREE.AdditiveBlending}));
+      pool.rotation.x=-Math.PI/2;pool.position.set(cx,chY+0.02,-22);pool.userData.noBlock=true;scene.add(pool);ob.push(pool);
     }
     // Spiral stair from BE side (straight stairs) — walkable floor regions
     // + vaultable barriers.
@@ -10878,6 +10953,24 @@ class Enemy{
     this._lastTacticalBark=now;
     _showEnemyBark(this,kind);
   }
+  /** Authored encounter roles that should hold angles instead of open-field strafing. */
+  _prefersHoldCorner(){
+    return this.encounterPreferredState==='HOLD_CORNER'
+      || this.encounterRole==='anchor'
+      || this.encounterBehavior==='hold_angle'
+      || this.encounterBehavior==='guard_objective'
+      || this.encounterBehavior==='overwatch_catwalk'
+      || this.encounterBehavior==='peek_from_cover';
+  }
+  _syncHoldCornerState(){
+    if(this.suppressUntil&&performance.now()<this.suppressUntil&&this.suppressBurstsLeft>0){
+      this.state=SUPPRESS;
+      return;
+    }
+    if(this.atCover&&this.coverSlot&&this._prefersHoldCorner()){
+      this.state=(this.peekState==='peeking'||this.peekAmt>.55)?PEEK_FIRE:HOLD_CORNER;
+    }
+  }
   _claimCoverSlot(slot){
     if(this.coverSlot&&this.coverSlot!==slot&&this.coverSlot.claimedBy===this)this.coverSlot.claimedBy=null;
     this.coverSlot=slot||null;
@@ -11508,7 +11601,7 @@ class Enemy{
             const s=c.createBufferSource();s.buffer=buf;
             const f=c.createBiquadFilter();f.type='highpass';f.frequency.value=2400;
             const g=c.createGain();g.gain.value=0.10;
-            s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+            s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
           }
           // Phase AL: authored squad alert-link — coordinated room wake.
           // On first contact, wake any teammates named in encounterAlertLink
@@ -11545,6 +11638,23 @@ class Enemy{
           break;
         }
         if(horizDist<=this.attackRange&&cs){
+          // Authored anchors: commit to cover before open-field ATTACK strafing.
+          if(this._prefersHoldCorner()&&this.coverSlot&&!this.atCover){
+            const cx=this.coverSlot.x-this.group.position.x,cz=this.coverSlot.z-this.group.position.z;
+            const cd=Math.sqrt(cx*cx+cz*cz);
+            if(cd<.55){
+              this.atCover=true;
+              this._aimRaiseStart=performance.now();
+              this._aimRaiseDur=300;
+              this.state=HOLD_CORNER;
+              this._enemyBark('alert',.45,2600);
+            }else{
+              this._pathToTarget(new THREE.Vector3(this.coverSlot.x,0,this.coverSlot.z),dt,walls);
+              moving=true;
+              this._faceYaw(Math.atan2(pdx,pdz),dt,9);
+            }
+            break;
+          }
           this.state=ATTACK;
           // Phase S: aim-raise — shoulder lifts the weapon over a 300ms ramp
           // when entering ATTACK from CHASE. Mirrors a real "raise rifle"
@@ -11638,7 +11748,7 @@ class Enemy{
           this.peekCooldown=.18+Math.random()*.30;
           this._aimRaiseStart=performance.now();
           this._aimRaiseDur=220+(this.tactic.aim||.35)*260;
-          this.state=cs?ATTACK:SEARCH;
+          this.state=cs?(this._prefersHoldCorner()?HOLD_CORNER:ATTACK):SEARCH;
           if(!cs&&this.lastKnownPos)this.searchTimer=1.8+Math.random()*1.4;
         }
         break;
@@ -11659,7 +11769,31 @@ class Enemy{
         break;
       }
 
+      case HOLD_CORNER:
+      case PEEK_FIRE:
+      case SUPPRESS:
       case ATTACK:{
+        if(cs)this.lastKnownPos=pp.clone();
+        this._syncHoldCornerState();
+        // Authored hold roles: path into cover before open-field strafe.
+        if(this._prefersHoldCorner()&&this.coverSlot&&!this.atCover){
+          const cx=this.coverSlot.x-this.group.position.x,cz=this.coverSlot.z-this.group.position.z;
+          const cd=Math.sqrt(cx*cx+cz*cz);
+          if(cd<.55)this.atCover=true;
+          else{
+            this._pathToTarget(new THREE.Vector3(this.coverSlot.x,0,this.coverSlot.z),dt,walls);
+            moving=true;
+            this._faceYaw(Math.atan2(pdx,pdz),dt,10);
+            break;
+          }
+        }
+        if(this.useSuppress&&cs&&!(this.suppressUntil&&performance.now()<this.suppressUntil)){
+          if((this.encounterBehavior==='suppress_lane'||this._prefersHoldCorner())&&Math.random()<.018){
+            this.suppressUntil=performance.now()+1800+Math.random()*900;
+            this.suppressBurstsLeft=2+((Math.random()*2)|0);
+            this.state=SUPPRESS;
+          }
+        }
         if(horizDist>this.attackRange+4||!cs){
           if(cs)this.lastKnownPos=pp.clone();
           this.state=CHASE;break;
@@ -11673,7 +11807,7 @@ class Enemy{
           // Sometimes flank (harder difficulties more likely)
           const _squadDir=this._squadDirective||null;
           const _squadFlankBias=_squadDir&&_squadDir.active?THREE.MathUtils.clamp((_squadDir.flankBias||0)*.34+(_squadDir.role==='flanker'?.18:0),0,.44):0;
-          const _flankChance=(0.18+this.diff*.04+_squadFlankBias)*(this.personality.flankMul||1)*(this.tactic.flank||.35);
+          const _flankChance=(0.18+this.diff*.04+_squadFlankBias)*(this.personality.flankMul||1)*(this.tactic.flank||.35)*(this._prefersHoldCorner()?0.12:1);
           if(Math.random()<_flankChance){
             const ang=Math.atan2(pdx,pdz)+Math.PI*.5*this.strafeDir;
             const fd=7+Math.random()*4;
@@ -11695,6 +11829,7 @@ class Enemy{
           if(slot){
             // Maintain claim
             slot.claimedBy=this;
+            this._syncHoldCornerState();
 	            // Peek scheduling
 	            this.peekCooldown-=dt;
 	            if(this.peekState==='safe'){
@@ -12889,11 +13024,13 @@ class EnemyManager{
   }
   aliveInZone(z){
     let n=0;
+    const zi=Number(z)|0;
     for (const e of this._list) {
-      // Dormant flow-room enemies are not in play — counting them softlocks
-      // mid/back doors when alarm-gated flank rooms never wake.
-      if (!e || e.dead || e._roomFlowDormant || !e.group || !e.group.position) continue;
-      if (getZoneOf(e.group.position) === z) n++;
+      if (!e || e.dead || !e.group || !e.group.position) continue;
+      // Front/mid: ignore dormants so unwoken flank rooms don't softlock zone doors.
+      // Back/signature: dormants still count — otherwise zoneClears[2] flips at deploy.
+      if (zi!==2 && e._roomFlowDormant) continue;
+      if (getZoneOf(e.group.position) === zi) n++;
     }
     return n;
   }
@@ -13150,14 +13287,14 @@ function sfxDryFire(hasReserve=false){
   tick.frequency.exponentialRampToValueAtTime(hasReserve?520:390,c.currentTime+.045);
   tg.gain.setValueAtTime(hasReserve?.105:.075,c.currentTime);
   tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.060);
-  tick.connect(tg);tg.connect(c.destination);tick.start();tick.stop(c.currentTime+.075);
+  tick.connect(tg);tg.connect(_sfxOut(c));tick.start();tick.stop(c.currentTime+.075);
   const clack=c.createOscillator(),cg=c.createGain();
   clack.type='triangle';
   clack.frequency.setValueAtTime(hasReserve?310:240,c.currentTime+.020);
   clack.frequency.exponentialRampToValueAtTime(hasReserve?190:150,c.currentTime+.070);
   cg.gain.setValueAtTime(hasReserve?.050:.036,c.currentTime+.020);
   cg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.085);
-  clack.connect(cg);cg.connect(c.destination);clack.start(c.currentTime+.020);clack.stop(c.currentTime+.095);
+  clack.connect(cg);cg.connect(_sfxOut(c));clack.start(c.currentTime+.020);clack.stop(c.currentTime+.095);
 }
 // ── ADAPTIVE SCORE ────────────────────────────────────────────────────────────
 // Procedural cinematic synth music. Two layers crossfaded by combat density.
@@ -13232,8 +13369,8 @@ function musicInit(){
   MUSIC.masterGain.connect(REVERB.dryGain);
   MUSIC.masterGain.connect(REVERB.sendGain);
   REVERB.sendGain.connect(REVERB.conv);
-  REVERB.dryGain.connect(c.destination);
-  REVERB.conv.connect(c.destination);
+  REVERB.dryGain.connect(_sfxOut(c));
+  REVERB.conv.connect(_sfxOut(c));
   reverbSetBuilding(1);
   MUSIC.ambGain=c.createGain();MUSIC.ambGain.gain.value=0.55;MUSIC.ambGain.connect(MUSIC.masterGain);
   MUSIC.cmbGain=c.createGain();MUSIC.cmbGain.gain.value=0.0; MUSIC.cmbGain.connect(MUSIC.masterGain);
@@ -13359,7 +13496,7 @@ function sfxBulletWhip(){
   const s=c.createBufferSource();s.buffer=b;
   const f=c.createBiquadFilter();f.type='highpass';f.frequency.value=2200;f.Q.value=1.3;
   const g=c.createGain();g.gain.value=.42;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
 }
 // Phase G: these wrappers delegate to ./audio.js so existing call sites keep
 // working after the extraction. Future passes can replace each call site
@@ -13378,9 +13515,9 @@ function sfxMeleeSwing(combo){
   const s=c.createBufferSource();s.buffer=b;
   const f=c.createBiquadFilter();f.type='bandpass';f.frequency.value=2600+combo*380;f.Q.value=.42;
   const g=c.createGain();g.gain.value=.46+combo*.055;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
   // Low-end body thud for overhead slam
-  if(combo===2){const o2=c.createOscillator(),g2=c.createGain();o2.type='sine';o2.frequency.setValueAtTime(140,c.currentTime);o2.frequency.exponentialRampToValueAtTime(45,c.currentTime+.09);g2.gain.setValueAtTime(.28,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o2.connect(g2);g2.connect(c.destination);o2.start();o2.stop(c.currentTime+.14);}
+  if(combo===2){const o2=c.createOscillator(),g2=c.createGain();o2.type='sine';o2.frequency.setValueAtTime(140,c.currentTime);o2.frequency.exponentialRampToValueAtTime(45,c.currentTime+.09);g2.gain.setValueAtTime(.28,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o2.connect(g2);g2.connect(_sfxOut(c));o2.start();o2.stop(c.currentTime+.14);}
 }
 function sfxMeleeHit(combo){
   const c=getAC();
@@ -13389,14 +13526,14 @@ function sfxMeleeHit(combo){
   o1.type='sine';o1.frequency.setValueAtTime(combo===2?70:110,c.currentTime);
   o1.frequency.exponentialRampToValueAtTime(28,c.currentTime+.14);
   g1.gain.setValueAtTime(.58+combo*.07,c.currentTime);g1.gain.exponentialRampToValueAtTime(.001,c.currentTime+.17);
-  o1.connect(g1);g1.connect(c.destination);o1.start();o1.stop(c.currentTime+.20);
+  o1.connect(g1);g1.connect(_sfxOut(c));o1.start();o1.stop(c.currentTime+.20);
   // Crunchy high transient
   const blen=~~(c.sampleRate*.038),buf=c.createBuffer(1,blen,c.sampleRate),bd=buf.getChannelData(0);
   for(let i=0;blen>i;i++)bd[i]=(Math.random()*2-1)*Math.pow(1-i/blen,1.1)*.75;
   const s2=c.createBufferSource();s2.buffer=buf;
   const fh=c.createBiquadFilter();fh.type='highpass';fh.frequency.value=700;
   const g2=c.createGain();g2.gain.value=.44+combo*.05;
-  s2.connect(fh);fh.connect(g2);g2.connect(c.destination);s2.start();
+  s2.connect(fh);fh.connect(g2);g2.connect(_sfxOut(c));s2.start();
 }
 function sfxMeleeKill(){
   const c=getAC();
@@ -13404,11 +13541,11 @@ function sfxMeleeKill(){
   const o=c.createOscillator(),g=c.createGain();
   o.type='sawtooth';o.frequency.setValueAtTime(200,c.currentTime);o.frequency.exponentialRampToValueAtTime(35,c.currentTime+.24);
   g.gain.setValueAtTime(.42,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.28);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.32);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.32);
   const bk=c.createBuffer(1,~~(c.sampleRate*.06),c.sampleRate),dk=bk.getChannelData(0);
   for(let i=0;dk.length>i;i++)dk[i]=(Math.random()*2-1)*Math.pow(1-i/dk.length,1.4)*.55;
   const sk=c.createBufferSource();sk.buffer=bk;const gk=c.createGain();gk.gain.value=.38;
-  sk.connect(gk);gk.connect(c.destination);sk.start();
+  sk.connect(gk);gk.connect(_sfxOut(c));sk.start();
 }
 // ─── MELEE STATE ─────────────────────────────────────────────────────────────
 const MELEE={
@@ -13919,7 +14056,7 @@ function _sfxKnifePairBeat(kind){
   o.frequency.exponentialRampToValueAtTime(f1,c.currentTime+(kind==='slice'?.12:(kind==='rip'?.18:.16)));
   g.gain.setValueAtTime(kind==='impact'?.20:(kind==='slice'?.16:(kind==='rip'?.13:.10)),c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(kind==='impact'?.20:(kind==='rip'?.18:.14)));
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
   if(kind==='slice'||kind==='impact'||kind==='rip'){
     const len=~~(c.sampleRate*(kind==='impact'?.050:(kind==='rip'?.060:.032)));
     const b=c.createBuffer(1,len,c.sampleRate),d=b.getChannelData(0);
@@ -13927,7 +14064,7 @@ function _sfxKnifePairBeat(kind){
     const s=c.createBufferSource();s.buffer=b;
     const f=c.createBiquadFilter();f.type='highpass';f.frequency.value=kind==='impact'?520:(kind==='rip'?720:1800);
     const gn=c.createGain();gn.gain.value=kind==='impact'?.22:(kind==='rip'?.17:.13);
-    s.connect(f);f.connect(gn);gn.connect(c.destination);s.start();
+    s.connect(f);f.connect(gn);gn.connect(_sfxOut(c));s.start();
   }
 }
 function _triggerKnifePairBeat(kind){
@@ -14491,6 +14628,8 @@ function checkMeleeHit(){
   const closeKind=heavy?'knife_heavy_stab':'knife_slice';
   let hitAny=false;
   if(!MELEE.hitEnemies)MELEE.hitEnemies=new Set();
+  // Silent Choir: melee in the nave is not quiet.
+  _failSilentChoirIfInNave('melee_in_nave',P.pos);
   if(G.enemyMgr){
     const paired=MELEE.pair&&MELEE.pair.target&&!MELEE.pair.target.dead?MELEE.pair:null;
     const candidates=paired?[paired.target]:G.enemyMgr._list;
@@ -14589,10 +14728,24 @@ function checkMeleeHit(){
       spawnSlashFx(true,heavy?3:MELEE.slash);hitAny=true;
       if(killed){
         const storyCloseKillSource=heavy?'knife-heavy-stab-kill':'knife-slice-kill';
-        killFeed(false);awardKillMoney(e,false);P.kills++;comboKill(false,{source:storyCloseKillSource,closeRange:THREE.MathUtils.clamp(1-dist/5,0,1)});applyStoryMomentumShock(e,hitPoint,{source:storyCloseKillSource});cinematicKill(e.group.position.clone());
+        killFeed(false);awardKillMoney(e,false);P.kills++;
+        if(typeof _registerNonHsKill==='function')_registerNonHsKill();
+        comboKill(false,{source:storyCloseKillSource,closeRange:THREE.MathUtils.clamp(1-dist/5,0,1)});applyStoryMomentumShock(e,hitPoint,{source:storyCloseKillSource});cinematicKill(e.group.position.clone());
         setTimeout(()=>checkZoneClears(),60);
         sfxMeleeKill();
       }
+    }
+  }
+  // Civilians Safe: knife reach into kneeling hostages.
+  if(SETPIECE.active&&SETPIECE.kind==='hostage'&&SETPIECE._hostages){
+    for(const h of SETPIECE._hostages){
+      if(!h||!h.userData||!h.userData.isHostage)continue;
+      const dx=h.position.x-P.pos.x,dz=h.position.z-P.pos.z;
+      const dist=Math.sqrt(dx*dx+dz*dz);
+      if(dist>range)continue;
+      const dot=(dx*fx2+dz*fz2)/Math.max(dist,.001);
+      if(dot<.25)continue;
+      setpieceCheckHostageHit(h);
     }
   }
   if(!hitAny){
@@ -20322,8 +20475,8 @@ function tryThrowKnife(){
   try{sfxKnifeWhoosh();}catch(_){}
   return true;
 }
-function sfxThrow(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sawtooth';o.frequency.setValueAtTime(420,c.currentTime);o.frequency.exponentialRampToValueAtTime(120,c.currentTime+.18);g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);}
-function sfxKnifeStick(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(180,c.currentTime);o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.10);g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);}
+function sfxThrow(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sawtooth';o.frequency.setValueAtTime(420,c.currentTime);o.frequency.exponentialRampToValueAtTime(120,c.currentTime+.18);g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);}
+function sfxKnifeStick(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(180,c.currentTime);o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.10);g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.14);}
 function updateThrowAnim(dt){
   if(KNIFE_SLOT_REMOVED){
     TK.active=false;TK.released=false;
@@ -20620,6 +20773,7 @@ function updateKnives(dt){
         const h=enemyHit;const enemy=h.object.userData.enemy;const isHead=h.object.userData.isHead===true;
         const side=_closeCombatImpactSide(h.point);
         if(enemy&&enemy.lastPlayerDir)enemy.lastPlayerDir.set(P.pos.x-enemy.group.position.x,0,P.pos.z-enemy.group.position.z).normalize();
+        _failSilentChoirIfInNave('knife_in_nave',h.point||P.pos);
         _setCloseCombatHitFlags('knife_throw',side,isHead?1.74:1.42,{thrown:true});
         if(enemy){
           _primeEnemyHitFromObject(h.object,isHead?'head':'torso');
@@ -20629,7 +20783,8 @@ function updateKnives(dt){
           if(killed){
             killFeed(isHead);
             awardKillMoney(enemy,isHead);
-            P.kills++;if(isHead)P.headshots++;
+            P.kills++;if(isHead){P.headshots++;if(typeof _registerHsKill==='function')_registerHsKill();}
+            else if(typeof _registerNonHsKill==='function')_registerNonHsKill();
             comboKill(isHead,{source:'knife-throw-kill',closeRange:THREE.MathUtils.clamp(1-h.point.distanceTo(camera.position)/5,0,1)});
             cinematicKill(h.point);
             applyStoryMomentumShock(enemy,h.point,{source:'knife-throw-kill',isHead});
@@ -21980,7 +22135,7 @@ function tryPistolWhip(){
   o.frequency.exponentialRampToValueAtTime(90,c.currentTime+.11);
   g.gain.setValueAtTime(.12,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.13);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.15);
   PP.shakeY-=0.035;P.dmgPitch+=0.006;
 }
 function _applyGunBashGameplayChoreography(enemy,opts={}){
@@ -22047,6 +22202,7 @@ function _resolvePistolWhipImpact(){
   if(_whipImpactDone)return false;
   _whipImpactDone=true;
   playerAnimEmitNotify(playerAnimState0,_playerAnimFrameSeq,'meleeImpactFrame',{gun:true});
+  _failSilentChoirIfInNave('bash_in_nave',P.pos);
   // Hit detection — short forward raycast
   const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const meshes=G.enemyMgr?G.enemyMgr.getMeshes():[];
@@ -22073,7 +22229,7 @@ function _resolvePistolWhipImpact(){
   o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.10);
   g.gain.setValueAtTime(hit ? .25 : .15,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.14);
   _pulseCloseCombatFeedback('gun_bash',hit,_whipSide,1);
   const hf=document.getElementById('melee-hit-flash');
   if(hf&&hit){hf.style.opacity='.65';hf.style.transition='none';requestAnimationFrame(()=>{hf.style.transition='opacity .22s ease-out';hf.style.opacity='0';});}
@@ -22143,7 +22299,7 @@ function startExecution(enemy){
   o.frequency.exponentialRampToValueAtTime(220,c.currentTime+.18);
   g.gain.setValueAtTime(.15,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
 }
 function updateExecution(dt){
   if(!_execActive)return;
@@ -22764,7 +22920,7 @@ function _companionDroneSfx(kind){
     o.frequency.exponentialRampToValueAtTime(kind==='fire'?420:kind==='recall'?120:760,c.currentTime+(kind==='fire'?.08:.22));
     g.gain.setValueAtTime(kind==='fire'?.06:.10,c.currentTime);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(kind==='fire'?.10:.25));
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+(kind==='fire'?.11:.27));
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+(kind==='fire'?.11:.27));
   }catch(_){}
 }
 function companionDroneLaunch(){
@@ -22944,8 +23100,21 @@ function _canRestartRunFromInput(){
 document.addEventListener('pointerlockchange',()=>{
   locked=!!document.pointerLockElement;
   if(locked)gameFocused=true;
-  if(!locked){_plLastExit=performance.now();M.lmbHeld=false;M.rmbDown=false;_lastMX=null;_lastMY=null;}
+  if(!locked){_plLastExit=performance.now();M.lmbHeld=false;M.rmbDown=false;_lastMX=null;_lastMY=null;_clearHeldInputKeys();}
 });
+function _clearHeldInputKeys(){
+  // Focus loss / pointer-lock exit can drop keyup — stuck WASD/lean softlocks combat.
+  if(typeof K==='object'&&K){for(const code of Object.keys(K))delete K[code];}
+  if(typeof K2==='object'&&K2){for(const code of Object.keys(K2))delete K2[code];}
+  if(P){
+    P.guardBehindHeld=false;
+    P.crouching=false;
+    if(P.sprintLatched!=null)P.sprintLatched=false;
+  }
+  if(typeof M==='object'&&M){M.lmbHeld=false;M.rmbDown=false;M.mmbDown=false;}
+}
+window.addEventListener('blur',()=>{gameFocused=false;_clearHeldInputKeys();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){_clearHeldInputKeys();gameFocused=false;}});
 // Mouse movement: prefer movementX/Y (pointer lock), fall back to clientX delta
 canvas.addEventListener('mousemove',e=>{
   if(!gameFocused)return;
@@ -23033,7 +23202,7 @@ document.addEventListener('keydown',e=>{
     e.preventDefault();
     triggerPrimaryJumpOrVaultInput();
   }
-  if(e.code==='KeyV'&&!P.dead)tryMeleeOrExecution();
+  if(e.code==='KeyV'&&!P.dead&&!(typeof RADIAL!=='undefined'&&RADIAL.open))tryMeleeOrExecution();
   if(e.code==='KeyF'&&!P.dead&&P.nearPickup){e.preventDefault();tryEquipPickup(P.nearPickup);return;}
   if(e.code==='KeyF'&&!P.dead&&P.nearOpenableDoor&&G.levelData&&typeof G.levelData.openCustomDoor==='function'){
     e.preventDefault();
@@ -23054,7 +23223,10 @@ document.addEventListener('keydown',e=>{
       else if(slotNum===2)buyGrenade();
     }else{
       const wi=weaponIdxForDisplaySlot(slotNum);
-      if(wi!=null)switchWeapon(wi);
+      if(wi!=null){
+        switchWeapon(wi);
+        if(typeof RADIAL!=='undefined'&&RADIAL.open&&typeof closeRadial==='function')closeRadial();
+      }
     }
   }
   if(e.code==='KeyF'&&!P.dead&&!G.menuOpen&&!e.repeat)toggleFocus();
@@ -23539,10 +23711,11 @@ function cinematicKill(hitPt){
   P.dmgRoll +=Math.max(-.010,Math.min(.010,(rel.x/len)*.010));
 }
 function awardBuildingMoney(){const b=200+G.building*50;P.money+=b;moneyPopup(b,'CLEAR');sfxMoney();hudUpdate();}
-function sfxMoney(){const c=getAC();[[0,860,.06],[.06,1320,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
-function sfxBuy(){const c=getAC();[[0,520,.05],[.05,420,.04],[.10,640,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='square';o.frequency.value=f;g.gain.setValueAtTime(.08,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
-function sfxHeal(){const c=getAC();[[0,440,.10],[.04,560,.08],[.10,720,.06]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
+function sfxMoney(){const c=getAC();[[0,860,.06],[.06,1320,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
+function sfxBuy(){const c=getAC();[[0,520,.05],[.05,420,.04],[.10,640,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='square';o.frequency.value=f;g.gain.setValueAtTime(.08,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
+function sfxHeal(){const c=getAC();[[0,440,.10],[.04,560,.08],[.10,720,.06]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
 function useHealPack(){
+  if(_onLethal()){attachToast('<div style="color:#ff5048">LETHAL: NO HEALS</div>',1500);return;}
   const cap=P.maxHp||100;
   if(P.dead||P.healPacks<=0||P.hp>=cap)return;
   P.healPacks--;P.hp=cap;sfxHeal();
@@ -23579,7 +23752,7 @@ function buyAttachment(slot,tier){
   const def=list.find(a=>a.tier===tier);if(!def)return false;
   P.money-=cost;P.attachments=_normalizeAttachments(P.attachments);
   P.attachments[slot]=Object.assign({},def);
-  applyPerks();
+  applyPerks({preserveHp:true});
   sfxBuy();hudUpdate();
   attachToast(`<div style="color:${ATTACH_TIER_COL[tier-1]};letter-spacing:.30em">▣ ${def.name} EQUIPPED</div><div style="font-size:11px;opacity:.78;margin-top:3px">${def.desc}</div>`,2400);
   return true;
@@ -23593,7 +23766,7 @@ function buyGrenade(){
 }
 // ── GRENADES ─────────────────────────────────────────────────────────────────
 const GR={active:false,t:0,released:false,DUR:.55};
-function sfxGrenadeThrow(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(280,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.18);g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);}
+function sfxGrenadeThrow(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(280,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.18);g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);}
 function sfxExplode(){
   const c=getAC();
   const o=c.createOscillator(),g=c.createGain();
@@ -23601,12 +23774,12 @@ function sfxExplode(){
   o.frequency.exponentialRampToValueAtTime(20,c.currentTime+.55);
   g.gain.setValueAtTime(.50,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.65);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.7);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.7);
   const o2=c.createOscillator(),g2=c.createGain();
   o2.type='square';o2.frequency.value=320;
   g2.gain.setValueAtTime(.22,c.currentTime);
   g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.10);
-  o2.connect(g2);g2.connect(c.destination);o2.start();o2.stop(c.currentTime+.12);
+  o2.connect(g2);g2.connect(_sfxOut(c));o2.start();o2.stop(c.currentTime+.12);
 }
 function tryThrowGrenade(){
   if(G.playMode==='duel')return;
@@ -23701,7 +23874,7 @@ function deploySmoke(pos){
   const s=c.createBufferSource();s.buffer=buf;
   const f=c.createBiquadFilter();f.type='bandpass';f.frequency.value=480;
   const g=c.createGain();g.gain.value=.30;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
 }
 // ── FLASHBANG — bright flash + AOE stun for 2.5s
 function tryThrowFlash(){
@@ -23754,13 +23927,13 @@ function detonateFlash(pos){
   for(let i=0;i<d2.length;i++)d2[i]=(Math.random()*2-1)*Math.pow(1-i/d2.length,1.0)*.95;
   const s=c.createBufferSource();s.buffer=buf;
   const g=c.createGain();g.gain.value=.55;
-  s.connect(g);g.connect(c.destination);s.start();
+  s.connect(g);g.connect(_sfxOut(c));s.start();
   // Tinnitus sine
   const o=c.createOscillator(),og=c.createGain();
   o.type='sine';o.frequency.value=4400;
   og.gain.setValueAtTime(.08,c.currentTime);
   og.gain.exponentialRampToValueAtTime(.001,c.currentTime+2.0);
-  o.connect(og);og.connect(c.destination);o.start();o.stop(c.currentTime+2.1);
+  o.connect(og);og.connect(_sfxOut(c));o.start();o.stop(c.currentTime+2.1);
 }
 function spawnEnemyGrenade(fromPos,toPos,thrower){
   const grp=new THREE.Group();
@@ -23781,6 +23954,8 @@ function spawnEnemyGrenade(fromPos,toPos,thrower){
 }
 function explodeGrenade(pos,fromEnemy){
   const RADIUS=5.2;
+  // Silent Choir: player frags in the nave break the quiet rule.
+  if(!fromEnemy)_failSilentChoirIfInNave('grenade_in_nave',pos);
   // Player grenades damage enemies. Enemy (demolitions) frags must NOT
   // friendly-fire allies — that collapses authored encounter counts.
   if(G.enemyMgr&&!fromEnemy){
@@ -23801,11 +23976,22 @@ function explodeGrenade(pos,fromEnemy){
           P.kills++;
           killFeed(false,{dist:d});
           awardKillMoney(e,false);
+          if(typeof _registerNonHsKill==='function')_registerNonHsKill();
           comboKill(false,{source:'grenade-kill',closeRange:THREE.MathUtils.clamp(1-d/5,0,1)});
           applyStoryMomentumShock(e,pos,{source:'grenade-kill'});
           setTimeout(()=>checkZoneClears(),60);
         }
       }
+    }
+  }
+  // Civilians Safe: player frags also fail on hostage splash.
+  if(!fromEnemy&&SETPIECE.active&&SETPIECE.kind==='hostage'&&SETPIECE._hostages){
+    for(const h of SETPIECE._hostages){
+      if(!h||!h.userData||!h.userData.isHostage)continue;
+      const dx=h.position.x-pos.x,dz=h.position.z-pos.z;
+      const dy=(h.position.y+.5)-pos.y;
+      const d=Math.sqrt(dx*dx+dz*dz+dy*dy*.4);
+      if(d<RADIUS)setpieceCheckHostageHit(h);
     }
   }
   // Self-damage if too close (player and enemy frags both hurt the operator)
@@ -24280,14 +24466,31 @@ function _applyScreenPostProfile(ctx){
   const grain=$e('post-grain');
   if(STABLE_RENDERING_MODE){
     document.body.classList.add('stable-render');
-    if(cg)cg.style.opacity='0';
-    if(grain)grain.style.opacity='0';
     const chrom=$e('chrom');if(chrom)chrom.classList.remove('show');
-    // Keep #low-hp under the main-loop writer — it is the only danger vignette
-    // while the composer/post stack is locked off.
-    const scopeVig=$e('scope-vignette');if(scopeVig)_uiSetStyle(scopeVig,'scope-vignette','opacity','0');
-    const leanVig=$e('lean-vignette');if(leanVig){leanVig.style.opacity='0';leanVig.className='';}
-    G._screenPost={enabled:false,stable:true,coreVisualPostCameraVersion:_CORE_VISUAL_POST_CAMERA_VERSION};
+    // Soft DOM grade only — no composer/LUT/bloom. Keeps per-building mood readable.
+    if(cg){
+      const g=grade&&Object.keys(grade).length?grade:(visual&&visual.grade)||{};
+      const warm=g.warm??0.10;
+      const cool=g.cool??0.12;
+      const vignetteStrength=SETTINGS.vignette===false?0:(g.vignette??0.40)*.72;
+      const accent=(visual&&visual.atmosphere&&visual.atmosphere.accent)||0x80c8ff;
+      const coolCol=_rgbaFromHex(0x5eb8ff,0.035+cool*0.12);
+      const warmCol=_rgbaFromHex(0xffb060,0.030+warm*0.11);
+      const accentCol=_rgbaFromHex(accent,0.028+Math.max(warm,cool)*0.08);
+      const shade=THREE.MathUtils.clamp(0.06+vignetteStrength*0.28,0.03,0.22);
+      const lift=THREE.MathUtils.clamp(0.055+((g.exposure??1.06)-1)*0.10,0.04,0.14);
+      cg.style.opacity=String(lift);
+      cg.style.mixBlendMode='soft-light';
+      cg.style.background=[
+        `radial-gradient(ellipse at 50% 50%, transparent 32%, rgba(0,0,0,${shade.toFixed(3)}) 88%, rgba(0,0,0,${(shade*1.25).toFixed(3)}) 100%)`,
+        `linear-gradient(180deg, ${coolCol} 0%, rgba(0,0,0,0) 44%, rgba(0,0,0,0) 56%, ${warmCol} 100%)`,
+        `linear-gradient(90deg, rgba(0,0,0,0) 0%, ${accentCol} 50%, rgba(0,0,0,0) 100%)`
+      ].join(',');
+    }
+    if(grain)grain.style.opacity='0';
+    // Keep #low-hp and #scope-vignette under the main-loop / ADS writers.
+    // Leave #lean-vignette to the main-loop writer (STABLE uses *.28 opacity there).
+    G._screenPost={enabled:!!cg,stable:true,domGrade:true,coreVisualPostCameraVersion:_CORE_VISUAL_POST_CAMERA_VERSION};
     return ctx;
   }
   const postOn=SETTINGS.postEnabled!==false&&(SETTINGS.quality||'high')!=='low'&&SETTINGS.colorGrade!==false;
@@ -24342,8 +24545,9 @@ function _applyScreenPostProfile(ctx){
 function _updatePostProfile(hpRatio=1){
   if(!_renderStack)return null;
   if(STABLE_RENDERING_MODE){
-    const ctx={visualProfile:_activeVisualProfile(),grade:{},postProfile:'stable-direct',signature:'stable-direct'};
-    G._activePostProfile='stable-direct';
+    const visual=_activeVisualProfile();
+    const ctx={visualProfile:visual,grade:(visual&&visual.grade)||{},postProfile:'stable-dom-grade',signature:'stable-dom-grade'};
+    G._activePostProfile='stable-dom-grade';
     _applyScreenPostProfile(ctx);
     return ctx;
   }
@@ -24379,12 +24583,21 @@ function _syncEditorPlaytestUi(){
     else esRestart.textContent='PLAY AGAIN';
   }
 }
-function openMenu(){G.menuOpen=true;_syncEditorPlaytestUi();$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}}
+function openMenu(){
+  // Checkpoint while paused so Esc→quit (or crash) can Continue this building.
+  if(G.started&&!P.dead&&(G.playMode==='solo'||G.playMode==='custom')&&typeof saveRunState==='function'){
+    try{saveRunState();}catch(_){}
+  }
+  G.menuOpen=true;_syncEditorPlaytestUi();$e('pause-menu').classList.remove('pause-hidden');if(locked)try{document.exitPointerLock();}catch(_){}
+}
 function closeMenu(relockPointer=true){
   G.menuOpen=false;$e('pause-menu').classList.add('pause-hidden');$e('pause-settings').style.display='none';$e('pause-buttons').style.display='flex';
   if(relockPointer&&G.started&&!P.dead)tryLock();
 }
 function quitToMain(){
+  if(G.started&&!P.dead&&(G.playMode==='solo'||G.playMode==='custom')&&typeof saveRunState==='function'){
+    try{saveRunState();}catch(_){}
+  }
   closeMenu(false);
   if(VIS_DEBUG.materialOverride&&VIS_DEBUG.materialOverride!=='none')_setMaterialOverride('none');
   if(typeof disableCampaignStoryExperience==='function')disableCampaignStoryExperience();
@@ -24425,6 +24638,8 @@ function quitToMain(){
   if(mp)mp.style.display='none';
   if(mb)mb.style.display='flex';
   GAMEPAD._menuPadA=false;
+  if(typeof refreshMenuContinue==='function')refreshMenuContinue();
+  if(typeof updateMenuStats==='function')updateMenuStats();
 }
 function announce(txt,sub,dur){$e('wa-text').textContent=txt;$e('wa-sub').textContent=sub||'';$e('wave-announce').style.opacity='1';setTimeout(()=>$e('wave-announce').style.opacity='0',dur||2600);}
 // ── FX / TRAILS ──────────────────────────────────────────────────────────────
@@ -25564,8 +25779,8 @@ function refreshInventory(){_drawWristCanvas();}
 function openInventory(){G.invOpen=true;wristTarget=1;wristScanY=0;_drawWristCanvas();sfxInvOpen();}
 function closeInventory(){G.invOpen=false;wristTarget=0;sfxInvClose();}
 function toggleInventory(){G.invOpen?closeInventory():openInventory();}
-function sfxInvOpen(){const c=getAC();[[0,520,.06],[.04,720,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
-function sfxInvClose(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(440,c.currentTime);o.frequency.exponentialRampToValueAtTime(220,c.currentTime+.08);g.gain.setValueAtTime(.08,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.10);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.12);}
+function sfxInvOpen(){const c=getAC();[[0,520,.06],[.04,720,.05]].forEach(([t,f,d])=>{const o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(.10,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+d);o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+t);o.stop(c.currentTime+t+d+.02);});}
+function sfxInvClose(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='triangle';o.frequency.setValueAtTime(440,c.currentTime);o.frequency.exponentialRampToValueAtTime(220,c.currentTime+.08);g.gain.setValueAtTime(.08,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.10);o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.12);}
 // ── SHOP ──────────────────────────────────────────────────────────────────────
 const _shopCanvas=document.createElement('canvas');
 _shopCanvas.width=512;_shopCanvas.height=320;
@@ -25869,26 +26084,26 @@ function spawnSurfaceImpact(hitPt,normal,opts={}){
     o.type='triangle';o.frequency.setValueAtTime((2400+Math.random()*400)*pitch,c.currentTime);
     o.frequency.exponentialRampToValueAtTime(800*pitch,c.currentTime+.18);
     g.gain.setValueAtTime(.18*soundGain,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
   } else if(sound==='thud'){
     const o=c.createOscillator(),g=c.createGain();
     o.type='sine';o.frequency.setValueAtTime(120*pitch,c.currentTime);
     o.frequency.exponentialRampToValueAtTime(60*pitch,c.currentTime+.10);
     g.gain.setValueAtTime(.20*soundGain,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.14);
   } else if(sound==='chip'){
     const o=c.createOscillator(),g=c.createGain();
     o.type='triangle';o.frequency.setValueAtTime(1800*pitch,c.currentTime);
     o.frequency.exponentialRampToValueAtTime(900*pitch,c.currentTime+.10);
     g.gain.setValueAtTime(.15*soundGain,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.14);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.14);
   } else if(sound==='shatter'){
     [2400,2800,3200].forEach((f,i)=>{
       const o=c.createOscillator(),g=c.createGain();
       o.type='triangle';o.frequency.value=f*pitch;
       g.gain.setValueAtTime(.10*soundGain,c.currentTime+i*.04);
       g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.04+.10);
-      o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.12);
+      o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.12);
     });
   }
   return feel;
@@ -26273,6 +26488,11 @@ function tickProjectiles(dt){
         PROJECTILES.list.splice(i,1);
         continue;
       }
+      // Civilians Safe: ballistic friendly fire on hostages.
+      if(p.fromPlayer&&typeof _probeHostageRayHit==='function'){
+        const hh=_probeHostageRayHit(prev,segDir,segLen);
+        if(hh)setpieceCheckHostageHit(hh.hostage);
+      }
       if(G.playMode==='duel'&&p.fromPlayer){
         const os=p.ownerSlot|0;
         const opp=os===1?P:P2;
@@ -26452,7 +26672,7 @@ function _playReloadReadyCue(){
     o.frequency.exponentialRampToValueAtTime(920,c.currentTime+0.075);
     g.gain.setValueAtTime(.11,c.currentTime);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.11);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.13);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.13);
   }catch(_){}
 }
 function _clearTriggerBuffer(pl){
@@ -26681,10 +26901,8 @@ function shoot(){
   _clearTriggerBuffer(pl);
   pl.lastShot=now;pl.ammo--;sfxShoot(pl.weaponIdx);if(typeof incrementMagShot==='function')incrementMagShot();
   _markRoundSpentFeedback(pl,_slot,W);
-  // Silent Choir (B10): firing while still in the nave (front zone) fails mastery.
-  if(_slot===0&&typeof failMasteryIfMatch==='function'&&typeof getZoneOf==='function'&&getZoneOf(pl.pos)===0){
-    failMasteryIfMatch(/silent_choir/, 'fired_in_nave');
-  }
+  // Silent Choir (B10): combat in the nave fails mastery (guns, frags, melee).
+  if(_slot===0){_failSilentChoirIfInNave('fired_in_nave',pl.pos);}
   // Phase 6 telemetry — count lean-fire ratio
   if(G&&G._playerTotalShots!=null){
     G._playerTotalShots++;
@@ -26975,6 +27193,7 @@ function shoot(){
   }catch(_){}
   let firstHitPt=null;
   pl.shotsFired++;
+  if(typeof _noteBuildingChallengeShot==='function')_noteBuildingChallengeShot(pl);
   let pelletHit=false;
   let shotSurfaceHit=false;
   let hitConfirmDone=false;
@@ -27316,6 +27535,11 @@ function shoot(){
         }
       }
     }
+    // Civilians Safe: hitscan friendly fire on hostage props fails mastery.
+    if(_slot===0&&typeof _probeHostageRayHit==='function'){
+      const hh=_probeHostageRayHit(camPos,dir,bulletEndDist);
+      if(hh)setpieceCheckHostageHit(hh.hostage);
+    }
     if(!firstHitPt)firstHitPt=hitPt;
 	    if(allowFx){
 	      const trKind=pelletHitEnemy?'player-hit':(surfaceHit?'player-surface':'player-miss');
@@ -27541,7 +27765,7 @@ function _focusTone(c,type,from,to,gain,dur,delay=0){
   g.gain.setValueAtTime(0,t0);
   g.gain.linearRampToValueAtTime(gain,t0+.015);
   g.gain.exponentialRampToValueAtTime(.001,t1);
-  o.connect(g);g.connect(c.destination);o.start(t0);o.stop(t1+.03);
+  o.connect(g);g.connect(_sfxOut(c));o.start(t0);o.stop(t1+.03);
 }
 function _focusNoise(c,gain=.08,dur=.16,delay=0){
   const sr=c.sampleRate||44100;
@@ -27556,7 +27780,7 @@ function _focusNoise(c,gain=.08,dur=.16,delay=0){
   filter.type='highpass';filter.frequency.setValueAtTime(620,t0);
   g.gain.setValueAtTime(gain,t0);
   g.gain.exponentialRampToValueAtTime(.001,t0+dur);
-  src.buffer=buf;src.connect(filter);filter.connect(g);g.connect(c.destination);
+  src.buffer=buf;src.connect(filter);filter.connect(g);g.connect(_sfxOut(c));
   src.start(t0);src.stop(t0+dur+.02);
 }
 function sfxFocusOn(){
@@ -28490,7 +28714,7 @@ function _startPlayerSlide(fx,fz,landing=false,meta=null){
   o.frequency.exponentialRampToValueAtTime(landing?92:120,c.currentTime+(.38+(landing?.10:0)));
   g.gain.setValueAtTime(landing?.135:.10,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(.45+(landing?.10:0)));
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.58);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.58);
   _spawnSlideSkidFx(P);
   return true;
 }
@@ -28876,7 +29100,7 @@ function _updateGuardBehind(dt,fx,fz,rx,rz,walls){
     if((P.guardBehindAmt||0)<.035)P._guardVisualMode='none';
   }
 }
-function sfxJump(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(200,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.12);g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.15);}
+function sfxJump(){const c=getAC(),o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(200,c.currentTime);o.frequency.exponentialRampToValueAtTime(80,c.currentTime+.12);g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.12);o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.15);}
 function sfxWallJump(){
   sfxJump();
   const c=getAC();
@@ -28886,14 +29110,14 @@ function sfxWallJump(){
   thud.frequency.exponentialRampToValueAtTime(38,c.currentTime+.16);
   tg.gain.setValueAtTime(.18,c.currentTime);
   tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
-  thud.connect(tg);tg.connect(c.destination);thud.start();thud.stop(c.currentTime+.20);
+  thud.connect(tg);tg.connect(_sfxOut(c));thud.start();thud.stop(c.currentTime+.20);
   const snap=c.createOscillator(),sg=c.createGain();
   snap.type='square';
   snap.frequency.setValueAtTime(210,c.currentTime);
   snap.frequency.exponentialRampToValueAtTime(130,c.currentTime+.035);
   sg.gain.setValueAtTime(.035,c.currentTime);
   sg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.045);
-  snap.connect(sg);sg.connect(c.destination);snap.start();snap.stop(c.currentTime+.055);
+  snap.connect(sg);sg.connect(_sfxOut(c));snap.start();snap.stop(c.currentTime+.055);
 }
 function sfxDropkickStart(){
   const c=getAC();
@@ -28902,11 +29126,11 @@ function sfxDropkickStart(){
   const src=c.createBufferSource();src.buffer=buf;
   const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=520;bp.Q.value=.62;
   const g=c.createGain();g.gain.setValueAtTime(.28,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
-  src.connect(bp);bp.connect(g);g.connect(c.destination);src.start();
+  src.connect(bp);bp.connect(g);g.connect(_sfxOut(c));src.start();
   const th=c.createOscillator(),tg=c.createGain();
   th.type='triangle';th.frequency.setValueAtTime(165,c.currentTime);th.frequency.exponentialRampToValueAtTime(66,c.currentTime+.13);
   tg.gain.setValueAtTime(.12,c.currentTime);tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.15);
-  th.connect(tg);tg.connect(c.destination);th.start();th.stop(c.currentTime+.17);
+  th.connect(tg);tg.connect(_sfxOut(c));th.start();th.stop(c.currentTime+.17);
 }
 function sfxDropkickHit(killed=false){
   const c=getAC();
@@ -28914,13 +29138,13 @@ function sfxDropkickHit(killed=false){
   o.type='sawtooth';o.frequency.setValueAtTime(killed?95:118,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(killed?28:38,c.currentTime+.18);
   g.gain.setValueAtTime(killed?.62:.50,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.24);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.24);
   const nLen=~~(c.sampleRate*.045),buf=c.createBuffer(1,nLen,c.sampleRate),d=buf.getChannelData(0);
   for(let i=0;i<nLen;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/nLen,1.05)*.82;
   const src=c.createBufferSource();src.buffer=buf;
   const hp=c.createBiquadFilter();hp.type='highpass';hp.frequency.value=420;
   const ng=c.createGain();ng.gain.value=killed?.42:.34;
-  src.connect(hp);hp.connect(ng);ng.connect(c.destination);src.start();
+  src.connect(hp);hp.connect(ng);ng.connect(_sfxOut(c));src.start();
 }
 function sfxDropkickLand(hit=false){
   const c=getAC();
@@ -28928,7 +29152,7 @@ function sfxDropkickLand(hit=false){
   o.type='triangle';o.frequency.setValueAtTime(hit?88:72,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(24,c.currentTime+.16);
   g.gain.setValueAtTime((hit ? .28 : .18),c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
 }
 // ── VOICE BARKS ────────────────────────────────────────────────────
 // Procedural formant-ish vocal grunts. Two oscillators tuned to vowel-ish
@@ -28961,7 +29185,7 @@ function sfxVoiceBark(kind){
   const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=cfg.filt;
   o0.connect(f1);f1.connect(g0);
   o0.connect(f2);f2.connect(g0);
-  g0.connect(lp);lp.connect(c.destination);
+  g0.connect(lp);lp.connect(_sfxOut(c));
   o0.start();o0.stop(c.currentTime+cfg.dur+.02);
   // Noise burst layer (breath)
   const buf=c.createBuffer(1,~~(c.sampleRate*cfg.dur),c.sampleRate),d=buf.getChannelData(0);
@@ -28969,7 +29193,7 @@ function sfxVoiceBark(kind){
   const s=c.createBufferSource();s.buffer=buf;
   const sg=c.createGain();sg.gain.value=cfg.gain*.6;
   const sf=c.createBiquadFilter();sf.type='bandpass';sf.frequency.value=cfg.fA;sf.Q.value=4;
-  s.connect(sf);sf.connect(sg);sg.connect(c.destination);s.start();s.stop(c.currentTime+cfg.dur);
+  s.connect(sf);sf.connect(sg);sg.connect(_sfxOut(c));s.start();s.stop(c.currentTime+cfg.dur);
 }
 // ── BUILDING AMBIENT BED ────────────────────────────────────────────
 const AMBIENT={src:null,gain:null,filter:null,osc:null,osc2:null};
@@ -29434,7 +29658,7 @@ const DESIGN_PHILOSOPHY=`
 PILLAR 1 · ROOM-BY-ROOM (not wave-defense)
 Every enemy in every building is pre-placed at run start. Doors lock you
 into the current room until cleared. Then the next door opens. Three rooms
-per building, eight buildings total.
+per building, twelve buildings total.
 
 PILLAR 2 · FLUID GUN-FU
 Instant weapon swap. Reload-cancel-on-fire. Quick-throw via MMB. Pistol-whip
@@ -29516,7 +29740,11 @@ const SHOP_DISCOUNTS={
   5:0.95, // hospital
   6:1.05, // subway — 5% surcharge
   7:0.85, // yacht — 15% off
-  8:1.10  // server — 10% surcharge (final building)
+  8:1.10, // server — Act II finale surcharge
+  9:1.0,  // border
+  10:0.95,// cathedral
+  11:1.05,// freighter
+  12:1.12 // spire — campaign apex surcharge
 };
 // ── EXTENDED PROFILE TIPS — randomized hints shown on loading screens
 const LOADING_TIPS=[
@@ -29536,7 +29764,7 @@ const LOADING_TIPS=[
   'Combo chains build a multiplier — keep killing.',
   'Damage taken breaks combo unless you have Iron Will perk.',
   'Boss fights have multiple phases — adapt your strategy.',
-  'Mini-bosses appear in buildings 2-7. Final boss in 8.',
+  'Lieutenants mid-campaign. Patriarch at 8; Director at 12.',
   'The Patriarch has THREE phases. The third is the worst.',
   'Knife: LMB slice, RMB heavy stab, MMB throw. Hit recalls it; miss and collect it where it sticks.',
   'Grenades have 5.2m blast radius — clear cover instantly.',
@@ -29558,8 +29786,8 @@ function getRandomTip(){return pickRandom(LOADING_TIPS);}
 const ACHIEVEMENT_TRIGGERS={
   on_kill:['first_blood','sharpshooter','eagle_eye','centurion','millennial','centurion','gun_fu','samurai','ten_grand'],
   on_death:[],
-  on_building_clear:['flawless','speedrun','high_society','tunnel_rat','digital_ghost','no_grenade','sniper_only','no_reload'],
-  on_run_end:['cleaner','allBuildings','noDeath','difficultyMaster','allOps','endlessTen'],
+  on_building_clear:['flawless','speedrun','high_society','tunnel_rat','digital_ghost','no_grenade','sniper_only','no_reload','patriarch'],
+  on_run_end:['cleaner','allBuildings','noDeath','difficultyMaster','allOps','endlessTen','director','patriarch'],
   on_session_open:['iron_op'],
   on_takedown:['surgeon','execMax'],
   on_wallbang:['wall_master'],
@@ -30544,7 +30772,7 @@ const TUTORIAL_SEQ={
     {trigger:'focusUsed',  threshold:1, text:'<kbd>T</kbd> takedown low-HP enemies in front',duration:4000},
     {trigger:'kills',      threshold:6, text:'<kbd>V</kbd> melee · <kbd>G</kbd> grenade · <kbd>H</kbd> heal',duration:4000},
     {trigger:'kills',      threshold:10,text:'<kbd>T</kbd> smoke · <kbd>Y</kbd> flashbang',duration:3500},
-    {trigger:'kills',      threshold:14,text:'Hold <kbd>CAPS</kbd> for radial weapon select',duration:3500},
+    {trigger:'kills',      threshold:14,text:'<kbd>CAPS</kbd> radial (keep aiming) · Caps again / 1-9 to equip',duration:4000},
     {trigger:'kills',      threshold:18,text:'Press <kbd>M</kbd> for tactical map · <kbd>P</kbd> for skill tree',duration:4000}
   ],
   advanced:[
@@ -30826,8 +31054,10 @@ function _drawBuildingMap(canvas,bn){
   if(G.levelData&&G.levelData.zoneDoors){
     ctx.strokeStyle='#ffd060';ctx.lineWidth=2;
     for(const d of G.levelData.zoneDoors){
-      const dx=cx+d.mesh.position.x*sx;
-      const dy=cy-d.mesh.position.z*sy;
+      const pos=(d.mesh&&d.mesh.position)||(d.parts&&d.parts[0]&&d.parts[0].position)||null;
+      if(!pos)continue;
+      const dx=cx+pos.x*sx;
+      const dy=cy-pos.z*sy;
       ctx.beginPath();ctx.moveTo(dx-8,dy);ctx.lineTo(dx+8,dy);ctx.stroke();
     }
   }
@@ -30876,7 +31106,7 @@ function sfxRicochet(){
   o.type='triangle';o.frequency.setValueAtTime(2400+Math.random()*800,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(800,c.currentTime+.18);
   g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
 }
 function sfxNearMiss(){
   // Sharp wood-pop crack — bullet whips past head
@@ -30886,7 +31116,7 @@ function sfxNearMiss(){
   const s=c.createBufferSource();s.buffer=buf;
   const f=c.createBiquadFilter();f.type='bandpass';f.frequency.value=2200;f.Q.value=1.5;
   const g=c.createGain();g.gain.value=.32;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
 }
 function sfxDistantShot(){
   // Distant gunshot — heavily filtered + reverbed feel
@@ -30896,12 +31126,12 @@ function sfxDistantShot(){
   const s=c.createBufferSource();s.buffer=buf;
   const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=800;
   const g=c.createGain();g.gain.value=.12;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
   // Sub thump
   const o=c.createOscillator(),og=c.createGain();
   o.type='sine';o.frequency.setValueAtTime(48,c.currentTime);
   og.gain.setValueAtTime(.10,c.currentTime);og.gain.exponentialRampToValueAtTime(.001,c.currentTime+.30);
-  o.connect(og);og.connect(c.destination);o.start();o.stop(c.currentTime+.32);
+  o.connect(og);og.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.32);
 }
 function sfxCasingClatter(){
   // Brass casing hitting concrete
@@ -30911,7 +31141,7 @@ function sfxCasingClatter(){
     o.type='triangle';o.frequency.value=f;
     g.gain.setValueAtTime(.05,c.currentTime+i*.04);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.04+.06);
-    o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.08);
+    o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.08);
   });
 }
 function sfxKnifeWhoosh(){
@@ -30922,7 +31152,7 @@ function sfxKnifeWhoosh(){
   const s=c.createBufferSource();s.buffer=buf;
   const f=c.createBiquadFilter();f.type='bandpass';f.frequency.value=520;f.Q.value=2.0;
   const g=c.createGain();g.gain.value=.20;
-  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
 }
 function sfxBodyFall(){
   // Heavy thud when body hits floor
@@ -30931,14 +31161,14 @@ function sfxBodyFall(){
   o.type='sine';o.frequency.setValueAtTime(80,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(40,c.currentTime+.20);
   g.gain.setValueAtTime(.40,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.24);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.24);
   // Impact noise
   const buf=c.createBuffer(1,~~(c.sampleRate*.10),c.sampleRate),d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2.0)*.55;
   const s=c.createBufferSource();s.buffer=buf;
   const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=180;
   const sg=c.createGain();sg.gain.value=.25;
-  s.connect(f);f.connect(sg);sg.connect(c.destination);s.start();
+  s.connect(f);f.connect(sg);sg.connect(_sfxOut(c));s.start();
 }
 function sfxHeartbeat(){
   // Low-HP heartbeat pulse
@@ -30949,7 +31179,7 @@ function sfxHeartbeat(){
   g.gain.setValueAtTime(0,c.currentTime);
   g.gain.linearRampToValueAtTime(.18,c.currentTime+.04);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.20);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.20);
   // Second pulse
   setTimeout(()=>{
     const o2=c.createOscillator(),g2=c.createGain();
@@ -30957,7 +31187,7 @@ function sfxHeartbeat(){
     g2.gain.setValueAtTime(0,c.currentTime);
     g2.gain.linearRampToValueAtTime(.16,c.currentTime+.04);
     g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);
-    o2.connect(g2);g2.connect(c.destination);o2.start();o2.stop(c.currentTime+.20);
+    o2.connect(g2);g2.connect(_sfxOut(c));o2.start();o2.stop(c.currentTime+.20);
   },230);
 }
 // Heartbeat tick — call when low HP every 1s
@@ -30993,15 +31223,43 @@ function _enhancedHitParticle(pos,enemyType){
     }
   }
 }
-// ── RADIAL QUICK-SELECT MENU — hold Q for radial weapon picker
-const RADIAL={open:false,startTime:0};
+// ── RADIAL QUICK-SELECT — CapsLock toggle (V is melee; Q is lean-left)
+// CapsLock keyup is flaky across OS/browsers, so this is press-to-open /
+// Caps-again-or-click/1-9-to-equip. Keep pointer lock — aim with mouse delta.
+const RADIAL={open:false,startTime:0,hoverIdx:-1,aimX:0,aimY:0};
+function _radialHoveredIdx(){
+  const hover=document.querySelector('#radial .rad-slot.rad-hover');
+  if(hover&&hover.dataset&&hover.dataset.idx!=null)return Number(hover.dataset.idx)|0;
+  if(Number.isFinite(RADIAL.hoverIdx)&&RADIAL.hoverIdx>=0)return RADIAL.hoverIdx|0;
+  return -1;
+}
+function _radialHighlightIdx(idx){
+  RADIAL.hoverIdx=idx|0;
+  document.querySelectorAll('#radial .rad-slot').forEach(s=>{
+    const on=(Number(s.dataset.idx)|0)===RADIAL.hoverIdx;
+    s.classList.toggle('rad-hover',on);
+  });
+}
+function tickRadialAim(dx,dy){
+  if(!RADIAL.open)return;
+  RADIAL.aimX=(RADIAL.aimX||0)+dx;
+  RADIAL.aimY=(RADIAL.aimY||0)+dy;
+  const mag=Math.hypot(RADIAL.aimX,RADIAL.aimY);
+  if(mag<18)return;
+  // Screen Y is down; map stick-style aim to slot ring (0 = top).
+  const ang=(Math.atan2(RADIAL.aimX,-RADIAL.aimY)+Math.PI*2)%(Math.PI*2);
+  const slots=PLAYABLE_WEAPON_INDICES;
+  if(!slots.length)return;
+  const step=(Math.PI*2)/slots.length;
+  const si=Math.round(ang/step)%slots.length;
+  _radialHighlightIdx(slots[si]);
+}
 function openRadial(){
   if(RADIAL.open||P.dead)return;
   RADIAL.open=true;RADIAL.startTime=performance.now();
-  if(locked)try{document.exitPointerLock();}catch(_){}
-  // Slow time slightly while picking
-  P._radialPrevScale=P.timeScale;
-  // Render the radial overlay
+  RADIAL.hoverIdx=P.weaponIdx|0;
+  RADIAL.aimX=0;RADIAL.aimY=0;
+  // Keep pointer lock so combat look isn't dropped mid-fight.
   const r=$e('radial');if(!r)return;
   r.innerHTML='';
   const slots=PLAYABLE_WEAPON_INDICES;
@@ -31013,41 +31271,49 @@ function openRadial(){
     const cy=120+Math.sin(a)*82;
     const slot=document.createElement('div');
     slot.className='rad-slot'+(i===P.weaponIdx?' rad-current':'');
+    if(i===P.weaponIdx)slot.classList.add('rad-hover');
     slot.style.left=cx+'px';slot.style.top=cy+'px';
     slot.dataset.idx=i;
     slot.innerHTML=`<div class="rad-num">${si+1}</div><div class="rad-name">${w.name.split(' ')[0]}</div>`;
     slot.addEventListener('mouseenter',()=>{
-      document.querySelectorAll('.rad-slot').forEach(s=>s.classList.remove('rad-hover'));
-      slot.classList.add('rad-hover');
+      if(locked)return;
+      _radialHighlightIdx(i);
     });
-    slot.addEventListener('mousedown',()=>{
-      switchWeapon(i);closeRadial();
+    slot.addEventListener('mousedown',(ev)=>{
+      ev.preventDefault();
+      RADIAL.hoverIdx=i;
+      confirmRadial(i);
     });
     r.appendChild(slot);
   }
-  // Center label
   const c=document.createElement('div');c.className='rad-center';
-  c.innerHTML='<div class="rad-c-name">QUICK SELECT</div><div class="rad-c-hint">RELEASE to lock</div>';
+  c.innerHTML='<div class="rad-c-name">QUICK SELECT</div><div class="rad-c-hint">AIM · 1-9 · CAPS</div>';
   r.appendChild(c);
   r.classList.add('show');
 }
 function closeRadial(){
   if(!RADIAL.open)return;
   RADIAL.open=false;
+  RADIAL.hoverIdx=-1;
+  RADIAL.aimX=0;RADIAL.aimY=0;
   const r=$e('radial');if(r)r.classList.remove('show');
-  if(G.started&&!P.dead&&!G.menuOpen)tryLock();
+  if(G.started&&!P.dead&&!G.menuOpen&&!locked)tryLock();
 }
-// Wire CapsLock to open radial (Q is reserved for lean-left)
+function confirmRadial(forcedIdx){
+  if(!RADIAL.open)return;
+  const idx=Number.isFinite(forcedIdx)?(forcedIdx|0):_radialHoveredIdx();
+  if(Number.isFinite(idx)&&idx>=0&&typeof switchWeapon==='function')switchWeapon(idx);
+  closeRadial();
+}
 window.addEventListener('keydown',e=>{
-  if(e.code==='CapsLock'&&!P.dead&&!G.menuOpen&&G.started&&!e.repeat){
-    if(!RADIAL.open){
-      e.preventDefault();
-      openRadial();
-    }
-  }
+  if(e.code!=='CapsLock'||P.dead||G.menuOpen||!G.started||e.repeat)return;
+  e.preventDefault();
+  if(RADIAL.open)confirmRadial();
+  else openRadial();
 });
-window.addEventListener('keyup',e=>{
-  if(e.code==='CapsLock'&&RADIAL.open){
+window.addEventListener('keydown',e=>{
+  if(e.code==='Escape'&&RADIAL.open){
+    e.preventDefault();
     closeRadial();
   }
 });
@@ -31406,30 +31672,63 @@ const TUTORIAL_STEPS=[
   { id:'sprint', text:'SPRINT: <b>SHIFT + W</b>',             check:()=>(P.sprintLatched===true) },
   { id:'vault',  text:'VAULT BARRIERS: <b>SPACE</b> near a ledge', check:()=>(P.vaulting===true||P._tutVaulted===true) },
 ];
+const MID_ROUTE_HOLD_LABELS={
+  1:'CUT ALARM',
+  2:'DESK OVERRIDE',
+  3:'BOOTH KILL-SWITCH',
+  4:'SAFEHOUSE LOCKOUT',
+  5:'WARD POWER CUT',
+  6:'PLATFORM RELAY',
+  7:'BRIDGE CONSOLE',
+  8:'INTRUSION CUT',
+  9:'BORDER OVERRIDE',
+  10:'SACRISTY RELAY',
+  11:'BRIDGE LOCKOUT',
+  12:'HELO LOCKOUT'
+};
+function midRouteHoldLabel(bn){
+  return MID_ROUTE_HOLD_LABELS[bn|0]||'CUT RELAY';
+}
+function midRouteHoldWaypointLabel(bn){
+  return 'HOLD E: '+midRouteHoldLabel(bn);
+}
+/** B05 Blackout Clean damage budget — STABLE combat is darker (no post), so allow a bit more chip. */
+function _blackoutCleanDamageBudget(){
+  return STABLE_RENDERING_MODE?55:40;
+}
 // ── Phase Y: per-building mission objectives ──────────────────────────
-// Three buildings get bespoke objective verbs surfaced in the HUD ticker.
+// Bespoke verbs surfaced in the HUD ticker. Keep mastery coupling honest:
+// timers only for buildings whose mastery is a reach-in-time condition.
 //
-//   B05 Sterling Medical — "expose the surgery records": visit 3 chart
-//                          stations (player within 2m for 0.5s) to unlock boss
-//   B07 Azure Yacht       — "quiet the deck": stealth gate — if any enemy
-//                          gets LOS on the player, alarm raises, difficulty bumps
-//   B10 Cathedral         — "reach the bell tower before midnight mass ends":
-//                          90s countdown, fail mastery if expired before boss
+//   B05 Sterling Medical — visit mid-ward chart stations before the mid door opens
+//   B07 Azure Yacht       — no-heal banner (fail mastery is heal-pack driven)
+//   B09 Border            — ledger window timer
+//   B10 Cathedral         — Silent Choir banner (nave fire fails mastery)
+//   B11 Karelia           — bridge window timer
+//   B12 Spire             — helo clock timer
 //
 // G._objective is the runtime state; null when no objective applies.
 const OBJECTIVE_DEFS={
-  5: {kind:'stations',stations:[{x:-13,z:-16},{x:0,z:-18},{x:13,z:-15}],radius:2.0,dwellMs:500,total:3,
-      labelFn:o=>'EXPOSE SURGERY RECORDS — '+(o.visited||0)+' / '+o.total},
+  5: {kind:'stations',stations:[{x:-10,z:3},{x:0,z:-2},{x:10,z:4}],radius:2.0,dwellMs:500,total:3,
+      labelFn:o=>{
+        const base='EXPOSE SURGERY RECORDS — '+(o.visited||0)+' / '+o.total;
+        if(!G.mastery||G.mastery.failed||!/blackout_clean/i.test(String(G.mastery.objective&&G.mastery.objective.id||'')))return base;
+        const cleanArmed=!!(SETPIECE.active&&SETPIECE.kind==='dark'&&((typeof playerZone==='function'?playerZone():0)>=1||!!(G.zoneClears&&G.zoneClears[0])));
+        if(!cleanArmed)return base+' · CLEAN ARMS AT MID';
+        const budget=typeof _blackoutCleanDamageBudget==='function'?_blackoutCleanDamageBudget():40;
+        const left=Math.max(0,Math.ceil(budget-(G.mastery.damageTaken||0)));
+        return base+' · CLEAN '+left;
+      }},
   7: {kind:'holdout',label:'NO-HEAL BOARDING — HOLD YOUR PACKS',
       labelFn:()=>'NO-HEAL BOARDING — HOLD YOUR PACKS'},
-  9: {kind:'timer',timerS:80,label:'SECURE THE LEDGER',
-      labelFn:o=>'LEDGER WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
-  10:{kind:'timer',timerS:90,label:'REACH THE BELL TOWER',
-      labelFn:o=>'BELL TOWER — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
-  11:{kind:'timer',timerS:75,label:'REACH THE BRIDGE',
-      labelFn:o=>'BRIDGE WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
-  12:{kind:'timer',timerS:60,label:'REACH THE HELIPAD',
-      labelFn:o=>'HELO CLOCK — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'},
+  9: {kind:'timer',timerS:80,armOn:'front_clear',label:'SECURE THE LEDGER',
+      labelFn:o=>o._timerArmed?('LEDGER WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'):'LEDGER WINDOW — ARMS AFTER FRONT CLEAR'},
+  10:{kind:'holdout',label:'SILENT CHOIR — NO COMBAT IN THE NAVE',
+      labelFn:()=>'SILENT CHOIR — KEEP THE NAVE QUIET'},
+  11:{kind:'timer',timerS:75,armOn:'front_clear',label:'REACH THE BRIDGE',
+      labelFn:o=>o._timerArmed?('BRIDGE WINDOW — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'):'BRIDGE WINDOW — ARMS AFTER FRONT CLEAR'},
+  12:{kind:'timer',timerS:60,armOn:'front_clear',label:'REACH THE HELIPAD',
+      labelFn:o=>o._timerArmed?('HELO CLOCK — '+Math.max(0,Math.ceil(o.remainingS||0))+'s'):'HELO CLOCK — ARMS AFTER FRONT CLEAR'},
 };
 function _objectiveCloseEnemyCount(radius=9){
   if(!G.enemyMgr||!Array.isArray(G.enemyMgr._list)||!P.pos)return 0;
@@ -31622,6 +31921,72 @@ function _refreshObjectiveHud(o){
   el.style.transform=`translateY(${((feel.cameraTension||0)*-1.5+(feel.completionAnticipation||0)*1.2).toFixed(2)}px)`;
   el.style.boxShadow=`0 2px ${Math.round(12+(feel.objectiveCadence||0)*14)}px rgba(0,0,0,.45),0 0 ${Math.round((feel.completionAnticipation||0)*14)}px rgba(95,203,82,.22)`;
 }
+function _despawnObjectiveStationMarkers(o){
+  const list=(o&&o._stationMeshes)||G._objectiveStationMeshes||[];
+  for(const m of list){
+    if(!m)continue;
+    if(m.parent)m.parent.remove(m);
+    m.traverse(obj=>{
+      if(obj.geometry)obj.geometry.dispose();
+      if(obj.material){
+        if(Array.isArray(obj.material))obj.material.forEach(mat=>mat&&mat.dispose&&mat.dispose());
+        else if(obj.material.dispose)obj.material.dispose();
+      }
+    });
+  }
+  if(o)o._stationMeshes=null;
+  G._objectiveStationMeshes=null;
+}
+function _spawnObjectiveStationMarkers(o){
+  _despawnObjectiveStationMarkers(o);
+  if(!o||!o.def||o.def.kind!=='stations'||!Array.isArray(o.def.stations))return;
+  const meshes=[];
+  const accent=0x40ff80;
+  for(let i=0;i<o.def.stations.length;i++){
+    const st=o.def.stations[i];
+    const grp=new THREE.Group();
+    grp.position.set(st.x,WT+.02,st.z);
+    grp.userData.objectiveStation=true;
+    grp.userData.stationIdx=i;
+    const padM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.42,depthWrite:false,blending:THREE.AdditiveBlending});
+    const pad=new THREE.Mesh(new THREE.CircleGeometry(0.55,20),padM);
+    pad.rotation.x=-Math.PI/2;
+    grp.add(pad);
+    const standM=new THREE.MeshLambertMaterial({color:0x2a3440,emissive:accent,emissiveIntensity:.35});
+    const stand=new THREE.Mesh(new THREE.BoxGeometry(.42,.95,.18),standM);
+    stand.position.y=.48;
+    grp.add(stand);
+    const screenM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.85});
+    const screen=new THREE.Mesh(new THREE.PlaneGeometry(.34,.28),screenM);
+    screen.position.set(0,.72,.10);
+    grp.add(screen);
+    const haloM=new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.22,depthWrite:false,blending:THREE.AdditiveBlending});
+    const halo=new THREE.Mesh(new THREE.SphereGeometry(.16,10,8),haloM);
+    halo.position.y=1.12;
+    grp.add(halo);
+    scene.add(grp);
+    meshes.push(grp);
+  }
+  o._stationMeshes=meshes;
+  G._objectiveStationMeshes=meshes;
+}
+function _refreshObjectiveStationMarkers(o){
+  if(!o||!Array.isArray(o._stationMeshes)||!Array.isArray(o.visitedFlags))return;
+  for(let i=0;i<o._stationMeshes.length;i++){
+    const grp=o._stationMeshes[i];
+    if(!grp)continue;
+    const done=!!o.visitedFlags[i];
+    grp.visible=!done;
+    if(done)continue;
+    const pulse=.55+.45*Math.sin(performance.now()*.004+i);
+    grp.traverse(obj=>{
+      if(obj.material&&obj.material.opacity!=null&&obj.material.transparent){
+        if(obj.geometry&&obj.geometry.type==='CircleGeometry')obj.material.opacity=.28+pulse*.22;
+        else if(obj.geometry&&obj.geometry.type==='SphereGeometry')obj.material.opacity=.16+pulse*.18;
+      }
+    });
+  }
+}
 function _initObjectiveForBuilding(bn){
   // Always tear down previous HUD element
   const prior=document.getElementById('objective-ticker');
@@ -31630,6 +31995,7 @@ function _initObjectiveForBuilding(bn){
   // across runs that ended in ADS pose.
   const sg=document.getElementById('sg-pellets');
   if(sg)sg.style.opacity='0';
+  _despawnObjectiveStationMarkers(G._objective);
   G._objective=null;
   const def=OBJECTIVE_DEFS[bn];
   if(!def)return;
@@ -31646,6 +32012,7 @@ function _initObjectiveForBuilding(bn){
     _nearStationIdx:-1,
     alarmed: def.kind==='stealth'?false:undefined,
     remainingS: def.kind==='timer'?def.timerS:undefined,
+    _timerArmed: def.kind==='timer'?false:undefined,
     completed:false,
     failed:false,
     feel:null,
@@ -31668,6 +32035,7 @@ function _initObjectiveForBuilding(bn){
   document.body.appendChild(el);
   G._objective.feel=buildStoryObjectiveFeelSnapshot(G._objective,_objectiveFeelContext(G._objective));
   _refreshObjectiveHud(G._objective);
+  if(def.kind==='stations')_spawnObjectiveStationMarkers(G._objective);
 }
 function tickObjective(dt){
   const o=G._objective;
@@ -31698,7 +32066,19 @@ function tickObjective(dt){
 	          o._lastObjectivePulseAt=nowMs;
 	          P._objectiveInteractPulse=Math.max(P._objectiveInteractPulse||0,.86);
 	          if(typeof attachToast==='function')attachToast('<div style="color:#ffd060;letter-spacing:.20em">▣ CHART '+o.visited+' / '+o.total+'</div>',1400);
-	          if(o.visited>=o.total)o.completed=true;
+	          if(o.visited>=o.total){
+              o.completed=true;
+              const mid=G.levelData&&G.levelData.zoneDoors&&G.levelData.zoneDoors[1];
+              const midCleared=!!(G.zoneClears&&G.zoneClears[1]);
+              const midSealed=!!(mid&&!mid.opened);
+              if(G.levelData&&typeof G.levelData.openZoneDoor==='function'&&(o._pendingMidDoor||(midCleared&&midSealed))){
+                G.levelData.openZoneDoor(1);
+                o._pendingMidDoor=false;
+                if(typeof attachToast==='function')attachToast('<div style="color:#5fcb52;letter-spacing:.20em">✓ RECORDS EXPOSED</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door unlocked</div>',2200);
+              }else if(typeof applyStoryObjectivePayoff==='function'){
+                applyStoryObjectivePayoff('stations-complete',{strength:.82,side:0});
+              }
+            }
 	          else if(typeof applyStoryObjectivePayoff==='function')applyStoryObjectivePayoff('station-step',{strength:.58,side:i%2?1:-1});
         }
         break;
@@ -31712,6 +32092,7 @@ function tickObjective(dt){
     o._nearestStationDist=nearestDist;
     o._nearStationIdx=nearestIdx;
     feelExtra={near:matched||nearestDist<def.radius,dwellProgress:o._stationHoldProgress||0,holding:matched,nearestDistance:nearestDist,radius:def.radius};
+    _refreshObjectiveStationMarkers(o);
   } else if(!o.completed&&!o.failed&&def.kind==='stealth'){
     // If any non-dead enemy currently has LOS to the player, alarm.
     if(!o.alarmed&&G.enemyMgr){
@@ -31759,21 +32140,38 @@ function tickObjective(dt){
     feelExtra={holding:false,roomsCleared:Array.isArray(G.zoneClears)?G.zoneClears.filter(Boolean).length:0,roomsTotal:3,exitUnlocked:!!G.exitUnlocked};
   } else if(!o.completed&&!o.failed&&def.kind==='timer'){
     const reachedBack=typeof playerZone==='function'&&playerZone()===2;
-    // Act III timers are destination windows (ledger/bridge/helipad) — mid clear alone is not enough.
-    if(reachedBack||G.exitUnlocked){
+    // Act III timers are destination windows — do not burn the clock during front clear.
+    if(!o._timerArmed){
+      const z=typeof playerZone==='function'?playerZone():0;
+      const frontDone=!!(G.zoneClears&&G.zoneClears[0]);
+      if(frontDone||z>=1||reachedBack||G.exitUnlocked){
+        o._timerArmed=true;
+        o.remainingS=def.timerS;
+        if(typeof attachToast==='function')attachToast('<div style="color:#ffd060;letter-spacing:.20em">⏱ '+(def.label||'WINDOW')+' ARMED</div>',1800);
+      }
+    }
+    // Destination = signature cage / exit throat / unlocked exit — not vestibule threshold.
+    const flowRoom=String(G.encounterDirector&&(G.encounterDirector.currentFlowRoomId||G.encounterDirector.currentRoomId)||'');
+    const atDestination=/relay_cage|signature|exit_door|helipad|bridge_wing|bell_tower|ledger/i.test(flowRoom)
+      ||(P&&P.pos&&P.pos.z<-18);
+    if(G.exitUnlocked||atDestination){
       o.completed=true;
-    }else{
-      o.remainingS=Math.max(0,o.remainingS-dt);
+    }else if(o._timerArmed){
+      // Pause while survival mid-door hold is sealing progress (B11).
+      const holdPause=!!(SETPIECE.active&&SETPIECE.kind==='survival'&&SETPIECE._pendingMidDoor&&!SETPIECE.rewardGiven);
+      if(!holdPause)o.remainingS=Math.max(0,o.remainingS-dt);
       if(o.remainingS<=0&&!o.completed){
         o.failed=true;
         // Only fail mastery if THIS building's mastery is genuinely a "reach in time" condition.
-        // The timer objective is authored for buildings (e.g. B10 silent-choir) whose mastery is
-        // unrelated to a countdown, so we must not blanket-fail mastery on timeout. (decoupled)
-        if(G.mastery&&/no_helo|no_engine_alarm|pipeline_intact|intact|grounded|cold_engines|timer|time_limit/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+        // B10 Silent Choir is holdout (nave fire), not a countdown — do not blanket-fail on timeout.
+        if(G.mastery&&/no_helo|no_engine_alarm|pipeline_intact|intact|grounded|cold_engines|timer|time_limit/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){
+          if(typeof failMastery==='function')failMastery('timer_expired');
+          else{G.mastery.failed=true;G.levelState&&(G.levelState.masteryFailed=true);}
+        }
         if(typeof attachToast==='function')attachToast('<div style="color:#ff5040;letter-spacing:.20em">'+(def.label||'OBJECTIVE')+' TIMED OUT</div>',2200);
       }
     }
-    feelExtra={timerS:def.timerS,remainingS:o.remainingS,holding:false};
+    feelExtra={timerS:def.timerS,remainingS:o.remainingS,holding:false,armed:!!o._timerArmed};
   }
   o.feel=buildStoryObjectiveFeelSnapshot(o,_objectiveFeelContext(o,feelExtra));
   G._storyObjectiveFeel=o.feel;
@@ -32013,7 +32411,7 @@ function _comboMilestoneFx(count){
     o.type='triangle';o.frequency.value=f*(1+count*.02);
     g.gain.setValueAtTime(.18,c.currentTime+i*.06);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.06+.20);
-    o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.06);o.stop(c.currentTime+i*.06+.22);
+    o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+i*.06);o.stop(c.currentTime+i*.06+.22);
   });
 }
 // ── ENEMY DIALOGUE / BARK LINES — text popup over enemy on alert/leader
@@ -32137,10 +32535,30 @@ function startSingleBuildingRun(bn){
   $e('overlay').classList.add('hidden');hideEndScreen();_resetRunStats();applyUnlocks();applyOperator();
   tryLock();musicInit();showBriefingCard(bn,2000);startBuilding();
 }
-// Track max building cleared
+// Track max building cleared + Steam achievement challenge flags for this building.
 function recordBuildingClear(bn){
   PROGRESS._maxBuildingCleared=Math.max(PROGRESS._maxBuildingCleared||0,bn);
+  const ch=G._buildingChallenge||{};
+  const elapsedS=Math.max(0,(performance.now()-(ch.startMs||performance.now()))/1000);
+  if(!ch.tookDamage)PROGRESS._flawlessBuilding=true;
+  if(elapsedS<=120)PROGRESS._speedrunBuilding=true;
+  if(!ch.usedNonKnife)PROGRESS._knifeOnlyBuilding=true;
+  if(!ch.usedUnsuppressed)PROGRESS._silentBuilding=true;
+  if((bn|0)===6&&elapsedS<=240)PROGRESS._subwaySpeed=true;
   saveProgressFile();
+  if(typeof checkAchievements==='function'){
+    try{checkAchievements();}catch(_){}
+  }
+}
+function _resetBuildingChallengeTracking(){
+  G._buildingChallenge={startMs:performance.now(),tookDamage:false,usedNonKnife:false,usedUnsuppressed:false};
+}
+function _noteBuildingChallengeShot(pl){
+  const ch=G._buildingChallenge;if(!ch||!pl)return;
+  if((pl.weaponIdx|0)!==2)ch.usedNonKnife=true;
+  if(typeof _weaponSuppressedFor==='function'?(!_weaponSuppressedFor(pl)):(pl.weaponIdx!==1&&pl.weaponIdx!==4&&pl.weaponIdx!==6)){
+    ch.usedUnsuppressed=true;
+  }
 }
 // ── ONBOARD TUTORIAL OVERLAY — first-time hint system (corner cards)
 const ONBOARD={steps:[
@@ -32148,8 +32566,8 @@ const ONBOARD={steps:[
   {id:'shoot', hint:'<kbd>LMB</kbd> to shoot · <kbd>RMB</kbd> to aim',cond:()=>P.shotsFired>=10},
   {id:'reload',hint:'<kbd>R</kbd> to reload · firing cancels reload mid-animation',cond:()=>P.shotsFired>=20},
   {id:'focus', hint:'<kbd>F</kbd> activates Focus mode (slow time)',cond:()=>P.focus<.85||P.focusActive},
-  {id:'melee', hint:'<kbd>V</kbd> melee · <kbd>T</kbd> takedown low-HP enemies',cond:()=>P.execs>=1||P.kills>=8},
-  {id:'tact',  hint:'<kbd>G</kbd> grenade · <kbd>T</kbd> smoke · <kbd>Y</kbd> flashbang',cond:()=>P.kills>=12},
+  {id:'melee', hint:'<kbd>V</kbd> melee · <kbd>T</kbd> takedown low-HP enemies (smoke if none in range)',cond:()=>P.execs>=1||P.kills>=8},
+  {id:'tact',  hint:'<kbd>G</kbd> grenade · <kbd>T</kbd> smoke when no takedown · <kbd>Y</kbd> flashbang',cond:()=>P.kills>=12},
   {id:'weap',  hint:'<kbd>1</kbd>-<kbd>7</kbd> swap weapons · <kbd>2</kbd> knife: LMB slice, RMB heavy stab, MMB throw',cond:()=>isPlayableWeaponIdx(P.weaponIdx)},
   {id:'shop',  hint:'<kbd>B</kbd> opens the shop between firefights',cond:()=>G.shopOpen||P.kills>=20}
 ],idx:0,active:false,timer:0};
@@ -32642,7 +33060,7 @@ function _grantPowerup(def){
     o.type='triangle';o.frequency.value=f;
     g.gain.setValueAtTime(.10,c.currentTime+i*.07);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.07+.18);
-    o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.07);o.stop(c.currentTime+i*.07+.20);
+    o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+i*.07);o.stop(c.currentTime+i*.07+.20);
   });
 }
 function hasActivePowerup(id){
@@ -32673,7 +33091,7 @@ function _killKickFx(isHead){
     o.frequency.exponentialRampToValueAtTime(isHead?760:520,c.currentTime+0.10);
     g.gain.setValueAtTime(0.10*intensity,c.currentTime);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+0.12);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+0.14);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+0.14);
   }catch(_){}
 }
 
@@ -32757,7 +33175,7 @@ function _arcProp(mesh){
   o.type='sawtooth';o.frequency.setValueAtTime(2200,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(800,c.currentTime+.30);
   g.gain.setValueAtTime(.20,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.32);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.34);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.34);
   // Mark mesh dead
   mesh.material.color.setHex(0x202028);
   if(mesh.material.emissive)mesh.material.emissive.setHex(0x000000);
@@ -32847,14 +33265,14 @@ function _shatterMesh(mesh,hitPt){
     const s=c.createBufferSource();s.buffer=buf;
     const f=c.createBiquadFilter();f.type='highpass';f.frequency.value=2400;
     const g=c.createGain();g.gain.value=.30;
-    s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+    s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
     // Tinkle
     [2200,2800,3200].forEach((freq,i)=>{
       const o=c.createOscillator(),og=c.createGain();
       o.type='triangle';o.frequency.value=freq;
       og.gain.setValueAtTime(.06,c.currentTime+i*.04);
       og.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.04+.10);
-      o.connect(og);og.connect(c.destination);o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.12);
+      o.connect(og);og.connect(_sfxOut(c));o.start(c.currentTime+i*.04);o.stop(c.currentTime+i*.04+.12);
     });
   } else if(sndType==='wood'){
     [180,140,100].forEach((freq,i)=>{
@@ -32862,7 +33280,7 @@ function _shatterMesh(mesh,hitPt){
       o.type='triangle';o.frequency.value=freq;
       og.gain.setValueAtTime(.20,c.currentTime+i*.03);
       og.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.03+.18);
-      o.connect(og);og.connect(c.destination);o.start(c.currentTime+i*.03);o.stop(c.currentTime+i*.03+.20);
+      o.connect(og);og.connect(_sfxOut(c));o.start(c.currentTime+i*.03);o.stop(c.currentTime+i*.03+.20);
     });
   }
 }
@@ -32893,7 +33311,7 @@ function ambientEventTick(dt){
     if(f1!==null)o.frequency.exponentialRampToValueAtTime(f1,c.currentTime+dur);
     g.gain.setValueAtTime(0,c.currentTime);g.gain.linearRampToValueAtTime(gain,c.currentTime+.02);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+dur);
-    o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+dur+.05);
+    o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+dur+.05);
   };
   const playNoise=(filter,freq,Q,dur,gain)=>{
     const buf=c.createBuffer(1,~~(c.sampleRate*dur),c.sampleRate),d=buf.getChannelData(0);
@@ -32901,7 +33319,7 @@ function ambientEventTick(dt){
     const s=c.createBufferSource();s.buffer=buf;
     const f=c.createBiquadFilter();f.type=filter;f.frequency.value=freq;f.Q.value=Q;
     const g=c.createGain();g.gain.value=gain;
-    s.connect(f);f.connect(g);g.connect(c.destination);s.start();s.stop(c.currentTime+dur);
+    s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();s.stop(c.currentTime+dur);
   };
   switch(evt){
     case 'gunshot':playNoise('bandpass',900,1.0,.10,.18);playOsc('sine',60,28,.18,.25);break;
@@ -32921,7 +33339,7 @@ function ambientEventTick(dt){
       g.gain.linearRampToValueAtTime(0,c.currentTime+.14);
       g.gain.linearRampToValueAtTime(.10,c.currentTime+.20);
       g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.34);
-      o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.36);
+      o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.36);
       break;
     }
     case 'beep':playOsc('sine',1800,1800,.10,.06);break;
@@ -32935,7 +33353,7 @@ function ambientEventTick(dt){
       o.frequency.linearRampToValueAtTime(720,c.currentTime+.90);
       g.gain.setValueAtTime(.18,c.currentTime);
       g.gain.exponentialRampToValueAtTime(.001,c.currentTime+1.10);
-      o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+1.12);
+      o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+1.12);
       break;
     }
     case 'train':playOsc('sawtooth',70,40,1.6,.18);playNoise('lowpass',180,1.5,1.4,.15);break;
@@ -32975,16 +33393,16 @@ function ambientStart(bn){
   const src=c.createBufferSource();src.buffer=buf;src.loop=true;
   const f=c.createBiquadFilter();f.type='bandpass';f.frequency.value=cfg.noiseFreq;f.Q.value=cfg.noiseQ;
   const ng=c.createGain();ng.gain.value=cfg.noiseGain;
-  src.connect(f);f.connect(ng);ng.connect(c.destination);src.start();
+  src.connect(f);f.connect(ng);ng.connect(_sfxOut(c));src.start();
   AMBIENT.src=src;AMBIENT.gain=ng;AMBIENT.filter=f;
   // Two low sines — room tone
   const osc=c.createOscillator(),og=c.createGain();
   osc.type='sine';osc.frequency.value=cfg.toneA;og.gain.value=cfg.toneGain;
-  osc.connect(og);og.connect(c.destination);osc.start();
+  osc.connect(og);og.connect(_sfxOut(c));osc.start();
   AMBIENT.osc=osc;
   const osc2=c.createOscillator(),og2=c.createGain();
   osc2.type='sine';osc2.frequency.value=cfg.toneB;og2.gain.value=cfg.toneGain*.85;
-  osc2.connect(og2);og2.connect(c.destination);osc2.start();
+  osc2.connect(og2);og2.connect(_sfxOut(c));osc2.start();
   AMBIENT.osc2=osc2;
 }
 // ── FOOTSTEPS ────────────────────────────────────────────────────────
@@ -32996,10 +33414,10 @@ function _connectWithPan(c,node,side=0){
   if(c&&typeof c.createStereoPanner==='function'){
     const pan=c.createStereoPanner();
     pan.pan.value=THREE.MathUtils.clamp(side||0,-1,1)*.18;
-    node.connect(pan);pan.connect(c.destination);
+    node.connect(pan);pan.connect(_sfxOut(c));
     return pan;
   }
-  node.connect(c.destination);
+  node.connect(_sfxOut(c));
   return node;
 }
 function _footstepNoiseBuffer(c,dur,sprint=false){
@@ -33054,14 +33472,14 @@ function sfxSprintGear(kind='start',strength=1){
   const src=c.createBufferSource();src.buffer=buf;
   const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=kind==='stop'?640:920;bp.Q.value=1.1;
   const g=c.createGain();g.gain.setValueAtTime((kind==='stop' ? .075 : .105)*s,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+dur);
-  src.connect(bp);bp.connect(g);g.connect(c.destination);src.start();src.stop(c.currentTime+dur);
+  src.connect(bp);bp.connect(g);g.connect(_sfxOut(c));src.start();src.stop(c.currentTime+dur);
   const o=c.createOscillator(),og=c.createGain();
   o.type='triangle';
   o.frequency.setValueAtTime(kind==='stop'?86:112,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(kind==='stop'?42:58,c.currentTime+.12);
   og.gain.setValueAtTime((kind==='stop' ? .045 : .060)*s,c.currentTime);
   og.gain.exponentialRampToValueAtTime(.001,c.currentTime+.15);
-  o.connect(og);og.connect(c.destination);o.start();o.stop(c.currentTime+.16);
+  o.connect(og);og.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.16);
 }
 function sfxLandingGear(strength=1,hit=false){
   const c=getAC();
@@ -33072,13 +33490,13 @@ function sfxLandingGear(strength=1,hit=false){
   o.frequency.exponentialRampToValueAtTime(24,c.currentTime+.18);
   g.gain.setValueAtTime((hit ? .22 : .16)*s,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.24);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.24);
   const len=~~(c.sampleRate*.07),buf=c.createBuffer(1,len,c.sampleRate),d=buf.getChannelData(0);
   for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,1.8)*.44*s;
   const src=c.createBufferSource();src.buffer=buf;
   const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=260+(hit?160:0);
   const ng=c.createGain();ng.gain.value=.12*s;
-  src.connect(lp);lp.connect(ng);ng.connect(c.destination);src.start();src.stop(c.currentTime+.08);
+  src.connect(lp);lp.connect(ng);ng.connect(_sfxOut(c));src.start();src.stop(c.currentTime+.08);
 }
 function sfxSlideScrape(strength=1,side=0){
   const c=getAC();
@@ -33305,7 +33723,7 @@ function startInspect(){
   const o=c.createOscillator(),g=c.createGain();
   o.type='triangle';o.frequency.value=540;
   g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.10);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.12);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.12);
 }
 function endInspect(){
   if(!INSPECT.active)return;
@@ -33475,7 +33893,7 @@ function _announceMultikill(label,bonus,color){
     o.type='triangle';o.frequency.value=f;
     g.gain.setValueAtTime(.16,c.currentTime+i*.05);
     g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.05+.20);
-    o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.05);o.stop(c.currentTime+i*.05+.22);
+    o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+i*.05);o.stop(c.currentTime+i*.05+.22);
   });
 }
 // ── ENEMY ALERTNESS INDICATOR — disabled for cleaner enemy silhouettes
@@ -33492,6 +33910,11 @@ function _registerHsKill(){
   HS_CHAIN.count+=1;
   if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='sniper'){
     SETPIECE.progress=Math.max(SETPIECE.progress|0,HS_CHAIN.count);
+    // Only Precision mastery locks from HS streak — B09 ledger is a different objective.
+    if(G.mastery&&/precision/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))&&SETPIECE.progress>=(SETPIECE.goal|0)&&!G.mastery._precisionMet){
+      G.mastery._precisionMet=true;
+      if(typeof attachToast==='function')attachToast('<div style="color:#5fcb52;letter-spacing:.22em">✓ PRECISION STREAK</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mastery streak locked</div>',2200);
+    }
   }
   // 3+ in a row → bonus
   if(HS_CHAIN.count>=3){
@@ -33505,10 +33928,16 @@ function _registerHsKill(){
   }
 }
 function _registerNonHsKill(){
+  // Precision Hunt: only fail while an unfinished recent streak is live — never after lock, never on stale HS.
+  const now=performance.now();
+  const alreadyMet=!!(G.mastery&&G.mastery._precisionMet);
+  const recentHs=HS_CHAIN.count>0&&(now-HS_CHAIN.lastT)<=HS_CHAIN.resetMs;
+  const sniperActive=typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='sniper';
+  const unfinished=sniperActive&&(SETPIECE.progress|0)>0&&(SETPIECE.progress|0)<(SETPIECE.goal|0);
+  const streakLive=!alreadyMet&&(recentHs||unfinished);
   HS_CHAIN.count=0;
-  // Precision-hunt mastery fails when the headshot streak is broken by a body kill.
-  if(typeof failMasteryIfMatch==='function')failMasteryIfMatch(/precision/, 'body_kill');
-  if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='sniper'&&(SETPIECE.progress|0)<(SETPIECE.goal|0)){
+  if(streakLive&&typeof failMasteryIfMatch==='function')failMasteryIfMatch(/precision/, 'body_kill');
+  if(sniperActive&&!alreadyMet&&(SETPIECE.progress|0)<(SETPIECE.goal|0)){
     SETPIECE.progress=0;
   }
 }
@@ -33524,7 +33953,7 @@ function sfxGunshotEcho(distance){
     const s=c.createBufferSource();s.buffer=buf;
     const f=c.createBiquadFilter();f.type='lowpass';f.frequency.value=600;
     const g=c.createGain();g.gain.value=Math.min(.15,(distance-8)*.012);
-    s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+    s.connect(f);f.connect(g);g.connect(_sfxOut(c));s.start();
   },delay*1000);
 }
 // ── HIT CONFIRMATION STACK — chip-pip ascending tone on consecutive hits
@@ -33542,19 +33971,19 @@ function sfxHitConfirm(isHead,killed=false,strength=1){
   const o=c.createOscillator(),g=c.createGain();
   o.type=isHead?'triangle':'sine';o.frequency.value=freq;
   g.gain.setValueAtTime((killed?.24:.18)*impact,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(isHead?.11:.075)+(killed?.025:0));
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.12);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.12);
   // Layered overtone for depth
   const o2=c.createOscillator(),g2=c.createGain();
   o2.type=killed?'square':'triangle';o2.frequency.value=freq*(isHead?1.62:1.48);
   g2.gain.setValueAtTime((killed?.075:.06)*impact,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+(killed?.105:.08));
-  o2.connect(g2);g2.connect(c.destination);o2.start();o2.stop(c.currentTime+.10);
+  o2.connect(g2);g2.connect(_sfxOut(c));o2.start();o2.stop(c.currentTime+.10);
   if(killed){
     const th=c.createOscillator(),tg=c.createGain();
     th.type='sine';th.frequency.setValueAtTime(isHead?116:92,c.currentTime);
     th.frequency.exponentialRampToValueAtTime(isHead?58:48,c.currentTime+.13);
     tg.gain.setValueAtTime(.10*impact,c.currentTime);
     tg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.16);
-    th.connect(tg);tg.connect(c.destination);th.start();th.stop(c.currentTime+.18);
+    th.connect(tg);tg.connect(_sfxOut(c));th.start();th.stop(c.currentTime+.18);
   }
 }
 // ── AI COUNTER-ATTACK WINDOW — when player reloads, enemies push aggressively
@@ -33650,7 +34079,7 @@ function cycleFireMode(){
   const o=c.createOscillator(),g=c.createGain();
   o.type='triangle';o.frequency.value=720;
   g.gain.setValueAtTime(.10,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.06);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.08);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.08);
   return true;
 }
 // ── COUNTER-STRAFE — track velocity history; opposite key snaps to zero
@@ -33992,9 +34421,10 @@ function _activeStoryObjectiveRuntime(){
   const hold=THREE.MathUtils.clamp(st.alarmPanelHold||0,0,1);
   const relaySec=st.secondsInRelayRoom||0;
   if(hold<=.001&&relaySec<=.05)return null;
+  const holdLabel=(typeof midRouteHoldLabel==='function'?midRouteHoldLabel(G.building):null)||'CUT RELAY';
   return {
     kind:'hold',
-    def:{kind:'hold',label:'CUT ALARM',timerS:1},
+    def:{kind:'hold',label:holdLabel,timerS:1},
     completed:false,
     failed:false,
     dwellStart:hold>.02?performance.now()-hold*1000:null,
@@ -34515,7 +34945,26 @@ function tickCompass(){
     let target=null,label='';
     const flowWp=G.encounterDirector&&typeof G.encounterDirector.getWaypointTarget==='function'
       ?G.encounterDirector.getWaypointTarget(G.enemyMgr):null;
-    if(flowWp){
+    const oStations=G._objective&&G._objective.def&&G._objective.def.kind==='stations'&&!G._objective.completed?G._objective:null;
+    if(oStations&&Array.isArray(oStations.def.stations)&&Array.isArray(oStations.visitedFlags)){
+      let bestD=Infinity,best=null,bestI=-1;
+      for(let i=0;i<oStations.def.stations.length;i++){
+        if(oStations.visitedFlags[i])continue;
+        const st=oStations.def.stations[i];
+        const dx=st.x-P.pos.x,dz=st.z-P.pos.z;
+        const d=dx*dx+dz*dz;
+        if(d<bestD){bestD=d;best=st;bestI=i;}
+      }
+      if(best){target={x:best.x,z:best.z};label='CHART '+(bestI+1);}
+    }
+    // Survival mid-door seal: do not point at the locked door — show hold remaining.
+    if(!target&&SETPIECE.active&&SETPIECE.kind==='survival'&&SETPIECE._pendingMidDoor&&!SETPIECE.rewardGiven){
+      const remain=Math.max(0,Math.ceil((SETPIECE.def&&SETPIECE.def.duration||0)-(SETPIECE.timer||0)));
+      target={x:P.pos.x,z:P.pos.z};
+      label='HOLD '+remain+'s';
+    }
+    if(target){ /* keep chart/hold target */ }
+    else if(flowWp){
       target={x:flowWp.x,z:flowWp.z};label=flowWp.label||'NEXT';
     } else if(G.exitUnlocked){
       const hd=(G.levelData.zoneBounds&&G.levelData.zoneBounds.halfDepth)||22;
@@ -34525,7 +34974,10 @@ function tickCompass(){
       const zd=G.levelData.zoneDoors;
       if(zd){
         for(const d of zd){
-          if(!d.opened){target={x:d.mesh.position.x,z:d.mesh.position.z};break;}
+          if(!d.opened){
+            const pos=(d.mesh&&d.mesh.position)||(d.parts&&d.parts[0]&&d.parts[0].position)||null;
+            if(pos){target={x:pos.x,z:pos.z};break;}
+          }
         }
         if(!target){
           // Default to front of nearest enemy in current zone
@@ -34551,7 +35003,7 @@ function tickFootsteps(){
   // ticker fought that cadence and allocated audio work mid-sprint, which read
   // as a periodic hitch.
 }
-function sfxVault(){const c=getAC();[[0,300,.12],[.08,200,.09],[.18,260,.07]].forEach(([t,f,dur])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.2,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+dur);o.connect(g);g.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+dur+.02);});}
+function sfxVault(){const c=getAC();[[0,300,.12],[.08,200,.09],[.18,260,.07]].forEach(([t,f,dur])=>{const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.2,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+t+dur);o.connect(g);g.connect(_sfxOut(c));o.start(c.currentTime+t);o.stop(c.currentTime+t+dur+.02);});}
 // ── CLEAR-ROOM ZONE GATE ───────────────────────────────────────────────────
 // Replaces the wave system. All enemies are pre-placed across zones at building
 // start. Per-frame zone-clear detection fires the ROOM CLEAR beat. Building
@@ -34624,10 +35076,12 @@ function checkZoneClears(){
     applyStoryRoomClearBreather(2,{fullClear:true});
     awardBuildingMoney();
     if(G.mastery&&!G.mastery.failed&&G.campaignLevel){
-      persistMasteryClear(G.campaignLevel);
-      const bonus=300+G.building*40;
-      P.money+=bonus;moneyPopup(bonus,'MASTERY');
-      attachToast(`<div style="color:#5fcb52;letter-spacing:.28em">✓ ${G.campaignLevel.mastery.label}</div><div style="font-size:11px;margin-top:4px">${G.campaignLevel.mastery.reward}</div>`,3200);
+      const masteryOk=persistMasteryClear(G.campaignLevel);
+      if(masteryOk&&G.mastery&&!G.mastery.failed){
+        const bonus=300+G.building*40;
+        P.money+=bonus;moneyPopup(bonus,'MASTERY');
+        attachToast(`<div style="color:#5fcb52;letter-spacing:.28em">✓ ${G.campaignLevel.mastery.label}</div><div style="font-size:11px;margin-top:4px">${G.campaignLevel.mastery.reward}</div>`,3200);
+      }
     }
     sfxWaveClear();
     announce('BUILDING CLEAR','Exit unlocked — move forward',3500);
@@ -34652,13 +35106,16 @@ function onZoneCleared(zoneId){
     const policyPass=!hasPol||!!dir.shouldOpenZoneDoorOnClear(zi);
     const authCE=!!SETTINGS.authoredCampaignEncounters;
     const mesoPass=!authCE||!dir||typeof dir.encountersSatisfiedForZoneDoorOpen!=='function'||dir.encountersSatisfiedForZoneDoorOpen(zi);
-    if((zi===0||zi===1)&&policyPass&&mesoPass){
-      if(zi===1&&SETPIECE.active&&SETPIECE.kind==='survival'&&!SETPIECE.rewardGiven){
-        SETPIECE._pendingMidDoor=true;
-        attachToast('<div style="color:#ffd060;letter-spacing:.28em">HOLD THE LINE</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door sealed until the hold completes</div>',2600);
-      }else{
-        G.levelData.openZoneDoor(zi);
-      }
+    // Station/survival seals must arm even if meso door requirements are still open —
+    // otherwise a mid wipe without completed catalog ids never seals the chart gate.
+    if(zi===1&&SETPIECE.active&&SETPIECE.kind==='survival'&&!SETPIECE.rewardGiven){
+      SETPIECE._pendingMidDoor=true;
+      attachToast('<div style="color:#ffd060;letter-spacing:.28em">HOLD THE LINE</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door sealed until the hold completes</div>',2600);
+    }else if(zi===1&&G.building===5&&G._objective&&G._objective.def&&G._objective.def.kind==='stations'&&!G._objective.completed){
+      G._objective._pendingMidDoor=true;
+      attachToast('<div style="color:#ffd060;letter-spacing:.28em">EXPOSE THE RECORDS</div><div style="font-size:11px;opacity:.78;margin-top:3px">Mid door sealed until chart stations are swept</div>',2800);
+    }else if((zi===0||zi===1)&&policyPass&&mesoPass){
+      G.levelData.openZoneDoor(zi);
     }
   }
   if(G.levelState){
@@ -34668,7 +35125,8 @@ function onZoneCleared(zoneId){
       // Hospital mid-clear: deepen the blackout once the ward loses power.
       if(G.building===5&&G.levelData){
         if(G.levelData.lightingController&&typeof G.levelData.lightingController.setMoodScale==='function'){
-          G.levelData.lightingController.setMoodScale(.18);
+          // Keep a readable silhouette floor under STABLE (no post exposure boost).
+          G.levelData.lightingController.setMoodScale(STABLE_RENDERING_MODE?.26:.18);
         }
         if(Array.isArray(G.levelData.ceilingLights)){
           for(const L of G.levelData.ceilingLights){
@@ -34875,7 +35333,8 @@ function populateBuilding(){
     $e('boss-name').textContent=(campaign&&campaign.target?campaign.target.toUpperCase():'IL PATRIARCA');
     $e('boss-bar').classList.add('show');
     $e('boss-fill').style.width='100%';
-    $e('boss-phase').textContent='PHASE 1 / 3';
+    const phaseTotal=1+((campaign&&Array.isArray(campaign.bossPhases))?campaign.bossPhases.length:2);
+    $e('boss-phase').textContent='PHASE 1 / '+phaseTotal;
   } else {
     const def=G.levelData&&G.levelData.encounterDef;
     const useAuth=!!SETTINGS.authoredCampaignEncounters;
@@ -34959,6 +35418,7 @@ function populateBuilding(){
 }
 // ── BUILDING PROGRESSION ──────────────────────────────────────────────────────
 async function startBuilding(){
+  if(typeof closeRadial==='function')closeRadial();
   const _deployName=`B${G.building||1} ${((getCampaignLevel(G.building)||{}).name)||'BUILDING'}`;
   _deployBegin(_deployName);
   const campaignLevel=syncCampaignRuntime();
@@ -34968,6 +35428,7 @@ async function startBuilding(){
     applyPerks();
     P.maxHp=P.maxHp||100;P.hp=P.maxHp;P.dead=false;P.reloading=false;
     _resetKnifeRuntime();
+    if(typeof _resetBuildingChallengeTracking==='function')_resetBuildingChallengeTracking();
     P._spawnVisualGraceUntil=performance.now()+5200;
     P._spawnPerfGraceUntil=performance.now()+6500;
     _clearDamageVisuals();
@@ -35108,6 +35569,11 @@ async function startBuilding(){
 	  await _deploySpan('shader prewarm',90,async()=>{await _prewarmVisibleSceneForDeploy();});
 	  await _deploySpan('settle first frames',97,async()=>{await _deployLoadingPaint();await _deployLoadingPaint();});
   _deployEnd();
+  // Entry + live checkpoints once the building is live (death retry uses entry).
+  if((G.playMode==='solo'||G.playMode==='custom')&&typeof saveEntryRunState==='function'){
+    try{saveEntryRunState();}catch(_){try{saveRunState();}catch(__){}}
+    if(typeof refreshMenuContinue==='function')refreshMenuContinue();
+  }
   }catch(err){
     _deployFail(err);
     throw err;
@@ -35123,7 +35589,8 @@ const PROGRESS=(()=>{
 	    daily:{seed:0,done:false},
 	    mastery:{},
 	    customMaps:{packs:{},runs:0,wins:0,bestScore:0,bestGrade:'-'},
-	    runSave:null
+	    runSave:null,
+	    runEntrySave:null
 	  };
   try{const raw=localStorage.getItem('clearance_progress');if(raw){
     const parsed=JSON.parse(raw);
@@ -35136,6 +35603,7 @@ const PROGRESS=(()=>{
 	    s.mastery=s.mastery||{};
 	    s.customMaps=Object.assign({packs:{},runs:0,wins:0,bestScore:0,bestGrade:'-'},s.customMaps||{});
 	    s.customMaps.packs=s.customMaps.packs||{};
+	    if(typeof s.runEntrySave==='undefined')s.runEntrySave=null;
 	  }}catch(_){}
   return s;
 })();
@@ -35176,7 +35644,8 @@ const ACHIEVEMENTS=[
   {id:'gun_fu',      name:'Gun-Fu',               desc:'Reach a 10-kill chain combo',       check:()=>(PROGRESS._maxCombo||0)>=10},
   {id:'samurai',     name:'Samurai',              desc:'Reach a 20-kill chain combo',       check:()=>(PROGRESS._maxCombo||0)>=20},
   {id:'no_reload',   name:'Cold Steel',           desc:'Win a building only using the knife',check:()=>!!PROGRESS._knifeOnlyBuilding},
-  {id:'patriarch',   name:'Patriarch',            desc:'Defeat the final boss',             check:()=>!!PROGRESS._finalKill},
+  {id:'patriarch',   name:'Patriarch',            desc:'Defeat Il Patriarca at Server Farm', check:()=>(PROGRESS._maxBuildingCleared||0)>=8},
+  {id:'director',    name:'Director',             desc:'Defeat the Director at The Spire',  check:()=>!!PROGRESS._finalKill},
   {id:'silent_runner',name:'Silent Runner',       desc:'Clear a building using only suppressed weapons',check:()=>!!PROGRESS._silentBuilding},
   {id:'cleaner',     name:'Cleaner',              desc:'Win a run with 80%+ accuracy',      check:()=>!!PROGRESS._cleanerWin},
   {id:'collector',   name:'Collector',            desc:'Collect every attachment tier',     check:()=>(PROGRESS._collected||0)>=8},
@@ -35478,17 +35947,17 @@ try{
   }
 }catch(_){}
 // ── PER-RUN SAVE STATE (resume) ──────────────────────────────────────
-function saveRunState(){
-  if(!G.started||P.dead)return;
-  if(G.playMode!=='solo'&&G.playMode!=='custom')return;
+function _snapshotRunLoadout(){
   normalizePlayerRuntime();
-	  PROGRESS.runSave={
-	    mode:G.playMode||'solo',
-	    building:G.building,
-	    packId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.pack?CUSTOM_MAP_RUNTIME.pack.id:null,
-	    mapId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.map?CUSTOM_MAP_RUNTIME.map.id:null,
-	    mapIndex:(G.playMode==='custom'||G.playMode==='editor-test')?CUSTOM_MAP_RUNTIME.mapIndex:0,
-	    money:P.money,hp:P.hp,
+  const maxB=typeof campaignLength==='function'?campaignLength():12;
+  const building=Math.max(1,Math.min(maxB,G.building|0||1));
+  return{
+    mode:G.playMode||'solo',
+    building,
+    packId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.pack?CUSTOM_MAP_RUNTIME.pack.id:null,
+    mapId:(G.playMode==='custom'||G.playMode==='editor-test')&&CUSTOM_MAP_RUNTIME.map?CUSTOM_MAP_RUNTIME.map.id:null,
+    mapIndex:(G.playMode==='custom'||G.playMode==='editor-test')?CUSTOM_MAP_RUNTIME.mapIndex:0,
+    money:P.money,hp:P.hp,
     healPacks:P.healPacks,grenades:P.grenades,smokes:P.smokes,flashes:P.flashes,
     weaponIdx:P.weaponIdx,weaponAmmo:P.weaponAmmo.slice(0,WEAPONS.length),weaponRes:P.weaponRes.slice(0,WEAPONS.length),
     attachments:P.attachments?{
@@ -35501,17 +35970,53 @@ function saveRunState(){
     kills:P.kills,headshots:P.headshots,shotsFired:P.shotsFired,shotsHit:P.shotsHit,
     runStart:P.runStart,timestamp:Date.now()
   };
+}
+/** Live Continue checkpoint (mid-run). Does not overwrite building-entry death-retry loadout. */
+function saveRunState(){
+  if(!G.started||P.dead)return;
+  if(G.playMode!=='solo'&&G.playMode!=='custom')return;
+  PROGRESS.runSave=_snapshotRunLoadout();
   saveProgressFile();
 }
-function clearRunState(){PROGRESS.runSave=null;saveProgressFile();}
+/** Building-entry loadout used by death retry / Play Again. */
+function saveEntryRunState(){
+  if(!G.started||P.dead)return;
+  if(G.playMode!=='solo'&&G.playMode!=='custom')return;
+  const snap=_snapshotRunLoadout();
+  const maxHp=Number.isFinite(P.maxHp)&&P.maxHp>0?P.maxHp:100;
+  snap.hp=maxHp;
+  PROGRESS.runEntrySave=snap;
+  PROGRESS.runSave={...snap};
+  saveProgressFile();
+}
+function clearRunState(){PROGRESS.runSave=null;PROGRESS.runEntrySave=null;saveProgressFile();}
+try{
+  if(typeof window!=='undefined'&&!window.__clearanceRunSaveUnloadBound){
+    window.__clearanceRunSaveUnloadBound=true;
+    window.addEventListener('beforeunload',()=>{
+      try{
+        if(typeof G!=='undefined'&&G&&G.started&&!(typeof P!=='undefined'&&P&&P.dead)&&(G.playMode==='solo'||G.playMode==='custom')&&typeof saveRunState==='function'){
+          saveRunState();
+        }
+      }catch(_){}
+    });
+  }
+}catch(_){}
 /** Keep Continue / Play Again on the building where the player died. */
 function ensureRetryCheckpoint(){
   if(G.playMode!=='solo'&&G.playMode!=='custom')return;
   const mode=G.playMode||'solo';
   const building=Math.max(1,Math.min(campaignLength(),G.building|0||1));
+  const entry=PROGRESS.runEntrySave;
+  if(entry&&entry.mode===mode&&(entry.building|0)===building){
+    // Death retry must restore building-entry loadout, not mid-fight pause save.
+    entry.timestamp=Date.now();
+    PROGRESS.runSave={...entry};
+    saveProgressFile();
+    return;
+  }
   const existing=PROGRESS.runSave;
   if(existing&&existing.mode===mode&&(existing.building|0)===building){
-    // Preserve the entry checkpoint (loadout at building start); just refresh timestamp.
     existing.timestamp=Date.now();
     saveProgressFile();
     return;
@@ -35553,7 +36058,7 @@ function resumeRunState(){
     startCustomMapPack(r.packId,r.mapIndex||0).catch(err=>{console.error('[custom-map] resume failed',err);clearRunState();quitToMain();});
     return true;
   }
-  G.building=r.building;P.money=r.money;
+  G.building=Math.max(1,Math.min(campaignLength(),r.building|0||1));P.money=r.money;
   P.healPacks=r.healPacks||0;P.grenades=r.grenades||0;P.smokes=r.smokes||0;P.flashes=r.flashes||0;
   P.attachments=_normalizeAttachments(r.attachments);
   P.weaponIdx=normalizeWeaponIdx(r.weaponIdx||START_WEAPON_IDX);
@@ -35567,7 +36072,7 @@ function resumeRunState(){
   P.runStart=r.runStart||performance.now();
   G.started=true;gameFocused=true;
   $e('overlay').classList.add('hidden');hideEndScreen();
-  applyUnlocks();
+  applyUnlocks({preserveInventory:true});
   tryLock();musicInit();showBriefingCard(G.building,1800);startBuilding();
   return true;
 }
@@ -35615,14 +36120,18 @@ function saveProgress(score,grade){
   // Toast for unlocks
   if(PROGRESS.level>oldLvl)attachToast(`<div style="color:#ffd060;letter-spacing:.32em">LVL ${oldLvl} → ${PROGRESS.level}</div><div style="font-size:11px;opacity:.7;margin-top:4px">+${gainXp} XP · +${PROGRESS.level-oldLvl} PERK PT</div>`,3500);
 }
-function applyUnlocks(){
-  const u=PROGRESS.unlocks;
-  if(u.startCredits)P.money=(P.money||0)+150;
-  if(u.startHeal)P.healPacks=(P.healPacks||0)+1;
-  if(u.startGrenade)P.grenades=(P.grenades||0)+1;
-  // Enhanced focus (Lv 5): start full + slower drain + faster passive refill.
+function applyUnlocks(opts){
+  const u=PROGRESS.unlocks||{};
+  const preserveInventory=!!(opts&&opts.preserveInventory);
+  // Consumable start bonuses only on a fresh run — never on Continue / death retry.
+  if(!preserveInventory){
+    if(u.startCredits)P.money=(P.money||0)+150;
+    if(u.startHeal)P.healPacks=(P.healPacks||0)+1;
+    if(u.startGrenade)P.grenades=(P.grenades||0)+1;
+  }
+  // Enhanced focus (Lv 5): passive modifiers always re-apply; full focus only on fresh grant.
   if(u.extraFocus){
-    P.focus=1;
+    if(!preserveInventory)P.focus=1;
     P._extraFocus=true;
     P._focusRegen=Math.max(Number.isFinite(P._focusRegen)?P._focusRegen:1,1.45);
   }else{
@@ -35630,7 +36139,9 @@ function applyUnlocks(){
   }
 }
 // Per-perk runtime effect application (called at startBuilding + on attachment swap)
-function applyPerks(){
+function applyPerks(opts){
+  const preserveHp=!!(opts&&opts.preserveHp);
+  const prevHp=P.hp;
   // Bigger mag perk + Extended mag attachment: stack
   for(let i=0;i<WEAPONS.length;i++){
     if(typeof WEAPONS[i]._origMag==='undefined')WEAPONS[i]._origMag=WEAPONS[i].mag;
@@ -35641,7 +36152,8 @@ function applyPerks(){
   }
   // Extra HP
   P.maxHp=hasPerk('extraHp')?125:100;
-  P.hp=P.maxHp;
+  if(preserveHp)P.hp=Math.max(1,Math.min(P.maxHp,Number.isFinite(prevHp)?prevHp:P.maxHp));
+  else P.hp=P.maxHp;
 }
 // Effective spread for current weapon — folds scope + muzzle + foregrip attachments
 function _weaponSpreadMul(){
@@ -35697,11 +36209,17 @@ function comboKill(isHead,opts={}){
   if(P.combo.count%5===0&&typeof _comboMilestoneFx==='function')_comboMilestoneFx(P.combo.count);
   // Headhunter perk: extra credits on headshot
   if(isHead&&hasPerk('hsBoost')){P.money+=Math.round(20*P.combo.multiplier);}
+  // VIP Fastline: only lock during the dance-floor ambush window (same gate as fail).
+  const fastlineWindow=!!(SETPIECE.active&&SETPIECE.kind==='ambush'&&!(G.zoneClears&&G.zoneClears[1]));
+  if(fastlineWindow&&P.combo.count>=3&&G.mastery&&/fastline|combo/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){
+    G.mastery._fastlineMet=true;
+  }
 }
 function comboBreak(reason){
   if(!P.combo||P.combo.count===0)return;
-  // VIP Fastline mastery: survive the ambush without dropping the combo.
-  if(P.combo.count>=3&&typeof failMasteryIfMatch==='function')failMasteryIfMatch(/fastline|combo/, reason||'combo_break');
+  // VIP Fastline: only fail during the dance-floor ambush (mid), not post-clear boss chip/timeout.
+  const fastlineWindow=!!(SETPIECE.active&&SETPIECE.kind==='ambush'&&!(G.zoneClears&&G.zoneClears[1]));
+  if(fastlineWindow&&P.combo.count>=3&&typeof failMasteryIfMatch==='function')failMasteryIfMatch(/fastline|combo/, reason||'combo_break');
   P.combo.count=0;P.combo.multiplier=1.0;P.combo.timer=0;P.combo.window=4.8;
   const el=$e('combo-hud');if(el)el.classList.remove('show');
 }
@@ -35719,7 +36237,7 @@ const SETPIECE_DEFS={
   1:{type:'alarm',  duration:75,reward:600,name:'CONTAINMENT ALARM',desc:'Clear the middle zone before the alarm pulls reinforcements.'},
   2:{type:'hostage',count:3,reward:500,name:'HOSTAGE PROTOCOL',desc:'Civilians on the floor. No friendly fire.'},
   3:{type:'ambush', delayPct:.30,wave:4,reward:550,name:'CLUB AMBUSH',desc:'Hostiles flanking from the back rooms.'},
-  4:{type:'sniper', streak:5,reward:600,name:'PRECISION HUNT',desc:'Reward streak of headshots before missing.'},
+  4:{type:'sniper', streak:5,reward:600,name:'PRECISION HUNT',desc:'Land a headshot streak — body kills break it.'},
   5:{type:'dark',   reward:550,name:'BLACKOUT WARD',desc:'Power cut. Flashlight only. Stay aware.'},
   6:{type:'survival',duration:30,reward:700,name:'PLATFORM HOLD',desc:'Hold the platform — the mid door stays sealed until the train clears.'},
   7:{type:'ambush', delayPct:.25,wave:5,reward:650,name:'DECK BOARDED',desc:'Crew breaching from below-deck.'},
@@ -35728,7 +36246,7 @@ const SETPIECE_DEFS={
   9:{type:'sniper', streak:4,reward:650,name:'OPEN DESERT ANGLE',desc:'Own the long axis before the courier burns the ledger.'},
   10:{type:'ambush',delayPct:.28,wave:4,reward:700,name:'MIDNIGHT MASS',desc:'Choir loft pressure — keep the nave quiet if you can.'},
   11:{type:'survival',duration:35,reward:750,name:'HEAVY SEAS',desc:'Hold the maze — the bridge door opens when the window clears.'},
-  12:{type:'alarm', duration:50,reward:900,name:'HELO CLOCK',desc:'Reach the helipad before the bird lifts off.'}
+  12:{type:'alarm', duration:50,reward:900,name:'SPIRE LOCKDOWN',desc:'Intrusion cascade — clear before reinforcements stack.'}
 };
 const SETPIECE={active:false,kind:null,timer:0,goal:0,progress:0,rewardGiven:false,_lastFlash:0};
 // Spawn a rotating red alarm light visual (used by alarm setpieces)
@@ -35757,9 +36275,10 @@ function _alarmTick(dt){
   if(!SETPIECE._alarm)return;
   SETPIECE._alarm.phase+=dt*4.5;
   SETPIECE._alarm.grp.rotation.y=SETPIECE._alarm.phase;
-  // Pulse beam opacity
+  // Pulse beam opacity — hotter under STABLE (no bloom to sell the strobe).
   if(SETPIECE._alarm.beam){
-    const op=.20+Math.abs(Math.sin(SETPIECE._alarm.phase*1.4))*.30;
+    const base=.20+Math.abs(Math.sin(SETPIECE._alarm.phase*1.4))*.30;
+    const op=STABLE_RENDERING_MODE?Math.min(.85,base+.18):base;
     SETPIECE._alarm.beam.material.opacity=op;
   }
 }
@@ -35821,10 +36340,11 @@ function _tickActIiiSetpieceFx(dt){
   }
   for(const m of fx.meshes){
     if(!m||!m.material)continue;
+    const stableBoost=typeof STABLE_RENDERING_MODE!=='undefined'&&STABLE_RENDERING_MODE?1.55:1;
     const flash=fx.kind==='alarm'||fx.kind==='sniper'
       ?(Math.sin(t*8.5)>.72?(.22+.18*Math.random()):.02)
       :(.04+.08*Math.abs(Math.sin(t*1.8)));
-    m.material.opacity=flash;
+    m.material.opacity=Math.max(STABLE_RENDERING_MODE?.10:0,flash)*stableBoost;
   }
 }
 function _despawnActIiiSetpieceFx(){
@@ -35843,9 +36363,15 @@ function _despawnActIiiSetpieceFx(){
 function setpieceStart(bn){
   const def=SETPIECE_DEFS[bn];if(!def)return;
   SETPIECE.active=true;SETPIECE.kind=def.type;SETPIECE.def=def;
-  SETPIECE.timer=def.duration||0;SETPIECE.goal=def.streak||def.count||def.wave||0;
+  // Alarm counts down from duration; survival counts up from 0 (must not start armed).
+  SETPIECE.timer=def.type==='survival'?0:(def.duration||0);
+  SETPIECE.goal=def.streak||def.count||def.wave||0;
   SETPIECE.progress=0;SETPIECE.rewardGiven=false;SETPIECE.triggered=false;
   SETPIECE._relaySilenced=false;
+  SETPIECE._pendingMidDoor=false;
+  // Alarm/survival clocks arm at mid (or front clear) — do not burn budget during front.
+  SETPIECE._clockArmed=(def.type!=='alarm'&&def.type!=='survival');
+  SETPIECE._ambushSeedTotal=0;
   // Show banner toast
   attachToast(`<div style="color:#ffd060;letter-spacing:.30em">▣ ${def.name}</div><div style="font-size:11px;opacity:.78;margin-top:4px">${def.desc}</div>`,3500);
   // Apply modifiers
@@ -35863,11 +36389,13 @@ function setpieceStart(bn){
       }
     }
     if(G.levelData&&G.levelData.lightingController&&typeof G.levelData.lightingController.setMoodScale==='function'){
-      G.levelData.lightingController.setMoodScale(.28);
+      G.levelData.lightingController.setMoodScale(STABLE_RENDERING_MODE?.22:.28);
     }
-    // Spawn flashlight cone (a SpotLight on camera)
+    // Spawn flashlight cone (a SpotLight on camera). STABLE needs a hotter cone
+    // because post exposure/bloom are locked off during blackout.
     if(!P.flashlight){
-      const fl=new THREE.SpotLight(0xfff8e0,5.8,20,Math.PI*.17,.38,1.15);
+      const flInt=STABLE_RENDERING_MODE?8.4:5.8;
+      const fl=new THREE.SpotLight(0xfff8e0,flInt,STABLE_RENDERING_MODE?24:20,Math.PI*.17,.38,1.15);
       fl.position.set(0,0,0);
       const tgt=new THREE.Object3D();tgt.position.set(0,0,-1);
       camera.add(fl);camera.add(tgt);fl.target=tgt;
@@ -35875,21 +36403,20 @@ function setpieceStart(bn){
     }
   }
   if(def.type==='hostage'){
-    // Spawn 3 hostage props in middle zone (kneeling civilians)
+    // Spawn 3 kneeling civilian props (rounded silhouettes, not box mannequins).
     SETPIECE._hostages=[];
     const civM=new THREE.MeshLambertMaterial({color:0xc8a070});
     const shirtM=new THREE.MeshLambertMaterial({color:0x506080});
+    const pantM=new THREE.MeshLambertMaterial({color:0x2a3040});
     for(let i=0;i<def.count;i++){
       const grp=new THREE.Group();
       const px=(-3+i*3),pz=2-(i*2.2);
       grp.position.set(px,WT,pz);scene.add(grp);
-      // Body kneeling
-      grp.add(new THREE.Mesh(new THREE.BoxGeometry(.42,.65,.30),shirtM)).position.set(0,.45,0);
-      // Head
-      const hd=new THREE.Mesh(new THREE.BoxGeometry(.24,.24,.24),civM);hd.position.set(0,.95,0);grp.add(hd);
-      // Arms behind (raised)
-      const aL=new THREE.Mesh(new THREE.BoxGeometry(.10,.28,.10),shirtM);aL.position.set(.18,.78,-.05);aL.rotation.x=-.55;grp.add(aL);
-      const aR=new THREE.Mesh(new THREE.BoxGeometry(.10,.28,.10),shirtM);aR.position.set(-.18,.78,-.05);aR.rotation.x=-.55;grp.add(aR);
+      const torso=new THREE.Mesh(new THREE.CapsuleGeometry(.16,.38,4,8),shirtM);torso.position.set(0,.52,0);grp.add(torso);
+      const hd=new THREE.Mesh(new THREE.SphereGeometry(.12,10,8),civM);hd.position.set(0,.98,0);grp.add(hd);
+      const aL=new THREE.Mesh(new THREE.CapsuleGeometry(.035,.18,3,6),shirtM);aL.position.set(.18,.72,-.06);aL.rotation.x=-.55;grp.add(aL);
+      const aR=new THREE.Mesh(new THREE.CapsuleGeometry(.035,.18,3,6),shirtM);aR.position.set(-.18,.72,-.06);aR.rotation.x=-.55;grp.add(aR);
+      const knee=new THREE.Mesh(new THREE.CapsuleGeometry(.07,.16,3,6),pantM);knee.position.set(0,.18,.06);knee.rotation.x=1.15;grp.add(knee);
       grp.userData.isHostage=true;
       SETPIECE._hostages.push(grp);
     }
@@ -35901,8 +36428,11 @@ function setpieceTickProgress(){
   if(SETPIECE.kind!=='ambush')return;
   if(!G.enemyMgr||!G.zoneClears)return;
   const aliveMid=G.enemyMgr._list.filter(e=>!e.dead&&e.zoneId===1).length;
-  const total=G.enemyMgr._list.filter(e=>e.zoneId===1).length;
-  const pct=1-aliveMid/Math.max(1,total);
+  const listedMid=G.enemyMgr._list.filter(e=>e.zoneId===1).length;
+  // Snapshot seed so corpse despawn cannot keep pct≈0 forever.
+  if(!(SETPIECE._ambushSeedTotal>0))SETPIECE._ambushSeedTotal=Math.max(listedMid,aliveMid,1);
+  else if(listedMid>SETPIECE._ambushSeedTotal)SETPIECE._ambushSeedTotal=listedMid;
+  const pct=1-aliveMid/Math.max(1,SETPIECE._ambushSeedTotal);
   if(pct>=(SETPIECE.def.delayPct||.30)){
     SETPIECE.triggered=true;
     // Spawn extra wave through spawn doors in middle zone
@@ -35946,29 +36476,55 @@ function setpieceTick(dt){
       if(h.children[1])h.children[1].rotation.z=Math.sin(h.userData._t*3.5)*.04;
     }
   }
+  // Arm mid-zone clocks once the fight reaches mid pressure.
+  // Alarm: after front clear (or mid entry). Survival: mid entry or sealed hold — never burn in front.
+  if((SETPIECE.kind==='alarm'||SETPIECE.kind==='survival')&&!SETPIECE._clockArmed){
+    const z=typeof playerZone==='function'?playerZone():0;
+    const frontDone=!!(G.zoneClears&&G.zoneClears[0]);
+    const armAlarm=SETPIECE.kind==='alarm'&&(frontDone||z>=1);
+    const armSurv=SETPIECE.kind==='survival'&&(z>=1||!!SETPIECE._pendingMidDoor);
+    if(armAlarm||armSurv){
+      SETPIECE._clockArmed=true;
+      if(SETPIECE.kind==='survival')SETPIECE.timer=0;
+      if(SETPIECE.kind==='alarm'&&SETPIECE.def&&Number.isFinite(SETPIECE.def.duration))SETPIECE.timer=SETPIECE.def.duration;
+      if(typeof attachToast==='function'){
+        attachToast('<div style="color:#ffd060;letter-spacing:.20em">⏱ '+(SETPIECE.def&&SETPIECE.def.name||'SETPIECE')+' ARMED</div>',1600);
+      }
+    }
+  }
   // Alarm — countdown; if timer hits 0, lose reward and spawn extra wave
   if(SETPIECE.kind==='alarm'){
-    if(!SETPIECE._relaySilenced)SETPIECE.timer-=dt;
-    if(SETPIECE.timer<=0&&!SETPIECE.triggered&&!SETPIECE._relaySilenced){
+    if(SETPIECE._clockArmed&&!SETPIECE._relaySilenced)SETPIECE.timer-=dt;
+    if(SETPIECE._clockArmed&&SETPIECE.timer<=0&&!SETPIECE.triggered&&!SETPIECE._relaySilenced){
       SETPIECE.triggered=true;
-      failMasteryIfMatch(/no_alarm|lockdown|no_helo|no_engine_alarm|grounded|cold_engines/, 'alarm');
+      // B01 No Alarm = clear mid before reinforcements. Once mid is contained, do not fail it late.
+      const midContained=!!SETPIECE.rewardGiven||!!(G.zoneClears&&G.zoneClears[1]);
+      if(midContained)failMasteryIfMatch(/lockdown|no_engine_alarm|cold_engines/, 'alarm');
+      else failMasteryIfMatch(/no_alarm|lockdown|no_engine_alarm|cold_engines/, 'alarm');
       attachToast('<div style="color:#ff5048;letter-spacing:.30em">! REINFORCEMENTS</div>',2200);
-      // Spawn extra wave
-      const sd=G.levelData&&G.levelData.spawnDoors||[];
+      // Spawn extra wave — fall back to alert doorways / zone splits when spawnDoors is empty (B01 megaplex).
+      let sd=G.levelData&&G.levelData.spawnDoors||[];
+      if(!sd.length){
+        const ad=G.levelData&&G.levelData.alertDoorways||[];
+        const zb=G.levelData&&G.levelData.zoneBounds;
+        const zSplit=(zb&&zb.zSplit)||6;
+        sd=ad.length?ad.map((d,i)=>({ax:d.x||0,az:d.z||0,inwardX:0,inwardZ:(d.z||0)>=0?-1:1,zoneId:i%2})):[{ax:-5,az:zSplit,inwardX:0,inwardZ:-1,zoneId:0},{ax:5,az:-zSplit,inwardX:0,inwardZ:1,zoneId:1},{ax:0,az:0,inwardX:0,inwardZ:-1,zoneId:1}];
+      }
       const _walls=G.levelData?G.levelData.walls:[];
       const peers=[];
       for(const e of G.enemyMgr._list){if(e&&!e.dead&&e.group)peers.push({x:e.group.position.x,z:e.group.position.z});}
       for(let i=0;i<3;i++){
         const door=sd[i%sd.length];if(!door)break;
         const id=1.14;
-        const bx=door.ax+door.inwardX*id,bz=door.az+door.inwardZ*id;
+        const bx=(door.ax!=null?door.ax:door.x||0)+(door.inwardX||0)*id;
+        const bz=(door.az!=null?door.az:door.z||0)+(door.inwardZ||0)*id;
         const type=i===0?'heavy':'soldier';
-        const opts={zoneId:Math.min(2,door.zoneId+1),peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
+        const opts={zoneId:Math.min(2,(door.zoneId|0)+1),peerR:_enemySpawnPeerRadius(type),requireNav:true,strictZone:false};
         const pos=_snapSpawnOutOfWalls(bx,bz,WT,_walls,.46,peers,opts)
           ||_findClearEnemySpawn(new THREE.Vector3(bx,WT,bz),_walls,.46,peers,opts);
         if(!pos)continue;
         const e=new Enemy(scene,pos,Math.min(4,G.building+1),type);
-        e.zoneId=Math.min(2,door.zoneId+1);e.spawnIntro={t:0,door};
+        e.zoneId=Math.min(2,(door.zoneId|0)+1);e.spawnIntro={t:0,door};
         G.enemyMgr._list.push(e);
         peers.push({x:pos.x,z:pos.z});
         G.enemyMgr._needsSpawnAudit=true;
@@ -35979,21 +36535,21 @@ function setpieceTick(dt){
     }
     // Update HUD timer (reuse compass-area or attach toast intermittently)
     const sb=$e('setpiece-bar');if(sb){
-      const ratio=Math.max(0,SETPIECE.timer/SETPIECE.def.duration);
+      const ratio=SETPIECE._clockArmed?Math.max(0,SETPIECE.timer/SETPIECE.def.duration):1;
       sb.querySelector('.sp-fill').style.width=(ratio*100).toFixed(1)+'%';
-      sb.querySelector('.sp-time').textContent=Math.max(0,Math.ceil(SETPIECE.timer))+'s';
+      sb.querySelector('.sp-time').textContent=SETPIECE._clockArmed?(Math.max(0,Math.ceil(SETPIECE.timer))+'s'):'ARMS AFTER FRONT CLEAR';
       sb.classList.add('show');
     }
   }
   if(SETPIECE.kind==='survival'){
-    SETPIECE.timer+=dt;
+    if(SETPIECE._clockArmed)SETPIECE.timer+=dt;
     const sb=$e('setpiece-bar');if(sb){
-      const ratio=Math.min(1,SETPIECE.timer/SETPIECE.def.duration);
+      const ratio=SETPIECE._clockArmed?Math.min(1,SETPIECE.timer/SETPIECE.def.duration):0;
       sb.querySelector('.sp-fill').style.width=(ratio*100).toFixed(1)+'%';
-      sb.querySelector('.sp-time').textContent=Math.max(0,Math.ceil(SETPIECE.def.duration-SETPIECE.timer))+'s';
+      sb.querySelector('.sp-time').textContent=SETPIECE._clockArmed?(Math.max(0,Math.ceil(SETPIECE.def.duration-SETPIECE.timer))+'s'):'ARMS AT MID';
       sb.classList.add('show');
     }
-    if(SETPIECE.timer>=SETPIECE.def.duration&&!SETPIECE.rewardGiven){
+    if(SETPIECE._clockArmed&&SETPIECE.timer>=SETPIECE.def.duration&&!SETPIECE.rewardGiven){
       SETPIECE.rewardGiven=true;
       P.money+=SETPIECE.def.reward;
       moneyPopup(SETPIECE.def.reward,'HELD');
@@ -36007,6 +36563,29 @@ function setpieceTick(dt){
   if(SETPIECE.kind==='ambush'){
     setpieceTickProgress();
   }
+  if(SETPIECE.kind==='sniper'){
+    const sb=$e('setpiece-bar');if(sb){
+      const goal=Math.max(1,SETPIECE.goal|0);
+      const prog=Math.min(goal,SETPIECE.progress|0);
+      const locked=!!(G.mastery&&G.mastery._precisionMet);
+      sb.querySelector('.sp-fill').style.width=((locked?1:prog/goal)*100).toFixed(1)+'%';
+      sb.querySelector('.sp-time').textContent=locked?'LOCKED':(prog+' / '+goal+' HS');
+      sb.classList.add('show');
+    }
+  }
+}
+function _probeHostageRayHit(origin,dir,maxDist){
+  if(!SETPIECE.active||SETPIECE.kind!=='hostage'||!SETPIECE._hostages||!origin||!dir)return null;
+  const lim=Number.isFinite(maxDist)?maxDist:60;
+  let best=null,bestT=lim;
+  for(const h of SETPIECE._hostages){
+    if(!h||!h.userData||!h.userData.isHostage)continue;
+    // Kneeling civilian ~ torso sphere at mid-chest.
+    const cen=new THREE.Vector3(h.position.x,h.position.y+.55,h.position.z);
+    const t=_raySphereHitT(origin,dir,cen,.48);
+    if(t!=null&&t>0&&t<=bestT){bestT=t;best=h;}
+  }
+  return best?{hostage:best,t:bestT}:null;
 }
 function setpieceCheckHostageHit(target){
   // Called from any damage path that could hit a hostage
@@ -36018,12 +36597,16 @@ function setpieceCheckHostageHit(target){
 }
 function setpieceOnZoneCleared(zid){
   if(!SETPIECE.active||SETPIECE.rewardGiven)return;
+  // Survival pay + mid-door unlock are timer-driven only. Paying reward here
+  // set rewardGiven and permanently blocked openZoneDoor(1) after _pendingMidDoor.
+  if(SETPIECE.kind==='survival')return;
   // Reward awarded after middle zone clear (most setpieces wrap zone 1)
   const cleared=G.zoneClears&&G.zoneClears[1];
   if(zid===1&&cleared){
     let reward=SETPIECE.def.reward;
     let label='OBJECTIVE';
-    if(SETPIECE.kind==='alarm'&&SETPIECE.timer>0){label='ALARM SILENCED';}
+    const alarmSilenced=!!SETPIECE._relaySilenced;
+    if(SETPIECE.kind==='alarm'&&SETPIECE.timer>0){label=alarmSilenced?'ALARM SILENCED':'CONTAINED';}
     if(SETPIECE.kind==='hostage'){
       if(SETPIECE.progress===0){
         label='CIVILIANS SAFE';reward=Math.round(reward*1.3);
@@ -36031,16 +36614,23 @@ function setpieceOnZoneCleared(zid){
       }
       else{reward=Math.max(0,reward-200*SETPIECE.progress);label='OBJECTIVE';}
     }
-    if(SETPIECE.kind==='alarm'&&SETPIECE.timer>0&&!SETPIECE.triggered){
+    if(SETPIECE.kind==='alarm'&&alarmSilenced&&SETPIECE.timer>0&&!SETPIECE.triggered){
       if(G.building===8)PROGRESS._serverAlarmStopped=true;
     }
     if(SETPIECE.kind==='dark'){label='BLACKOUT';}
     if(SETPIECE.kind==='sniper'&&SETPIECE.progress>=SETPIECE.goal){label='PRECISION';reward=Math.round(reward*1.5);}
     if(reward>0){P.money+=reward;moneyPopup(reward,label);}
     SETPIECE.rewardGiven=true;
+    // Mid clear ends the blackout beat — do not keep chipping Clean mastery in the back.
+    if(SETPIECE.kind==='dark')setpieceEnd();
   }
 }
 function setpieceEnd(){
+  // Never leave a sealed mid door behind if the hold already paid out.
+  if(SETPIECE._pendingMidDoor&&SETPIECE.rewardGiven&&G.levelData&&typeof G.levelData.openZoneDoor==='function'){
+    G.levelData.openZoneDoor(1);
+    SETPIECE._pendingMidDoor=false;
+  }
   const wasDark=SETPIECE.kind==='dark';
   SETPIECE.active=false;SETPIECE.kind=null;
   _despawnAlarmLight();
@@ -36071,6 +36661,8 @@ function setpieceEnd(){
 }
 function comboTick(dt){
   if(!P.combo)comboInit();
+  // Idle-clear headshot chain so a stale HS cannot forever arm Precision body-kill fails.
+  if(HS_CHAIN.count>0&&performance.now()-HS_CHAIN.lastT>HS_CHAIN.resetMs)HS_CHAIN.count=0;
   if(P.combo.count>0){
     P.combo.timer-=dt;
     const el=$e('combo-hud');
@@ -36264,7 +36856,7 @@ function _sfxTakedownBeat(kind){
   o.frequency.exponentialRampToValueAtTime(f1,c.currentTime+.16);
   g.gain.setValueAtTime(kind==='impact'?.24:.13,c.currentTime);
   g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(kind==='impact'?.20:.14));
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
 }
 function _triggerTakedownBeat(kind){
   const t=TAKEDOWN.target;
@@ -36435,14 +37027,14 @@ function sfxTakedown(){
   o.type='sine';o.frequency.setValueAtTime(60,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(28,c.currentTime+.30);
   g.gain.setValueAtTime(.55,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.32);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.35);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.35);
   const w=c.createOscillator(),wg=c.createGain();
   w.type='triangle';w.frequency.setValueAtTime(190,c.currentTime+.08);
   w.frequency.exponentialRampToValueAtTime(88,c.currentTime+.30);
   wg.gain.setValueAtTime(.001,c.currentTime);
   wg.gain.linearRampToValueAtTime(.18,c.currentTime+.09);
   wg.gain.exponentialRampToValueAtTime(.001,c.currentTime+.32);
-  w.connect(wg);wg.connect(c.destination);w.start(c.currentTime+.04);w.stop(c.currentTime+.35);
+  w.connect(wg);wg.connect(_sfxOut(c));w.start(c.currentTime+.04);w.stop(c.currentTime+.35);
 }
 function updateTakedown(dt){
   if(!TAKEDOWN.active)return;
@@ -36555,7 +37147,7 @@ function sfxDodge(){
   o.type='sine';o.frequency.setValueAtTime(420,c.currentTime);
   o.frequency.exponentialRampToValueAtTime(180,c.currentTime+.20);
   g.gain.setValueAtTime(.18,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
-  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.25);
+  o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.25);
 }
 function updateDodge(dt){
   if(!DODGE.active)return;
@@ -36752,9 +37344,15 @@ function hideAchievements(){
 }
 // ── ENDING CINEMATIC ────────────────────────────────────────────
 function showEndingCinematic(){
-  // Boss-death path never walks the exit — still count the final clear.
+  // Boss-death path never walks the exit — still count the final clear + mastery.
   if(typeof recordBuildingClear==='function')recordBuildingClear(campaignLength());
+  if(G.mastery&&!G.mastery.failed&&G.campaignLevel&&typeof persistMasteryClear==='function'){
+    persistMasteryClear(G.campaignLevel);
+  }
+  G._endingCinematicPlayedThisRun=true;
   PROGRESS._finalKill=true;saveProgressFile();
+  // Same as walking past Spire — do not leave Continue pointing at a finished B12.
+  if(typeof clearRunState==='function')clearRunState();
   // Story epilogue first
   showStoryBeat(campaignLength(),()=>{_actuallyShowEndingCinematic();});
 }
@@ -36871,17 +37469,21 @@ function advanceBuilding(){
   if(typeof recordBuildingClear==='function')recordBuildingClear(G.building);
   G.building++;
   $e('exit-prompt').style.opacity='0';
-  // Save run progress on each advance (resumable later)
-  saveRunState();
   // Beyond the final building → end-of-run (single path: cinematic → victory)
   if(G.building>campaignLength()){
+    // Never checkpoint building 13 — Continue must not resume past Spire.
+    if(typeof clearRunState==='function')clearRunState();
     showBriefingCard(campaignLength(),1400);
     setTimeout(()=>{
-      if(PROGRESS&&PROGRESS._finalKill)showVictoryScreen();
+      // Per-run gate: after first ending this run, skip straight to victory.
+      // Persistent PROGRESS._finalKill is for achievements/skins only.
+      if(G._endingCinematicPlayedThisRun)showVictoryScreen();
       else showEndingCinematic();
     },1400);
     return;
   }
+  // Save run progress on each mid-campaign advance (resumable later)
+  saveRunState();
   // Story act-pivot story beats. Each beat plays before the listed building:
   //   5  → "after 4"  (Act I → Act II) — family spine broken
   //   9  → "after 8"  (Act II → Act III) — Patriarch dead, the apparatus surfaces
@@ -36982,9 +37584,21 @@ function takeDamage(amt,slot=0){
   // Mastery is condition-specific — taking a hit must not fail unrelated objectives
   // (no-alarm / no-heal / precision / civilians). Blackout Clean tracks cumulative damage.
   if(G.mastery&&amt>0&&slot===0){
-    G.mastery.damageTaken=(G.mastery.damageTaken||0)+amt;
-    if(/blackout_clean|low.?dmg|clean_clear/i.test(_masteryObjectiveId())&&G.mastery.damageTaken>40){
-      failMastery('damage_budget');
+    if(G._buildingChallenge)G._buildingChallenge.tookDamage=true;
+    // Blackout Clean: only chip the budget during the power-cut mid beat (not front spawn).
+    const cleanId=/blackout_clean|low.?dmg|clean_clear/i.test(_masteryObjectiveId());
+    const cleanArmed=cleanId&&!!(SETPIECE.active&&SETPIECE.kind==='dark'&&((typeof playerZone==='function'?playerZone():0)>=1||!!(G.zoneClears&&G.zoneClears[0])));
+    if(cleanId){
+      if(cleanArmed){
+        G.mastery.damageTaken=(G.mastery.damageTaken||0)+amt;
+        const budget=typeof _blackoutCleanDamageBudget==='function'?_blackoutCleanDamageBudget():40;
+        if(G.mastery.damageTaken>budget)failMastery('damage_budget');
+        if(G._objective&&G._objective.def&&G._objective.def.kind==='stations'&&typeof _refreshObjectiveHud==='function'){
+          _refreshObjectiveHud(G._objective);
+        }
+      }
+    }else{
+      G.mastery.damageTaken=(G.mastery.damageTaken||0)+amt;
     }
   }
   const hpBefore=pl.hp;
@@ -37012,6 +37626,7 @@ function takeDamage(amt,slot=0){
   }
   if(pl.hp<=0){
     P._diedThisRun=true;
+    if(typeof closeRadial==='function')closeRadial();
     if(G.playMode==='coop'){
       pl.hp=0;pl.dead=true;
       P.dead=P2.dead=true;
@@ -37054,7 +37669,7 @@ function tickLastStand(){
   }
   if(now>=P._lastStandUntil){
     P._inLastStand=false;
-	    P.hp=0;P.dead=true;if(locked)document.exitPointerLock();
+	    P.hp=0;P.dead=true;if(typeof closeRadial==='function')closeRadial();if(locked)document.exitPointerLock();
 	    startDeathCam();
 	    setTimeout(()=>{if(G.playMode==='custom'||G.playMode==='editor-test')showCustomMapEndScreen(false);else{saveProgress(0,'-');showDefeatScreen();}},1700);
 	  }
@@ -37083,24 +37698,24 @@ const ENCOUNTER_BEATS={
   boss:{label:'BOSS',pace:'finale',announce:'Clear the guard line and finish the target.'}
 };
 const CAMPAIGN_LEVELS=[
-  {building:1,id:'B01_LOADING_DOCK',name:'Loading Dock',callsign:'DOCK 7',target:'Eugene Prado',role:'Cartel Enforcer',threat:'LOW',time:'0312 HRS',missionVerb:'Breach the harbor intake and stop the alarm chain.',signaturePressure:'Containment alarm',setpiece:'alarm',mastery:{id:'dock_no_alarm',label:'No Alarm Clear',desc:'Clear the middle zone before reinforcements trigger.',reward:'Service catwalk route marked on replay.'},shortcut:'Service Catwalk',reward:'Harbor ledger fragment',beats:['read','brawl','boss'],enemyBias:['soldier','scout','heavy'],visual:{accent:'#ff9d40',landmark:'Forklift crown and relay beacon'},intel:['Runs the harbor smuggling lane','Alarm doors wake adjacent rooms','Catwalk silhouettes point toward the relay cage']},
-  {building:2,id:'B02_CONTINENTAL_LOBBY',name:'Continental Lobby',callsign:'CONTINENTAL',target:'Irina Kovac',role:'Bagman / Fixer',threat:'MED',time:'0345 HRS',missionVerb:'Protect civilians while extracting the route key.',signaturePressure:'Hostage protocol',setpiece:'hostage',mastery:{id:'lobby_civilians_safe',label:'Civilians Safe',desc:'Clear the hostage beat without friendly fire.',reward:'Concierge service bypass unlocked.'},shortcut:'Concierge Bypass',reward:'Decryption key',beats:['read','hold','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#d4b06a',landmark:'Marble portico and hostage-lit atrium'},intel:['Hostages turn the middle zone into a restraint test','Formal columns hide side pushes','The target carries route credentials']},
-  {building:3,id:'B03_NIGHTCLUB',name:'Nightclub',callsign:'CLUB OBSIDIAN',target:'Xavier Roux',role:'Information Broker',threat:'MED',time:'0421 HRS',missionVerb:'Push through the floor before the VIP rooms collapse on you.',signaturePressure:'Club ambush',setpiece:'ambush',mastery:{id:'club_vip_fastline',label:'VIP Fastline',desc:'Clear the dance-floor ambush without breaking combo.',reward:'VIP stair split highlighted on replay.'},shortcut:'VIP Stair Split',reward:'Broker drive',beats:['read','brawl','boss'],enemyBias:['scout','riot','demolitions'],visual:{accent:'#ff40c8',landmark:'Neon dance bowl and mirror lounge'},intel:['Security floods from both sides once the floor wakes','The DJ booth frames the best first read','VIP route rewards momentum']},
-  {building:4,id:'B04_PENTHOUSE',name:'Penthouse',callsign:'VASARI SUITE',target:'Tommaso Vasari',role:'Underboss',threat:'HIGH',time:'0500 HRS',missionVerb:'Win a precision ascent through glass and gold.',signaturePressure:'Precision hunt',setpiece:'sniper',mastery:{id:'penthouse_precision',label:'Precision Hunt',desc:'Land the required headshot streak before missing.',reward:'Maintenance rail route marked on replay.'},shortcut:'Facade Rail',reward:'Family ledger page',beats:['snipe','brawl','boss'],enemyBias:['marksman','heavy','soldier'],visual:{accent:'#ffd060',landmark:'Glass crown, skyline rail, and suite arch'},intel:['Long sightlines punish careless sprinting','The underboss guards the first-act turning point','Sniper tells should be readable before impact'],bossPhases:[
+  {building:1,id:'B01_LOADING_DOCK',name:'Loading Dock',callsign:'DOCK 7',target:'Eugene Prado',role:'Cartel Enforcer',threat:'LOW',time:'0312 HRS',missionVerb:'Breach the harbor intake and stop the alarm chain.',signaturePressure:'Containment alarm',setpiece:'alarm',mastery:{id:'dock_no_alarm',label:'No Alarm Clear',desc:'Clear the middle zone before reinforcements trigger.',reward:'Mastery bonus credits on clear.'},shortcut:'Service Catwalk',reward:'Harbor ledger fragment',beats:['read','brawl','boss'],enemyBias:['soldier','scout','heavy'],visual:{accent:'#ff9d40',landmark:'Forklift crown and relay beacon'},intel:['Runs the harbor smuggling lane','Alarm doors wake adjacent rooms','Catwalk silhouettes point toward the relay cage']},
+  {building:2,id:'B02_CONTINENTAL_LOBBY',name:'Continental Lobby',callsign:'CONTINENTAL',target:'Irina Kovac',role:'Bagman / Fixer',threat:'MED',time:'0345 HRS',missionVerb:'Protect civilians while extracting the route key.',signaturePressure:'Hostage protocol',setpiece:'hostage',mastery:{id:'lobby_civilians_safe',label:'Civilians Safe',desc:'Clear the hostage beat without friendly fire.',reward:'Mastery bonus credits on clear.'},shortcut:'Concierge Bypass',reward:'Decryption key',beats:['read','hold','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#d4b06a',landmark:'Marble portico and hostage-lit atrium'},intel:['Hostages turn the middle zone into a restraint test','Formal columns hide side pushes','The target carries route credentials']},
+  {building:3,id:'B03_NIGHTCLUB',name:'Nightclub',callsign:'CLUB OBSIDIAN',target:'Xavier Roux',role:'Information Broker',threat:'MED',time:'0421 HRS',missionVerb:'Push through the floor before the VIP rooms collapse on you.',signaturePressure:'Club ambush',setpiece:'ambush',mastery:{id:'club_vip_fastline',label:'VIP Fastline',desc:'Clear the dance-floor ambush without breaking combo.',reward:'Mastery bonus credits on clear.'},shortcut:'VIP Stair Split',reward:'Broker drive',beats:['read','brawl','boss'],enemyBias:['scout','riot','demolitions'],visual:{accent:'#ff40c8',landmark:'Neon dance bowl and mirror lounge'},intel:['Security floods from both sides once the floor wakes','The DJ booth frames the best first read','VIP route rewards momentum']},
+  {building:4,id:'B04_PENTHOUSE',name:'Penthouse',callsign:'VASARI SUITE',target:'Tommaso Vasari',role:'Underboss',threat:'HIGH',time:'0500 HRS',missionVerb:'Win a precision ascent through glass and gold.',signaturePressure:'Precision hunt',setpiece:'sniper',mastery:{id:'penthouse_precision',label:'Precision Hunt',desc:'Land the required headshot streak without breaking it on a body kill.',reward:'Mastery bonus credits on clear.'},shortcut:'Facade Rail',reward:'Family ledger page',beats:['snipe','brawl','boss'],enemyBias:['marksman','heavy','soldier'],visual:{accent:'#ffd060',landmark:'Glass crown, skyline rail, and suite arch'},intel:['Long sightlines punish careless sprinting','The underboss guards the first-act turning point','Sniper tells should be readable before impact'],bossPhases:[
     {at:0.5,cmds:[{type:'banner',text:'PHASE 2 — GLASS BREAKS'},{type:'invuln',ms:1200},{type:'shatterWindows'},{type:'addSpawn',adds:[{type:'marksman',dx:6,dz:0},{type:'marksman',dx:-6,dz:0}]},{type:'peekBurst',mul:2.0}]},
     {at:0.25,cmds:[{type:'banner',text:'PHASE 3 — RAGE'},{type:'invuln',ms:900},{type:'speedMul',mul:1.35},{type:'damageMul',mul:1.30}]},
   ]},
-  {building:5,id:'B05_STERLING_MEDICAL',name:'Sterling Medical',callsign:'STERLING MED',target:'Dr. Marcus Huynh',role:'Asset Launderer',threat:'HIGH',time:'0612 HRS',missionVerb:'Cross the blackout ward and expose the surgery records.',signaturePressure:'Blackout ward',setpiece:'dark',mastery:{id:'medical_blackout_clean',label:'Blackout Clean',desc:'Clear the power-cut beat with low damage.',reward:'ICU service gate remains marked.'},shortcut:'ICU Service Gate',reward:'Surgery record cache',beats:['stealth_or_loud','hold','boss'],enemyBias:['riot','drone','marksman'],visual:{accent:'#40ff80',landmark:'Triage curtains and surgical-light pit'},intel:['Darkness changes both route reading and enemy pressure','Medical glass should telegraph silhouettes','Low damage earns the cleanest route']},
-  {building:6,id:'B06_SUBWAY_LINE_7',name:'Subway Line 7',callsign:'LINE 7',target:'Pyotr Demidov',role:'Weapons Runner',threat:'HIGH',time:'0743 HRS',missionVerb:'Hold the platform until the rail window opens.',signaturePressure:'Platform hold',setpiece:'survival',mastery:{id:'subway_platform_hold',label:'Platform Held',desc:'Survive the platform timer without using a heal.',reward:'Trackside bypass marked on replay.'},shortcut:'Trackside Bypass',reward:'Weapons manifest',beats:['read','hold','boss'],enemyBias:['demolitions','riot','drone'],visual:{accent:'#ff5040',landmark:'Live rail trench and switch chamber'},intel:['The route is narrow, loud, and flank-prone','Power panels cue danger states','Explosives force movement out of comfort cover']},
-  {building:7,id:'B07_AZURE_YACHT',name:'Azure Yacht',callsign:'AZURE YACHT',target:'Lucia Vasari',role:'Consigliera',threat:'CRITICAL',time:'0901 HRS',missionVerb:'Repel boarding pressure across a narrow luxury deck.',signaturePressure:'Deck boarded',setpiece:'ambush',mastery:{id:'yacht_no_heal',label:'No-Heal Boarding',desc:'Clear the deck ambush without using a heal pack.',reward:'Crew hatch bypass marked on replay.'},shortcut:'Crew Hatch',reward:'Family ledger',beats:['stealth_or_loud','brawl','boss'],enemyBias:['marksman','demolitions','heavy'],visual:{accent:'#a0c8ff',landmark:'Teak salon, crew hatch, and bridge suite'},intel:['Narrow geometry rewards decisive pushes','Boarding waves arrive from below-deck doors','Lucia is the final family shield before command']},
-  {building:8,id:'B08_SERVER_FARM',name:'Server Farm Delta',callsign:'SERVER FARM D',target:'Il Patriarca',role:'Syndicate Head',threat:'EXTREME',time:'1014 HRS',missionVerb:'Break the command protocol and end the family.',signaturePressure:'Final lockdown',setpiece:'alarm',mastery:{id:'server_lockdown_solved',label:'Lockdown Broken',desc:'Clear the final alarm before phase-three berserk.',reward:'Family arc grade mastery bonus.'},shortcut:'Core Vault Fastline',reward:'Family ledger sealed',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','riot','heavy'],visual:{accent:'#40e0ff',landmark:'Cold aisles, battery bay, and core vault'},intel:['End of Act II — the Patriarch falls here','Stacks every prior pressure type','Lockdown completion seals the family arc'],bossPhases:[
+  {building:5,id:'B05_STERLING_MEDICAL',name:'Sterling Medical',callsign:'STERLING MED',target:'Dr. Marcus Huynh',role:'Asset Launderer',threat:'HIGH',time:'0612 HRS',missionVerb:'Cross the blackout ward and expose the surgery records.',signaturePressure:'Blackout ward',setpiece:'dark',mastery:{id:'medical_blackout_clean',label:'Blackout Clean',desc:'Clear the power-cut beat under the damage budget shown on the objective ticker.',reward:'Mastery bonus credits on clear.'},shortcut:'ICU Service Gate',reward:'Surgery record cache',beats:['stealth_or_loud','hold','boss'],enemyBias:['riot','drone','marksman'],visual:{accent:'#40ff80',landmark:'Triage curtains and surgical-light pit'},intel:['Darkness changes both route reading and enemy pressure','Medical glass should telegraph silhouettes','Low damage earns the cleanest route']},
+  {building:6,id:'B06_SUBWAY_LINE_7',name:'Subway Line 7',callsign:'LINE 7',target:'Pyotr Demidov',role:'Weapons Runner',threat:'HIGH',time:'0743 HRS',missionVerb:'Hold the platform until the rail window opens.',signaturePressure:'Platform hold',setpiece:'survival',mastery:{id:'subway_platform_hold',label:'Platform Held',desc:'Survive the platform timer without using a heal.',reward:'Mastery bonus credits on clear.'},shortcut:'Trackside Bypass',reward:'Weapons manifest',beats:['read','hold','boss'],enemyBias:['demolitions','riot','drone'],visual:{accent:'#ff5040',landmark:'Live rail trench and switch chamber'},intel:['The route is narrow, loud, and flank-prone','Power panels cue danger states','Explosives force movement out of comfort cover']},
+  {building:7,id:'B07_AZURE_YACHT',name:'Azure Yacht',callsign:'AZURE YACHT',target:'Lucia Vasari',role:'Consigliera',threat:'CRITICAL',time:'0901 HRS',missionVerb:'Repel boarding pressure across a narrow luxury deck.',signaturePressure:'Deck boarded',setpiece:'ambush',mastery:{id:'yacht_no_heal',label:'No-Heal Boarding',desc:'Clear the deck ambush without using a heal pack.',reward:'Mastery bonus credits on clear.'},shortcut:'Crew Hatch',reward:'Family ledger',beats:['stealth_or_loud','brawl','boss'],enemyBias:['marksman','demolitions','heavy'],visual:{accent:'#a0c8ff',landmark:'Teak salon, crew hatch, and bridge suite'},intel:['Narrow geometry rewards decisive pushes','Boarding waves arrive from below-deck doors','Lucia is the final family shield before command']},
+  {building:8,id:'B08_SERVER_FARM',name:'Server Farm Delta',callsign:'SERVER FARM D',target:'Il Patriarca',role:'Syndicate Head',threat:'EXTREME',time:'1014 HRS',missionVerb:'Break the command protocol and end the family.',signaturePressure:'Final lockdown',setpiece:'alarm',mastery:{id:'server_lockdown_solved',label:'Lockdown Broken',desc:'Silence the final alarm before the lockdown timer expires.',reward:'Family arc grade mastery bonus.'},shortcut:'Core Vault Fastline',reward:'Family ledger sealed',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','riot','heavy'],visual:{accent:'#40e0ff',landmark:'Cold aisles, battery bay, and core vault'},intel:['End of Act II — the Patriarch falls here','Stacks every prior pressure type','Lockdown completion seals the family arc'],bossPhases:[
     {at:0.66,cmds:[{type:'banner',text:'PHASE 2 — DRONE SWARM'},{type:'invuln',ms:1200},{type:'addSpawn',adds:[{type:'drone',dx:4,dz:0},{type:'drone',dx:-4,dz:0},{type:'drone',dx:0,dz:4}]},{type:'speedMul',mul:1.15}]},
     {at:0.33,cmds:[{type:'banner',text:'PHASE 3 — LOCKDOWN OVERRIDE'},{type:'invuln',ms:1500},{type:'addSpawn',adds:[{type:'lieutenant',dx:0,dz:-4},{type:'riot',dx:3,dz:-2},{type:'heavy',dx:-3,dz:-2}]},{type:'peekBurst',mul:2.5},{type:'damageMul',mul:1.4}]},
   ]},
   // ── ACT III — The Apparatus (B09–B12) ─────────────────────────────────
-  {building:9,id:'B09_BORDER_CROSSING',name:'Border Crossing',callsign:'BORDER 09',target:'Saito Murano',role:'Pipeline Operator',threat:'HIGH',time:'0510 HRS',missionVerb:'Intercept the handoff before the route disappears.',signaturePressure:'Open desert sniper',setpiece:'sniper',mastery:{id:'border_pipeline_intact',label:'Ledger Intact',desc:'Reach the customs office before the courier burns the ledger.',reward:'Sand vent bypass marked on replay.'},shortcut:'Sand Vent Bypass',reward:'Customs ledger',beats:['snipe','read','boss'],enemyBias:['marksman','soldier','demolitions'],visual:{accent:'#ffb060',landmark:'Sandstone watchtower above the cargo gantry'},intel:['Cartel was a front — the pipeline still moves above them','Watchtower marksman owns the long axis','Ledger names the financiers — read it before they burn it']},
-  {building:10,id:'B10_CATHEDRAL',name:'Cathedral of San Marco',callsign:'SAN MARCO',target:'Cardinal Vittorio Lazaretti',role:'Sacred Launderer',threat:'HIGH',time:'0035 HRS',missionVerb:'Break the sanctuary vault under cover of midnight mass.',signaturePressure:'Holy ground',setpiece:'ambush',mastery:{id:'cathedral_silent_choir',label:'Silent Choir',desc:'Reach the choir loft without firing in the nave.',reward:'Confessional service corridor marked on replay.'},shortcut:'Confessional Run',reward:'Votive account keys',beats:['stealth_or_loud','brawl','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#ffe8b0',landmark:'Stained-glass apse and bell-tower vault'},intel:['Funnels syndicate cash through fake votive accounts','Choir loft hides a sniper above the nave','The vault is in the bell tower — Lazaretti holds the key']},
-  {building:11,id:'B11_KARELIA',name:'Karelia Freighter',callsign:'KARELIA MV-11',target:'Capt. Renko Stannis',role:'Route Master',threat:'CRITICAL',time:'0322 HRS',missionVerb:'Storm the bridge while the ship is at sea.',signaturePressure:'Open ocean',setpiece:'survival',mastery:{id:'karelia_no_engine_alarm',label:'Cold Engines',desc:'Reach the bridge before the engine alarm goes off.',reward:'Crew companionway shortcut marked on replay.'},shortcut:'Crew Companionway',reward:'Trafficking manifest',beats:['hold','brawl','boss'],enemyBias:['heavy','drone','marksman'],visual:{accent:'#6890b8',landmark:'Container maze and bridge wing'},intel:['No backup — only the sea','Container rows shift LOS — the cargo is alive','Stannis pilots the route — drop him to drop the line']},
+  {building:9,id:'B09_BORDER_CROSSING',name:'Border Crossing',callsign:'BORDER 09',target:'Saito Murano',role:'Pipeline Operator',threat:'HIGH',time:'0510 HRS',missionVerb:'Intercept the handoff before the route disappears.',signaturePressure:'Open desert sniper',setpiece:'sniper',mastery:{id:'border_pipeline_intact',label:'Ledger Intact',desc:'Reach the customs office before the courier burns the ledger.',reward:'Mastery bonus credits on clear.'},shortcut:'Sand Vent Bypass',reward:'Customs ledger',beats:['snipe','read','boss'],enemyBias:['marksman','soldier','demolitions'],visual:{accent:'#ffb060',landmark:'Sandstone watchtower above the cargo gantry'},intel:['Cartel was a front — the pipeline still moves above them','Watchtower marksman owns the long axis','Ledger names the financiers — read it before they burn it']},
+  {building:10,id:'B10_CATHEDRAL',name:'Cathedral of San Marco',callsign:'SAN MARCO',target:'Cardinal Vittorio Lazaretti',role:'Sacred Launderer',threat:'HIGH',time:'0035 HRS',missionVerb:'Break the sanctuary vault under cover of midnight mass.',signaturePressure:'Holy ground',setpiece:'ambush',mastery:{id:'cathedral_silent_choir',label:'Silent Choir',desc:'Reach the choir loft without fighting in the nave.',reward:'Mastery bonus credits on clear.'},shortcut:'Confessional Run',reward:'Votive account keys',beats:['stealth_or_loud','brawl','boss'],enemyBias:['pistolero','soldier','riot'],visual:{accent:'#ffe8b0',landmark:'Stained-glass apse and bell-tower vault'},intel:['Funnels syndicate cash through fake votive accounts','Choir loft hides a sniper above the nave','The vault is in the bell tower — Lazaretti holds the key']},
+  {building:11,id:'B11_KARELIA',name:'Karelia Freighter',callsign:'KARELIA MV-11',target:'Capt. Renko Stannis',role:'Route Master',threat:'CRITICAL',time:'0322 HRS',missionVerb:'Storm the bridge while the ship is at sea.',signaturePressure:'Open ocean',setpiece:'survival',mastery:{id:'karelia_no_engine_alarm',label:'Cold Engines',desc:'Reach the bridge within the 75s bridge window.',reward:'Mastery bonus credits on clear.'},shortcut:'Crew Companionway',reward:'Trafficking manifest',beats:['hold','brawl','boss'],enemyBias:['heavy','drone','marksman'],visual:{accent:'#6890b8',landmark:'Container maze and bridge wing'},intel:['No backup — only the sea','Container rows shift LOS — the cargo is alive','Stannis pilots the route — drop him to drop the line']},
   {building:12,id:'B12_THE_SPIRE',name:'The Spire',callsign:'APEX TOWER',target:'Eldritch Asteria',role:'The Director',threat:'EXTREME',time:'0444 HRS',missionVerb:'End it before the helicopter clears the helipad.',signaturePressure:'Apex',setpiece:'alarm',mastery:{id:'spire_no_helo',label:'Grounded',desc:'Reach the helipad before the helicopter lifts off.',reward:'Apex grade and campaign closure.'},shortcut:'Maintenance Apex',reward:'Campaign concluded',beats:['snipe','brawl','boss'],enemyBias:['drone','marksman','heavy','riot','lieutenant'],visual:{accent:'#c8e0ff',landmark:'Glass crown, executive vault, and helipad'},intel:['Last level — the true mastermind above the family','Glass walls give nowhere to hide','The helicopter is fueled — race the boss out, or lose the run'],bossPhases:[
     {at:0.7,cmds:[{type:'banner',text:'PHASE 2 — VAULT BREACH'},{type:'invuln',ms:1000},{type:'addSpawn',adds:[{type:'lieutenant',dx:0,dz:-3},{type:'marksman',dx:5,dz:0},{type:'marksman',dx:-5,dz:0}]}]},
     {at:0.4,cmds:[{type:'banner',text:'PHASE 3 — GLASS APEX'},{type:'invuln',ms:1500},{type:'shatterWindows'},{type:'speedMul',mul:1.25},{type:'peekBurst',mul:2.5}]},
@@ -37122,12 +37737,33 @@ function failMastery(reason){
   G.mastery.failed=true;
   if(G.levelState)G.levelState.masteryFailed=true;
   G.mastery.failReason=reason||true;
+  const label=(G.mastery.objective&&G.mastery.objective.label)||'MASTERY';
+  if(typeof attachToast==='function'){
+    attachToast('<div style="color:#ff5048;letter-spacing:.22em">✗ '+label+' FAILED</div><div style="font-size:11px;opacity:.78;margin-top:3px">'+(reason?String(reason).replace(/_/g,' '):'objective broken')+'</div>',2600);
+  }
   return true;
 }
 function failMasteryIfMatch(re,reason){
   if(!G.mastery||G.mastery.failed)return false;
   if(!re||!re.test(_masteryObjectiveId()))return false;
   return failMastery(reason);
+}
+/** Silent Choir: no combat in the nave (front). Choir aisle / flanks / tower are allowed. */
+function _inSilentChoirNave(pos){
+  const p=pos||(P&&P.pos);
+  if(!p)return false;
+  const z=typeof getZoneOf==='function'?getZoneOf(p):-1;
+  const room=String(G.encounterDirector&&(G.encounterDirector.currentFlowRoomId||G.encounterDirector.currentRoomId)||'');
+  // Early connectors are not the nave proper.
+  if(/service_hall|intake_peek|entry_vestibule/i.test(room))return false;
+  if(/(?:^|_)nave(?:_|$)/i.test(room)||/\bnave\b/i.test(room))return true;
+  // Front zone = NAVE ENTRY on B10; mid CHOIR AISLE and back BELL TOWER are fair game.
+  return z===0;
+}
+function _failSilentChoirIfInNave(reason,pos){
+  if(typeof failMasteryIfMatch!=='function')return false;
+  if(!_inSilentChoirNave(pos))return false;
+  return failMasteryIfMatch(/silent_choir/, reason||'combat_in_nave');
 }
 function syncCampaignRuntime(){
   const level=getCampaignLevel(G.building);
@@ -37156,7 +37792,48 @@ function campaignBeatForZone(zoneId){
   return {zone:zoneId,id,meta:ENCOUNTER_BEATS[id]||ENCOUNTER_BEATS.read};
 }
 function persistMasteryClear(level){
-  if(!level||!level.mastery)return;
+  if(!level||!level.mastery)return false;
+  // Precision Hunt requires the authored headshot streak, not merely "no body kills".
+  if(/precision/i.test(String(level.mastery.id||''))&&!(G.mastery&&G.mastery._precisionMet)){
+    failMastery('precision_streak_missed');
+    return false;
+  }
+  // VIP Fastline requires actually holding a combo chain.
+  if(/fastline|combo/i.test(String(level.mastery.id||''))&&!(G.mastery&&G.mastery._fastlineMet)){
+    failMastery('combo_never_held');
+    return false;
+  }
+  // B08 Lockdown Broken requires Hold-E silence, not merely beating the timer.
+  if(/lockdown/i.test(String(level.mastery.id||''))){
+    const silenced=!!(G.mastery&&G.mastery._lockdownSilenced)
+      ||!!(SETPIECE&&SETPIECE._relaySilenced)
+      ||!!(G.encounterDirector&&G.encounterDirector.objectiveState&&G.encounterDirector.objectiveState.alarmPanelDisabled);
+    if(!silenced){
+      failMastery('alarm_not_silenced');
+      return false;
+    }
+  }
+  // Act III reach-in-time masteries require destination before timeout.
+  // Exit unlock happens same frame as persistMasteryClear — treat it as destination.
+  if(/no_helo|no_engine_alarm|pipeline_intact|grounded|cold_engines/i.test(String(level.mastery.id||''))){
+    const o=G._objective;
+    if(o&&!o.failed&&(o.completed||G.exitUnlocked)){
+      o.completed=true;
+    }else{
+      failMastery((o&&o.failed)?'timer_expired':'destination_missed');
+      return false;
+    }
+  }
+  // Blackout Clean: re-validate damage budget at clear (live chip can miss edge cases).
+  if(/blackout_clean|low.?dmg|clean_clear/i.test(String(level.mastery.id||''))){
+    const budget=typeof _blackoutCleanDamageBudget==='function'?_blackoutCleanDamageBudget():40;
+    const taken=(G.mastery&&G.mastery.damageTaken)||0;
+    if(taken>budget){
+      failMastery('damage_budget');
+      return false;
+    }
+  }
+  if(G.mastery&&G.mastery.failed)return false;
   PROGRESS.mastery=PROGRESS.mastery||{};
   const entry=PROGRESS.mastery[level.mastery.id]||{};
   entry.completed=true;
@@ -37166,6 +37843,7 @@ function persistMasteryClear(level){
   PROGRESS.mastery[level.mastery.id]=entry;
   PROGRESS._masteryCount=Object.values(PROGRESS.mastery).filter(x=>x&&x.completed).length;
   saveProgressFile();
+  return true;
 }
 function _briefSilhouette(bn){
   // Per-building stylized silhouette as SVG. Returns inner SVG markup.
@@ -37433,6 +38111,7 @@ function _resetRunStats(){
   _resetFocusSequencer();
   _clearDamageVisuals();
   G.boss=null;P._lastStandUsed=false;P._inLastStand=false;P._spawnVisualGraceUntil=performance.now()+5200;P._spawnPerfGraceUntil=performance.now()+6500;
+  G._endingCinematicPlayedThisRun=false;
 }
 // ── TUTORIAL TIPS — run-once toast sequence on first play ─────────────
 function _tutorialTip(text,delay){
@@ -37999,7 +38678,7 @@ async function buildMegaplexB01Map(scene){
       o.frequency.exponentialRampToValueAtTime(58,c.currentTime+1.05);
       g.gain.setValueAtTime(.16,c.currentTime);
       g.gain.exponentialRampToValueAtTime(.001,c.currentTime+1.18);
-      o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+1.25);
+      o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+1.25);
     }catch(_){}
     return true;
   }
@@ -38617,7 +39296,7 @@ function startGame(){
     _tutorialTip('<span class="kb">WASD</span> to move &nbsp; <span class="kb">SHIFT</span> to sprint',3500);
     _tutorialTip('<span class="kb">LMB</span> shoot &nbsp; <span class="kb">RMB</span> aim down sights',9000);
     _tutorialTip('<span class="kb">F</span> activate FOCUS — slow time',14000);
-    _tutorialTip('<span class="kb">T</span> takedown / smoke · <span class="kb">Y</span> flashbang',19000);
+    _tutorialTip('<span class="kb">T</span> takedown (or smoke if none) · <span class="kb">G</span> grenade · <span class="kb">Y</span> flash',19000);
     _tutorialTip('Headshots = instant kill. <span style="color:#ffd060">Move &amp; chain.</span>',24000);
   }
   G.playMode='solo';G.splitScreenActive=false;DUEL.active=false;
@@ -38631,10 +39310,13 @@ function startGame(){
   });
 }
 function restartGame(){
+  if(typeof closeRadial==='function')closeRadial();
   $e('overlay').classList.add('hidden');hideEndScreen();$e('dmg-flash').style.opacity='0';
   G.playMode='solo';G.splitScreenActive=false;DUEL.active=false;
   DEATHCAM.active=false;P.dead=false;G.started=true;gameFocused=true;G.menuOpen=false;
-  const r=PROGRESS.runSave;
+  const entry=PROGRESS.runEntrySave;
+  const live=PROGRESS.runSave;
+  const r=(entry&&(entry.mode==='solo'||!entry.mode)&&(!live||(live.building|0)===(entry.building|0)))?entry:live;
   if(r&&(r.mode==='solo'||!r.mode)){
     G.building=Math.max(1,Math.min(campaignLength(),r.building|0||1));
     P.money=r.money||0;
@@ -38649,14 +39331,14 @@ function restartGame(){
     P.kills=r.kills||0;P.headshots=r.headshots||0;
     P.shotsFired=r.shotsFired||0;P.shotsHit=r.shotsHit||0;
     P.runStart=r.runStart||performance.now();
-    applyUnlocks();
+    applyUnlocks({preserveInventory:true});
     tryLock();musicInit();showBriefingCard(G.building,2200);startBuilding();
     return;
   }
   // Fallback: retry the building where the player died (never force B01).
   G.building=Math.max(1,Math.min(campaignLength(),G.building|0||1));
   P.attachments=P.attachments||_defaultAttachments();
-  applyUnlocks();tryLock();musicInit();showBriefingCard(G.building,2200);startBuilding();
+  applyUnlocks({preserveInventory:true});tryLock();musicInit();showBriefingCard(G.building,2200);startBuilding();
 }
 // Update menu stats display from PROGRESS
 function updateMenuStats(){
@@ -38807,7 +39489,11 @@ function refreshMenuContinue(){
 	  if(PROGRESS.runSave){
 	    const r=PROGRESS.runSave;
 	    b.style.display='inline-block';
-	    b.innerHTML=r.mode==='custom'?'▶ CONTINUE · CUSTOM':'▶ CONTINUE · BLDG '+r.building;
+	    if(r.mode==='custom')b.innerHTML='▶ CONTINUE · CUSTOM';
+	    else{
+	      const bn=Math.max(1,Math.min(campaignLength(),r.building|0||1));
+	      b.innerHTML='▶ CONTINUE · BLDG '+bn;
+	    }
 	  } else b.style.display='none';
   const activeDiff=(PROGRESS.runSave&&PROGRESS.runSave.difficulty)||G.difficulty;
   document.querySelectorAll('.menu-mode[data-diff]').forEach(mb=>{
@@ -41647,7 +42333,12 @@ renderer.setAnimationLoop(()=>{
 	        moneyPopup(120,'RELAY HACK');
 	        if(typeof applyStoryObjectivePayoff==='function')applyStoryObjectivePayoff('alarm-disabled',{strength:1.08});
 	        attachToast('<div style="color:#40ffc8;letter-spacing:.22em">ALARM CHAIN CUT</div><div style="font-size:11px;margin-top:4px">Reinforcements aborted · relay safe</div>',2800);
-	        if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='alarm')SETPIECE._relaySilenced=true;
+	        if(typeof SETPIECE!=='undefined'&&SETPIECE.active&&SETPIECE.kind==='alarm'){
+	          SETPIECE._relaySilenced=true;
+	          if(G.mastery&&/lockdown/i.test(String(G.mastery.objective&&G.mastery.objective.id||''))){
+	            G.mastery._lockdownSilenced=true;
+	          }
+	        }
 	      }
       if(typeof _updateEncounterObjectiveFeel==='function')_updateEncounterObjectiveFeel(dt);
       let req=G.encounterDirector.drainReinforcementSpawnRequest();
@@ -41763,6 +42454,10 @@ renderer.setAnimationLoop(()=>{
   const adsMs=getAimLookSensitivityMultiplier(P,SETTINGS.adsens||1.0,_aimFeelOptionsFor(P,K,RECOIL_STATE,_lookOptic));
   const yMul=SETTINGS.invY?-1:1;
   if(!_twoPadsSplit){
+    if(typeof RADIAL!=='undefined'&&RADIAL.open){
+      tickRadialAim(M.dx||0,M.dy||0);
+      P._animMouseDx=0;P._animMouseDy=0;
+    }else{
     const _rawAnimMouseDx=M.dx+(P._animPadLookDx||0);
     const _rawAnimMouseDy=M.dy;
     const _focusAdsMotion=_focusAdsViewmodelMotionFilter(P,_rawAnimMouseDx,_rawAnimMouseDy);
@@ -41770,6 +42465,7 @@ renderer.setAnimationLoop(()=>{
     P._animMouseDy=_focusAdsMotion.dy;
     P._focusAdsViewmodelStability=_focusAdsMotion;
     P.yaw-=M.dx*_ms*adsMs;P.pitch-=M.dy*_ms*adsMs*yMul;
+    }
   }else{
     const _focusAdsMotion=_focusAdsViewmodelMotionFilter(P,(P._animPadLookDx||0),0);
     P._animMouseDx=_focusAdsMotion.dx;P._animMouseDy=0;P._focusAdsViewmodelStability=_focusAdsMotion;
@@ -41850,6 +42546,10 @@ renderer.setAnimationLoop(()=>{
   let _lt=0;
   if(K['KeyQ']||GAMEPAD._gpLeanLeft)_lt=-1;
   else if(K['KeyE']||GAMEPAD._gpLeanRight)_lt=1;
+  // Hold-E alarm panels share KeyE with lean — suppress lean only while the panel is still active.
+  const _objSt=G.encounterDirector&&G.encounterDirector.objectiveState;
+  const _alarmDone=!!(_objSt&&(_objSt.alarmPanelDisabled||(_objSt.completedObjectiveIds&&_objSt.completedObjectiveIds.disable_alarm_panel)));
+  if(_lt>0&&_objSt&&!_alarmDone&&((_objSt.alarmPanelHold||0)>.001||_objSt.nearAlarmPanel))_lt=0;
   P.leanTarget=_lt;
   if(P.sliding||P.slideAmt>0.2||P.dead||P.vaulting)P.leanTarget=0;
   P.lean=damp(P.lean,P.leanTarget,10,dt);
@@ -41895,13 +42595,15 @@ renderer.setAnimationLoop(()=>{
   // vignette and crush the scene to near-black at the edges.
   // Phase BA: throttle DOM writes to every-other-frame. Track the last value
   // to skip writes when nothing changed (avoids style-recompute thrash).
-  const _leanOpacity=STABLE_RENDERING_MODE?0:Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0);
+  const _leanOpacity=STABLE_RENDERING_MODE
+    ? Math.abs(P.lean)*.28*Math.max(0,1-P.ads*1.0)
+    : Math.abs(P.lean)*.55*Math.max(0,1-P.ads*1.0);
   if(((G._frameAlt|0)&1)===0){
     if(Math.abs((P._lastLeanOpacity||0)-_leanOpacity)>0.005){
       lv.style.opacity=String(_leanOpacity);
       P._lastLeanOpacity=_leanOpacity;
     }
-    const _leanCls=STABLE_RENDERING_MODE?'':(P.lean<-.15?'left':P.lean>.15?'right':'');
+    const _leanCls=P.lean<-.15?'left':P.lean>.15?'right':'';
     if(P._lastLeanCls!==_leanCls){lv.className=_leanCls;P._lastLeanCls=_leanCls;}
   }
     // ADS — disabled while running. Sprint NOW allowed during reload (gun-fu fluidity).
@@ -44054,7 +44756,7 @@ renderer.setAnimationLoop(()=>{
       o.type='sine';o.frequency.setValueAtTime(540,c.currentTime);
       o.frequency.exponentialRampToValueAtTime(180,c.currentTime+.18);
       g.gain.setValueAtTime(.32,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.20);
-      o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.22);
+      o.connect(g);g.connect(_sfxOut(c));o.start();o.stop(c.currentTime+.22);
       // Apply damage if swing connects (dist<2.4)
       setTimeout(()=>{
         const dx2=P.pos.x-G.boss.group.position.x,dz2=P.pos.z-G.boss.group.position.z;
@@ -44088,9 +44790,15 @@ renderer.setAnimationLoop(()=>{
       const wasBoss=G.boss;G.boss=null;
       if(wasBoss&&!wasBoss.isBoss&&typeof showLieutenantDeath==='function')showLieutenantDeath(G.building);
       if(G.building>=campaignLength()){
-        // FINAL boss — ending cinematic
-        triggerKillCamSlowMo(.20,3.0);
-        setTimeout(()=>showEndingCinematic(),2400);
+        // FINAL boss — ending only after Spire clear path (zones/exit), not mid-fight phase death.
+        const spireClear=!!G.exitUnlocked||(Array.isArray(G.zoneClears)&&G.zoneClears.every(Boolean));
+        if(spireClear){
+          triggerKillCamSlowMo(.20,3.0);
+          setTimeout(()=>showEndingCinematic(),2400);
+        }else{
+          triggerKillCamSlowMo(.40,1.2);
+          if(typeof announce==='function')announce('DIRECTOR DOWN','Clear remaining rooms — exit unlocks the ending',3200);
+        }
       } else {
         // Lieutenant down — quick celebration
         triggerKillCamSlowMo(.40,1.0);
@@ -44629,7 +45337,9 @@ renderer.setAnimationLoop(()=>{
       // ── PIP scope render — attachment optics plus built-in DMR/sniper scopes
       const _opticForPip=_currentOpticProfile();
 	      const _scopePipAllowed=!!(_opticForPip&&((!STABLE_RENDERING_MODE&&SETTINGS.scopePipEnabled)||_opticForPip.forcePip));
-      _scopePipStatus.enabled=!!_scopePipAllowed;
+	      // DOM screen-scope / sniper vignette is safe under STABLE even when RT PIP is locked off.
+	      const _scopeScreenAllowed=!!(_opticForPip&&(_opticForPip.screenScope||_scopePipAllowed));
+      _scopePipStatus.enabled=!!(_scopePipAllowed||_scopeScreenAllowed);
       _scopePipStatus.visible=false;
       _scopePipStatus.opacity=0;
       const _scopeAds=P.adsVis||P.ads||0;
@@ -44697,18 +45407,20 @@ renderer.setAnimationLoop(()=>{
         scopeCamera.aspect=Number.isFinite(_opticForPip.pipAspect)?_opticForPip.pipAspect:1;
         scopeCamera.updateProjectionMatrix();
         const _disablePip=!!_opticForPip.disablePip;
-        const _shouldPip=_scopePipAllowed&&_opticVisible&&!_screenScope&&!_disablePip&&!_skipMotion&&!_skipFade;
+        // Under STABLE, forcePip optics keep RT look-through even when screenScope is set
+        // (DMR/AWM); otherwise screenScope prefers the DOM overlay path.
+        const _shouldPip=_scopePipAllowed&&_opticVisible&&!_disablePip&&!_skipMotion&&!_skipFade&&(!_screenScope||(STABLE_RENDERING_MODE&&!!_opticForPip.forcePip));
         const stride=_scopePipRenderStride();
         const _contribAlpha=_pipAlpha>0.084;
         const _vigAlpha=Math.min(1,_pipScopeEase*(.38+_pipMax*.34)+(P.adsKick||0)*.035+_scopeShadowUi*.18);
         const _suppressVig=!!_opticForPip.suppressVignette;
-        const _vigOpacity=_suppressVig?0:(_screenScope?Math.min(1,.18+_pipScopeEase*.90+(P.adsKick||0)*.020):_vigAlpha);
+        const _vigOpacity=_suppressVig?0:(_screenScope&&!_shouldPip?Math.min(1,.18+_pipScopeEase*.90+(P.adsKick||0)*.020):_vigAlpha);
         _scopePipStatus.throttleInterval=stride;
         _scopePipStatus.skippedThrottle=false;
         _scopePipStatus.renderedThisFrame=false;
         _scopePipStatus.visible=!!_shouldPip;
         _scopePipStatus.opacity=_shouldPip?_pipAlpha:0;
-        _scopePipStatus.screenOverlay=!!(_screenScope&&_scopePipAllowed&&!_skipMotion);
+        _scopePipStatus.screenOverlay=!!(_screenScope&&_scopeScreenAllowed&&!_skipMotion&&!_shouldPip);
         _scopePipStatus.fov=scopeCamera.fov;
         _scopePipStatus.settle=_pipScopeEase;
         _scopePipStatus.vignetteOpacity=_vigOpacity;
@@ -44734,7 +45446,7 @@ renderer.setAnimationLoop(()=>{
         }else{
           _scopePipStatus.rendered=false;
         }
-        _setScopePipView(_screenScope?null:_opticForPip,_shouldPip?_pipAlpha:0);
+        _setScopePipView((_screenScope&&!_shouldPip)?null:_opticForPip,_shouldPip?_pipAlpha:0);
         P.scopeVignetteOpacity=_vigOpacity;
         if(_vig)_uiSetStyle(_vig,'scope-vignette','opacity',String(Math.max(_vigOpacity,THREE.MathUtils.smoothstep(P._scopeVmSwapMask||0,.10,.70)*.85)));
         }
@@ -45289,6 +46001,63 @@ installDebugApi({
       await startBuilding();
       return window.__game.debug.deployLog();
     },
+    /** Combat-path clear: kill enemies + zone-clear bookkeeping. Does NOT force-open doors. */
+    debugCombatClearBuilding:()=>{
+      const dir=G.encounterDirector;
+      if(dir&&typeof dir.reconcileStaleZoneDoorEncounters==='function'){
+        dir.reconcileStaleZoneDoorEncounters(0,G.enemyMgr);
+        dir.reconcileStaleZoneDoorEncounters(1,G.enemyMgr);
+      }
+      if(dir&&typeof dir.reconcileStaleExitEncounters==='function'){
+        dir.reconcileStaleExitEncounters(G.enemyMgr);
+      }
+      if(G.enemyMgr&&Array.isArray(G.enemyMgr._list)){
+        for(const e of G.enemyMgr._list){
+          if(!e||e.dead)continue;
+          e.dead=true;e.hp=0;e._roomFlowDormant=false;
+          if(e.group)e.group.visible=false;
+        }
+      }
+      if(G.boss&&!G.boss.dead){G.boss.dead=true;G.boss.hp=0;}
+      G.zoneEverPopulated=[true,true,true];
+      if(dir&&typeof dir.checkRoomClearEncounters==='function'){
+        dir.checkRoomClearEncounters(G.enemyMgr);
+      }
+      // Survival hold may still seal mid — finish it if pending.
+      if(SETPIECE.active&&SETPIECE.kind==='survival'&&!SETPIECE.rewardGiven){
+        const remain=Math.max(0.25,(SETPIECE.def&&SETPIECE.def.duration||0)-(SETPIECE.timer||0)+0.25);
+        const steps=Math.max(1,Math.ceil(remain*20));
+        const dt=remain/steps;
+        for(let i=0;i<steps;i++){
+          if(typeof setpieceTick==='function')setpieceTick(dt);
+          if(SETPIECE.rewardGiven)break;
+        }
+      }
+      // B05 stations may still seal mid — complete if still open.
+      if(G._objective&&G._objective.def&&G._objective.def.kind==='stations'&&!G._objective.completed&&typeof window.__game.debug.debugVisitStations==='function'){
+        window.__game.debug.debugVisitStations({frames:8,dt:1/20});
+      }
+      for(let pass=0;pass<4;pass++){
+        if(typeof checkZoneClears==='function')checkZoneClears();
+        if(dir&&typeof dir.reconcileStaleZoneDoorEncounters==='function'){
+          dir.reconcileStaleZoneDoorEncounters(0,G.enemyMgr);
+          dir.reconcileStaleZoneDoorEncounters(1,G.enemyMgr);
+        }
+        if(dir&&typeof dir.reconcileStaleExitEncounters==='function'){
+          dir.reconcileStaleExitEncounters(G.enemyMgr);
+        }
+      }
+      const zd=G.levelData&&G.levelData.zoneDoors;
+      return{
+        ok:!!(G.exitUnlocked&&G.zoneClears&&G.zoneClears.every(Boolean)),
+        building:G.building|0,
+        zoneClears:G.zoneClears?G.zoneClears.slice():null,
+        exitUnlocked:!!G.exitUnlocked,
+        doors:zd?zd.map(d=>({opened:!!d.opened})):null,
+        alive:G.enemyMgr?G.enemyMgr.aliveCount:0,
+        forced:false
+      };
+    },
     /** Dev/smoke: wipe combat, complete meso/exit encounters, unlock exit. */
     debugForceClearBuilding:()=>{
       const dir=G.encounterDirector;
@@ -45338,6 +46107,9 @@ installDebugApi({
     },
     /** Dev/smoke: death keeps Continue; Play Again retries the died-on building. */
     runSave:()=>PROGRESS.runSave?JSON.parse(JSON.stringify(PROGRESS.runSave)):null,
+    runEntrySave:()=>PROGRESS.runEntrySave?JSON.parse(JSON.stringify(PROGRESS.runEntrySave)):null,
+    saveEntryRunState:()=>{if(typeof saveEntryRunState==='function')saveEntryRunState();return PROGRESS.runEntrySave?{building:PROGRESS.runEntrySave.building,hp:PROGRESS.runEntrySave.hp}:null;},
+    saveRunState:()=>{if(typeof saveRunState==='function')saveRunState();return PROGRESS.runSave?{building:PROGRESS.runSave.building,hp:PROGRESS.runSave.hp}:null;},
     ensureRetryCheckpoint:()=>{if(typeof ensureRetryCheckpoint==='function')ensureRetryCheckpoint();return PROGRESS.runSave?{building:PROGRESS.runSave.building,mode:PROGRESS.runSave.mode}:null;},
     simulateMissionFail:()=>{
       G.playMode='solo';
@@ -45365,12 +46137,14 @@ installDebugApi({
       G.advancePending=false;
       G.building=from+1;
       $e('exit-prompt').style.opacity='0';
-      if(typeof saveRunState==='function')saveRunState();
       if(G.building>campaignLength()){
+        if(typeof clearRunState==='function')clearRunState();
         if(typeof recordBuildingClear==='function')recordBuildingClear(campaignLength());
+        G._endingCinematicPlayedThisRun=true;
         PROGRESS._finalKill=true;saveProgressFile();
         return{ok:true,from,to:G.building,ending:true,maxCleared:PROGRESS._maxBuildingCleared|0,finalKill:!!PROGRESS._finalKill};
       }
+      if(typeof saveRunState==='function')saveRunState();
       G.started=true;gameFocused=true;P.dead=false;G.menuOpen=false;
       hideEndScreen();
       const endingEl=$e('ending-overlay');if(endingEl)endingEl.classList.remove('show');
@@ -45383,6 +46157,130 @@ installDebugApi({
     campaignIds:()=>CAMPAIGN_LEVELS.map(l=>({building:l.building,id:l.id,setpiece:l.setpiece,mastery:l.mastery&&l.mastery.id})),
     setpieceDef:(bn)=>SETPIECE_DEFS[bn]||null,
     objectiveDef:(bn)=>OBJECTIVE_DEFS[bn]||null,
+    /** B05 chart stations: mid door stays sealed until all stations visited. */
+    debugTriggerZoneClear:(zi)=>{
+      const z=Number(zi)|0;
+      if(z<0||z>2)return{ok:false,reason:'bad_zone'};
+      if(!G.zoneClears)G.zoneClears=[false,false,false];
+      if(!G.zoneEverPopulated)G.zoneEverPopulated=[false,false,false];
+      G.zoneEverPopulated[z]=true;
+      if(G.enemyMgr&&Array.isArray(G.enemyMgr._list)){
+        for(const e of G.enemyMgr._list){
+          if(!e||e.dead||!e.group)continue;
+          if((typeof getZoneOf==='function'?getZoneOf(e.group.position):-1)===z){
+            e.dead=true;e.hp=0;e._roomFlowDormant=false;
+            if(e.group)e.group.visible=false;
+          }
+        }
+      }
+      if(G.encounterDirector&&typeof G.encounterDirector.checkRoomClearEncounters==='function'){
+        G.encounterDirector.checkRoomClearEncounters(G.enemyMgr);
+      }
+      if(G.encounterDirector&&typeof G.encounterDirector.reconcileStaleZoneDoorEncounters==='function'){
+        G.encounterDirector.reconcileStaleZoneDoorEncounters(z,G.enemyMgr);
+      }
+      const already=!!G.zoneClears[z];
+      if(!already){
+        G.zoneClears[z]=true;
+        if(typeof onZoneCleared==='function')onZoneCleared(z);
+      }
+      return{ok:true,zone:z,already,zoneClears:G.zoneClears.slice(),gate:typeof window!=='undefined'&&window.__game&&window.__game.debug&&window.__game.debug.b05StationGate?window.__game.debug.b05StationGate():null};
+    },
+    b05StationGate:()=>{
+      const o=G._objective;
+      const zd=G.levelData&&G.levelData.zoneDoors;
+      const mid=zd&&zd[1]?{opened:!!zd[1].opened,y:zd[1].mesh?+zd[1].mesh.position.y.toFixed(2):null}:null;
+      const meshes=Array.isArray(o&&o._stationMeshes)?o._stationMeshes.length:0;
+      return{
+        building:G.building|0,
+        kind:o&&o.def?o.def.kind:null,
+        visited:o?o.visited|0:0,
+        total:o&&o.def?o.def.total|0:0,
+        completed:!!(o&&o.completed),
+        pendingMidDoor:!!(o&&o._pendingMidDoor),
+        stationMeshes:meshes,
+        midDoor:mid,
+        sealed:!!(o&&o.def&&o.def.kind==='stations'&&!o.completed&&mid&&!mid.opened)
+      };
+    },
+    /** B06/B11 survival hold: mid door sealed until timer completes (counts up from 0). */
+    survivalMidDoorGate:()=>{
+      const zd=G.levelData&&G.levelData.zoneDoors;
+      const mid=zd&&zd[1]?{opened:!!zd[1].opened}:null;
+      const dur=SETPIECE.def&&Number(SETPIECE.def.duration)||0;
+      return{
+        building:G.building|0,
+        active:!!SETPIECE.active,
+        kind:SETPIECE.kind||null,
+        timer:+(SETPIECE.timer||0).toFixed(3),
+        duration:dur,
+        rewardGiven:!!SETPIECE.rewardGiven,
+        pendingMidDoor:!!SETPIECE._pendingMidDoor,
+        midDoor:mid,
+        sealed:!!(SETPIECE.active&&SETPIECE.kind==='survival'&&SETPIECE._pendingMidDoor&&!SETPIECE.rewardGiven&&mid&&!mid.opened)
+      };
+    },
+    /** Advance survival hold by dt seconds (smoke). */
+    debugAdvanceSurvival:(secs=1)=>{
+      if(SETPIECE.kind!=='survival')return{ok:false,reason:'not_survival'};
+      // Smoke may advance before the player physically enters mid — arm the clock.
+      SETPIECE._clockArmed=true;
+      const steps=Math.max(1,Math.ceil(Number(secs)*20)||1);
+      const dt=(Number(secs)||1)/steps;
+      for(let i=0;i<steps;i++){
+        if(typeof setpieceTick==='function')setpieceTick(dt);
+        if(SETPIECE.rewardGiven)break;
+      }
+      return{ok:true,gate:window.__game.debug.survivalMidDoorGate()};
+    },
+    /** Teleport+dwell each unfinished chart station (B05 smoke). */
+    debugVisitStations:(opts={})=>{
+      const o=G._objective;
+      if(!o||!o.def||o.def.kind!=='stations')return{ok:false,reason:'no_stations_objective'};
+      const frames=Math.max(1,Number(opts.frames)|0||24);
+      const dt=Number.isFinite(opts.dt)?opts.dt:1/20;
+      const steps=[];
+      // Dwell timing uses performance.now(); backdate dwellStart so tight debug ticks complete.
+      const holdMs=Math.max(500,Number(o.def.dwellMs)|0||500)+250;
+      for(let i=0;i<o.def.stations.length;i++){
+        if(o.visitedFlags&&o.visitedFlags[i]){steps.push({i,skipped:true});continue;}
+        const st=o.def.stations[i];
+        P.pos.set(st.x,typeof WT==='number'?WT:0,st.z);
+        P.dead=false;G.menuOpen=false;
+        o.dwellStart=performance.now()-holdMs;
+        o._dwellIdx=i;
+        o._stationHoldProgress=0;
+        for(let f=0;f<frames;f++){
+          if(typeof tickObjective==='function')tickObjective(dt);
+          if(o.visitedFlags&&o.visitedFlags[i])break;
+          // Keep dwell "armed" across frames that reset on mismatch.
+          if(!(o.visitedFlags&&o.visitedFlags[i])){
+            o.dwellStart=performance.now()-holdMs;
+            o._dwellIdx=i;
+          }
+        }
+        steps.push({i,visited:!!(o.visitedFlags&&o.visitedFlags[i]),visitedCount:o.visited|0});
+      }
+      // If dwell still failed (feel/context interference), force-complete for smoke only.
+      if(!o.completed&&Array.isArray(o.visitedFlags)){
+        for(let i=0;i<o.visitedFlags.length;i++){
+          if(o.visitedFlags[i])continue;
+          o.visitedFlags[i]=true;
+          o.visited=(o.visited||0)+1;
+        }
+        if(o.visited>=o.total){
+          o.completed=true;
+          if(o._pendingMidDoor&&G.levelData&&typeof G.levelData.openZoneDoor==='function'){
+            G.levelData.openZoneDoor(1);
+            o._pendingMidDoor=false;
+          }
+        }
+        _refreshObjectiveStationMarkers(o);
+      }
+      const zd=G.levelData&&G.levelData.zoneDoors;
+      const midOpen=!!(zd&&zd[1]&&zd[1].opened);
+      return{ok:!!o.completed,completed:!!o.completed,visited:o.visited|0,total:o.total|0,midDoorOpened:midOpen,pendingMidDoor:!!o._pendingMidDoor,steps,stationMeshes:Array.isArray(o._stationMeshes)?o._stationMeshes.length:0};
+    },
     /** Count meshes tagged for hold-E alarm panel (B02–B12 softlock probe). */
     alarmPanelMeshes:()=>{
       const solids=G.levelData&&Array.isArray(G.levelData.solids)?G.levelData.solids:[];

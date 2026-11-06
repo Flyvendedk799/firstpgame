@@ -35,7 +35,8 @@ assert(main.includes('function applyStoryObjectivePayoff') && main.includes("ver
 assert(main.includes("applyStoryObjectivePayoff('station-step'") && main.includes("applyStoryObjectivePayoff('complete'") && main.includes("applyStoryObjectivePayoff('alarm-disabled'"), 'story objective payoff not wired to station/completion/relay events');
 assert(main.includes('_storyObjectivePayoffEnemyPulse') && main.includes('storyObjectivePayoff'), 'story objective payoff enemy animation/debug missing');
 assert(main.includes('_storyObjectivePayoffPulse') && main.includes('_storyObjectivePayoffSide'), 'story objective payoff player presentation missing');
-assert(main.includes('playerZone()===2'), 'timer objective reach completion missing');
+assert(main.includes('atDestination'), 'timer objective destination completion missing');
+assert(main.includes('playerZone()===2'), 'timer objective arm still uses zone reach');
 assert(main.includes('storyObjective:{version:STORY_OBJECTIVE_FEEL_VERSION') && main.includes('rig:P._storyObjectiveActionRig||null'), 'debug story objective feel missing action rig');
 assert(director.includes('feel: null'), 'encounter director objective feel slot missing');
 

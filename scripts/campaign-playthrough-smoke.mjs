@@ -112,13 +112,78 @@ for (let bn = 1; bn <= EXPECTED_LENGTH; bn++) {
     pre.alarmHoldOk = true;
   }
 
-  const cleared = await page.evaluate(() => window.__game.debug.debugForceClearBuilding());
-  if (!cleared.ok || !cleared.exitUnlocked) {
-    throw new Error(`B${bn}: force clear failed ${JSON.stringify(cleared)}`);
+  // B05: mid door stays sealed until chart stations are visited (not force-clear).
+  if (bn === 5) {
+    const gatePre = await page.evaluate(() => window.__game.debug.b05StationGate());
+    if (!gatePre || gatePre.kind !== 'stations') {
+      throw new Error(`B05: expected stations objective, got ${JSON.stringify(gatePre)}`);
+    }
+    if ((gatePre.stationMeshes | 0) < 3) {
+      throw new Error(`B05: expected visible station meshes, got ${JSON.stringify(gatePre)}`);
+    }
+    const midClear = await page.evaluate(() => {
+      window.__game.debug.debugTriggerZoneClear(0);
+      return window.__game.debug.debugTriggerZoneClear(1);
+    });
+    const gateSealed = await page.evaluate(() => window.__game.debug.b05StationGate());
+    if (!gateSealed?.pendingMidDoor || gateSealed?.midDoor?.opened) {
+      throw new Error(`B05: mid door should stay sealed until stations ${JSON.stringify({ midClear, gateSealed })}`);
+    }
+    const visited = await page.evaluate(() => window.__game.debug.debugVisitStations({ frames: 40, dt: 1 / 20 }));
+    if (!visited?.ok || !visited.completed || !visited.midDoorOpened) {
+      throw new Error(`B05: stations should complete and open mid door ${JSON.stringify(visited)}`);
+    }
+    pre.b05StationGate = { sealed: true, openedAfterVisit: true, meshes: gatePre.stationMeshes };
+  }
+
+  // B06/B11: survival hold must count up from 0 and seal mid door until complete.
+  if (bn === 6 || bn === 11) {
+    await page.waitForFunction(
+      () => {
+        const g = window.__game?.debug?.survivalMidDoorGate?.();
+        return g && g.kind === 'survival' && g.active;
+      },
+      null,
+      { timeout: 8000 },
+    );
+    const early = await page.evaluate(() => {
+      // Prove hold is not already complete (old bug: timer started at duration).
+      window.__game.debug.debugAdvanceSurvival(0.25);
+      return window.__game.debug.survivalMidDoorGate();
+    });
+    if (!early || early.rewardGiven || early.timer >= early.duration) {
+      throw new Error(`B${bn}: survival hold completed too early ${JSON.stringify(early)}`);
+    }
+    await page.evaluate(() => {
+      window.__game.debug.debugTriggerZoneClear(0);
+      window.__game.debug.debugTriggerZoneClear(1);
+    });
+    const sealed = await page.evaluate(() => window.__game.debug.survivalMidDoorGate());
+    if (!sealed?.pendingMidDoor || sealed?.midDoor?.opened || sealed?.rewardGiven) {
+      throw new Error(`B${bn}: mid door should stay sealed during survival hold ${JSON.stringify(sealed)}`);
+    }
+    const remain = Math.max(0.5, (sealed.duration || 30) - (sealed.timer || 0) + 0.5);
+    const after = await page.evaluate((secs) => window.__game.debug.debugAdvanceSurvival(secs), remain);
+    const gate = after?.gate || (await page.evaluate(() => window.__game.debug.survivalMidDoorGate()));
+    if (!gate?.rewardGiven || !gate?.midDoor?.opened) {
+      throw new Error(`B${bn}: survival complete should open mid door ${JSON.stringify(gate)}`);
+    }
+    pre.survivalMidDoorGate = { sealed: true, openedAfterHold: true, duration: gate.duration };
+  }
+
+  // Prefer combat-path clear (no force-open). Fall back to force-clear only if exit stuck.
+  let cleared = await page.evaluate(() => window.__game.debug.debugCombatClearBuilding());
+  if (!cleared?.ok || !cleared.exitUnlocked) {
+    const forced = await page.evaluate(() => window.__game.debug.debugForceClearBuilding());
+    if (!forced.ok || !forced.exitUnlocked) {
+      throw new Error(`B${bn}: combat+force clear failed ${JSON.stringify({ cleared, forced })}`);
+    }
+    cleared = { ...forced, combatAttempt: cleared, forcedFallback: true };
   }
   if (!cleared.zoneClears || cleared.zoneClears.filter(Boolean).length < 3) {
     throw new Error(`B${bn}: zone clears incomplete ${JSON.stringify(cleared.zoneClears)}`);
   }
+  pre.clearPath = cleared.forcedFallback ? 'force' : 'combat';
 
   await page.screenshot({
     path: path.join(SCREENSHOTS_DIR, `campaign-playthrough-b${String(bn).padStart(2, '0')}.png`),
@@ -149,6 +214,7 @@ for (let bn = 1; bn <= EXPECTED_LENGTH; bn++) {
     objectiveKind: pre.objectiveKind,
     masteryId: pre.masteryId,
     exitUnlocked: cleared.exitUnlocked,
+    clearPath: pre.clearPath || 'unknown',
     maxCleared: advanced.maxCleared,
     ending: !!advanced.ending,
   });

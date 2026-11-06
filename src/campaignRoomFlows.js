@@ -528,7 +528,14 @@ function _buildFlow(building) {
       'alarm_to_drum',
       'alarm_relay',
       'drum_flank',
-      { type: 'objective_complete', objectiveId: 'disable_alarm_panel' },
+      {
+        type: 'any',
+        conditions: [
+          { type: 'objective_complete', objectiveId: 'disable_alarm_panel' },
+          // Softlock escape: clearing the relay desk also opens the flank if Hold-E was skipped.
+          { type: 'encounter_clear', encounterId: _id(building, 'alarm_relay') },
+        ],
+      },
       true,
       'Flank pressure gate',
     ),

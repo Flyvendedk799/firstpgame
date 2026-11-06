@@ -11,6 +11,21 @@ function _boundsArea(b) {
   return (b.x1 - b.x0) * (b.z1 - b.z0);
 }
 
+const MID_ROUTE_HOLD_WAYPOINT={
+  1:'HOLD E: CUT ALARM',
+  2:'HOLD E: DESK OVERRIDE',
+  3:'HOLD E: BOOTH KILL-SWITCH',
+  4:'HOLD E: SAFEHOUSE LOCKOUT',
+  5:'HOLD E: WARD POWER CUT',
+  6:'HOLD E: PLATFORM RELAY',
+  7:'HOLD E: BRIDGE CONSOLE',
+  8:'HOLD E: INTRUSION CUT',
+  9:'HOLD E: BORDER OVERRIDE',
+  10:'HOLD E: SACRISTY RELAY',
+  11:'HOLD E: BRIDGE LOCKOUT',
+  12:'HOLD E: HELO LOCKOUT'
+};
+
 /** Smallest matching bounds win so nested sub-spaces beat parent volumes. */
 export function pickFloorplanSpaceId(x, z, floorplan) {
   const sp = floorplan && floorplan.spaces;
@@ -212,6 +227,34 @@ export class EncounterDirector {
   }
 
   /**
+   * True when tagged hostiles for `encounterId` are resolved for clear:
+   * all dead / gone, OR never spawned. Still-dormant (unwoken) rooms are NOT resolved.
+   * @param {string} encounterId
+   * @param {object[]} list
+   * @returns {boolean}
+   */
+  _encounterCombatResolved(encounterId, list) {
+    if (!encounterId || !Array.isArray(list)) return false;
+    let awakeAlive = 0;
+    let dormantAlive = 0;
+    let dead = 0;
+    let tagged = 0;
+    for (const e of list) {
+      if (!e || e.encounterId !== encounterId) continue;
+      tagged++;
+      if (e.dead) dead++;
+      else if (e._roomFlowDormant) dormantAlive++;
+      else awakeAlive++;
+    }
+    if (awakeAlive > 0) return false;
+    // Unwoken dormants must not auto-complete mid/back encounters at deploy.
+    if (dormantAlive > 0 && dead === 0) return false;
+    const spawned = !!this._encounterSpawned[encounterId];
+    if (!spawned && tagged === 0) return this._isEncounterClearGateReachable(encounterId);
+    return tagged > 0 || spawned;
+  }
+
+  /**
    * Complete catalog encounters when all their `encounterId` hostiles are dead.
    * Handles `room_clear` and `objective_and_room_safe` (relay guard dead without panel hold).
    * @param {{ _list?: unknown[] }|null} enemyMgr
@@ -223,16 +266,7 @@ export class EncounterDirector {
       const ct = enc.completion && enc.completion.type;
       if (ct !== 'room_clear' && ct !== 'objective_and_room_safe') continue;
       if (!Array.isArray(enc.enemies) || enc.enemies.length === 0) continue;
-      let alive = 0;
-      let tagged = 0;
-      for (const e of enemyMgr._list) {
-        if (!e || e.encounterId !== enc.id) continue;
-        tagged++;
-        if (!e.dead && !e._roomFlowDormant) alive++;
-      }
-      const spawned = !!this._encounterSpawned[enc.id];
-      if (!spawned && tagged === 0 && !this._isEncounterClearGateReachable(enc.id)) continue;
-      if (alive === 0) this.completeEncounter(enc.id);
+      if (this._encounterCombatResolved(enc.id, enemyMgr._list)) this.completeEncounter(enc.id);
     }
   }
 
@@ -285,12 +319,7 @@ export class EncounterDirector {
     const list = enemyMgr && Array.isArray(enemyMgr._list) ? enemyMgr._list : [];
     for (const id of req.encounterIds) {
       if (!id || this.completedEncounterIds[id]) continue;
-      let aliveTagged = 0;
-      for (const e of list) {
-        if (!e || e.encounterId !== id || e.dead || e._roomFlowDormant) continue;
-        aliveTagged++;
-      }
-      if (aliveTagged === 0) this.completeEncounter(id);
+      if (this._encounterCombatResolved(id, list)) this.completeEncounter(id);
     }
     return this.encountersSatisfiedForZoneDoorOpen(zoneId);
   }
@@ -310,12 +339,7 @@ export class EncounterDirector {
       const ct = enc.completion && enc.completion.type;
       if (ct !== 'room_clear' && ct !== 'objective_and_room_safe') continue;
       if (!/relay_cage_clear|signature|exit/i.test(String(enc.id))) continue;
-      let alive = 0;
-      for (const e of list) {
-        if (!e || e.encounterId !== enc.id || e.dead || e._roomFlowDormant) continue;
-        alive++;
-      }
-      if (alive === 0) {
+      if (this._encounterCombatResolved(enc.id, list)) {
         this.completeEncounter(enc.id);
         changed = true;
       }
@@ -465,6 +489,9 @@ export class EncounterDirector {
     const cond = gate && gate.opensOn;
     if (!cond || !cond.type) return false;
     if (cond.type === 'immediate') return true;
+    if (cond.type === 'any' && Array.isArray(cond.conditions)) {
+      return cond.conditions.some((c) => this._gateConditionSatisfied({ opensOn: c }));
+    }
     if (cond.type === 'room_enter') return !!this.flowRoomVisitCounts[cond.roomId] || this.currentFlowRoomId === cond.roomId;
     if (cond.type === 'room_clear') return !!this.completedFlowRooms[cond.roomId];
     if (cond.type === 'encounter_clear') return !!this.completedEncounterIds[cond.encounterId];
@@ -613,7 +640,9 @@ export class EncounterDirector {
     if (!room || !room.objectiveId || this.objectiveState.completedObjectiveIds[room.objectiveId]) return null;
     return {
       type: 'objective',
-      label: room.objectiveId === 'disable_alarm_panel' ? 'HOLD E: CUT ALARM' : 'OBJECTIVE',
+      label: room.objectiveId === 'disable_alarm_panel'
+        ? (MID_ROUTE_HOLD_WAYPOINT[this.building|0] || 'HOLD E: CUT RELAY')
+        : 'OBJECTIVE',
       roomId,
       objectiveId: room.objectiveId,
       x: room.waypoint.x,
@@ -849,10 +878,12 @@ export class EncounterDirector {
   tickObjectives(dt, player, input) {
     if (!player || !player.pos || !this._holdObjectiveSpecs.length) {
       this.objectiveState.alarmPanelHold = 0;
+      this.objectiveState.nearAlarmPanel = false;
       return null;
     }
     const solids = input && input.levelSolids;
     const alarmOn = !!(input && input.alarmSystem);
+    this.objectiveState.nearAlarmPanel = false;
     for (const spec of this._holdObjectiveSpecs) {
       const sid = spec.id;
       if (!sid || this.objectiveState.completedObjectiveIds[sid]) continue;
@@ -879,6 +910,9 @@ export class EncounterDirector {
           near = true;
           break;
         }
+      }
+      if (sid === 'disable_alarm_panel' || meshId === 'alarm_panel') {
+        this.objectiveState.nearAlarmPanel = !!near;
       }
       if (near && input && input.keyE) {
         const next = this._getHoldProgress(spec) + dt / holdSec;
@@ -910,9 +944,12 @@ export class EncounterDirector {
     const sid = spec.id;
     if (!sid || this.objectiveState.completedObjectiveIds[sid]) return null;
     this.objectiveState.completedObjectiveIds[sid] = true;
-    this._setHoldProgress(spec, 1);
+    // Clear hold progress so KeyE lean is not permanently suppressed after hack.
+    this._setHoldProgress(spec, 0);
     if (spec.meshObjectiveId === 'alarm_panel' || sid === 'disable_alarm_panel') {
       this.objectiveState.alarmPanelDisabled = true;
+      this.objectiveState.nearAlarmPanel = false;
+      this.objectiveState.alarmPanelHold = 0;
       this.applyAlarmPanelDisabledVisuals(solids);
     }
     this.lastTrigger = { type: 'objective', id: sid, t: performance.now() * 0.001 };

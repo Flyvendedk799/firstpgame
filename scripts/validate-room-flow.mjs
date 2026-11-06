@@ -39,6 +39,16 @@ function validateGateOpenCondition(lab, gate, encounterIds, roomIds) {
     fail(`${lab} gate ${gate.id}: opensOn must be an object with type`);
     return;
   }
+  if (cond.type === 'any') {
+    if (!Array.isArray(cond.conditions) || cond.conditions.length === 0) {
+      fail(`${lab} gate ${gate.id}: any opensOn needs a non-empty conditions array`);
+      return;
+    }
+    for (const c of cond.conditions) {
+      validateGateOpenCondition(lab, { ...gate, opensOn: c }, encounterIds, roomIds);
+    }
+    return;
+  }
   if (cond.type === 'encounter_clear') {
     if (!cond.encounterId || !encounterIds.has(cond.encounterId)) {
       fail(`${lab} gate ${gate.id}: encounter_clear references unknown encounter ${JSON.stringify(cond.encounterId)}`);

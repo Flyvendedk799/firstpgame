@@ -240,8 +240,8 @@ const MATERIAL_PRESETS = {
   bulletHole: { color: 0x0a0a0a, roughness: 0.85, metalness: 0.10, transparent: true, opacity: 0.95, depthWrite: false, alphaTest: 0.06 },
   scorchMark: { color: 0x141008, roughness: 0.95, metalness: 0.00, transparent: true, opacity: 0.78, depthWrite: false, alphaTest: 0.04 },
   glassCrack: { color: 0xe0e8f0, roughness: 0.15, metalness: 0.02, transparent: true, opacity: 0.65, depthWrite: false, alphaTest: 0.03 },
-  warningPaint: { color: 0xffb020, roughness: 0.68, metalness: 0.02, emissive: 0x442800, emissiveIntensity: 0.18, normalScale: 0.30 },
-  signage: { color: 0xf4f0e8, roughness: 0.52, metalness: 0.02, emissive: 0x100c08, emissiveIntensity: 0.05, normalScale: 0.20 }
+  warningPaint: { color: 0xffb020, roughness: 0.68, metalness: 0.02, emissive: 0x442800, emissiveIntensity: 0.55, normalScale: 0.30 },
+  signage: { color: 0xf4f0e8, roughness: 0.52, metalness: 0.02, emissive: 0x100c08, emissiveIntensity: 0.75, normalScale: 0.20 }
 };
 
 const QUALITY = {
